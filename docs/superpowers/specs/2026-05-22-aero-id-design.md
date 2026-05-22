@@ -376,12 +376,35 @@ SIGTERM → 停接新连接 → 等现有请求完成（≤ `shutdown_timeout`�
 
 ## 11. 未来扩展点（仅记录，不实现）
 
+### 11.1 业务增强
+
 - 点赞表 `comment_likes(comment_id, owner_uid)` + 计数维护
-- pg 全文检索（已在表上留 jsonb，可加 GIN 索引）
 - 消息推送（WebSocket / SSE 长连接）
 - 多租户隔离（`org_id` 列）
-- 观测（otel + prometheus）
+
+### 11.2 AI 时代增强（评审讨论结论：不进 MVP）
+
+以下项目曾在评审中讨论过，明确**不进 MVP**，但保留作为后续演进路线。决策日期 2026-05-22：
+
+| 扩展项 | 描述 | 触发条件 |
+|---|---|---|
+| AI 列预埋 | files/messages/comments 加 `extracted_text` / `tags` / `embedding(VECTOR)` 列 | 当业务确定要做语义检索 / 自动标签 |
+| `pgvector` 扩展 | PG 装 vector 扩展支持向量检索 | 同上 |
+| Outbox 事件流 | `events_outbox` 表 + 内置 worker，支持异步处理（OCR / embedding / 审核） | 当出现首个异步业务（如文件转码、敏感词审核） |
+| Consents 同意表 | `consents(owner_uid, scope, granted_at, revoked_at)` 记录用户对数据使用的授权 | 当数据被送入外部 LLM 之前必须先建 |
+| MCP server | 把 service 暴露成 MCP 工具，供 AI agent 调用 | 当公司开始用 Claude/Cursor 等 agent 操作此数据 |
+| OTel + Metrics | tracing/metrics 接入观测体系 | 当 SLA 要求或 AI 调用成本可视化需要 |
+| AI Gateway 抽象 | `internal/ai/` 包定义 Embedder/Summarizer/Moderator 接口，统一接入 LLM provider | 进入 Phase 1（异步 AI 处理）时立即需要 |
+
+### 11.3 演进路线参考
+
+```
+Phase 0（本 MVP）：核心 CRUD + SSO 集成 + 双协议
+Phase 1：outbox + 异步 worker + embedding 写回
+Phase 2：pgvector 语义检索 + MCP server + SSE 流式
+Phase 3：智能摘要 / 审核 / 推荐
+```
 
 ---
 
-**文档状态**：等待 user review。批准后进入实现计划（writing-plans skill）。
+**文档状态**：评审完成，待 user 最终批准后进入实现计划（writing-plans skill）。
