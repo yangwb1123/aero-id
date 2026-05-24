@@ -113,3 +113,55 @@ func msgDomainToRow(m *domain.Message) *messageRow {
 		CreatedAt: m.CreatedAt,
 	}
 }
+
+type commentRow struct {
+	ID         uuid.UUID      `gorm:"column:id;primaryKey"`
+	OwnerUID   string         `gorm:"column:owner_uid"`
+	TargetType string         `gorm:"column:target_type"`
+	TargetID   uuid.UUID      `gorm:"column:target_id"`
+	ParentID   *uuid.UUID     `gorm:"column:parent_id"`
+	RootID     uuid.UUID      `gorm:"column:root_id"`
+	Content    string         `gorm:"column:content"`
+	LikeCount  int            `gorm:"column:like_count"`
+	ReplyCount int            `gorm:"column:reply_count"`
+	Status     int16          `gorm:"column:status"`
+	CreatedAt  time.Time      `gorm:"column:created_at"`
+	UpdatedAt  time.Time      `gorm:"column:updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"column:deleted_at;index"`
+}
+
+func (commentRow) TableName() string { return "comments" }
+
+func commentRowToDomain(r *commentRow) *domain.Comment {
+	return &domain.Comment{
+		ID:         r.ID,
+		OwnerUID:   r.OwnerUID,
+		TargetType: domain.TargetType(r.TargetType),
+		TargetID:   r.TargetID,
+		ParentID:   r.ParentID,
+		RootID:     r.RootID,
+		Content:    r.Content,
+		LikeCount:  r.LikeCount,
+		ReplyCount: r.ReplyCount,
+		Status:     domain.CommentStatus(r.Status),
+		CreatedAt:  r.CreatedAt,
+		UpdatedAt:  r.UpdatedAt,
+	}
+}
+
+func commentDomainToRow(c *domain.Comment) *commentRow {
+	return &commentRow{
+		ID:         c.ID,
+		OwnerUID:   c.OwnerUID,
+		TargetType: string(c.TargetType),
+		TargetID:   c.TargetID,
+		ParentID:   c.ParentID,
+		RootID:     c.RootID,
+		Content:    c.Content,
+		LikeCount:  c.LikeCount,
+		ReplyCount: c.ReplyCount,
+		Status:     int16(c.Status),
+		CreatedAt:  c.CreatedAt,
+		UpdatedAt:  c.UpdatedAt,
+	}
+}
