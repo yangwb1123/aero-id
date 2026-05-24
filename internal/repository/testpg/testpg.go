@@ -4,6 +4,10 @@ package testpg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	pg "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -42,4 +46,47 @@ func Start(t *testing.T) *gorm.DB {
 		t.Fatalf("gorm open: %v", err)
 	}
 	return db
+}
+
+// Migrate executes every *.up.sql file under migrationsDir in lexical order.
+// Path is typically returned by RepoRoot helpers; we just take it raw.
+func Migrate(t *testing.T, db *gorm.DB, migrationsDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(migrationsDir, f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if err := db.Exec(string(b)).Error; err != nil {
+			t.Fatalf("exec %s: %v", f, err)
+		}
+	}
+}
+
+// RepoRoot finds the module root by walking up from the calling test file
+// looking for a go.mod.
+func RepoRoot(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for d := wd; d != "/"; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			return d
+		}
+	}
+	t.Fatal("go.mod not found")
+	return ""
 }
