@@ -2760,17 +2760,18 @@ Create `internal/storage/s3.go`:
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"github.com/aero/aero-id/internal/pkg/idgen"
 )
@@ -2823,7 +2824,7 @@ func (s *S3) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, 
 	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.cfg.Bucket),
 		Key:    aws.String(key),
-		Body:   ioReader(body),
+		Body:   bytes.NewReader(body), // PutObject needs a seekable reader (SDK rewinds on retry)
 	})
 	if err != nil {
 		return "", 0, fmt.Errorf("put object: %w", err)
@@ -2892,25 +2893,6 @@ func (s *S3) PresignGet(ctx context.Context, key string, ttl time.Duration) (str
 		return "", fmt.Errorf("presign: %w", err)
 	}
 	return req.URL, nil
-}
-
-// ioReader makes a []byte usable as an io.Reader without external deps.
-func ioReader(b []byte) io.Reader {
-	return &byteReader{b: b}
-}
-
-type byteReader struct {
-	b   []byte
-	pos int
-}
-
-func (r *byteReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.pos:])
-	r.pos += n
-	return n, nil
 }
 
 var _ FileStorage = (*S3)(nil)
