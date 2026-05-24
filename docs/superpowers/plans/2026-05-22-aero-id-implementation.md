@@ -5432,7 +5432,8 @@ func AccessLog(log *zap.Logger) gin.HandlerFunc {
 		c.Next()
 		log.Info("http_request",
 			zap.String("method", c.Request.Method),
-			zap.String("path", c.FullPath()),
+			zap.String("path", c.FullPath()),          // route template, "" for unmatched (404) routes
+			zap.String("uri", c.Request.URL.Path),      // raw path, always present
 			zap.Int("status", c.Writer.Status()),
 			zap.Duration("latency", time.Since(start)),
 			zap.String("request_id", c.GetString("request_id")),
@@ -5454,7 +5455,8 @@ import (
 )
 
 // CORS applies permissive defaults when origins is empty, otherwise reflects only
-// allow-listed origins. Handles the OPTIONS preflight with 204.
+// allow-listed origins. Allow-Methods/Headers are emitted only for accepted origins;
+// a disallowed-origin preflight is rejected with 403, an accepted one with 204.
 func CORS(origins []string) gin.HandlerFunc {
 	allowAll := len(origins) == 0
 	allowed := make(map[string]struct{}, len(origins))
@@ -5462,16 +5464,27 @@ func CORS(origins []string) gin.HandlerFunc {
 		allowed[o] = struct{}{}
 	}
 	return func(c *gin.Context) {
-		if origin := c.GetHeader("Origin"); origin != "" {
-			if allowAll {
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			_, originAllowed := allowed[origin]
+			switch {
+			case allowAll:
 				c.Header("Access-Control-Allow-Origin", "*")
-			} else if _, ok := allowed[origin]; ok {
+			case originAllowed:
 				c.Header("Access-Control-Allow-Origin", origin)
 				c.Header("Vary", "Origin")
+			default:
+				// disallowed origin: reject preflight, let real requests through sans CORS headers
+				if c.Request.Method == http.MethodOptions {
+					c.AbortWithStatus(http.StatusForbidden)
+					return
+				}
+			}
+			if allowAll || originAllowed {
+				c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+				c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,"+RequestIDHeader)
 			}
 		}
-		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,"+RequestIDHeader)
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
