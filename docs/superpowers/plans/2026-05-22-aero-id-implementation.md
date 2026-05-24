@@ -4402,13 +4402,13 @@ func (s *fileService) Delete(ctx context.Context, id domain.ID) error {
 	if f.OwnerUID != actor {
 		return apperr.Forbidden("file.forbidden", "only the owner can delete this file")
 	}
-	// Soft-delete the authoritative row first, then remove the blob.
 	if err := s.files.Delete(ctx, id); err != nil {
 		return apperr.Internal("file.delete_failed", "failed to delete file").Wrap(err)
 	}
-	if err := s.store.Delete(ctx, f.StorageKey); err != nil && !stderrors.Is(err, storage.ErrNotFound) {
-		return apperr.Internal("file.delete_failed", "failed to delete file blob").Wrap(err)
-	}
+	// The soft-deleted row is authoritative. Blob removal is best-effort: if it fails
+	// the row is already gone, so we don't fail the request — the blob is left for a
+	// future storage GC sweep rather than resurrecting the row.
+	_ = s.store.Delete(ctx, f.StorageKey)
 	return nil
 }
 
@@ -5040,6 +5040,10 @@ func (s *commentService) Create(ctx context.Context, in CreateCommentInput) (*do
 		return nil, apperr.Internal("comment.create_failed", "failed to create comment").Wrap(err)
 	}
 	if parent != nil {
+		// NOTE: Create + IncReplyCount are not wrapped in a transaction. If IncReplyCount
+		// fails after the comment is persisted, the reply is saved but the parent's
+		// reply_count is not incremented (a denormalized counter that can drift). A future
+		// task should wrap both writes in a DB transaction.
 		if err := s.comments.IncReplyCount(ctx, parent.ID); err != nil {
 			return nil, apperr.Internal("comment.create_failed", "failed to update reply count").Wrap(err)
 		}
