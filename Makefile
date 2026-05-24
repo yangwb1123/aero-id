@@ -18,7 +18,8 @@ proto:
 	  --proto_path=api/proto \
 	  --go_out=. --go_opt=module=github.com/aero/aero-id \
 	  --go-grpc_out=. --go-grpc_opt=module=github.com/aero/aero-id \
-	  api/proto/sso/v1/sso.proto
+	  api/proto/sso/v1/sso.proto \
+	  api/proto/aero_id/v1/aero_id.proto
 
 MIGRATIONS_DIR := migrations
 MIGRATE_DSN    := postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable

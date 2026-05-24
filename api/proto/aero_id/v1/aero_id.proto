@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package aero_id.v1;
+
+option go_package = "github.com/aero/aero-id/internal/handler/grpc/aeropb";
+
+import "google/protobuf/timestamp.proto";
+
+// ---- shared ----
+message User {
+  string uid      = 1;
+  string nickname = 2;
+  string avatar   = 3;
+}
+
+message Page {
+  int32  limit  = 1;
+  string cursor = 2;
+}
+
+// ---- files ----
+message File {
+  string id                              = 1;
+  string owner_uid                       = 2;
+  string name                            = 3;
+  int64  size                            = 4;
+  string mime_type                       = 5;
+  int32  visibility                      = 6;
+  string storage_type                    = 7;
+  google.protobuf.Timestamp created_at   = 8;
+  google.protobuf.Timestamp updated_at   = 9;
+}
+
+message GetFileRequest { string id = 1; }
+message GetFileResponse { File file = 1; }
+message ListFilesRequest { string owner_uid = 1; Page page = 2; }
+message ListFilesResponse { repeated File files = 1; string next_cursor = 2; }
+message DeleteFileRequest { string id = 1; }
+message DeleteFileResponse {}
+message DownloadURLRequest { string id = 1; int64 ttl_seconds = 2; }
+message DownloadURLResponse { string url = 1; }
+
+service FileService {
+  rpc GetFile(GetFileRequest) returns (GetFileResponse);
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  rpc GetDownloadURL(DownloadURLRequest) returns (DownloadURLResponse);
+}
+
+// ---- messages ----
+message Message {
+  string id                            = 1;
+  string from_uid                      = 2;
+  string to_uid                        = 3;
+  int32  kind                          = 4;
+  string content                       = 5;
+  string file_id                       = 6;
+  google.protobuf.Timestamp read_at    = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message SendMessageRequest { string to_uid = 1; int32 kind = 2; string content = 3; string file_id = 4; }
+message SendMessageResponse { Message message = 1; }
+message GetMessageRequest { string id = 1; }
+message GetMessageResponse { Message message = 1; }
+message InboxRequest { Page page = 1; bool unread_only = 2; }
+message InboxResponse { repeated Message messages = 1; map<string, User> users = 2; string next_cursor = 3; }
+message ConversationRequest { string with_uid = 1; Page page = 2; }
+message ConversationResponse { repeated Message messages = 1; map<string, User> users = 2; string next_cursor = 3; }
+message MarkReadRequest { string id = 1; }
+message MarkReadResponse {}
+
+service MessageService {
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc GetMessage(GetMessageRequest) returns (GetMessageResponse);
+  rpc Inbox(InboxRequest) returns (InboxResponse);
+  rpc Conversation(ConversationRequest) returns (ConversationResponse);
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+}
+
+// ---- comments ----
+message Comment {
+  string id                            = 1;
+  string owner_uid                     = 2;
+  string target_type                   = 3;
+  string target_id                     = 4;
+  string parent_id                     = 5;
+  string root_id                       = 6;
+  string content                       = 7;
+  int32  reply_count                   = 8;
+  int32  status                        = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message CreateCommentRequest { string target_type = 1; string target_id = 2; string parent_id = 3; string content = 4; }
+message CreateCommentResponse { Comment comment = 1; }
+message ListCommentsRequest { string target_type = 1; string target_id = 2; Page page = 3; }
+message ListCommentsResponse { repeated Comment comments = 1; map<string, User> users = 2; string next_cursor = 3; }
+message RepliesRequest { string root_id = 1; Page page = 2; }
+message RepliesResponse { repeated Comment comments = 1; map<string, User> users = 2; string next_cursor = 3; }
+message DeleteCommentRequest { string id = 1; }
+message DeleteCommentResponse {}
+
+service CommentService {
+  rpc CreateComment(CreateCommentRequest) returns (CreateCommentResponse);
+  rpc ListComments(ListCommentsRequest) returns (ListCommentsResponse);
+  rpc Replies(RepliesRequest) returns (RepliesResponse);
+  rpc DeleteComment(DeleteCommentRequest) returns (DeleteCommentResponse);
+}
