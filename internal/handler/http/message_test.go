@@ -106,3 +106,48 @@ func TestMessageHandler_GetForbiddenMapsTo403(t *testing.T) {
 		t.Fatalf("status = %d, want 403", w.Code)
 	}
 }
+
+func TestMessageHandler_Conversation(t *testing.T) {
+	msgID := idgen.NewID()
+	svc := &fakeMessageService{
+		conversationFn: func(_ context.Context, with string, _ domain.Page) (*service.MessageList, error) {
+			return &service.MessageList{
+				Messages: []*domain.Message{{
+					ID:      msgID,
+					FromUID: "a",
+					ToUID:   "peer-uid",
+					Content: "hey",
+				}},
+				NextCursor: "",
+				Users: map[string]sso.User{
+					"a":        {UID: "a", Nickname: "Alice"},
+					"peer-uid": {UID: "peer-uid", Nickname: "Peer"},
+				},
+			}, nil
+		},
+	}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "a")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/conversations/peer-uid", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Messages []map[string]any          `json:"messages"`
+			Users    map[string]map[string]any `json:"users"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Data.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d (body=%s)", len(resp.Data.Messages), w.Body.String())
+	}
+	if resp.Data.Messages[0]["content"] != "hey" {
+		t.Fatalf("unexpected message content: %v", resp.Data.Messages[0]["content"])
+	}
+	if resp.Data.Users["peer-uid"]["nickname"] != "Peer" {
+		t.Fatalf("unexpected user: %v", resp.Data.Users["peer-uid"])
+	}
+}

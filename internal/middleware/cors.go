@@ -7,7 +7,8 @@ import (
 )
 
 // CORS applies permissive defaults when origins is empty, otherwise reflects only
-// allow-listed origins. Handles the OPTIONS preflight with 204.
+// allow-listed origins. Handles the OPTIONS preflight with 204 for allowed origins
+// and 403 for disallowed origins.
 func CORS(origins []string) gin.HandlerFunc {
 	allowAll := len(origins) == 0
 	allowed := make(map[string]struct{}, len(origins))
@@ -15,16 +16,27 @@ func CORS(origins []string) gin.HandlerFunc {
 		allowed[o] = struct{}{}
 	}
 	return func(c *gin.Context) {
-		if origin := c.GetHeader("Origin"); origin != "" {
-			if allowAll {
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			_, originAllowed := allowed[origin]
+			switch {
+			case allowAll:
 				c.Header("Access-Control-Allow-Origin", "*")
-			} else if _, ok := allowed[origin]; ok {
+			case originAllowed:
 				c.Header("Access-Control-Allow-Origin", origin)
 				c.Header("Vary", "Origin")
+			default:
+				// disallowed origin: reject preflight outright, let real requests through without CORS headers
+				if c.Request.Method == http.MethodOptions {
+					c.AbortWithStatus(http.StatusForbidden)
+					return
+				}
+			}
+			if allowAll || originAllowed {
+				c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+				c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,"+RequestIDHeader)
 			}
 		}
-		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,"+RequestIDHeader)
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return

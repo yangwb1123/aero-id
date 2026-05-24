@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"context"
 	stderrors "errors"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,6 +48,18 @@ func TestRecovery_returns500(t *testing.T) {
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/boom", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (body=%s)", err, w.Body.String())
+	}
+	if body.Error.Code != "internal.panic" {
+		t.Fatalf("expected error code %q, got %q (body=%s)", "internal.panic", body.Error.Code, w.Body.String())
 	}
 }
 

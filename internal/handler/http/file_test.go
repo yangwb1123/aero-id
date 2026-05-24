@@ -3,10 +3,13 @@ package http_test
 import (
 	"bytes"
 	"context"
+	stderrors "errors"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,5 +132,57 @@ func TestFileHandler_Delete204(t *testing.T) {
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/v1/files/"+idgen.NewID().String(), nil))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", w.Code)
+	}
+}
+
+// fakeSignedDownloader implements httpapi.SignedDownloader for tests.
+type fakeSignedDownloader struct {
+	verifyFn func(rawURL string, now time.Time) error
+	getFn    func(ctx context.Context, key string) (io.ReadCloser, error)
+	getCalled bool
+}
+
+func (f *fakeSignedDownloader) VerifyPresignedURL(rawURL string, now time.Time) error {
+	return f.verifyFn(rawURL, now)
+}
+
+func (f *fakeSignedDownloader) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	f.getCalled = true
+	return f.getFn(ctx, key)
+}
+
+func TestFileHandler_DownloadValidSignature(t *testing.T) {
+	dl := &fakeSignedDownloader{
+		verifyFn: func(string, time.Time) error { return nil },
+		getFn:    func(context.Context, string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("hello")), nil
+		},
+	}
+	e := serveWithActor(httpapi.NewFileHandler(&fakeFileService{}, dl, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/files/dl?key=k&exp=123&sig=abc", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "hello" {
+		t.Fatalf("body = %q, want %q", got, "hello")
+	}
+}
+
+func TestFileHandler_DownloadBadSignature(t *testing.T) {
+	dl := &fakeSignedDownloader{
+		verifyFn: func(string, time.Time) error { return stderrors.New("bad signature") },
+		getFn:    func(context.Context, string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("should not be called")), nil
+		},
+	}
+	e := serveWithActor(httpapi.NewFileHandler(&fakeFileService{}, dl, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/files/dl?key=k&exp=123&sig=bad", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	if dl.getCalled {
+		t.Fatal("Get should not have been called when signature verification fails")
 	}
 }
