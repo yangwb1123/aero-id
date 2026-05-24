@@ -69,11 +69,13 @@ func TestFileRepo_ListPagination(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		now := time.Now().UTC()
-		_ = repo.Create(ctx, &domain.File{
+		if err := repo.Create(ctx, &domain.File{
 			ID: idgen.NewID(), OwnerUID: "u2", Name: "f", Size: 1,
 			MimeType: "x", StorageKey: "k", StorageType: "local",
 			CreatedAt: now, UpdatedAt: now,
-		})
+		}); err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	page1, cursor1, err := repo.ListByOwner(ctx, "u2", domain.Page{Limit: 2})

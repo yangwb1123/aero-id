@@ -42,9 +42,44 @@ func TestMessageRepo_CreateAndRead(t *testing.T) {
 	if err := repo.MarkRead(ctx, m.ID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	unread, _, _ := repo.ListInbox(ctx, "bob", domain.Page{}, true)
+	unread, _, err2 := repo.ListInbox(ctx, "bob", domain.Page{}, true)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
 	if len(unread) != 0 {
 		t.Fatalf("expected 0 unread, got %d", len(unread))
+	}
+}
+
+func TestMessageRepo_ListInboxPagination(t *testing.T) {
+	ctx := context.Background()
+	repo := setupMsgRepo(t)
+
+	for i := 0; i < 3; i++ {
+		if err := repo.Create(ctx, &domain.Message{
+			ID: idgen.NewID(), FromUID: "sender", ToUID: "carol",
+			Kind: domain.MessageKindText, Content: "msg",
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	page1, cursor1, err := repo.ListInbox(ctx, "carol", domain.Page{Limit: 2}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1) != 2 || cursor1 == "" {
+		t.Fatalf("page1 len=%d cursor=%q, want 2 messages and non-empty cursor", len(page1), cursor1)
+	}
+
+	page2, cursor2, err := repo.ListInbox(ctx, "carol", domain.Page{Limit: 2, Cursor: cursor1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) != 1 || cursor2 != "" {
+		t.Fatalf("page2 len=%d cursor=%q, want 1 message and empty cursor", len(page2), cursor2)
 	}
 }
 
@@ -57,10 +92,12 @@ func TestMessageRepo_Conversation(t *testing.T) {
 		{"a", "b"}, {"b", "a"}, {"a", "c"},
 	}
 	for _, p := range pairs {
-		_ = repo.Create(ctx, &domain.Message{
+		if err := repo.Create(ctx, &domain.Message{
 			ID: idgen.NewID(), FromUID: p.from, ToUID: p.to,
 			Kind: domain.MessageKindText, Content: "x", CreatedAt: now,
-		})
+		}); err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	conv, _, err := repo.ListConversation(ctx, "a", "b", domain.Page{Limit: 10})

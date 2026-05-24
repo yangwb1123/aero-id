@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 )
+
+// ErrNotFound is returned by repository methods when no row matches.
+var ErrNotFound = errors.New("repository: not found")
 
 // fileRow is the GORM-mapped representation of the files table.
 type fileRow struct {

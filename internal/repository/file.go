@@ -10,9 +10,6 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 )
 
-// ErrNotFound is returned when no row matches.
-var ErrNotFound = errors.New("repository: not found")
-
 type FileRepository interface {
 	Create(ctx context.Context, f *domain.File) error
 	Get(ctx context.Context, id domain.ID) (*domain.File, error)

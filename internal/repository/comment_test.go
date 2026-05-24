@@ -65,6 +65,43 @@ func TestCommentRepo_TopLevelAndReply(t *testing.T) {
 	}
 }
 
+func TestCommentRepo_ListByTargetPagination(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+
+	target := idgen.NewID()
+
+	for i := 0; i < 3; i++ {
+		c := &domain.Comment{
+			ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
+			TargetID: target, Content: "top-level comment",
+			Status: domain.CommentStatusNormal,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		c.RootID = c.ID
+		if err := repo.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	page1, cursor1, err := repo.ListByTarget(ctx, domain.TargetTypeFile, target, domain.Page{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1) != 2 || cursor1 == "" {
+		t.Fatalf("page1 len=%d cursor=%q, want 2 comments and non-empty cursor", len(page1), cursor1)
+	}
+
+	page2, cursor2, err := repo.ListByTarget(ctx, domain.TargetTypeFile, target, domain.Page{Limit: 2, Cursor: cursor1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) != 1 || cursor2 != "" {
+		t.Fatalf("page2 len=%d cursor=%q, want 1 comment and empty cursor", len(page2), cursor2)
+	}
+}
+
 func TestCommentRepo_SoftDelete(t *testing.T) {
 	ctx := context.Background()
 	repo := setupCommentRepo(t)
@@ -75,7 +112,9 @@ func TestCommentRepo_SoftDelete(t *testing.T) {
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	c.RootID = c.ID
-	_ = repo.Create(ctx, c)
+	if err := repo.Create(ctx, c); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.SoftDelete(ctx, c.ID); err != nil {
 		t.Fatal(err)
 	}
