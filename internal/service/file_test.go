@@ -170,6 +170,30 @@ func TestFileService_DeleteRemovesRowThenBlob(t *testing.T) {
 	}
 }
 
+func TestFileService_DeleteSucceedsWhenBlobDeleteFails(t *testing.T) {
+	rowDeleted := false
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", StorageKey: "k"}, nil
+		},
+		DeleteFn: func(_ context.Context, _ domain.ID) error { rowDeleted = true; return nil },
+	}
+	store := &mocks.Storage{
+		DeleteFn: func(_ context.Context, _ string) error {
+			return stderrors.New("unexpected storage error")
+		},
+	}
+	svc := service.NewFileService(repo, store, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	// Blob removal is best-effort: a storage error must not fail the request.
+	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if !rowDeleted {
+		t.Fatal("repo.Delete was not called")
+	}
+}
+
 func TestFileService_DownloadURLAppliesACL(t *testing.T) {
 	repo := &mocks.FileRepo{
 		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {

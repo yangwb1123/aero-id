@@ -115,9 +115,10 @@ func (s *fileService) Delete(ctx context.Context, id domain.ID) error {
 	if err := s.files.Delete(ctx, id); err != nil {
 		return apperr.Internal("file.delete_failed", "failed to delete file").Wrap(err)
 	}
-	if err := s.store.Delete(ctx, f.StorageKey); err != nil && !stderrors.Is(err, storage.ErrNotFound) {
-		return apperr.Internal("file.delete_failed", "failed to delete file blob").Wrap(err)
-	}
+	// The soft-deleted row is authoritative. Blob removal is best-effort: if it fails
+	// the row is already gone, so we don't fail the request — the blob is left for a
+	// future storage GC sweep rather than resurrecting the row.
+	_ = s.store.Delete(ctx, f.StorageKey)
 	return nil
 }
 

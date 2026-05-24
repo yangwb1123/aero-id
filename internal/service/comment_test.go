@@ -142,6 +142,60 @@ func TestCommentService_ListEnrichesAuthors(t *testing.T) {
 	}
 }
 
+func TestCommentService_RepliesHappyPath(t *testing.T) {
+	target := idgen.NewID()
+	rootID := idgen.NewID()
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: id, OwnerUID: "author", TargetType: domain.TargetTypeFile, TargetID: target}, nil
+		},
+		ListRepliesFn: func(_ context.Context, _ domain.ID, _ domain.Page) ([]*domain.Comment, string, error) {
+			return []*domain.Comment{{OwnerUID: "u1"}, {OwnerUID: "u2"}}, "tok", nil
+		},
+	}
+	var requested []string
+	dir := &mocks.UserDir{GetUsersFn: func(_ context.Context, uids []string) (map[string]sso.User, error) {
+		requested = uids
+		out := map[string]sso.User{}
+		for _, u := range uids {
+			out[u] = sso.User{UID: u}
+		}
+		return out, nil
+	}}
+	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, dir)
+	ctx := service.WithActor(context.Background(), "viewer")
+	list, err := svc.Replies(ctx, rootID, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Comments) != 2 {
+		t.Fatalf("expected 2 replies, got %d", len(list.Comments))
+	}
+	if list.NextCursor != "tok" {
+		t.Fatalf("cursor = %q, want tok", list.NextCursor)
+	}
+	if len(requested) != 2 {
+		t.Fatalf("expected 2 enriched uids, got %v", requested)
+	}
+}
+
+func TestCommentService_RepliesForbiddenForPrivateTarget(t *testing.T) {
+	target := idgen.NewID()
+	rootID := idgen.NewID()
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: id, OwnerUID: "owner", TargetType: domain.TargetTypeFile, TargetID: target}, nil
+		},
+	}
+	files := &mocks.FileRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+		return &domain.File{ID: target, OwnerUID: "owner", Visibility: domain.VisibilityPrivate}, nil
+	}}
+	svc := service.NewCommentService(comments, files, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "stranger")
+	_, err := svc.Replies(ctx, rootID, domain.Page{})
+	assertAppCode(t, err, 403)
+}
+
 func TestCommentService_DeleteRequiresOwner(t *testing.T) {
 	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
 		return &domain.Comment{ID: id, OwnerUID: "author"}, nil

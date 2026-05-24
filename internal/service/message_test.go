@@ -98,6 +98,50 @@ func TestMessageService_MarkReadIdempotent(t *testing.T) {
 	}
 }
 
+func TestMessageService_ConversationHappyPath(t *testing.T) {
+	repo := &mocks.MessageRepo{
+		ListConversationFn: func(_ context.Context, uidA, uidB string, _ domain.Page) ([]*domain.Message, string, error) {
+			return []*domain.Message{{FromUID: uidA, ToUID: uidB}, {FromUID: uidB, ToUID: uidA}}, "cur", nil
+		},
+	}
+	var requested []string
+	dir := &mocks.UserDir{GetUsersFn: func(_ context.Context, uids []string) (map[string]sso.User, error) {
+		requested = uids
+		out := map[string]sso.User{}
+		for _, u := range uids {
+			out[u] = sso.User{UID: u}
+		}
+		return out, nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, dir)
+	ctx := service.WithActor(context.Background(), "alice")
+	list, err := svc.Conversation(ctx, "bob", domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(list.Messages))
+	}
+	if list.NextCursor != "cur" {
+		t.Fatalf("cursor = %q, want cur", list.NextCursor)
+	}
+	// Both actor and peer must be passed to the directory for enrichment.
+	found := map[string]bool{}
+	for _, u := range requested {
+		found[u] = true
+	}
+	if !found["alice"] || !found["bob"] {
+		t.Fatalf("enrichment uids = %v; want both alice and bob", requested)
+	}
+}
+
+func TestMessageService_ConversationEmptyPeer(t *testing.T) {
+	svc := service.NewMessageService(&mocks.MessageRepo{}, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "alice")
+	_, err := svc.Conversation(ctx, "", domain.Page{})
+	assertAppCode(t, err, 400)
+}
+
 func TestMessageService_InboxDedupesAndEnrichesSenders(t *testing.T) {
 	repo := &mocks.MessageRepo{ListInboxFn: func(_ context.Context, to string, _ domain.Page, _ bool) ([]*domain.Message, string, error) {
 		if to != "b" {
