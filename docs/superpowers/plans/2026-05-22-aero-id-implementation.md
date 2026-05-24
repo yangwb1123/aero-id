@@ -897,9 +897,7 @@ package testpg
 import (
 	"context"
 	"testing"
-	"time"
 
-	"github.com/testcontainers/testcontainers-go"
 	pg "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"gorm.io/gorm"
 
@@ -916,9 +914,10 @@ func Start(t *testing.T) *gorm.DB {
 		pg.WithDatabase("aero_id_test"),
 		pg.WithUsername("aero"),
 		pg.WithPassword("aero"),
-		testcontainers.WithWaitStrategyAndDeadline(
-			60*time.Second,
-		),
+		// BasicWaitStrategies waits for "ready to accept connections" + port. The bare
+		// testcontainers.WithWaitStrategyAndDeadline(duration) form errors at runtime
+		// ("no wait strategy supplied") because it passes a deadline but no strategy.
+		pg.BasicWaitStrategies(),
 	)
 	if err != nil {
 		t.Fatalf("start pg container: %v", err)
