@@ -2,12 +2,15 @@ package sso_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/aero/aero-id/internal/sso"
@@ -97,5 +100,89 @@ func TestClient_GetUsersDedupesAcrossCalls(t *testing.T) {
 
 	if fake.getUsersCalls != 2 {
 		t.Errorf("calls = %d, want 2 (one per non-cached batch)", fake.getUsersCalls)
+	}
+}
+
+// slowSSOServer blocks ValidateToken for a configurable duration before responding.
+type slowSSOServer struct {
+	ssopb.UnimplementedSSOServer
+	delay time.Duration
+}
+
+func (s *slowSSOServer) ValidateToken(ctx context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
+	select {
+	case <-time.After(s.delay):
+		return &ssopb.ValidateTokenResponse{Uid: "uid-" + req.Token}, nil
+	case <-ctx.Done():
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
+}
+
+// startSlowSSO builds a bufconn client backed by a slowSSOServer.
+func startSlowSSO(t *testing.T, delay time.Duration, cfg sso.ClientConfig) *sso.Client {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	ssopb.RegisterSSOServer(srv, &slowSSOServer{delay: delay})
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// conn ownership is transferred to the Client; Client.Close() will close it.
+	c := sso.NewClientFromConn(conn, cfg)
+	return c
+}
+
+func TestClient_CloseClosesConn(t *testing.T) {
+	c, _ := startFakeSSO(t)
+
+	// Close must not panic.
+	c.Close()
+
+	// Calling Close a second time must also be safe (idempotent).
+	c.Close()
+
+	// A subsequent RPC on a closed connection should fail.
+	_, err := c.ValidateToken(context.Background(), "any")
+	if err == nil {
+		t.Error("expected error after Close, got nil")
+	}
+}
+
+func TestClient_ValidateTokenTimesOut(t *testing.T) {
+	const serverDelay = 200 * time.Millisecond
+	const clientTimeout = 20 * time.Millisecond
+
+	c := startSlowSSO(t, serverDelay, sso.ClientConfig{
+		TokenCacheTTL: 60 * time.Second,
+		UserCacheTTL:  60 * time.Second,
+		Timeout:       clientTimeout,
+	})
+	defer c.Close()
+
+	start := time.Now()
+	_, err := c.ValidateToken(context.Background(), "tok")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	// The call must have returned well before the server would have replied.
+	if elapsed >= serverDelay {
+		t.Errorf("call took %v, expected it to time out before %v", elapsed, serverDelay)
+	}
+
+	// Verify the error signals deadline exceeded (either via context sentinel or gRPC status).
+	st, _ := status.FromError(errors.Unwrap(err))
+	if !errors.Is(err, context.DeadlineExceeded) && st.Code() != codes.DeadlineExceeded {
+		t.Errorf("want DeadlineExceeded error, got: %v", err)
 	}
 }
