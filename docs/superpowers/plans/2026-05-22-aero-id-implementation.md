@@ -5528,7 +5528,7 @@ func Auth(v TokenValidator) gin.HandlerFunc {
 			return
 		}
 		uid, err := v.ValidateToken(c.Request.Context(), token)
-		if err != nil {
+		if err != nil || uid == "" {
 			httpx.WriteError(c, apperr.Unauthorized("auth.invalid_token", "invalid or expired token"))
 			c.Abort()
 			return
@@ -7047,7 +7047,7 @@ func AuthInterceptor(v TokenValidator) grpc.UnaryServerInterceptor {
 			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
 		}
 		uid, err := v.ValidateToken(ctx, token)
-		if err != nil {
+		if err != nil || uid == "" {
 			return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
 		}
 		return handler(service.WithActor(ctx, uid), req)
