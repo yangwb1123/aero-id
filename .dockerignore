@@ -1,0 +1,7 @@
+.git
+data
+*.md
+docs
+deployments
+bin
+*_test.go
