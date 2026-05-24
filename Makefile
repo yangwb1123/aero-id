@@ -11,3 +11,15 @@ test:        ; go test ./... -count=1
 test-integration: ; go test -tags=integration ./... -count=1
 lint:        ; go vet ./...
 clean:       ; rm -rf bin/
+
+MIGRATIONS_DIR := migrations
+MIGRATE_DSN    := postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
+
+.PHONY: migrate-up migrate-down migrate-create
+migrate-up:
+	migrate -path $(MIGRATIONS_DIR) -database "$(MIGRATE_DSN)" up
+migrate-down:
+	migrate -path $(MIGRATIONS_DIR) -database "$(MIGRATE_DSN)" down 1
+migrate-create:
+	@if [ -z "$(name)" ]; then echo "name=... required"; exit 1; fi
+	migrate create -ext sql -dir $(MIGRATIONS_DIR) -seq $(name)
