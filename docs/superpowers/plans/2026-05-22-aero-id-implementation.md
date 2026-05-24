@@ -3606,13 +3606,16 @@ import (
 type ClientConfig struct {
 	TokenCacheTTL time.Duration
 	UserCacheTTL  time.Duration
+	Timeout       time.Duration // per-RPC deadline for SSO calls; 0 = no deadline
 }
 
 type Client struct {
+	conn       *grpc.ClientConn
 	rpc        ssopb.SSOClient
 	tokenCache *TokenCache
 	userCache  *UserCache
 	stopFn     func()
+	timeout    time.Duration
 }
 
 // NewClient dials the SSO endpoint and returns a Client with caches running.
@@ -3631,8 +3634,10 @@ func NewClient(ctx context.Context, endpoint string, insecureConn bool, cfg Clie
 // NewClientFromConn lets tests inject a bufconn-backed *grpc.ClientConn.
 func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	c := &Client{
+		conn:       conn,
 		rpc:        ssopb.NewSSOClient(conn),
 		tokenCache: NewTokenCache(cfg.TokenCacheTTL),
+		timeout:    cfg.Timeout,
 	}
 	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
 	stop := c.tokenCache.RunCleaner(30 * time.Second)
@@ -3640,9 +3645,15 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	return c
 }
 
+// Close stops the cache sweeper and closes the underlying gRPC connection.
 func (c *Client) Close() {
 	if c.stopFn != nil {
 		c.stopFn()
+		c.stopFn = nil
+	}
+	if c.conn != nil {
+		_ = c.conn.Close()
+		c.conn = nil
 	}
 }
 
@@ -3650,6 +3661,11 @@ func (c *Client) Close() {
 func (c *Client) ValidateToken(ctx context.Context, token string) (string, error) {
 	if uid, ok := c.tokenCache.Get(token); ok {
 		return uid, nil
+	}
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
 	}
 	resp, err := c.rpc.ValidateToken(ctx, &ssopb.ValidateTokenRequest{Token: token})
 	if err != nil {
@@ -3669,6 +3685,11 @@ func (c *Client) GetUsers(ctx context.Context, uids []string) (map[string]User, 
 }
 
 func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User, error) {
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
 	resp, err := c.rpc.GetUsers(ctx, &ssopb.GetUsersRequest{Uids: uids})
 	if err != nil {
 		return nil, fmt.Errorf("sso get users: %w", err)
@@ -7710,6 +7731,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, cfg.SSO.Insecure, sso.ClientConfig{
 		TokenCacheTTL: cfg.SSO.TokenCacheTTL,
 		UserCacheTTL:  cfg.SSO.UserCacheTTL,
+		Timeout:       cfg.SSO.Timeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sso client: %w", err)
