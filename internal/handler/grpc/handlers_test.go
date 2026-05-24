@@ -51,7 +51,7 @@ func dial(t *testing.T, regs ...grpcsrv.ServiceRegistrar) *grpc.ClientConn {
 	t.Cleanup(srv.Stop)
 
 	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -99,5 +99,32 @@ func TestGRPC_GetFileNotFound(t *testing.T) {
 	_, err := client.GetFile(authCtx(), &aeropb.GetFileRequest{Id: idgen.NewID().String()})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("code = %v, want NotFound", status.Code(err))
+	}
+}
+
+func TestGRPC_InvalidUUIDReturnsInvalidArgument(t *testing.T) {
+	// The id parse fails before the service layer is ever reached.
+	conn := dial(t, grpcsrv.NewFileServer(fileSvc{}))
+	client := aeropb.NewFileServiceClient(conn)
+	_, err := client.GetFile(authCtx(), &aeropb.GetFileRequest{Id: "not-a-uuid"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	}
+}
+
+type panicMsgSvc struct {
+	service.MessageService
+}
+
+func (panicMsgSvc) Send(context.Context, service.SendMessageInput) (*domain.Message, error) {
+	panic("boom")
+}
+
+func TestGRPC_RecoveryInterceptorCatchesPanic(t *testing.T) {
+	conn := dial(t, grpcsrv.NewMessageServer(panicMsgSvc{}))
+	client := aeropb.NewMessageServiceClient(conn)
+	_, err := client.SendMessage(authCtx(), &aeropb.SendMessageRequest{ToUid: "b", Content: "hi"})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("code = %v, want Internal", status.Code(err))
 	}
 }

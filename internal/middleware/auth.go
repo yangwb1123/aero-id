@@ -29,7 +29,7 @@ func Auth(v TokenValidator) gin.HandlerFunc {
 			return
 		}
 		uid, err := v.ValidateToken(c.Request.Context(), token)
-		if err != nil {
+		if err != nil || uid == "" {
 			httpx.WriteError(c, apperr.Unauthorized("auth.invalid_token", "invalid or expired token"))
 			c.Abort()
 			return
