@@ -69,3 +69,47 @@ func fileDomainToRow(f *domain.File) *fileRow {
 	}
 	return r
 }
+
+type messageRow struct {
+	ID        uuid.UUID         `gorm:"column:id;primaryKey"`
+	FromUID   string            `gorm:"column:from_uid"`
+	ToUID     string            `gorm:"column:to_uid"`
+	Kind      int16             `gorm:"column:kind"`
+	Content   string            `gorm:"column:content"`
+	FileID    *uuid.UUID        `gorm:"column:file_id"`
+	ReadAt    *time.Time        `gorm:"column:read_at"`
+	Meta      datatypes.JSONMap `gorm:"column:meta"`
+	CreatedAt time.Time         `gorm:"column:created_at"`
+	DeletedAt gorm.DeletedAt    `gorm:"column:deleted_at;index"`
+}
+
+func (messageRow) TableName() string { return "messages" }
+
+func msgRowToDomain(r *messageRow) *domain.Message {
+	m := &domain.Message{
+		ID:        r.ID,
+		FromUID:   r.FromUID,
+		ToUID:     r.ToUID,
+		Kind:      domain.MessageKind(r.Kind),
+		Content:   r.Content,
+		FileID:    r.FileID,
+		ReadAt:    r.ReadAt,
+		Meta:      map[string]any(r.Meta),
+		CreatedAt: r.CreatedAt,
+	}
+	return m
+}
+
+func msgDomainToRow(m *domain.Message) *messageRow {
+	return &messageRow{
+		ID:        m.ID,
+		FromUID:   m.FromUID,
+		ToUID:     m.ToUID,
+		Kind:      int16(m.Kind),
+		Content:   m.Content,
+		FileID:    m.FileID,
+		ReadAt:    m.ReadAt,
+		Meta:      datatypes.JSONMap(m.Meta),
+		CreatedAt: m.CreatedAt,
+	}
+}
