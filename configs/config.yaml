@@ -1,0 +1,28 @@
+app:    { name: aero-id, env: dev, version: 0.1.0 }
+server:
+  http: { host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s }
+  grpc: { host: 0.0.0.0, port: 9090 }
+database:
+  host: 127.0.0.1
+  port: 5432
+  user: aero
+  password: aero
+  dbname: aero_id
+  sslmode: disable
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
+  log_level: warn
+sso:
+  endpoint: 127.0.0.1:9000
+  timeout: 5s
+  insecure: true
+  token_cache_ttl: 60s
+  user_cache_ttl: 300s
+storage:
+  type: local
+  local:
+    root: ./data/files
+    public_base_url: http://127.0.0.1:8080
+signing_key: change-me-please-very-long-random
+log:    { level: info, encoding: console }
