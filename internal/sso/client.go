@@ -16,6 +16,7 @@ import (
 type ClientConfig struct {
 	TokenCacheTTL time.Duration
 	UserCacheTTL  time.Duration
+	StaleTTL      time.Duration // serve a last-known uid this long past expiry when SSO is down
 	Timeout       time.Duration
 }
 
@@ -46,7 +47,7 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	c := &Client{
 		conn:       conn,
 		rpc:        ssopb.NewSSOClient(conn),
-		tokenCache: NewTokenCache(cfg.TokenCacheTTL),
+		tokenCache: NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
 		timeout:    cfg.Timeout,
 	}
 	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
@@ -95,6 +96,11 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (string, error
 	}
 	resp, err := c.rpc.ValidateToken(ctx, &ssopb.ValidateTokenRequest{Token: token})
 	if err != nil {
+		// SSO is unreachable: fall back to a recently-cached identity within the stale
+		// grace window so a transient outage doesn't reject every authenticated request.
+		if uid, ok := c.tokenCache.GetStale(token); ok {
+			return uid, nil
+		}
 		return "", fmt.Errorf("sso validate: %w", err)
 	}
 	var exp time.Time

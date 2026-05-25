@@ -19,6 +19,7 @@ sso:
   insecure: true
   readiness_critical: false   # when true, /readyz returns 503 if SSO is unreachable
   token_cache_ttl: 60s
+  stale_ttl: 300s             # serve last-known identity up to this long past expiry when SSO is down (0 = off)
   user_cache_ttl: 300s
 storage:
   type: local

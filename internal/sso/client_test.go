@@ -201,3 +201,76 @@ func TestClient_HealthCheck(t *testing.T) {
 		t.Error("HealthCheck after Close = nil, want error")
 	}
 }
+
+// flakySSOServer succeeds for the first successCalls ValidateToken calls, then
+// returns Unavailable — simulating an SSO outage after the cache was warmed.
+type flakySSOServer struct {
+	ssopb.UnimplementedSSOServer
+	calls        int
+	successCalls int
+}
+
+func (f *flakySSOServer) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
+	f.calls++
+	if f.calls > f.successCalls {
+		return nil, status.Error(codes.Unavailable, "sso down")
+	}
+	// Far-future expiry; the cache clamps it to the (tiny) configured TTL.
+	return &ssopb.ValidateTokenResponse{Uid: "uid-" + req.Token, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()}, nil
+}
+
+func startFlakySSO(t *testing.T, successCalls int, cfg sso.ClientConfig) *sso.Client {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	ssopb.RegisterSSOServer(srv, &flakySSOServer{successCalls: successCalls})
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := sso.NewClientFromConn(conn, cfg)
+	return c
+}
+
+func TestClient_ServesStaleWhenSSODown(t *testing.T) {
+	c := startFlakySSO(t, 1, sso.ClientConfig{
+		TokenCacheTTL: 15 * time.Millisecond,
+		UserCacheTTL:  time.Minute,
+		StaleTTL:      time.Hour,
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	// Warm the cache (SSO call #1 succeeds).
+	if uid, err := c.ValidateToken(ctx, "tok"); err != nil || uid != "uid-tok" {
+		t.Fatalf("warm uid=%q err=%v", uid, err)
+	}
+
+	// Let the cached entry expire, then call again: SSO call #2 fails, but the entry
+	// is still within the stale grace window, so the last-known uid is served.
+	time.Sleep(40 * time.Millisecond)
+	uid, err := c.ValidateToken(ctx, "tok")
+	if err != nil || uid != "uid-tok" {
+		t.Fatalf("stale-serve uid=%q err=%v (want last-known uid, no error)", uid, err)
+	}
+}
+
+func TestClient_NoStaleForUnknownTokenWhenDown(t *testing.T) {
+	c := startFlakySSO(t, 0, sso.ClientConfig{ // fails from the very first call
+		TokenCacheTTL: time.Minute,
+		UserCacheTTL:  time.Minute,
+		StaleTTL:      time.Hour,
+	})
+	defer c.Close()
+	// No cached identity exists, so a down SSO must surface an error.
+	if _, err := c.ValidateToken(context.Background(), "never-seen"); err == nil {
+		t.Fatal("expected error for an uncached token when SSO is down")
+	}
+}

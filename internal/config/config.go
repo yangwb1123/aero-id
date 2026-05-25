@@ -68,6 +68,7 @@ type SSOConfig struct {
 	Insecure          bool          `mapstructure:"insecure"`
 	ReadinessCritical bool          `mapstructure:"readiness_critical"`
 	TokenCacheTTL     time.Duration `mapstructure:"token_cache_ttl"`
+	StaleTTL          time.Duration `mapstructure:"stale_ttl"` // serve last-known identity past expiry when SSO is down
 	UserCacheTTL      time.Duration `mapstructure:"user_cache_ttl"`
 }
 

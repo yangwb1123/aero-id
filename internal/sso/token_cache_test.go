@@ -43,3 +43,39 @@ func TestTokenCache_Cleanup(t *testing.T) {
 		t.Error("b should remain")
 	}
 }
+
+func TestTokenCache_GetStaleWithinAndBeyondGrace(t *testing.T) {
+	c := NewTokenCacheWithStale(60*time.Second, 10*time.Second)
+
+	// Expired but within the grace window: Get misses, GetStale serves.
+	c.Set("stale", "u-stale", time.Now().Add(-2*time.Second))
+	if _, ok := c.Get("stale"); ok {
+		t.Fatal("expired entry must miss the fresh Get")
+	}
+	if uid, ok := c.GetStale("stale"); !ok || uid != "u-stale" {
+		t.Fatalf("within-grace GetStale uid=%q ok=%v", uid, ok)
+	}
+
+	// Beyond expiry+staleFor: GetStale also misses.
+	c.Set("gone", "u-gone", time.Now().Add(-20*time.Second))
+	if _, ok := c.GetStale("gone"); ok {
+		t.Fatal("entry past expiry+staleFor must not be served")
+	}
+}
+
+func TestTokenCache_StaleDisabledByDefault(t *testing.T) {
+	c := NewTokenCache(60 * time.Second) // staleFor == 0
+	c.Set("x", "u", time.Now().Add(-time.Second))
+	if _, ok := c.GetStale("x"); ok {
+		t.Fatal("with staleFor=0 an expired entry must not be served")
+	}
+}
+
+func TestTokenCache_SweepKeepsStaleWithinGrace(t *testing.T) {
+	c := NewTokenCacheWithStale(60*time.Second, time.Hour)
+	c.Set("recent", "u", time.Now().Add(-time.Second)) // expired 1s ago, within 1h grace
+	c.SweepExpired(time.Now())
+	if _, ok := c.GetStale("recent"); !ok {
+		t.Fatal("sweep must keep entries still within the stale grace window")
+	}
+}

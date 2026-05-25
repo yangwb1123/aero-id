@@ -6,11 +6,14 @@ import (
 )
 
 // TokenCache is an in-memory token→uid cache with a maximum TTL ceiling.
-// SSO-provided expirations longer than the ceiling are clamped.
+// SSO-provided expirations longer than the ceiling are clamped. When configured
+// with a stale window it also retains expired entries for that extra duration so
+// the client can serve a last-known uid while SSO is unreachable.
 type TokenCache struct {
-	maxTTL time.Duration
-	mu     sync.RWMutex
-	items  map[string]tokenEntry
+	maxTTL   time.Duration
+	staleFor time.Duration // grace window past expiry during which GetStale may serve
+	mu       sync.RWMutex
+	items    map[string]tokenEntry
 }
 
 type tokenEntry struct {
@@ -19,9 +22,17 @@ type tokenEntry struct {
 }
 
 func NewTokenCache(maxTTL time.Duration) *TokenCache {
+	return NewTokenCacheWithStale(maxTTL, 0)
+}
+
+// NewTokenCacheWithStale retains expired entries for an extra staleFor window so the
+// SSO client can serve a last-known uid when the upstream is unreachable. A staleFor
+// of 0 disables stale serving (entries drop as soon as they expire).
+func NewTokenCacheWithStale(maxTTL, staleFor time.Duration) *TokenCache {
 	return &TokenCache{
-		maxTTL: maxTTL,
-		items:  make(map[string]tokenEntry),
+		maxTTL:   maxTTL,
+		staleFor: staleFor,
+		items:    make(map[string]tokenEntry),
 	}
 }
 
@@ -33,6 +44,23 @@ func (c *TokenCache) Get(token string) (string, bool) {
 		return "", false
 	}
 	if time.Now().After(e.expiry) {
+		return "", false
+	}
+	return e.uid, true
+}
+
+// GetStale returns the cached uid for a token even after it has expired, as long as
+// the entry is still within the stale grace window (expiry+staleFor). It is the
+// fallback used when SSO is unreachable; ok is false when the entry is absent or
+// older than the grace window.
+func (c *TokenCache) GetStale(token string) (string, bool) {
+	c.mu.RLock()
+	e, ok := c.items[token]
+	c.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(e.expiry.Add(c.staleFor)) {
 		return "", false
 	}
 	return e.uid, true
@@ -60,7 +88,9 @@ func (c *TokenCache) SweepExpired(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k, e := range c.items {
-		if now.After(e.expiry) {
+		// Keep entries until they pass the stale grace window so GetStale can still
+		// serve them during an SSO outage.
+		if now.After(e.expiry.Add(c.staleFor)) {
 			delete(c.items, k)
 		}
 	}

@@ -64,6 +64,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, cfg.SSO.Insecure, sso.ClientConfig{
 		TokenCacheTTL: cfg.SSO.TokenCacheTTL,
 		UserCacheTTL:  cfg.SSO.UserCacheTTL,
+		StaleTTL:      cfg.SSO.StaleTTL,
 		Timeout:       cfg.SSO.Timeout,
 	})
 	if err != nil {
