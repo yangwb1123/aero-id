@@ -22,6 +22,8 @@ sso:
   user_cache_ttl: 300s
 storage:
   type: local
+  max_upload_bytes: 52428800   # 50 MiB; 0 = unlimited
+  allowed_mime_types: []       # empty = accept any content type
   local:
     root: ./data/files
     public_base_url: http://127.0.0.1:8080

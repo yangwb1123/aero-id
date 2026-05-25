@@ -68,6 +68,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	created, err := h.files.Create(c.Request.Context(), service.CreateFileInput{
 		Name:       name,
 		MimeType:   fh.Header.Get("Content-Type"),
+		Size:       fh.Size,
 		Visibility: vis,
 		Reader:     src,
 	})

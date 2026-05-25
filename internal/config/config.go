@@ -72,9 +72,11 @@ type SSOConfig struct {
 }
 
 type StorageConfig struct {
-	Type  string             `mapstructure:"type"`
-	Local LocalStorageConfig `mapstructure:"local"`
-	S3    S3StorageConfig    `mapstructure:"s3"`
+	Type             string             `mapstructure:"type"`
+	MaxUploadBytes   int64              `mapstructure:"max_upload_bytes"`   // 0 = unlimited
+	AllowedMimeTypes []string           `mapstructure:"allowed_mime_types"` // empty = allow any
+	Local            LocalStorageConfig `mapstructure:"local"`
+	S3               S3StorageConfig    `mapstructure:"s3"`
 }
 
 type LocalStorageConfig struct {

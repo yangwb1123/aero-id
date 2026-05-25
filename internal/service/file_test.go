@@ -224,3 +224,80 @@ func TestFileService_DownloadURLPresigns(t *testing.T) {
 		t.Fatalf("url=%q err=%v", url, err)
 	}
 }
+
+// assertAppErrCode asserts err is an *AppError carrying the given Code string.
+func assertAppErrCode(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	var ae *apperr.AppError
+	if !stderrors.As(err, &ae) {
+		t.Fatalf("expected *AppError, got %v", err)
+	}
+	if ae.Code != wantCode {
+		t.Fatalf("code = %s, want %s", ae.Code, wantCode)
+	}
+}
+
+func TestFileService_CreateRejectsTooLargeByDeclaredSize(t *testing.T) {
+	store := &mocks.Storage{
+		PutFn: func(context.Context, string, string, io.Reader) (string, int64, error) {
+			t.Fatal("storage.Put must not be called when the declared size exceeds the limit")
+			return "", 0, nil
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "local", service.WithMaxUploadBytes(5))
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.Create(ctx, service.CreateFileInput{Name: "big.bin", Size: 10, Reader: strings.NewReader("0123456789")})
+	assertAppErrCode(t, err, "file.too_large")
+}
+
+func TestFileService_CreateCapsOversizedStream(t *testing.T) {
+	// Declared size is 0 (unknown) but the stream exceeds the limit; the cappedReader
+	// must abort the write and the error must surface as file.too_large.
+	store := &mocks.Storage{
+		PutFn: func(_ context.Context, _, _ string, r io.Reader) (string, int64, error) {
+			n, err := io.Copy(io.Discard, r)
+			return "k", n, err
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "local", service.WithMaxUploadBytes(5))
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.Create(ctx, service.CreateFileInput{Name: "big.bin", Reader: strings.NewReader("0123456789")})
+	assertAppErrCode(t, err, "file.too_large")
+}
+
+func TestFileService_CreateRejectsUnsupportedType(t *testing.T) {
+	store := &mocks.Storage{
+		PutFn: func(context.Context, string, string, io.Reader) (string, int64, error) {
+			t.Fatal("storage.Put must not be called for a disallowed type")
+			return "", 0, nil
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "local",
+		service.WithAllowedMimeTypes([]string{"image/png", "image/jpeg"}))
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.Create(ctx, service.CreateFileInput{Name: "x.exe", MimeType: "application/octet-stream", Reader: strings.NewReader("x")})
+	assertAppErrCode(t, err, "file.unsupported_type")
+}
+
+func TestFileService_CreateAllowsWithinLimits(t *testing.T) {
+	repo := &mocks.FileRepo{CreateFn: func(context.Context, *domain.File) error { return nil }}
+	store := &mocks.Storage{
+		PutFn: func(_ context.Context, _, _ string, r io.Reader) (string, int64, error) {
+			n, _ := io.Copy(io.Discard, r)
+			return "k", n, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "local",
+		service.WithMaxUploadBytes(1024),
+		service.WithAllowedMimeTypes([]string{"text/plain"}))
+	ctx := service.WithActor(context.Background(), "owner")
+	f, err := svc.Create(ctx, service.CreateFileInput{
+		Name: "ok.txt", MimeType: "text/plain; charset=utf-8", Size: 5, Reader: strings.NewReader("hello"),
+	})
+	if err != nil {
+		t.Fatalf("within limits should succeed: %v", err)
+	}
+	if f.Size != 5 {
+		t.Fatalf("size = %d, want 5", f.Size)
+	}
+}

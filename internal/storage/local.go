@@ -48,6 +48,7 @@ func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (strin
 	defer f.Close()
 	n, err := io.Copy(f, r)
 	if err != nil {
+		_ = os.Remove(path) // don't leak a partial object when the write fails
 		return "", 0, fmt.Errorf("write: %w", err)
 	}
 	return key, n, nil

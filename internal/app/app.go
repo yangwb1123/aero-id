@@ -74,7 +74,10 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	msgRepo := repository.NewMessageRepository(gdb)
 	commentRepo := repository.NewCommentRepository(gdb)
 
-	fileSvc := service.NewFileService(fileRepo, store, cfg.Storage.Type)
+	fileSvc := service.NewFileService(fileRepo, store, cfg.Storage.Type,
+		service.WithMaxUploadBytes(cfg.Storage.MaxUploadBytes),
+		service.WithAllowedMimeTypes(cfg.Storage.AllowedMimeTypes),
+	)
 	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient)
 	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
 

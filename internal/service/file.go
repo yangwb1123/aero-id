@@ -3,6 +3,10 @@ package service
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
+	"io"
+	"mime"
+	"strings"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -16,10 +20,41 @@ type fileService struct {
 	files       repository.FileRepository
 	store       storage.FileStorage
 	storageType string // "local" | "s3", recorded on each row for later routing
+	maxBytes    int64  // 0 = unlimited
+	allowedMime map[string]bool
 }
 
-func NewFileService(files repository.FileRepository, store storage.FileStorage, storageType string) FileService {
-	return &fileService{files: files, store: store, storageType: storageType}
+// FileOption configures optional fileService policy (upload limits, type allow-list).
+type FileOption func(*fileService)
+
+// WithMaxUploadBytes caps the size of an uploaded file. Zero (the default) means no limit.
+func WithMaxUploadBytes(n int64) FileOption {
+	return func(s *fileService) { s.maxBytes = n }
+}
+
+// WithAllowedMimeTypes restricts uploads to the given media types (compared on the
+// base type, case-insensitively). An empty list (the default) allows any type.
+func WithAllowedMimeTypes(types []string) FileOption {
+	return func(s *fileService) {
+		if len(types) == 0 {
+			return
+		}
+		m := make(map[string]bool, len(types))
+		for _, t := range types {
+			if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+				m[t] = true
+			}
+		}
+		s.allowedMime = m
+	}
+}
+
+func NewFileService(files repository.FileRepository, store storage.FileStorage, storageType string, opts ...FileOption) FileService {
+	s := &fileService{files: files, store: store, storageType: storageType}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.File, error) {
@@ -33,9 +68,26 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 	if in.Reader == nil {
 		return nil, apperr.BadRequest("file.invalid", "file content is required")
 	}
+	if s.maxBytes > 0 && in.Size > s.maxBytes {
+		return nil, apperr.BadRequest("file.too_large", fmt.Sprintf("file exceeds the %d-byte limit", s.maxBytes))
+	}
+	if !s.mimeAllowed(in.MimeType) {
+		return nil, apperr.BadRequest("file.unsupported_type", "file content type is not allowed")
+	}
 
-	key, size, err := s.store.Put(ctx, actor, in.Name, in.Reader)
+	// Cap the stream as defense-in-depth: even if the declared size is wrong (or
+	// unknown), the backend can never write past the limit. cappedReader surfaces
+	// errFileTooLarge, which the storage Put call propagates.
+	reader := in.Reader
+	if s.maxBytes > 0 {
+		reader = &cappedReader{r: in.Reader, left: s.maxBytes}
+	}
+
+	key, size, err := s.store.Put(ctx, actor, in.Name, reader)
 	if err != nil {
+		if stderrors.Is(err, errFileTooLarge) {
+			return nil, apperr.BadRequest("file.too_large", fmt.Sprintf("file exceeds the %d-byte limit", s.maxBytes))
+		}
 		return nil, apperr.Internal("file.store_failed", "failed to store file").Wrap(err)
 	}
 
@@ -132,4 +184,39 @@ func (s *fileService) DownloadURL(ctx context.Context, id domain.ID, ttl time.Du
 		return "", apperr.Internal("file.presign_failed", "failed to presign download URL").Wrap(err)
 	}
 	return url, nil
+}
+
+// mimeAllowed reports whether the content type passes the configured allow-list.
+// With no allow-list configured, every type is accepted.
+func (s *fileService) mimeAllowed(contentType string) bool {
+	if len(s.allowedMime) == 0 {
+		return true
+	}
+	mt, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return s.allowedMime[strings.ToLower(mt)]
+}
+
+// errFileTooLarge is returned by cappedReader once the configured byte limit is exceeded.
+var errFileTooLarge = stderrors.New("file exceeds maximum allowed size")
+
+// cappedReader wraps an io.Reader and fails with errFileTooLarge as soon as more
+// than `left` bytes have been read, so an oversized upload is never fully written.
+type cappedReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.left < 0 {
+		return 0, errFileTooLarge
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	if c.left < 0 {
+		return n, errFileTooLarge
+	}
+	return n, err
 }

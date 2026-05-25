@@ -43,6 +43,7 @@ type UserDirectory interface {
 type CreateFileInput struct {
 	Name       string
 	MimeType   string
+	Size       int64 // declared content length; used to reject oversized uploads early
 	Visibility domain.Visibility
 	Reader     io.Reader
 	Meta       map[string]any
