@@ -186,3 +186,18 @@ func TestClient_ValidateTokenTimesOut(t *testing.T) {
 		t.Errorf("want DeadlineExceeded error, got: %v", err)
 	}
 }
+
+func TestClient_HealthCheck(t *testing.T) {
+	c, _ := startFakeSSO(t)
+
+	// A live connection is healthy (no hard failure / shutdown).
+	if err := c.HealthCheck(context.Background()); err != nil {
+		t.Errorf("HealthCheck on live conn = %v, want nil", err)
+	}
+
+	// After Close the connection is gone, so readiness must report unhealthy.
+	c.Close()
+	if err := c.HealthCheck(context.Background()); err == nil {
+		t.Error("HealthCheck after Close = nil, want error")
+	}
+}

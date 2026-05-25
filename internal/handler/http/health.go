@@ -10,15 +10,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// HealthHandler serves liveness and readiness probes.
-type HealthHandler struct {
-	ready func(ctx context.Context) error
+// Check is a named readiness probe. A failing Critical check takes the service
+// out of rotation (HTTP 503); a failing non-critical check is reported but only
+// marks the service "degraded", so an optional dependency cannot fail readiness.
+type Check struct {
+	Name     string
+	Critical bool
+	Probe    func(ctx context.Context) error
 }
 
-// NewHealthHandler wires a readiness checker (typically a DB ping). A nil checker
-// makes readiness always succeed.
-func NewHealthHandler(ready func(ctx context.Context) error) *HealthHandler {
-	return &HealthHandler{ready: ready}
+// HealthHandler serves liveness and readiness probes.
+type HealthHandler struct {
+	checks  []Check
+	timeout time.Duration
+}
+
+// NewHealthHandler wires an ordered set of readiness checks. With no checks,
+// readiness always succeeds.
+func NewHealthHandler(checks ...Check) *HealthHandler {
+	return &HealthHandler{checks: checks, timeout: 2 * time.Second}
 }
 
 // Live always reports OK as long as the process is serving.
@@ -26,15 +36,39 @@ func (h *HealthHandler) Live(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Ready reports 503 when the readiness checker fails (e.g. DB unreachable).
+// Ready runs every check under a short deadline and reports per-dependency
+// status. A failing critical check returns 503 ("unavailable"); a failing
+// non-critical check still returns 200 but flags the overall status "degraded".
 func (h *HealthHandler) Ready(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
 	defer cancel()
-	if h.ready != nil {
-		if err := h.ready(ctx); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable", "error": err.Error()})
-			return
+
+	results := make(map[string]string, len(h.checks))
+	code := http.StatusOK
+	degraded := false
+	for _, chk := range h.checks {
+		if chk.Probe == nil {
+			results[chk.Name] = "ok"
+			continue
 		}
+		if err := chk.Probe(ctx); err != nil {
+			results[chk.Name] = "unavailable: " + err.Error()
+			if chk.Critical {
+				code = http.StatusServiceUnavailable
+			} else {
+				degraded = true
+			}
+			continue
+		}
+		results[chk.Name] = "ok"
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+
+	status := "ready"
+	switch {
+	case code != http.StatusOK:
+		status = "unavailable"
+	case degraded:
+		status = "degraded"
+	}
+	c.JSON(code, gin.H{"status": status, "checks": results})
 }

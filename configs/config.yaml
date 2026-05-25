@@ -17,6 +17,7 @@ sso:
   endpoint: 127.0.0.1:9000
   timeout: 5s
   insecure: true
+  readiness_critical: false   # when true, /readyz returns 503 if SSO is unreachable
   token_cache_ttl: 60s
   user_cache_ttl: 300s
 storage:

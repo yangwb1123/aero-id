@@ -24,7 +24,7 @@ func (pingRegistrar) RegisterRoutes(r httpapi.Routes) {
 }
 
 func TestRouter_HealthLive(t *testing.T) {
-	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, httpapi.NewHealthHandler(nil))
+	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, httpapi.NewHealthHandler())
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if w.Code != http.StatusOK {
@@ -33,7 +33,7 @@ func TestRouter_HealthLive(t *testing.T) {
 }
 
 func TestRouter_ReadyFails503(t *testing.T) {
-	bad := httpapi.NewHealthHandler(func(context.Context) error { return context.DeadlineExceeded })
+	bad := httpapi.NewHealthHandler(httpapi.Check{Name: "db", Critical: true, Probe: func(context.Context) error { return context.DeadlineExceeded }})
 	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, bad)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -43,7 +43,7 @@ func TestRouter_ReadyFails503(t *testing.T) {
 }
 
 func TestRouter_AuthRequiredOnV1(t *testing.T) {
-	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, httpapi.NewHealthHandler(nil), pingRegistrar{})
+	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, httpapi.NewHealthHandler(), pingRegistrar{})
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/ping", nil))

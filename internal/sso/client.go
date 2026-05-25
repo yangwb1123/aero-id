@@ -2,10 +2,12 @@ package sso
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/aero/aero-id/internal/sso/ssopb"
@@ -61,6 +63,23 @@ func (c *Client) Close() {
 	if c.conn != nil {
 		_ = c.conn.Close()
 		c.conn = nil
+	}
+}
+
+// HealthCheck reports whether the SSO connection is usable, for readiness probes.
+// It nudges a lazily-dialed connection out of Idle and treats a closed or
+// hard-failed connection as unhealthy; Idle/Connecting/Ready are tolerated so a
+// momentary reconnect does not flap readiness. It issues no RPC.
+func (c *Client) HealthCheck(_ context.Context) error {
+	if c.conn == nil {
+		return errors.New("sso client closed")
+	}
+	c.conn.Connect()
+	switch s := c.conn.GetState(); s {
+	case connectivity.Shutdown, connectivity.TransientFailure:
+		return fmt.Errorf("sso connection state %s", s)
+	default:
+		return nil
 	}
 }
 

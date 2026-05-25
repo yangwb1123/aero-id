@@ -63,11 +63,12 @@ func (d DatabaseConfig) DSN() string {
 }
 
 type SSOConfig struct {
-	Endpoint      string        `mapstructure:"endpoint"`
-	Timeout       time.Duration `mapstructure:"timeout"`
-	Insecure      bool          `mapstructure:"insecure"`
-	TokenCacheTTL time.Duration `mapstructure:"token_cache_ttl"`
-	UserCacheTTL  time.Duration `mapstructure:"user_cache_ttl"`
+	Endpoint          string        `mapstructure:"endpoint"`
+	Timeout           time.Duration `mapstructure:"timeout"`
+	Insecure          bool          `mapstructure:"insecure"`
+	ReadinessCritical bool          `mapstructure:"readiness_critical"`
+	TokenCacheTTL     time.Duration `mapstructure:"token_cache_ttl"`
+	UserCacheTTL      time.Duration `mapstructure:"user_cache_ttl"`
 }
 
 type StorageConfig struct {

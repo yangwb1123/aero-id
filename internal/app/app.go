@@ -78,8 +78,12 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient)
 	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
 
-	// HTTP transport
-	health := httpapi.NewHealthHandler(func(c context.Context) error { return sqlDB.PingContext(c) })
+	// HTTP transport. Readiness probes the DB (critical) and SSO (criticality is
+	// configurable so an SSO-less dev stack stays "ready" rather than 503-ing).
+	health := httpapi.NewHealthHandler(
+		httpapi.Check{Name: "database", Critical: true, Probe: sqlDB.PingContext},
+		httpapi.Check{Name: "sso", Critical: cfg.SSO.ReadinessCritical, Probe: ssoClient.HealthCheck},
+	)
 	router := httpapi.NewRouter(
 		log,
 		httpapi.RouterConfig{},
