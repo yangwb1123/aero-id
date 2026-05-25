@@ -301,3 +301,37 @@ func TestFileService_CreateAllowsWithinLimits(t *testing.T) {
 		t.Fatalf("size = %d, want 5", f.Size)
 	}
 }
+
+func TestFileService_CreateDedupesIdenticalContent(t *testing.T) {
+	var deletedKey string
+	store := &mocks.Storage{
+		PutFn: func(_ context.Context, _, _ string, r io.Reader) (string, int64, error) {
+			n, _ := io.Copy(io.Discard, r)
+			return "fresh-key", n, nil
+		},
+		DeleteFn: func(_ context.Context, key string) error { deletedKey = key; return nil },
+	}
+	var persisted *domain.File
+	repo := &mocks.FileRepo{
+		FindByChecksumFn: func(_ context.Context, owner, _ string) (*domain.File, error) {
+			return &domain.File{OwnerUID: owner, StorageKey: "existing-key"}, nil
+		},
+		CreateFn: func(_ context.Context, f *domain.File) error { persisted = f; return nil },
+	}
+	svc := service.NewFileService(repo, store, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+
+	f, err := svc.Create(ctx, service.CreateFileInput{Name: "dup.bin", Reader: strings.NewReader("identical")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.StorageKey != "existing-key" {
+		t.Errorf("storage key = %q, want existing-key (deduped to the existing blob)", f.StorageKey)
+	}
+	if deletedKey != "fresh-key" {
+		t.Errorf("redundant blob deleted = %q, want fresh-key", deletedKey)
+	}
+	if persisted == nil || persisted.Checksum == "" {
+		t.Error("a content checksum must be persisted on the new row")
+	}
+}

@@ -15,10 +15,12 @@ import (
 )
 
 type FileRepo struct {
-	CreateFn      func(ctx context.Context, f *domain.File) error
-	GetFn         func(ctx context.Context, id domain.ID) (*domain.File, error)
-	ListByOwnerFn func(ctx context.Context, ownerUID string, page domain.Page) ([]*domain.File, string, error)
-	DeleteFn      func(ctx context.Context, id domain.ID) error
+	CreateFn            func(ctx context.Context, f *domain.File) error
+	GetFn               func(ctx context.Context, id domain.ID) (*domain.File, error)
+	ListByOwnerFn       func(ctx context.Context, ownerUID string, page domain.Page) ([]*domain.File, string, error)
+	DeleteFn            func(ctx context.Context, id domain.ID) error
+	FindByChecksumFn    func(ctx context.Context, ownerUID, checksum string) (*domain.File, error)
+	CountByStorageKeyFn func(ctx context.Context, storageKey string) (int64, error)
 }
 
 func (m *FileRepo) Create(ctx context.Context, f *domain.File) error { return m.CreateFn(ctx, f) }
@@ -29,6 +31,23 @@ func (m *FileRepo) ListByOwner(ctx context.Context, ownerUID string, page domain
 	return m.ListByOwnerFn(ctx, ownerUID, page)
 }
 func (m *FileRepo) Delete(ctx context.Context, id domain.ID) error { return m.DeleteFn(ctx, id) }
+
+// FindByChecksum and CountByStorageKey default to "feature inactive" (no dedup match /
+// no other references) when their Fn is unset, so tests that don't exercise dedup need
+// not wire them.
+func (m *FileRepo) FindByChecksum(ctx context.Context, ownerUID, checksum string) (*domain.File, error) {
+	if m.FindByChecksumFn == nil {
+		return nil, repository.ErrNotFound
+	}
+	return m.FindByChecksumFn(ctx, ownerUID, checksum)
+}
+
+func (m *FileRepo) CountByStorageKey(ctx context.Context, storageKey string) (int64, error) {
+	if m.CountByStorageKeyFn == nil {
+		return 0, nil
+	}
+	return m.CountByStorageKeyFn(ctx, storageKey)
+}
 
 type MessageRepo struct {
 	CreateFn           func(ctx context.Context, m *domain.Message) error

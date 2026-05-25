@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	stderrors "errors"
 	"fmt"
 	"io"
@@ -75,13 +77,15 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 		return nil, apperr.BadRequest("file.unsupported_type", "file content type is not allowed")
 	}
 
-	// Cap the stream as defense-in-depth: even if the declared size is wrong (or
-	// unknown), the backend can never write past the limit. cappedReader surfaces
-	// errFileTooLarge, which the storage Put call propagates.
-	reader := in.Reader
+	// Cap the stream as defense-in-depth (the backend can never write past the limit
+	// even if the declared size lies) and hash it in the same pass so we can record a
+	// content checksum and deduplicate identical uploads.
+	var reader io.Reader = in.Reader
 	if s.maxBytes > 0 {
 		reader = &cappedReader{r: in.Reader, left: s.maxBytes}
 	}
+	hasher := sha256.New()
+	reader = io.TeeReader(reader, hasher)
 
 	key, size, err := s.store.Put(ctx, actor, in.Name, reader)
 	if err != nil {
@@ -89,6 +93,21 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 			return nil, apperr.BadRequest("file.too_large", fmt.Sprintf("file exceeds the %d-byte limit", s.maxBytes))
 		}
 		return nil, apperr.Internal("file.store_failed", "failed to store file").Wrap(err)
+	}
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	// Deduplicate: if this owner already has an identical file, reuse its blob and drop
+	// the copy we just wrote. `reused` guards cleanup so we never delete a shared blob.
+	reused := false
+	if existing, ferr := s.files.FindByChecksum(ctx, actor, checksum); ferr == nil {
+		if existing.StorageKey != key {
+			_ = s.store.Delete(ctx, key)
+			key = existing.StorageKey
+		}
+		reused = true
+	} else if !stderrors.Is(ferr, repository.ErrNotFound) {
+		_ = s.store.Delete(ctx, key)
+		return nil, apperr.Internal("file.dedup_failed", "failed to check for an existing file").Wrap(ferr)
 	}
 
 	now := time.Now().UTC()
@@ -100,13 +119,16 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 		MimeType:    in.MimeType,
 		StorageKey:  key,
 		StorageType: s.storageType,
+		Checksum:    checksum,
 		Visibility:  in.Visibility,
 		Meta:        in.Meta,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 	if err := s.files.Create(ctx, f); err != nil {
-		_ = s.store.Delete(ctx, key) // best-effort cleanup of the orphaned blob
+		if !reused {
+			_ = s.store.Delete(ctx, key) // only clean up a blob we exclusively own
+		}
 		return nil, apperr.Internal("file.create_failed", "failed to persist file").Wrap(err)
 	}
 	return f, nil
@@ -167,10 +189,12 @@ func (s *fileService) Delete(ctx context.Context, id domain.ID) error {
 	if err := s.files.Delete(ctx, id); err != nil {
 		return apperr.Internal("file.delete_failed", "failed to delete file").Wrap(err)
 	}
-	// The soft-deleted row is authoritative. Blob removal is best-effort: if it fails
-	// the row is already gone, so we don't fail the request — the blob is left for a
-	// future storage GC sweep rather than resurrecting the row.
-	_ = s.store.Delete(ctx, f.StorageKey)
+	// Blob removal is dedup-safe and best-effort: drop the physical object only once no
+	// other live file references the same storage key, and never fail the request over
+	// it (the row is already gone; any orphan is left for a future GC sweep).
+	if n, cerr := s.files.CountByStorageKey(ctx, f.StorageKey); cerr == nil && n == 0 {
+		_ = s.store.Delete(ctx, f.StorageKey)
+	}
 	return nil
 }
 

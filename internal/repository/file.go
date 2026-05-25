@@ -15,6 +15,12 @@ type FileRepository interface {
 	Get(ctx context.Context, id domain.ID) (*domain.File, error)
 	ListByOwner(ctx context.Context, ownerUID string, page domain.Page) ([]*domain.File, string, error)
 	Delete(ctx context.Context, id domain.ID) error
+	// FindByChecksum returns a live file owned by ownerUID with the given content
+	// checksum, or ErrNotFound. Used to deduplicate identical uploads.
+	FindByChecksum(ctx context.Context, ownerUID, checksum string) (*domain.File, error)
+	// CountByStorageKey counts live files referencing a storage key, so the service
+	// can decide whether deleting a row should also delete the shared blob.
+	CountByStorageKey(ctx context.Context, storageKey string) (int64, error)
 }
 
 type fileRepo struct {
@@ -79,4 +85,32 @@ func (r *fileRepo) Delete(ctx context.Context, id domain.ID) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// FindByChecksum returns a live (non-soft-deleted) file owned by ownerUID with the
+// given checksum. GORM's soft-delete scope excludes deleted rows automatically.
+func (r *fileRepo) FindByChecksum(ctx context.Context, ownerUID, checksum string) (*domain.File, error) {
+	var row fileRow
+	err := r.db.WithContext(ctx).
+		Where("owner_uid = ? AND checksum = ?", ownerUID, checksum).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find by checksum: %w", err)
+	}
+	return fileRowToDomain(&row), nil
+}
+
+// CountByStorageKey counts live files referencing storageKey (soft-deleted rows are
+// excluded), so callers can tell whether a blob is still shared.
+func (r *fileRepo) CountByStorageKey(ctx context.Context, storageKey string) (int64, error) {
+	var n int64
+	if err := r.db.WithContext(ctx).Model(&fileRow{}).
+		Where("storage_key = ?", storageKey).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("count by storage key: %w", err)
+	}
+	return n, nil
 }

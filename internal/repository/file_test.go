@@ -90,3 +90,47 @@ func TestFileRepo_ListPagination(t *testing.T) {
 		t.Fatalf("page2=%d cursor=%q", len(page2), cursor2)
 	}
 }
+
+func TestFileRepo_FindByChecksumAndCount(t *testing.T) {
+	ctx := context.Background()
+	repo := setupFileRepo(t)
+	now := time.Now().UTC()
+
+	// Two live files for u1 share one storage key (a deduped pair).
+	shared := "u1/shared-blob"
+	a := &domain.File{ID: idgen.NewID(), OwnerUID: "u1", Name: "a", Size: 3, MimeType: "x", StorageKey: shared, StorageType: "local", Checksum: "deadbeef", CreatedAt: now, UpdatedAt: now}
+	b := &domain.File{ID: idgen.NewID(), OwnerUID: "u1", Name: "b", Size: 3, MimeType: "x", StorageKey: shared, StorageType: "local", Checksum: "deadbeef", CreatedAt: now, UpdatedAt: now}
+	if err := repo.Create(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+
+	// FindByChecksum returns a live match for the owner...
+	got, err := repo.FindByChecksum(ctx, "u1", "deadbeef")
+	if err != nil || got.Checksum != "deadbeef" {
+		t.Fatalf("FindByChecksum got=%+v err=%v", got, err)
+	}
+	// ...but not for a different owner (dedup is per-owner).
+	if _, err := repo.FindByChecksum(ctx, "u2", "deadbeef"); err != repository.ErrNotFound {
+		t.Errorf("cross-owner FindByChecksum = %v, want ErrNotFound", err)
+	}
+
+	// Two live rows reference the shared blob; deleting them drops the count toward 0.
+	if n, err := repo.CountByStorageKey(ctx, shared); err != nil || n != 2 {
+		t.Fatalf("count=%d err=%v, want 2", n, err)
+	}
+	if err := repo.Delete(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := repo.CountByStorageKey(ctx, shared); err != nil || n != 1 {
+		t.Fatalf("count after one delete=%d err=%v, want 1 (blob must be kept)", n, err)
+	}
+	if err := repo.Delete(ctx, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := repo.CountByStorageKey(ctx, shared); err != nil || n != 0 {
+		t.Fatalf("count after final delete=%d err=%v, want 0 (blob may now be removed)", n, err)
+	}
+}
