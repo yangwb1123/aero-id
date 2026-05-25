@@ -46,7 +46,7 @@ func (m msgSvc) Send(ctx context.Context, in service.SendMessageInput) (*domain.
 func dial(t *testing.T, regs ...grpcsrv.ServiceRegistrar) *grpc.ClientConn {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpcsrv.NewServer(validator{uid: "u1"}, zap.NewNop(), regs...)
+	srv := grpcsrv.NewServer(validator{uid: "u1"}, zap.NewNop(), nil, regs...)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 

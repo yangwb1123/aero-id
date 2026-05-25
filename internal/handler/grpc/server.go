@@ -1,5 +1,5 @@
-// Package grpc hosts aero-id's internal gRPC transport: a server with auth and
-// recovery interceptors plus handlers that delegate to the shared service layer.
+// Package grpc hosts aero-id's internal gRPC transport: a server with metrics, auth
+// and recovery interceptors plus handlers that delegate to the shared service layer.
 package grpc
 
 import (
@@ -7,6 +7,7 @@ import (
 	stderrors "errors"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -30,19 +32,33 @@ type ServiceRegistrar interface {
 	Register(s *grpc.Server)
 }
 
-// NewServer builds a *grpc.Server with recovery + auth interceptors and registers
-// each provided handler.
-func NewServer(validator TokenValidator, log *zap.Logger, regs ...ServiceRegistrar) *grpc.Server {
-	s := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			RecoveryInterceptor(log),
-			AuthInterceptor(validator),
-		),
-	)
+// NewServer builds a *grpc.Server with metrics + recovery + auth interceptors and
+// registers each provided handler. A nil reg disables metrics (used by tests).
+func NewServer(validator TokenValidator, log *zap.Logger, reg *metrics.Registry, regs ...ServiceRegistrar) *grpc.Server {
+	interceptors := []grpc.UnaryServerInterceptor{
+		RecoveryInterceptor(log),
+		AuthInterceptor(validator),
+	}
+	if reg != nil {
+		// Outermost so it measures the whole call, including auth and recovery.
+		interceptors = append([]grpc.UnaryServerInterceptor{MetricsInterceptor(reg)}, interceptors...)
+	}
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptors...))
 	for _, r := range regs {
 		r.Register(s)
 	}
 	return s
+}
+
+// MetricsInterceptor records one RED observation per unary call, keyed by the gRPC
+// method and resulting status code.
+func MetricsInterceptor(reg *metrics.Registry) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		start := time.Now()
+		resp, err := handler(ctx, req)
+		reg.ObserveGRPC(info.FullMethod, status.Code(err).String(), time.Since(start))
+		return resp, err
+	}
 }
 
 // AuthInterceptor validates the bearer token from request metadata and injects

@@ -4,12 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	httpapi "github.com/aero/aero-id/internal/handler/http"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 )
 
 type okValidator struct{}
@@ -57,5 +59,25 @@ func TestRouter_AuthRequiredOnV1(t *testing.T) {
 	e.ServeHTTP(w2, req)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("with-token /v1/ping = %d, want 200", w2.Code)
+	}
+}
+
+func TestRouter_MetricsEndpoint(t *testing.T) {
+	reg := metrics.NewRegistry()
+	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{Metrics: reg}, okValidator{}, httpapi.NewHealthHandler(), pingRegistrar{})
+
+	// Exercise an authenticated route so the metrics middleware records it.
+	req := httptest.NewRequest(http.MethodGet, "/v1/ping", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	e.ServeHTTP(httptest.NewRecorder(), req)
+
+	// Scrape /metrics and confirm the observation is exposed in Prometheus format.
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/metrics = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `aeroid_requests_total{transport="http",method="GET",route="/v1/ping"`) {
+		t.Errorf("/metrics missing the /v1/ping observation:\n%s", w.Body.String())
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/aero/aero-id/internal/middleware"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 )
 
 // RouteRegistrar lets each feature handler attach its own routes without the
@@ -23,6 +24,7 @@ type Routes struct {
 // RouterConfig holds cross-cutting router settings.
 type RouterConfig struct {
 	CORSOrigins []string
+	Metrics     *metrics.Registry // when set, records RED metrics and serves /metrics
 }
 
 // NewRouter assembles the gin engine: global middleware, health probes, and the
@@ -38,11 +40,17 @@ func NewRouter(
 	e := gin.New()
 	e.Use(middleware.RequestID())
 	e.Use(middleware.Recovery(log))
+	if cfg.Metrics != nil {
+		e.Use(middleware.Metrics(cfg.Metrics))
+	}
 	e.Use(middleware.AccessLog(log))
 	e.Use(middleware.CORS(cfg.CORSOrigins))
 
 	e.GET("/healthz", health.Live)
 	e.GET("/readyz", health.Ready)
+	if cfg.Metrics != nil {
+		e.GET("/metrics", gin.WrapH(cfg.Metrics.Handler()))
+	}
 
 	routes := Routes{
 		Public: e.Group(""),

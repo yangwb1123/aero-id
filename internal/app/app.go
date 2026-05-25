@@ -19,6 +19,7 @@ import (
 	grpcsrv "github.com/aero/aero-id/internal/handler/grpc"
 	httpapi "github.com/aero/aero-id/internal/handler/http"
 	"github.com/aero/aero-id/internal/pkg/db"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/sso"
@@ -84,13 +85,14 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	// HTTP transport. Readiness probes the DB (critical) and SSO (criticality is
 	// configurable so an SSO-less dev stack stays "ready" rather than 503-ing).
+	metricsReg := metrics.NewRegistry()
 	health := httpapi.NewHealthHandler(
 		httpapi.Check{Name: "database", Critical: true, Probe: sqlDB.PingContext},
 		httpapi.Check{Name: "sso", Critical: cfg.SSO.ReadinessCritical, Probe: ssoClient.HealthCheck},
 	)
 	router := httpapi.NewRouter(
 		log,
-		httpapi.RouterConfig{},
+		httpapi.RouterConfig{Metrics: metricsReg},
 		ssoClient,
 		health,
 		httpapi.NewFileHandler(fileSvc, downloader, presignTTL),
@@ -106,7 +108,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	// gRPC transport
 	grpcServer := grpcsrv.NewServer(
-		ssoClient, log,
+		ssoClient, log, metricsReg,
 		grpcsrv.NewFileServer(fileSvc),
 		grpcsrv.NewMessageServer(msgSvc),
 		grpcsrv.NewCommentServer(commentSvc),
