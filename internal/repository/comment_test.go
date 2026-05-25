@@ -123,3 +123,40 @@ func TestCommentRepo_SoftDelete(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestCommentRepo_CreateWithReplyBumpIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+
+	target := idgen.NewID()
+	now := time.Now().UTC()
+
+	root := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
+		TargetID: target, Content: "top", Status: domain.CommentStatusNormal,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	root.RootID = root.ID
+	if err := repo.CreateWithReplyBump(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+
+	reply := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u2", TargetType: domain.TargetTypeFile,
+		TargetID: target, ParentID: &root.ID, RootID: root.ID,
+		Content: "child", Status: domain.CommentStatusNormal,
+		CreatedAt: now.Add(time.Millisecond), UpdatedAt: now.Add(time.Millisecond),
+	}
+	if err := repo.CreateWithReplyBump(ctx, reply); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reply insert and the parent's reply_count bump must commit together.
+	got, err := repo.Get(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReplyCount != 1 {
+		t.Errorf("reply_count = %d, want 1 (atomic bump)", got.ReplyCount)
+	}
+}

@@ -12,6 +12,9 @@ import (
 
 type CommentRepository interface {
 	Create(ctx context.Context, c *domain.Comment) error
+	// CreateWithReplyBump inserts a comment and, when it is a reply (ParentID set),
+	// increments the parent's reply_count in the same transaction.
+	CreateWithReplyBump(ctx context.Context, c *domain.Comment) error
 	Get(ctx context.Context, id domain.ID) (*domain.Comment, error)
 	ListByTarget(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	ListReplies(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
@@ -26,6 +29,30 @@ func NewCommentRepository(db *gorm.DB) CommentRepository { return &commentRepo{d
 func (r *commentRepo) Create(ctx context.Context, c *domain.Comment) error {
 	if err := r.db.WithContext(ctx).Create(commentDomainToRow(c)).Error; err != nil {
 		return fmt.Errorf("create comment: %w", err)
+	}
+	return nil
+}
+
+// CreateWithReplyBump inserts a comment and, when it is a reply (ParentID set),
+// increments the parent's reply_count in the same transaction so the comment and
+// the denormalized counter commit together (or not at all).
+func (r *commentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment) error {
+	row := commentDomainToRow(c)
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(row).Error; err != nil {
+			return err
+		}
+		if c.ParentID != nil {
+			if err := tx.Model(&commentRow{}).
+				Where("id = ?", *c.ParentID).
+				UpdateColumn("reply_count", gorm.Expr("reply_count + 1")).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("create comment with reply bump: %w", err)
 	}
 	return nil
 }

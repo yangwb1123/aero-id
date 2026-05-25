@@ -55,15 +55,19 @@ func (m *MessageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) 
 }
 
 type CommentRepo struct {
-	CreateFn        func(ctx context.Context, c *domain.Comment) error
-	GetFn           func(ctx context.Context, id domain.ID) (*domain.Comment, error)
-	ListByTargetFn  func(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
-	ListRepliesFn   func(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
-	IncReplyCountFn func(ctx context.Context, parentID domain.ID) error
-	SoftDeleteFn    func(ctx context.Context, id domain.ID) error
+	CreateFn              func(ctx context.Context, c *domain.Comment) error
+	CreateWithReplyBumpFn func(ctx context.Context, c *domain.Comment) error
+	GetFn                 func(ctx context.Context, id domain.ID) (*domain.Comment, error)
+	ListByTargetFn        func(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
+	ListRepliesFn         func(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
+	IncReplyCountFn       func(ctx context.Context, parentID domain.ID) error
+	SoftDeleteFn          func(ctx context.Context, id domain.ID) error
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
+func (m *CommentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment) error {
+	return m.CreateWithReplyBumpFn(ctx, c)
+}
 func (m *CommentRepo) Get(ctx context.Context, id domain.ID) (*domain.Comment, error) {
 	return m.GetFn(ctx, id)
 }

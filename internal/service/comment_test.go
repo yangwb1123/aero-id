@@ -24,7 +24,7 @@ func readableFileRepo(target domain.ID) *mocks.FileRepo {
 func TestCommentService_CreateTopLevel(t *testing.T) {
 	target := idgen.NewID()
 	var saved *domain.Comment
-	comments := &mocks.CommentRepo{CreateFn: func(_ context.Context, c *domain.Comment) error { saved = c; return nil }}
+	comments := &mocks.CommentRepo{CreateWithReplyBumpFn: func(_ context.Context, c *domain.Comment) error { saved = c; return nil }}
 	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "author")
 	c, err := svc.Create(ctx, service.CreateCommentInput{TargetType: domain.TargetTypeFile, TargetID: target, Content: "nice"})
@@ -42,13 +42,12 @@ func TestCommentService_CreateTopLevel(t *testing.T) {
 func TestCommentService_CreateReplyIncrementsParent(t *testing.T) {
 	target := idgen.NewID()
 	root := idgen.NewID()
-	incremented := false
+	var bumpedFor *domain.ID
 	comments := &mocks.CommentRepo{
 		GetFn: func(_ context.Context, _ domain.ID) (*domain.Comment, error) {
 			return &domain.Comment{ID: root, ParentID: nil, RootID: root, TargetType: domain.TargetTypeFile, TargetID: target}, nil
 		},
-		CreateFn:        func(_ context.Context, _ *domain.Comment) error { return nil },
-		IncReplyCountFn: func(_ context.Context, pid domain.ID) error { incremented = pid == root; return nil },
+		CreateWithReplyBumpFn: func(_ context.Context, c *domain.Comment) error { bumpedFor = c.ParentID; return nil },
 	}
 	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "author")
@@ -59,8 +58,10 @@ func TestCommentService_CreateReplyIncrementsParent(t *testing.T) {
 	if c.RootID != root || c.ParentID == nil || *c.ParentID != root {
 		t.Fatalf("reply wiring wrong: %+v", c)
 	}
-	if !incremented {
-		t.Fatal("parent reply count was not incremented")
+	// The atomic reply-bump must be invoked with the parent set (the increment itself
+	// is exercised by the repository integration test).
+	if bumpedFor == nil || *bumpedFor != root {
+		t.Fatal("reply was not routed through the atomic reply-count bump with the parent set")
 	}
 }
 

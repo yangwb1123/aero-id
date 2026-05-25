@@ -95,17 +95,10 @@ func (s *commentService) Create(ctx context.Context, in CreateCommentInput) (*do
 	now := time.Now().UTC()
 	c.CreatedAt = now
 	c.UpdatedAt = now
-	if err := s.comments.Create(ctx, c); err != nil {
+	// Persist the comment and bump the parent's reply_count atomically so the
+	// denormalized counter can never drift from the rows that back it.
+	if err := s.comments.CreateWithReplyBump(ctx, c); err != nil {
 		return nil, apperr.Internal("comment.create_failed", "failed to create comment").Wrap(err)
-	}
-	if parent != nil {
-		// NOTE: Create + IncReplyCount are not wrapped in a transaction. If IncReplyCount
-		// fails after the comment is persisted, the reply is saved but the parent's
-		// reply_count is not incremented (a denormalized counter that can drift). A future
-		// task should wrap both writes in a DB transaction.
-		if err := s.comments.IncReplyCount(ctx, parent.ID); err != nil {
-			return nil, apperr.Internal("comment.create_failed", "failed to update reply count").Wrap(err)
-		}
 	}
 	return c, nil
 }
