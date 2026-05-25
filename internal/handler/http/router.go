@@ -1,9 +1,12 @@
 package http
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/aero/aero-id/internal/idempotency"
 	"github.com/aero/aero-id/internal/middleware"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 )
@@ -23,8 +26,10 @@ type Routes struct {
 
 // RouterConfig holds cross-cutting router settings.
 type RouterConfig struct {
-	CORSOrigins []string
-	Metrics     *metrics.Registry // when set, records RED metrics and serves /metrics
+	CORSOrigins    []string
+	Metrics        *metrics.Registry // when set, records RED metrics and serves /metrics
+	Idempotency    idempotency.Store // when set, makes keyed POSTs under /v1 safe to retry
+	IdempotencyTTL time.Duration
 }
 
 // NewRouter assembles the gin engine: global middleware, health probes, and the
@@ -52,9 +57,14 @@ func NewRouter(
 		e.GET("/metrics", gin.WrapH(cfg.Metrics.Handler()))
 	}
 
+	// The /v1 group requires auth; idempotency runs after it so keys are scoped per user.
+	authMW := []gin.HandlerFunc{middleware.Auth(validator)}
+	if cfg.Idempotency != nil {
+		authMW = append(authMW, middleware.Idempotency(cfg.Idempotency, cfg.IdempotencyTTL))
+	}
 	routes := Routes{
 		Public: e.Group(""),
-		Auth:   e.Group("/v1", middleware.Auth(validator)),
+		Auth:   e.Group("/v1", authMW...),
 	}
 	for _, r := range registrars {
 		r.RegisterRoutes(routes)
