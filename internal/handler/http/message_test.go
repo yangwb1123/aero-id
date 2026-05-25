@@ -22,6 +22,7 @@ type fakeMessageService struct {
 	inboxFn        func(context.Context, domain.Page, bool) (*service.MessageList, error)
 	conversationFn func(context.Context, string, domain.Page) (*service.MessageList, error)
 	markReadFn     func(context.Context, domain.ID) error
+	unreadCountFn  func(context.Context) (int64, error)
 }
 
 func (f *fakeMessageService) Send(ctx context.Context, in service.SendMessageInput) (*domain.Message, error) {
@@ -38,6 +39,22 @@ func (f *fakeMessageService) Conversation(ctx context.Context, with string, p do
 }
 func (f *fakeMessageService) MarkRead(ctx context.Context, id domain.ID) error {
 	return f.markReadFn(ctx, id)
+}
+func (f *fakeMessageService) UnreadCount(ctx context.Context) (int64, error) {
+	return f.unreadCountFn(ctx)
+}
+
+func TestMessageHandler_UnreadCount(t *testing.T) {
+	svc := &fakeMessageService{unreadCountFn: func(context.Context) (int64, error) { return 5, nil }}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "u1")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/messages/unread_count", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"unread_count":5`) {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
 }
 
 func TestMessageHandler_Send(t *testing.T) {

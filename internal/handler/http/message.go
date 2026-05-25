@@ -24,6 +24,7 @@ func NewMessageHandler(messages service.MessageService) *MessageHandler {
 func (h *MessageHandler) RegisterRoutes(r Routes) {
 	r.Auth.POST("/messages", h.Send)
 	r.Auth.GET("/messages", h.Inbox)
+	r.Auth.GET("/messages/unread_count", h.UnreadCount)
 	r.Auth.GET("/messages/:id", h.Get)
 	r.Auth.POST("/messages/:id/read", h.MarkRead)
 	r.Auth.GET("/conversations/:uid", h.Conversation)
@@ -108,6 +109,15 @@ func (h *MessageHandler) MarkRead(c *gin.Context) {
 		return
 	}
 	httpx.NoContent(c)
+}
+
+func (h *MessageHandler) UnreadCount(c *gin.Context) {
+	n, err := h.messages.UnreadCount(c.Request.Context())
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"unread_count": n})
 }
 
 func renderMessageList(c *gin.Context, list *service.MessageList) {

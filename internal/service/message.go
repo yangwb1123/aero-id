@@ -141,6 +141,18 @@ func (s *messageService) MarkRead(ctx context.Context, id domain.ID) error {
 	return nil
 }
 
+func (s *messageService) UnreadCount(ctx context.Context) (int64, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.messages.CountUnread(ctx, actor)
+	if err != nil {
+		return 0, apperr.Internal("message.unread_count_failed", "failed to count unread messages").Wrap(err)
+	}
+	return n, nil
+}
+
 // senderUIDs returns the distinct from_uids preserving first-seen order.
 func senderUIDs(msgs []*domain.Message) []string {
 	seen := make(map[string]struct{}, len(msgs))

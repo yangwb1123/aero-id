@@ -17,6 +17,7 @@ type MessageRepository interface {
 	ListInbox(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversation(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkRead(ctx context.Context, id domain.ID, at time.Time) error
+	CountUnread(ctx context.Context, toUID string) (int64, error)
 }
 
 type messageRepo struct{ db *gorm.DB }
@@ -100,4 +101,16 @@ func (r *messageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) 
 		return fmt.Errorf("mark read: %w", res.Error)
 	}
 	return nil
+}
+
+// CountUnread returns how many undeleted, unread messages are addressed to toUID.
+// It is served by the partial index idx_messages_unread.
+func (r *messageRepo) CountUnread(ctx context.Context, toUID string) (int64, error) {
+	var n int64
+	if err := r.db.WithContext(ctx).Model(&messageRow{}).
+		Where("to_uid = ? AND read_at IS NULL", toUID).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("count unread: %w", err)
+	}
+	return n, nil
 }

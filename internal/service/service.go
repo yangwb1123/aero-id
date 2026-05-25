@@ -104,6 +104,7 @@ type MessageService interface {
 	Inbox(ctx context.Context, page domain.Page, unreadOnly bool) (*MessageList, error)
 	Conversation(ctx context.Context, withUID string, page domain.Page) (*MessageList, error)
 	MarkRead(ctx context.Context, id domain.ID) error
+	UnreadCount(ctx context.Context) (int64, error)
 }
 
 type CommentService interface {

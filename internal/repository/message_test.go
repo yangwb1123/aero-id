@@ -21,6 +21,40 @@ func setupMsgRepo(t *testing.T) repository.MessageRepository {
 	return repository.NewMessageRepository(db)
 }
 
+func TestMessageRepo_CountUnread(t *testing.T) {
+	ctx := context.Background()
+	repo := setupMsgRepo(t)
+	now := time.Now().UTC()
+
+	mk := func(to string) *domain.Message {
+		return &domain.Message{ID: idgen.NewID(), FromUID: "alice", ToUID: to, Kind: domain.MessageKindText, Content: "hi", CreatedAt: now}
+	}
+	for _, to := range []string{"bob", "bob", "carol"} { // bob: 2 unread, carol: 1
+		if err := repo.Create(ctx, mk(to)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := repo.CountUnread(ctx, "bob"); err != nil || n != 2 {
+		t.Fatalf("bob unread = %d err=%v, want 2", n, err)
+	}
+
+	// Reading one of bob's messages drops his unread count to 1.
+	inbox, _, err := repo.ListInbox(ctx, "bob", domain.Page{Limit: 10}, false)
+	if err != nil || len(inbox) == 0 {
+		t.Fatalf("inbox err=%v len=%d", err, len(inbox))
+	}
+	if err := repo.MarkRead(ctx, inbox[0].ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := repo.CountUnread(ctx, "bob"); err != nil || n != 1 {
+		t.Fatalf("bob unread after read = %d err=%v, want 1", n, err)
+	}
+	// A user with no messages has zero unread.
+	if n, err := repo.CountUnread(ctx, "nobody"); err != nil || n != 0 {
+		t.Fatalf("nobody unread = %d err=%v, want 0", n, err)
+	}
+}
+
 func TestMessageRepo_CreateAndRead(t *testing.T) {
 	ctx := context.Background()
 	repo := setupMsgRepo(t)

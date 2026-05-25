@@ -55,6 +55,7 @@ type MessageRepo struct {
 	ListInboxFn        func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversationFn func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkReadFn         func(ctx context.Context, id domain.ID, at time.Time) error
+	CountUnreadFn      func(ctx context.Context, toUID string) (int64, error)
 }
 
 func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message) error {
@@ -71,6 +72,9 @@ func (m *MessageRepo) ListConversation(ctx context.Context, uidA, uidB string, p
 }
 func (m *MessageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) error {
 	return m.MarkReadFn(ctx, id, at)
+}
+func (m *MessageRepo) CountUnread(ctx context.Context, toUID string) (int64, error) {
+	return m.CountUnreadFn(ctx, toUID)
 }
 
 type CommentRepo struct {
