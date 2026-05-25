@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -20,6 +22,10 @@ type CommentRepository interface {
 	ListReplies(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	IncReplyCount(ctx context.Context, parentID domain.ID) error
 	SoftDelete(ctx context.Context, id domain.ID) error
+	// Like records a like by uid and returns the comment's updated like_count. A repeated
+	// like by the same uid is a no-op (idempotent). Unlike is the inverse.
+	Like(ctx context.Context, commentID domain.ID, uid string) (likeCount int, err error)
+	Unlike(ctx context.Context, commentID domain.ID, uid string) (likeCount int, err error)
 }
 
 type commentRepo struct{ db *gorm.DB }
@@ -138,4 +144,63 @@ func (r *commentRepo) SoftDelete(ctx context.Context, id domain.ID) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// Like inserts a (comment, uid) like and bumps like_count in one transaction. A
+// duplicate like by the same uid is ignored (ON CONFLICT DO NOTHING), keeping the
+// count consistent. It returns the resulting like_count.
+func (r *commentRepo) Like(ctx context.Context, commentID domain.ID, uid string) (int, error) {
+	var count int
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&commentLikeRow{CommentID: commentID, UID: uid, CreatedAt: time.Now().UTC()})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 1 {
+			if err := tx.Model(&commentRow{}).Where("id = ?", commentID).
+				UpdateColumn("like_count", gorm.Expr("like_count + 1")).Error; err != nil {
+				return err
+			}
+		}
+		var row commentRow
+		if err := tx.Select("like_count").First(&row, "id = ?", commentID).Error; err != nil {
+			return err
+		}
+		count = row.LikeCount
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("like comment: %w", err)
+	}
+	return count, nil
+}
+
+// Unlike removes a (comment, uid) like and decrements like_count (never below zero)
+// in one transaction, returning the resulting like_count. Unliking a comment that
+// wasn't liked is a no-op.
+func (r *commentRepo) Unlike(ctx context.Context, commentID domain.ID, uid string) (int, error) {
+	var count int
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("comment_id = ? AND uid = ?", commentID, uid).Delete(&commentLikeRow{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 1 {
+			if err := tx.Model(&commentRow{}).Where("id = ?", commentID).
+				UpdateColumn("like_count", gorm.Expr("GREATEST(like_count - 1, 0)")).Error; err != nil {
+				return err
+			}
+		}
+		var row commentRow
+		if err := tx.Select("like_count").First(&row, "id = ?", commentID).Error; err != nil {
+			return err
+		}
+		count = row.LikeCount
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("unlike comment: %w", err)
+	}
+	return count, nil
 }

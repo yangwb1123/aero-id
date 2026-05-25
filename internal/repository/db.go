@@ -169,3 +169,12 @@ func commentDomainToRow(c *domain.Comment) *commentRow {
 		UpdatedAt:  c.UpdatedAt,
 	}
 }
+
+// commentLikeRow maps the comment_likes join table: one row per (comment, user) like.
+type commentLikeRow struct {
+	CommentID uuid.UUID `gorm:"column:comment_id;primaryKey"`
+	UID       string    `gorm:"column:uid;primaryKey"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+}
+
+func (commentLikeRow) TableName() string { return "comment_likes" }

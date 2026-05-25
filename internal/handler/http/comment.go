@@ -25,6 +25,8 @@ func (h *CommentHandler) RegisterRoutes(r Routes) {
 	r.Auth.GET("/comments", h.List)
 	r.Auth.GET("/comments/:id/replies", h.Replies)
 	r.Auth.DELETE("/comments/:id", h.Delete)
+	r.Auth.POST("/comments/:id/like", h.Like)
+	r.Auth.DELETE("/comments/:id/like", h.Unlike)
 }
 
 type createCommentRequest struct {
@@ -107,6 +109,34 @@ func (h *CommentHandler) Delete(c *gin.Context) {
 	httpx.NoContent(c)
 }
 
+func (h *CommentHandler) Like(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	res, err := h.comments.Like(c.Request.Context(), id)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"liked": res.Liked, "like_count": res.LikeCount})
+}
+
+func (h *CommentHandler) Unlike(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	res, err := h.comments.Unlike(c.Request.Context(), id)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"liked": res.Liked, "like_count": res.LikeCount})
+}
+
 func renderCommentList(c *gin.Context, list *service.CommentList) {
 	items := make([]commentResponse, 0, len(list.Comments))
 	for _, cm := range list.Comments {
@@ -127,6 +157,7 @@ type commentResponse struct {
 	ParentID   *string   `json:"parent_id,omitempty"`
 	RootID     string    `json:"root_id"`
 	Content    string    `json:"content"`
+	LikeCount  int       `json:"like_count"`
 	ReplyCount int       `json:"reply_count"`
 	Status     int16     `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -140,6 +171,7 @@ func toCommentResponse(c *domain.Comment) commentResponse {
 		TargetID:   c.TargetID.String(),
 		RootID:     c.RootID.String(),
 		Content:    c.Content,
+		LikeCount:  c.LikeCount,
 		ReplyCount: c.ReplyCount,
 		Status:     int16(c.Status),
 		CreatedAt:  c.CreatedAt,

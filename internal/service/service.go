@@ -81,6 +81,13 @@ type CommentList struct {
 	Users      map[string]sso.User
 }
 
+// ReactionResult is the outcome of a like/unlike: the caller's resulting like state
+// and the comment's updated like count.
+type ReactionResult struct {
+	Liked     bool
+	LikeCount int
+}
+
 // ---- Service interfaces (implemented in file.go / message.go / comment.go) ----
 
 type FileService interface {
@@ -104,6 +111,8 @@ type CommentService interface {
 	List(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) (*CommentList, error)
 	Replies(ctx context.Context, rootID domain.ID, page domain.Page) (*CommentList, error)
 	Delete(ctx context.Context, id domain.ID) error
+	Like(ctx context.Context, id domain.ID) (*ReactionResult, error)
+	Unlike(ctx context.Context, id domain.ID) (*ReactionResult, error)
 }
 
 // ---- shared helpers (unexported; reused across the three service impls) ----

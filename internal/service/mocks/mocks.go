@@ -81,6 +81,8 @@ type CommentRepo struct {
 	ListRepliesFn         func(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	IncReplyCountFn       func(ctx context.Context, parentID domain.ID) error
 	SoftDeleteFn          func(ctx context.Context, id domain.ID) error
+	LikeFn                func(ctx context.Context, commentID domain.ID, uid string) (int, error)
+	UnlikeFn              func(ctx context.Context, commentID domain.ID, uid string) (int, error)
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
@@ -101,6 +103,12 @@ func (m *CommentRepo) IncReplyCount(ctx context.Context, parentID domain.ID) err
 }
 func (m *CommentRepo) SoftDelete(ctx context.Context, id domain.ID) error {
 	return m.SoftDeleteFn(ctx, id)
+}
+func (m *CommentRepo) Like(ctx context.Context, commentID domain.ID, uid string) (int, error) {
+	return m.LikeFn(ctx, commentID, uid)
+}
+func (m *CommentRepo) Unlike(ctx context.Context, commentID domain.ID, uid string) (int, error) {
+	return m.UnlikeFn(ctx, commentID, uid)
 }
 
 type Storage struct {

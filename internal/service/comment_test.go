@@ -206,3 +206,40 @@ func TestCommentService_DeleteRequiresOwner(t *testing.T) {
 	err := svc.Delete(ctx, idgen.NewID())
 	assertAppCode(t, err, 403)
 }
+
+func TestCommentService_LikeAndUnlike(t *testing.T) {
+	target := idgen.NewID()
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: id, OwnerUID: "author", TargetType: domain.TargetTypeFile, TargetID: target}, nil
+		},
+		LikeFn:   func(_ context.Context, _ domain.ID, _ string) (int, error) { return 1, nil },
+		UnlikeFn: func(_ context.Context, _ domain.ID, _ string) (int, error) { return 0, nil },
+	}
+	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "viewer")
+
+	liked, err := svc.Like(ctx, idgen.NewID())
+	if err != nil || !liked.Liked || liked.LikeCount != 1 {
+		t.Fatalf("like: %+v err=%v", liked, err)
+	}
+	unliked, err := svc.Unlike(ctx, idgen.NewID())
+	if err != nil || unliked.Liked || unliked.LikeCount != 0 {
+		t.Fatalf("unlike: %+v err=%v", unliked, err)
+	}
+}
+
+func TestCommentService_LikeForbiddenForPrivateTarget(t *testing.T) {
+	target := idgen.NewID()
+	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+		return &domain.Comment{ID: id, OwnerUID: "owner", TargetType: domain.TargetTypeFile, TargetID: target}, nil
+	}}
+	files := &mocks.FileRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+		return &domain.File{ID: target, OwnerUID: "owner", Visibility: domain.VisibilityPrivate}, nil
+	}}
+	svc := service.NewCommentService(comments, files, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "stranger")
+	if _, err := svc.Like(ctx, idgen.NewID()); err == nil {
+		t.Fatal("expected forbidden when liking a comment on a private target")
+	}
+}

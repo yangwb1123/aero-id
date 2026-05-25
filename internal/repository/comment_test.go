@@ -160,3 +160,38 @@ func TestCommentRepo_CreateWithReplyBumpIsAtomic(t *testing.T) {
 		t.Errorf("reply_count = %d, want 1 (atomic bump)", got.ReplyCount)
 	}
 }
+
+func TestCommentRepo_LikeUnlike(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+	now := time.Now().UTC()
+
+	c := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
+		TargetID: idgen.NewID(), Content: "top", Status: domain.CommentStatusNormal,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	c.RootID = c.ID
+	if err := repo.Create(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	// Liking increments; a repeat by the same user is idempotent.
+	if n, err := repo.Like(ctx, c.ID, "viewer"); err != nil || n != 1 {
+		t.Fatalf("first like n=%d err=%v, want 1", n, err)
+	}
+	if n, err := repo.Like(ctx, c.ID, "viewer"); err != nil || n != 1 {
+		t.Fatalf("duplicate like n=%d err=%v, want 1 (idempotent)", n, err)
+	}
+	if n, err := repo.Like(ctx, c.ID, "viewer2"); err != nil || n != 2 {
+		t.Fatalf("second user like n=%d err=%v, want 2", n, err)
+	}
+
+	// Unliking decrements; a repeat is idempotent and never goes negative.
+	if n, err := repo.Unlike(ctx, c.ID, "viewer"); err != nil || n != 1 {
+		t.Fatalf("unlike n=%d err=%v, want 1", n, err)
+	}
+	if n, err := repo.Unlike(ctx, c.ID, "viewer"); err != nil || n != 1 {
+		t.Fatalf("duplicate unlike n=%d err=%v, want 1 (idempotent)", n, err)
+	}
+}
