@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
@@ -25,6 +26,7 @@ type Client struct {
 	rpc        ssopb.SSOClient
 	tokenCache *TokenCache
 	userCache  *UserCache
+	sf         singleflight.Group // collapses concurrent validations of the same token
 	stopFn     func()
 	timeout    time.Duration
 }
@@ -85,10 +87,36 @@ func (c *Client) HealthCheck(_ context.Context) error {
 }
 
 // ValidateToken returns the uid for a Bearer token, consulting the cache first.
+// Concurrent validations of the same uncached token are collapsed into a single
+// upstream call via singleflight, so a cache-miss stampede cannot fan out to SSO.
 func (c *Client) ValidateToken(ctx context.Context, token string) (string, error) {
 	if uid, ok := c.tokenCache.Get(token); ok {
 		return uid, nil
 	}
+	ch := c.sf.DoChan(token, func() (interface{}, error) {
+		// A concurrent leader may have populated the cache while we queued.
+		if uid, ok := c.tokenCache.Get(token); ok {
+			return uid, nil
+		}
+		return c.validateUpstream(token)
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return "", res.Err
+		}
+		return res.Val.(string), nil
+	}
+}
+
+// validateUpstream performs the actual SSO ValidateToken RPC under the configured
+// timeout. It is only ever invoked by the singleflight leader; because the result is
+// shared with all waiters it uses a detached, timeout-bounded context rather than any
+// single caller's. On failure it falls back to a stale cached identity.
+func (c *Client) validateUpstream(token string) (string, error) {
+	ctx := context.Background()
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)

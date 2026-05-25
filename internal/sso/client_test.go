@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -272,5 +273,78 @@ func TestClient_NoStaleForUnknownTokenWhenDown(t *testing.T) {
 	// No cached identity exists, so a down SSO must surface an error.
 	if _, err := c.ValidateToken(context.Background(), "never-seen"); err == nil {
 		t.Fatal("expected error for an uncached token when SSO is down")
+	}
+}
+
+// countingSlowSSOServer counts ValidateToken calls and sleeps before replying, so a
+// burst of concurrent callers overlaps long enough to exercise singleflight.
+type countingSlowSSOServer struct {
+	ssopb.UnimplementedSSOServer
+	mu    sync.Mutex
+	calls int
+	delay time.Duration
+}
+
+func (s *countingSlowSSOServer) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	time.Sleep(s.delay)
+	return &ssopb.ValidateTokenResponse{Uid: "uid-" + req.Token, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()}, nil
+}
+
+func (s *countingSlowSSOServer) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func startCountingSlowSSO(t *testing.T, delay time.Duration, cfg sso.ClientConfig) (*sso.Client, *countingSlowSSOServer) {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	server := &countingSlowSSOServer{delay: delay}
+	ssopb.RegisterSSOServer(srv, server)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sso.NewClientFromConn(conn, cfg), server
+}
+
+func TestClient_ValidateTokenSingleflight(t *testing.T) {
+	c, server := startCountingSlowSSO(t, 50*time.Millisecond, sso.ClientConfig{
+		TokenCacheTTL: time.Minute,
+		UserCacheTTL:  time.Minute,
+	})
+	defer c.Close()
+
+	const n = 12
+	var wg sync.WaitGroup
+	uids := make([]string, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			uids[i], errs[i] = c.ValidateToken(context.Background(), "tok")
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil || uids[i] != "uid-tok" {
+			t.Fatalf("call %d uid=%q err=%v", i, uids[i], errs[i])
+		}
+	}
+	if got := server.Calls(); got != 1 {
+		t.Errorf("SSO ValidateToken calls = %d, want 1 (singleflight must collapse the stampede)", got)
 	}
 }

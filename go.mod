@@ -13,6 +13,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/minio v0.32.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.32.0
 	go.uber.org/zap v1.27.0
+	golang.org/x/sync v0.7.0
 	google.golang.org/grpc v1.66.0
 	google.golang.org/protobuf v1.34.1
 	gorm.io/datatypes v1.2.1
@@ -119,7 +120,6 @@ require (
 	golang.org/x/crypto v0.24.0 // indirect
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
 	golang.org/x/net v0.26.0 // indirect
-	golang.org/x/sync v0.7.0 // indirect
 	golang.org/x/sys v0.21.0 // indirect
 	golang.org/x/text v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240604185151-ef581f913117 // indirect
