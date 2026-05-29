@@ -22,6 +22,13 @@ type MessageRepository interface {
 	ListConversation(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkRead(ctx context.Context, id domain.ID, at time.Time) error
 	CountUnread(ctx context.Context, toUID string) (int64, error)
+	// UpdateContent rewrites a (non-deleted) message's content and stamps edited_at.
+	UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error
+	// SoftDelete soft-deletes a message (sets deleted_at). Idempotent.
+	SoftDelete(ctx context.Context, id domain.ID) error
+	// MarkConversationRead marks every undeleted, unread message from peer to toUID
+	// as read at the given time, in a single statement.
+	MarkConversationRead(ctx context.Context, toUID, peer string, at time.Time) error
 }
 
 type messageRepo struct {
@@ -125,6 +132,40 @@ func (r *messageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) 
 		Update("read_at", at)
 	if res.Error != nil {
 		return fmt.Errorf("mark read: %w", res.Error)
+	}
+	return nil
+}
+
+// UpdateContent rewrites the message's content and stamps edited_at. GORM's default
+// soft-delete scope restricts the update to rows with deleted_at IS NULL, so a
+// soft-deleted message is never touched here.
+func (r *messageRepo) UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error {
+	res := r.db.WithContext(ctx).Model(&messageRow{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"content": content, "edited_at": at})
+	if res.Error != nil {
+		return fmt.Errorf("update message content: %w", res.Error)
+	}
+	return nil
+}
+
+// SoftDelete soft-deletes the message (GORM sets deleted_at). It is idempotent: an
+// already-deleted row is filtered out by the default scope and silently matches nothing.
+func (r *messageRepo) SoftDelete(ctx context.Context, id domain.ID) error {
+	if err := r.db.WithContext(ctx).Where("id = ?", id).Delete(&messageRow{}).Error; err != nil {
+		return fmt.Errorf("soft delete message: %w", err)
+	}
+	return nil
+}
+
+// MarkConversationRead stamps read_at on every undeleted, unread message from peer to
+// toUID in one UPDATE. The default soft-delete scope adds deleted_at IS NULL.
+func (r *messageRepo) MarkConversationRead(ctx context.Context, toUID, peer string, at time.Time) error {
+	res := r.db.WithContext(ctx).Model(&messageRow{}).
+		Where("to_uid = ? AND from_uid = ? AND read_at IS NULL", toUID, peer).
+		Update("read_at", at)
+	if res.Error != nil {
+		return fmt.Errorf("mark conversation read: %w", res.Error)
 	}
 	return nil
 }

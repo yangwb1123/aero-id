@@ -164,7 +164,14 @@ type MessageService interface {
 	Inbox(ctx context.Context, page domain.Page, unreadOnly bool) (*MessageList, error)
 	Conversation(ctx context.Context, withUID string, page domain.Page) (*MessageList, error)
 	MarkRead(ctx context.Context, id domain.ID) error
+	// MarkConversationRead marks every message from withUID to the caller as read.
+	MarkConversationRead(ctx context.Context, withUID string) error
 	UnreadCount(ctx context.Context) (int64, error)
+	// Edit rewrites a message's content; only the original sender may edit, the
+	// message must be a non-deleted, non-system message, and content must be non-empty.
+	Edit(ctx context.Context, id domain.ID, content string) (*domain.Message, error)
+	// Delete soft-deletes a message; only the original sender may delete. Idempotent.
+	Delete(ctx context.Context, id domain.ID) error
 }
 
 type NotificationService interface {

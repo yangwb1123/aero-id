@@ -10,6 +10,7 @@ type Message struct {
 	Content   string
 	FileID    *ID
 	ReadAt    *time.Time
+	EditedAt  *time.Time
 	Meta      map[string]any
 	CreatedAt time.Time
 }

@@ -205,6 +205,78 @@ func (s *messageService) MarkRead(ctx context.Context, id domain.ID) error {
 	return nil
 }
 
+// Edit rewrites a message's content. Only the sender may edit; the content must be
+// non-empty; system-kind messages are server-owned and not user-editable. A
+// soft-deleted message reads back as NotFound (the repo's default scope hides it),
+// so editing a deleted message is rejected as not found.
+func (s *messageService) Edit(ctx context.Context, id domain.ID, content string) (*domain.Message, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if content == "" {
+		return nil, apperr.BadRequest("message.invalid", "content is required")
+	}
+	m, err := s.messages.Get(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return nil, apperr.NotFound("message.not_found", "message not found")
+	}
+	if err != nil {
+		return nil, apperr.Internal("message.get_failed", "failed to load message").Wrap(err)
+	}
+	if m.FromUID != actor {
+		return nil, apperr.Forbidden("message.forbidden", "only the sender can edit a message")
+	}
+	if m.Kind.IsSystem() {
+		return nil, apperr.Forbidden("message.forbidden", "system messages cannot be edited")
+	}
+	now := time.Now().UTC()
+	if err := s.messages.UpdateContent(ctx, id, content, now); err != nil {
+		return nil, apperr.Internal("message.edit_failed", "failed to edit message").Wrap(err)
+	}
+	m.Content = content
+	m.EditedAt = &now
+	return m, nil
+}
+
+// Delete soft-deletes a message. Only the sender may delete; the call is idempotent
+// (deleting an already-deleted message, which reads back as NotFound, is a no-op success).
+func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	m, err := s.messages.Get(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return nil // already gone — idempotent no-op
+	}
+	if err != nil {
+		return apperr.Internal("message.get_failed", "failed to load message").Wrap(err)
+	}
+	if m.FromUID != actor {
+		return apperr.Forbidden("message.forbidden", "only the sender can delete a message")
+	}
+	if err := s.messages.SoftDelete(ctx, id); err != nil {
+		return apperr.Internal("message.delete_failed", "failed to delete message").Wrap(err)
+	}
+	return nil
+}
+
+// MarkConversationRead marks every message from withUID to the caller as read.
+func (s *messageService) MarkConversationRead(ctx context.Context, withUID string) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	if withUID == "" {
+		return apperr.BadRequest("message.invalid", "peer uid is required")
+	}
+	if err := s.messages.MarkConversationRead(ctx, actor, withUID, time.Now().UTC()); err != nil {
+		return apperr.Internal("message.mark_read_failed", "failed to mark conversation read").Wrap(err)
+	}
+	return nil
+}
+
 func (s *messageService) UnreadCount(ctx context.Context) (int64, error) {
 	actor, err := mustActor(ctx)
 	if err != nil {

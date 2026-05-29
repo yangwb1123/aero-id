@@ -130,6 +130,10 @@ type MessageRepo struct {
 	ListConversationFn func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkReadFn         func(ctx context.Context, id domain.ID, at time.Time) error
 	CountUnreadFn      func(ctx context.Context, toUID string) (int64, error)
+
+	UpdateContentFn        func(ctx context.Context, id domain.ID, content string, at time.Time) error
+	SoftDeleteFn           func(ctx context.Context, id domain.ID) error
+	MarkConversationReadFn func(ctx context.Context, toUID, peer string, at time.Time) error
 }
 
 func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message, evt *outbox.Event) error {
@@ -152,6 +156,27 @@ func (m *MessageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) 
 }
 func (m *MessageRepo) CountUnread(ctx context.Context, toUID string) (int64, error) {
 	return m.CountUnreadFn(ctx, toUID)
+}
+
+// UpdateContent, SoftDelete, and MarkConversationRead default to success when their
+// Fn is unset, so tests wire only the ones they exercise.
+func (m *MessageRepo) UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error {
+	if m.UpdateContentFn == nil {
+		return nil
+	}
+	return m.UpdateContentFn(ctx, id, content, at)
+}
+func (m *MessageRepo) SoftDelete(ctx context.Context, id domain.ID) error {
+	if m.SoftDeleteFn == nil {
+		return nil
+	}
+	return m.SoftDeleteFn(ctx, id)
+}
+func (m *MessageRepo) MarkConversationRead(ctx context.Context, toUID, peer string, at time.Time) error {
+	if m.MarkConversationReadFn == nil {
+		return nil
+	}
+	return m.MarkConversationReadFn(ctx, toUID, peer, at)
 }
 
 type CommentRepo struct {

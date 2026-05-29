@@ -189,6 +189,127 @@ func TestMessageService_MarkReadIdempotent(t *testing.T) {
 	}
 }
 
+func TestMessageService_EditBySenderPersists(t *testing.T) {
+	id := idgen.NewID()
+	var gotContent string
+	var stamped bool
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b", Kind: domain.MessageKindText, Content: "old"}, nil
+		},
+		UpdateContentFn: func(_ context.Context, _ domain.ID, content string, at time.Time) error {
+			gotContent = content
+			stamped = !at.IsZero()
+			return nil
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	m, err := svc.Edit(ctx, id, "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotContent != "new" || m.Content != "new" {
+		t.Fatalf("content not updated: repo=%q msg=%q", gotContent, m.Content)
+	}
+	if !stamped || m.EditedAt == nil {
+		t.Fatalf("edited_at not stamped: stamped=%v editedAt=%v", stamped, m.EditedAt)
+	}
+}
+
+func TestMessageService_EditByNonSenderForbidden(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
+		return &domain.Message{ID: id, FromUID: "a", ToUID: "b", Kind: domain.MessageKindText}, nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "b") // recipient, not sender
+	_, err := svc.Edit(ctx, idgen.NewID(), "new")
+	assertAppCode(t, err, 403)
+}
+
+func TestMessageService_EditEmptyContentBadRequest(t *testing.T) {
+	svc := service.NewMessageService(&mocks.MessageRepo{}, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	_, err := svc.Edit(ctx, idgen.NewID(), "")
+	assertAppCode(t, err, 400)
+}
+
+func TestMessageService_EditSystemMessageForbidden(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
+		return &domain.Message{ID: id, FromUID: "a", ToUID: "b", Kind: domain.MessageKindSystem}, nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	_, err := svc.Edit(ctx, idgen.NewID(), "new")
+	assertAppCode(t, err, 403)
+}
+
+func TestMessageService_DeleteBySender(t *testing.T) {
+	called := false
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: id, FromUID: "a", ToUID: "b"}, nil
+		},
+		SoftDeleteFn: func(_ context.Context, _ domain.ID) error { called = true; return nil },
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("SoftDelete was not called")
+	}
+}
+
+func TestMessageService_DeleteByNonSenderForbidden(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
+		return &domain.Message{ID: id, FromUID: "a", ToUID: "b"}, nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "b") // recipient, not sender
+	err := svc.Delete(ctx, idgen.NewID())
+	assertAppCode(t, err, 403)
+}
+
+func TestMessageService_DeleteMissingIsIdempotent(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+		return nil, repository.ErrNotFound
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
+		t.Fatalf("expected idempotent no-op, got %v", err)
+	}
+}
+
+func TestMessageService_MarkConversationReadCallsRepo(t *testing.T) {
+	var gotTo, gotPeer string
+	repo := &mocks.MessageRepo{MarkConversationReadFn: func(_ context.Context, toUID, peer string, at time.Time) error {
+		gotTo = toUID
+		gotPeer = peer
+		if at.IsZero() {
+			t.Error("at must be set")
+		}
+		return nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "alice")
+	if err := svc.MarkConversationRead(ctx, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if gotTo != "alice" || gotPeer != "bob" {
+		t.Fatalf("repo args = (to=%q, peer=%q), want (alice, bob)", gotTo, gotPeer)
+	}
+}
+
+func TestMessageService_MarkConversationReadEmptyPeer(t *testing.T) {
+	svc := service.NewMessageService(&mocks.MessageRepo{}, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "alice")
+	err := svc.MarkConversationRead(ctx, "")
+	assertAppCode(t, err, 400)
+}
+
 func TestMessageService_ConversationHappyPath(t *testing.T) {
 	repo := &mocks.MessageRepo{
 		ListConversationFn: func(_ context.Context, uidA, uidB string, _ domain.Page) ([]*domain.Message, string, error) {

@@ -140,3 +140,86 @@ func TestMessageRepo_Conversation(t *testing.T) {
 		t.Fatalf("conv len=%d err=%v", len(conv), err)
 	}
 }
+
+func TestMessageRepo_UpdateContent(t *testing.T) {
+	ctx := context.Background()
+	repo := setupMsgRepo(t)
+
+	m := &domain.Message{
+		ID: idgen.NewID(), FromUID: "alice", ToUID: "bob",
+		Kind: domain.MessageKindText, Content: "old", CreatedAt: time.Now().UTC(),
+	}
+	if err := repo.Create(ctx, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	if err := repo.UpdateContent(ctx, m.ID, "new", at); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Get(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Content != "new" {
+		t.Fatalf("content = %q, want new", got.Content)
+	}
+	if got.EditedAt == nil {
+		t.Fatal("edited_at was not stamped")
+	}
+}
+
+func TestMessageRepo_SoftDeleteExcludedFromList(t *testing.T) {
+	ctx := context.Background()
+	repo := setupMsgRepo(t)
+
+	m := &domain.Message{
+		ID: idgen.NewID(), FromUID: "alice", ToUID: "bob",
+		Kind: domain.MessageKindText, Content: "hi", CreatedAt: time.Now().UTC(),
+	}
+	if err := repo.Create(ctx, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SoftDelete(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Soft-deleted rows must be excluded from inbox listings and Get.
+	inbox, _, err := repo.ListInbox(ctx, "bob", domain.Page{Limit: 10}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 0 {
+		t.Fatalf("expected 0 messages after soft delete, got %d", len(inbox))
+	}
+	if _, err := repo.Get(ctx, m.ID); err != repository.ErrNotFound {
+		t.Fatalf("Get after soft delete = %v, want ErrNotFound", err)
+	}
+	// SoftDelete is idempotent.
+	if err := repo.SoftDelete(ctx, m.ID); err != nil {
+		t.Fatalf("second SoftDelete should be a no-op, got %v", err)
+	}
+}
+
+func TestMessageRepo_MarkConversationRead(t *testing.T) {
+	ctx := context.Background()
+	repo := setupMsgRepo(t)
+	now := time.Now().UTC()
+
+	// Two messages bob->alice (the target conversation) and one carol->alice (unrelated).
+	for _, p := range []struct{ from, to string }{
+		{"bob", "alice"}, {"bob", "alice"}, {"carol", "alice"},
+	} {
+		if err := repo.Create(ctx, &domain.Message{
+			ID: idgen.NewID(), FromUID: p.from, ToUID: p.to,
+			Kind: domain.MessageKindText, Content: "x", CreatedAt: now,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.MarkConversationRead(ctx, "alice", "bob", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// Only carol's message remains unread for alice.
+	if n, err := repo.CountUnread(ctx, "alice"); err != nil || n != 1 {
+		t.Fatalf("alice unread = %d err=%v, want 1", n, err)
+	}
+}

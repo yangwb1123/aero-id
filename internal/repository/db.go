@@ -86,6 +86,7 @@ type messageRow struct {
 	Content   string            `gorm:"column:content"`
 	FileID    *uuid.UUID        `gorm:"column:file_id"`
 	ReadAt    *time.Time        `gorm:"column:read_at"`
+	EditedAt  *time.Time        `gorm:"column:edited_at"`
 	Meta      datatypes.JSONMap `gorm:"column:meta"`
 	CreatedAt time.Time         `gorm:"column:created_at"`
 	DeletedAt gorm.DeletedAt    `gorm:"column:deleted_at;index"`
@@ -102,6 +103,7 @@ func msgRowToDomain(r *messageRow) *domain.Message {
 		Content:   r.Content,
 		FileID:    r.FileID,
 		ReadAt:    r.ReadAt,
+		EditedAt:  r.EditedAt,
 		Meta:      map[string]any(r.Meta),
 		CreatedAt: r.CreatedAt,
 	}
@@ -117,6 +119,7 @@ func msgDomainToRow(m *domain.Message) *messageRow {
 		Content:   m.Content,
 		FileID:    m.FileID,
 		ReadAt:    m.ReadAt,
+		EditedAt:  m.EditedAt,
 		Meta:      datatypes.JSONMap(m.Meta),
 		CreatedAt: m.CreatedAt,
 	}

@@ -26,8 +26,11 @@ func (h *MessageHandler) RegisterRoutes(r Routes) {
 	r.Auth.GET("/messages", h.Inbox)
 	r.Auth.GET("/messages/unread_count", h.UnreadCount)
 	r.Auth.GET("/messages/:id", h.Get)
+	r.Auth.PATCH("/messages/:id", h.Edit)
+	r.Auth.DELETE("/messages/:id", h.Delete)
 	r.Auth.POST("/messages/:id/read", h.MarkRead)
 	r.Auth.GET("/conversations/:uid", h.Conversation)
+	r.Auth.POST("/conversations/:uid/read", h.MarkConversationRead)
 }
 
 type sendMessageRequest struct {
@@ -78,6 +81,50 @@ func (h *MessageHandler) Get(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, toMessageResponse(m))
+}
+
+type editMessageRequest struct {
+	Content string `json:"content"`
+}
+
+func (h *MessageHandler) Edit(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var req editMessageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("message.invalid", "invalid request body"))
+		return
+	}
+	m, err := h.messages.Edit(c.Request.Context(), id, req.Content)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, toMessageResponse(m))
+}
+
+func (h *MessageHandler) Delete(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	if err := h.messages.Delete(c.Request.Context(), id); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+func (h *MessageHandler) MarkConversationRead(c *gin.Context) {
+	if err := h.messages.MarkConversationRead(c.Request.Context(), c.Param("uid")); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
 }
 
 func (h *MessageHandler) Inbox(c *gin.Context) {
@@ -142,6 +189,7 @@ type messageResponse struct {
 	Content   string         `json:"content"`
 	FileID    *string        `json:"file_id,omitempty"`
 	ReadAt    *time.Time     `json:"read_at,omitempty"`
+	EditedAt  *time.Time     `json:"edited_at,omitempty"`
 	Meta      map[string]any `json:"meta,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 }
@@ -154,6 +202,7 @@ func toMessageResponse(m *domain.Message) messageResponse {
 		Kind:      int16(m.Kind),
 		Content:   m.Content,
 		ReadAt:    m.ReadAt,
+		EditedAt:  m.EditedAt,
 		Meta:      m.Meta,
 		CreatedAt: m.CreatedAt,
 	}
