@@ -49,6 +49,52 @@ func (m *FileRepo) CountByStorageKey(ctx context.Context, storageKey string) (in
 	return m.CountByStorageKeyFn(ctx, storageKey)
 }
 
+type FileShareRepo struct {
+	GrantFn               func(ctx context.Context, fileID domain.ID, ownerUID string, granteeUIDs []string) error
+	RevokeFn              func(ctx context.Context, fileID domain.ID, granteeUID string) error
+	ListGranteesFn        func(ctx context.Context, fileID domain.ID) ([]string, error)
+	ListFilesSharedWithFn func(ctx context.Context, uid string, page domain.Page) ([]*domain.File, string, error)
+	IsSharedWithFn        func(ctx context.Context, fileID domain.ID, uid string) (bool, error)
+}
+
+// The defaults model "sharing inactive": no grants exist, lists are empty, and
+// IsSharedWith is false, so a fileService wired with this mock behaves exactly as
+// one with no share repo until a test sets the relevant Fn.
+func (m *FileShareRepo) Grant(ctx context.Context, fileID domain.ID, ownerUID string, granteeUIDs []string) error {
+	if m.GrantFn == nil {
+		return nil
+	}
+	return m.GrantFn(ctx, fileID, ownerUID, granteeUIDs)
+}
+
+func (m *FileShareRepo) Revoke(ctx context.Context, fileID domain.ID, granteeUID string) error {
+	if m.RevokeFn == nil {
+		return nil
+	}
+	return m.RevokeFn(ctx, fileID, granteeUID)
+}
+
+func (m *FileShareRepo) ListGrantees(ctx context.Context, fileID domain.ID) ([]string, error) {
+	if m.ListGranteesFn == nil {
+		return nil, nil
+	}
+	return m.ListGranteesFn(ctx, fileID)
+}
+
+func (m *FileShareRepo) ListFilesSharedWith(ctx context.Context, uid string, page domain.Page) ([]*domain.File, string, error) {
+	if m.ListFilesSharedWithFn == nil {
+		return nil, "", nil
+	}
+	return m.ListFilesSharedWithFn(ctx, uid, page)
+}
+
+func (m *FileShareRepo) IsSharedWith(ctx context.Context, fileID domain.ID, uid string) (bool, error) {
+	if m.IsSharedWithFn == nil {
+		return false, nil
+	}
+	return m.IsSharedWithFn(ctx, fileID, uid)
+}
+
 type MessageRepo struct {
 	CreateFn           func(ctx context.Context, m *domain.Message) error
 	GetFn              func(ctx context.Context, id domain.ID) (*domain.Message, error)
@@ -126,8 +172,10 @@ type Storage struct {
 func (m *Storage) Put(ctx context.Context, ownerUID, name string, r io.Reader) (string, int64, error) {
 	return m.PutFn(ctx, ownerUID, name, r)
 }
-func (m *Storage) Get(ctx context.Context, key string) (io.ReadCloser, error) { return m.GetFn(ctx, key) }
-func (m *Storage) Delete(ctx context.Context, key string) error               { return m.DeleteFn(ctx, key) }
+func (m *Storage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	return m.GetFn(ctx, key)
+}
+func (m *Storage) Delete(ctx context.Context, key string) error { return m.DeleteFn(ctx, key) }
 func (m *Storage) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	return m.PresignGetFn(ctx, key, ttl)
 }
@@ -145,8 +193,9 @@ func (m *UserDir) GetUsers(ctx context.Context, uids []string) (map[string]sso.U
 
 // Compile-time guarantees the doubles satisfy the real interfaces.
 var (
-	_ repository.FileRepository    = (*FileRepo)(nil)
-	_ repository.MessageRepository = (*MessageRepo)(nil)
-	_ repository.CommentRepository = (*CommentRepo)(nil)
-	_ storage.FileStorage          = (*Storage)(nil)
+	_ repository.FileRepository      = (*FileRepo)(nil)
+	_ repository.FileShareRepository = (*FileShareRepo)(nil)
+	_ repository.MessageRepository   = (*MessageRepo)(nil)
+	_ repository.CommentRepository   = (*CommentRepo)(nil)
+	_ storage.FileStorage            = (*Storage)(nil)
 )

@@ -36,9 +36,14 @@ func NewFileHandler(files service.FileService, downloader SignedDownloader, urlT
 func (h *FileHandler) RegisterRoutes(r Routes) {
 	r.Auth.POST("/files", h.Upload)
 	r.Auth.GET("/files", h.List)
+	// Static path registered before the /files/:id param route so gin routes it as a
+	// literal, not as a file id.
+	r.Auth.GET("/files/shared-with-me", h.ListSharedWithMe)
 	r.Auth.GET("/files/:id", h.Get)
 	r.Auth.GET("/files/:id/url", h.DownloadURL)
 	r.Auth.DELETE("/files/:id", h.Delete)
+	r.Auth.POST("/files/:id/shares", h.Share)
+	r.Auth.DELETE("/files/:id/shares/:uid", h.Unshare)
 	if h.downloader != nil {
 		r.Public.GET("/files/dl", h.Download)
 	}
@@ -131,6 +136,55 @@ func (h *FileHandler) Delete(c *gin.Context) {
 		return
 	}
 	httpx.NoContent(c)
+}
+
+// Share grants read access on a file the caller owns to the uids in the body.
+func (h *FileHandler) Share(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var body struct {
+		UIDs []string `json:"uids"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("file.invalid", "invalid request body"))
+		return
+	}
+	if err := h.files.ShareFile(c.Request.Context(), id, body.UIDs); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+// Unshare revokes a single grantee's access to a file the caller owns.
+func (h *FileHandler) Unshare(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	if err := h.files.UnshareFile(c.Request.Context(), id, c.Param("uid")); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+// ListSharedWithMe lists files other owners have shared with the caller.
+func (h *FileHandler) ListSharedWithMe(c *gin.Context) {
+	list, err := h.files.ListSharedWithMe(c.Request.Context(), httpx.PageFromQuery(c))
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	items := make([]fileResponse, 0, len(list.Files))
+	for _, f := range list.Files {
+		items = append(items, toFileResponse(f))
+	}
+	httpx.OK(c, gin.H{"files": items, "next_cursor": list.NextCursor})
 }
 
 // Download serves a local-storage object after verifying the presigned signature.

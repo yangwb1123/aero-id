@@ -96,6 +96,12 @@ type FileService interface {
 	List(ctx context.Context, ownerUID string, page domain.Page) (*FileList, error)
 	Delete(ctx context.Context, id domain.ID) error
 	DownloadURL(ctx context.Context, id domain.ID, ttl time.Duration) (string, error)
+	// ShareFile grants read access on a file the caller owns to each grantee uid.
+	ShareFile(ctx context.Context, id domain.ID, granteeUIDs []string) error
+	// UnshareFile revokes a single grantee's access to a file the caller owns.
+	UnshareFile(ctx context.Context, id domain.ID, granteeUID string) error
+	// ListSharedWithMe lists files other owners have shared with the caller.
+	ListSharedWithMe(ctx context.Context, page domain.Page) (*FileList, error)
 }
 
 type MessageService interface {

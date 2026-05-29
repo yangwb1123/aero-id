@@ -20,6 +20,7 @@ import (
 
 type fileService struct {
 	files       repository.FileRepository
+	shares      repository.FileShareRepository // nil => explicit sharing is inactive
 	store       storage.FileStorage
 	storageType string // "local" | "s3", recorded on each row for later routing
 	maxBytes    int64  // 0 = unlimited
@@ -49,6 +50,12 @@ func WithAllowedMimeTypes(types []string) FileOption {
 		}
 		s.allowedMime = m
 	}
+}
+
+// WithFileShareRepo enables explicit per-user file sharing. When unset (the default),
+// the share methods report the feature unavailable and read access is unchanged.
+func WithFileShareRepo(shares repository.FileShareRepository) FileOption {
+	return func(s *fileService) { s.shares = shares }
 }
 
 func NewFileService(files repository.FileRepository, store storage.FileStorage, storageType string, opts ...FileOption) FileService {
@@ -146,10 +153,31 @@ func (s *fileService) Get(ctx context.Context, id domain.ID) (*domain.File, erro
 	if err != nil {
 		return nil, apperr.Internal("file.get_failed", "failed to load file").Wrap(err)
 	}
-	if !canReadFile(actor, f) {
+	allowed, err := s.canRead(ctx, actor, f)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
 		return nil, apperr.Forbidden("file.forbidden", "not allowed to access this file")
 	}
 	return f, nil
+}
+
+// canRead reports whether actor may read f: the owner and public files are always
+// allowed; otherwise, if explicit sharing is enabled, an actor the file was shared
+// with is allowed. Returns an *AppError if the share lookup fails.
+func (s *fileService) canRead(ctx context.Context, actor string, f *domain.File) (bool, error) {
+	if canReadFile(actor, f) {
+		return true, nil
+	}
+	if s.shares == nil {
+		return false, nil
+	}
+	shared, err := s.shares.IsSharedWith(ctx, f.ID, actor)
+	if err != nil {
+		return false, apperr.Internal("file.share_lookup_failed", "failed to check file sharing").Wrap(err)
+	}
+	return shared, nil
 }
 
 func (s *fileService) List(ctx context.Context, ownerUID string, page domain.Page) (*FileList, error) {
@@ -208,6 +236,98 @@ func (s *fileService) DownloadURL(ctx context.Context, id domain.ID, ttl time.Du
 		return "", apperr.Internal("file.presign_failed", "failed to presign download URL").Wrap(err)
 	}
 	return url, nil
+}
+
+// ShareFile grants read access on a file the caller owns to each grantee uid. It is
+// idempotent and rejects blank uids and self-grants (the owner already has access).
+func (s *fileService) ShareFile(ctx context.Context, id domain.ID, granteeUIDs []string) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	if s.shares == nil {
+		return apperr.Internal("file.sharing_unavailable", "file sharing is not enabled")
+	}
+	f, err := s.ownedFile(ctx, id, actor)
+	if err != nil {
+		return err
+	}
+	// Validate and de-duplicate the grantee set: reject blank uids; silently drop a
+	// self-grant since the owner already has access.
+	seen := make(map[string]bool, len(granteeUIDs))
+	grantees := make([]string, 0, len(granteeUIDs))
+	for _, g := range granteeUIDs {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			return apperr.BadRequest("file.invalid_grantee", "grantee uid must not be blank")
+		}
+		if g == f.OwnerUID || seen[g] {
+			continue
+		}
+		seen[g] = true
+		grantees = append(grantees, g)
+	}
+	if len(grantees) == 0 {
+		return nil
+	}
+	if err := s.shares.Grant(ctx, id, f.OwnerUID, grantees); err != nil {
+		return apperr.Internal("file.share_failed", "failed to share file").Wrap(err)
+	}
+	return nil
+}
+
+// UnshareFile revokes a single grantee's access to a file the caller owns. Revoking a
+// grant that does not exist is a no-op.
+func (s *fileService) UnshareFile(ctx context.Context, id domain.ID, granteeUID string) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	if s.shares == nil {
+		return apperr.Internal("file.sharing_unavailable", "file sharing is not enabled")
+	}
+	if strings.TrimSpace(granteeUID) == "" {
+		return apperr.BadRequest("file.invalid_grantee", "grantee uid must not be blank")
+	}
+	if _, err := s.ownedFile(ctx, id, actor); err != nil {
+		return err
+	}
+	if err := s.shares.Revoke(ctx, id, granteeUID); err != nil {
+		return apperr.Internal("file.unshare_failed", "failed to unshare file").Wrap(err)
+	}
+	return nil
+}
+
+// ListSharedWithMe lists files other owners have shared with the caller.
+func (s *fileService) ListSharedWithMe(ctx context.Context, page domain.Page) (*FileList, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.shares == nil {
+		return &FileList{Files: []*domain.File{}}, nil
+	}
+	files, next, err := s.shares.ListFilesSharedWith(ctx, actor, page)
+	if err != nil {
+		return nil, apperr.Internal("file.list_failed", "failed to list shared files").Wrap(err)
+	}
+	return &FileList{Files: files, NextCursor: next}, nil
+}
+
+// ownedFile loads a file and asserts the actor is its owner, translating raw errors
+// to the same NotFound/Forbidden AppErrors the other owner-only operations return.
+func (s *fileService) ownedFile(ctx context.Context, id domain.ID, actor string) (*domain.File, error) {
+	f, err := s.files.Get(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return nil, apperr.NotFound("file.not_found", "file not found")
+	}
+	if err != nil {
+		return nil, apperr.Internal("file.get_failed", "failed to load file").Wrap(err)
+	}
+	if f.OwnerUID != actor {
+		return nil, apperr.Forbidden("file.forbidden", "only the owner can share this file")
+	}
+	return f, nil
 }
 
 // mimeAllowed reports whether the content type passes the configured allow-list.

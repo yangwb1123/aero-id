@@ -225,6 +225,168 @@ func TestFileService_DownloadURLPresigns(t *testing.T) {
 	}
 }
 
+func TestFileService_GetGranteeAllowed(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Visibility: domain.VisibilityPrivate}, nil
+		},
+	}
+	shares := &mocks.FileShareRepo{
+		IsSharedWithFn: func(_ context.Context, _ domain.ID, uid string) (bool, error) {
+			return uid == "friend", nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "friend")
+	if _, err := svc.Get(ctx, idgen.NewID()); err != nil {
+		t.Fatalf("grantee should read shared private file: %v", err)
+	}
+}
+
+func TestFileService_GetNonGranteePrivateForbidden(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Visibility: domain.VisibilityPrivate}, nil
+		},
+	}
+	shares := &mocks.FileShareRepo{} // default IsSharedWith => false
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "stranger")
+	_, err := svc.Get(ctx, idgen.NewID())
+	assertAppCode(t, err, 403)
+}
+
+func TestFileService_DownloadURLGranteeAllowed(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Visibility: domain.VisibilityPrivate, StorageKey: "k"}, nil
+		},
+	}
+	shares := &mocks.FileShareRepo{
+		IsSharedWithFn: func(_ context.Context, _ domain.ID, _ string) (bool, error) { return true, nil },
+	}
+	store := &mocks.Storage{
+		PresignGetFn: func(_ context.Context, key string, _ time.Duration) (string, error) {
+			return "https://signed/" + key, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "friend")
+	url, err := svc.DownloadURL(ctx, idgen.NewID(), time.Minute)
+	if err != nil || url != "https://signed/k" {
+		t.Fatalf("grantee download url=%q err=%v", url, err)
+	}
+}
+
+func TestFileService_ShareFileOwnerGrants(t *testing.T) {
+	var granted []string
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	shares := &mocks.FileShareRepo{
+		GrantFn: func(_ context.Context, _ domain.ID, owner string, uids []string) error {
+			if owner != "owner" {
+				t.Errorf("owner = %q", owner)
+			}
+			granted = uids
+			return nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "owner")
+	// "owner" self-grant is dropped; "a" appears once despite the duplicate.
+	if err := svc.ShareFile(ctx, idgen.NewID(), []string{"a", "a", "owner", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(granted) != 2 || granted[0] != "a" || granted[1] != "b" {
+		t.Fatalf("granted = %v, want [a b]", granted)
+	}
+}
+
+func TestFileService_ShareFileNonOwnerForbidden(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(&mocks.FileShareRepo{}))
+	ctx := service.WithActor(context.Background(), "not-owner")
+	err := svc.ShareFile(ctx, idgen.NewID(), []string{"a"})
+	assertAppCode(t, err, 403)
+}
+
+func TestFileService_ShareFileRejectsBlankUID(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	shares := &mocks.FileShareRepo{
+		GrantFn: func(context.Context, domain.ID, string, []string) error {
+			t.Fatal("Grant must not be called when a uid is blank")
+			return nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "owner")
+	err := svc.ShareFile(ctx, idgen.NewID(), []string{"a", "   "})
+	assertAppCode(t, err, 400)
+}
+
+func TestFileService_UnshareFileOwnerRevokes(t *testing.T) {
+	var revoked string
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	shares := &mocks.FileShareRepo{
+		RevokeFn: func(_ context.Context, _ domain.ID, uid string) error { revoked = uid; return nil },
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "owner")
+	if err := svc.UnshareFile(ctx, idgen.NewID(), "friend"); err != nil {
+		t.Fatal(err)
+	}
+	if revoked != "friend" {
+		t.Fatalf("revoked = %q, want friend", revoked)
+	}
+}
+
+func TestFileService_UnshareFileNonOwnerForbidden(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileShareRepo(&mocks.FileShareRepo{}))
+	ctx := service.WithActor(context.Background(), "not-owner")
+	err := svc.UnshareFile(ctx, idgen.NewID(), "friend")
+	assertAppCode(t, err, 403)
+}
+
+func TestFileService_ListSharedWithMe(t *testing.T) {
+	shares := &mocks.FileShareRepo{
+		ListFilesSharedWithFn: func(_ context.Context, uid string, _ domain.Page) ([]*domain.File, string, error) {
+			if uid != "me" {
+				t.Errorf("uid = %q, want me", uid)
+			}
+			return []*domain.File{{OwnerUID: "owner"}}, "next", nil
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, &mocks.Storage{}, "local", service.WithFileShareRepo(shares))
+	ctx := service.WithActor(context.Background(), "me")
+	list, err := svc.ListSharedWithMe(ctx, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.NextCursor != "next" || len(list.Files) != 1 {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+}
+
 // assertAppErrCode asserts err is an *AppError carrying the given Code string.
 func assertAppErrCode(t *testing.T, err error, wantCode string) {
 	t.Helper()

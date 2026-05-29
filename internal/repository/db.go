@@ -178,3 +178,13 @@ type commentLikeRow struct {
 }
 
 func (commentLikeRow) TableName() string { return "comment_likes" }
+
+// fileShareRow maps the file_shares join table: one row per (file, grantee) grant.
+type fileShareRow struct {
+	FileID     uuid.UUID `gorm:"column:file_id;primaryKey"`
+	GranteeUID string    `gorm:"column:grantee_uid;primaryKey"`
+	OwnerUID   string    `gorm:"column:owner_uid"`
+	CreatedAt  time.Time `gorm:"column:created_at"`
+}
+
+func (fileShareRow) TableName() string { return "file_shares" }

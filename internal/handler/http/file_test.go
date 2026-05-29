@@ -3,8 +3,8 @@ package http_test
 import (
 	"bytes"
 	"context"
-	stderrors "errors"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -37,11 +37,14 @@ func serveWithActor(h httpapi.RouteRegistrar, actor string) *gin.Engine {
 }
 
 type fakeFileService struct {
-	createFn      func(context.Context, service.CreateFileInput) (*domain.File, error)
-	getFn         func(context.Context, domain.ID) (*domain.File, error)
-	listFn        func(context.Context, string, domain.Page) (*service.FileList, error)
-	deleteFn      func(context.Context, domain.ID) error
-	downloadURLFn func(context.Context, domain.ID, time.Duration) (string, error)
+	createFn           func(context.Context, service.CreateFileInput) (*domain.File, error)
+	getFn              func(context.Context, domain.ID) (*domain.File, error)
+	listFn             func(context.Context, string, domain.Page) (*service.FileList, error)
+	deleteFn           func(context.Context, domain.ID) error
+	downloadURLFn      func(context.Context, domain.ID, time.Duration) (string, error)
+	shareFn            func(context.Context, domain.ID, []string) error
+	unshareFn          func(context.Context, domain.ID, string) error
+	listSharedWithMeFn func(context.Context, domain.Page) (*service.FileList, error)
 }
 
 func (f *fakeFileService) Create(ctx context.Context, in service.CreateFileInput) (*domain.File, error) {
@@ -56,6 +59,15 @@ func (f *fakeFileService) List(ctx context.Context, owner string, p domain.Page)
 func (f *fakeFileService) Delete(ctx context.Context, id domain.ID) error { return f.deleteFn(ctx, id) }
 func (f *fakeFileService) DownloadURL(ctx context.Context, id domain.ID, ttl time.Duration) (string, error) {
 	return f.downloadURLFn(ctx, id, ttl)
+}
+func (f *fakeFileService) ShareFile(ctx context.Context, id domain.ID, uids []string) error {
+	return f.shareFn(ctx, id, uids)
+}
+func (f *fakeFileService) UnshareFile(ctx context.Context, id domain.ID, uid string) error {
+	return f.unshareFn(ctx, id, uid)
+}
+func (f *fakeFileService) ListSharedWithMe(ctx context.Context, p domain.Page) (*service.FileList, error) {
+	return f.listSharedWithMeFn(ctx, p)
 }
 
 func TestFileHandler_Upload(t *testing.T) {
@@ -135,10 +147,71 @@ func TestFileHandler_Delete204(t *testing.T) {
 	}
 }
 
+func TestFileHandler_Share204(t *testing.T) {
+	var gotUIDs []string
+	svc := &fakeFileService{shareFn: func(_ context.Context, _ domain.ID, uids []string) error {
+		gotUIDs = uids
+		return nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/files/"+idgen.NewID().String()+"/shares",
+		strings.NewReader(`{"uids":["a","b"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+	if len(gotUIDs) != 2 {
+		t.Fatalf("uids = %v, want 2", gotUIDs)
+	}
+}
+
+func TestFileHandler_Unshare204(t *testing.T) {
+	var gotUID string
+	svc := &fakeFileService{unshareFn: func(_ context.Context, _ domain.ID, uid string) error {
+		gotUID = uid
+		return nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/v1/files/"+idgen.NewID().String()+"/shares/friend", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+	if gotUID != "friend" {
+		t.Fatalf("uid = %q, want friend", gotUID)
+	}
+}
+
+func TestFileHandler_ListSharedWithMe(t *testing.T) {
+	svc := &fakeFileService{listSharedWithMeFn: func(context.Context, domain.Page) (*service.FileList, error) {
+		return &service.FileList{Files: []*domain.File{{OwnerUID: "owner"}}, NextCursor: "next"}, nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/files/shared-with-me", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Files      []map[string]any `json:"files"`
+			NextCursor string           `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data.Files) != 1 || body.Data.NextCursor != "next" {
+		t.Fatalf("unexpected body: %+v", body)
+	}
+}
+
 // fakeSignedDownloader implements httpapi.SignedDownloader for tests.
 type fakeSignedDownloader struct {
-	verifyFn func(rawURL string, now time.Time) error
-	getFn    func(ctx context.Context, key string) (io.ReadCloser, error)
+	verifyFn  func(rawURL string, now time.Time) error
+	getFn     func(ctx context.Context, key string) (io.ReadCloser, error)
 	getCalled bool
 }
 
@@ -154,7 +227,7 @@ func (f *fakeSignedDownloader) Get(ctx context.Context, key string) (io.ReadClos
 func TestFileHandler_DownloadValidSignature(t *testing.T) {
 	dl := &fakeSignedDownloader{
 		verifyFn: func(string, time.Time) error { return nil },
-		getFn:    func(context.Context, string) (io.ReadCloser, error) {
+		getFn: func(context.Context, string) (io.ReadCloser, error) {
 			return io.NopCloser(strings.NewReader("hello")), nil
 		},
 	}
@@ -172,7 +245,7 @@ func TestFileHandler_DownloadValidSignature(t *testing.T) {
 func TestFileHandler_DownloadBadSignature(t *testing.T) {
 	dl := &fakeSignedDownloader{
 		verifyFn: func(string, time.Time) error { return stderrors.New("bad signature") },
-		getFn:    func(context.Context, string) (io.ReadCloser, error) {
+		getFn: func(context.Context, string) (io.ReadCloser, error) {
 			return io.NopCloser(strings.NewReader("should not be called")), nil
 		},
 	}
