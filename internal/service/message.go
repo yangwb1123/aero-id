@@ -17,10 +17,24 @@ type messageService struct {
 	messages repository.MessageRepository
 	files    repository.FileRepository // used only to validate file attachments
 	dir      UserDirectory
+	blocks   BlockChecker // nil => block guard is inactive
 }
 
-func NewMessageService(messages repository.MessageRepository, files repository.FileRepository, dir UserDirectory) MessageService {
-	return &messageService{messages: messages, files: files, dir: dir}
+// MessageOption configures optional messageService policy.
+type MessageOption func(*messageService)
+
+// WithBlockChecker enables the block guard on Send: a message is rejected when the
+// recipient has blocked the sender. When unset (the default), Send is unaffected.
+func WithBlockChecker(blocks BlockChecker) MessageOption {
+	return func(s *messageService) { s.blocks = blocks }
+}
+
+func NewMessageService(messages repository.MessageRepository, files repository.FileRepository, dir UserDirectory, opts ...MessageOption) MessageService {
+	s := &messageService{messages: messages, files: files, dir: dir}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain.Message, error) {
@@ -44,6 +58,18 @@ func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain
 	}
 	if in.Content == "" && in.FileID == nil {
 		return nil, apperr.BadRequest("message.invalid", "content or file_id is required")
+	}
+	// Block guard: if the recipient has blocked the sender, the message is refused.
+	// Directional — IsBlocked(blocker=recipient, blocked=sender). Inactive unless a
+	// checker is wired (WithBlockChecker).
+	if s.blocks != nil {
+		blocked, err := s.blocks.IsBlocked(ctx, in.ToUID, actor)
+		if err != nil {
+			return nil, apperr.Internal("message.send_failed", "failed to check block status").Wrap(err)
+		}
+		if blocked {
+			return nil, apperr.Forbidden("message.forbidden", "recipient is not accepting messages from you")
+		}
 	}
 	if in.FileID != nil {
 		f, err := s.files.Get(ctx, *in.FileID)

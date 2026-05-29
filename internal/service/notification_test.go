@@ -118,6 +118,45 @@ func TestNotificationDispatcher_MalformedPayloadIsNoOp(t *testing.T) {
 	}
 }
 
+func TestNotificationDispatcher_SkipsBlockedRecipient(t *testing.T) {
+	called := false
+	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error {
+		called = true
+		return nil
+	}}
+	// Recipient "b" has blocked actor "a": IsBlocked(blocker=b, blocked=a) == true.
+	blocks := &mocks.BlockRepo{IsBlockedFn: func(_ context.Context, blocker, blocked string) (bool, error) {
+		return blocker == "b" && blocked == "a", nil
+	}}
+	d := service.NewNotificationDispatcher(repo, service.WithDispatcherBlockChecker(blocks))
+	e := event(t, "message.sent", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "b"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("blocked recipient must not get a notification")
+	}
+}
+
+func TestNotificationDispatcher_NotifiesNonBlockedRecipient(t *testing.T) {
+	var created *domain.Notification
+	repo := &mocks.NotificationRepo{CreateFn: func(_ context.Context, n *domain.Notification) error {
+		created = n
+		return nil
+	}}
+	blocks := &mocks.BlockRepo{IsBlockedFn: func(context.Context, string, string) (bool, error) {
+		return false, nil
+	}}
+	d := service.NewNotificationDispatcher(repo, service.WithDispatcherBlockChecker(blocks))
+	e := event(t, "message.sent", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "b"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if created == nil || created.RecipientUID != "b" || created.ActorUID != "a" {
+		t.Fatalf("expected notification for b about a, got %+v", created)
+	}
+}
+
 func TestNotificationService_RequiresActor(t *testing.T) {
 	svc := service.NewNotificationService(&mocks.NotificationRepo{}, &mocks.UserDir{})
 	if _, err := svc.List(context.Background(), domain.Page{}); err == nil {

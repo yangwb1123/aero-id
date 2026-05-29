@@ -323,6 +323,43 @@ func (m *NotificationRepo) CountUnread(ctx context.Context, recipientUID string)
 	return m.CountUnreadFn(ctx, recipientUID)
 }
 
+type BlockRepo struct {
+	BlockFn       func(ctx context.Context, blocker, blocked string) error
+	UnblockFn     func(ctx context.Context, blocker, blocked string) error
+	IsBlockedFn   func(ctx context.Context, blocker, blocked string) (bool, error)
+	ListBlockedFn func(ctx context.Context, blocker string, page domain.Page) ([]string, string, error)
+}
+
+// Defaults model "no blocks": Block/Unblock succeed, IsBlocked is false (so the
+// message/notification guards stay inactive when unwired), and lists are empty.
+func (m *BlockRepo) Block(ctx context.Context, blocker, blocked string) error {
+	if m.BlockFn == nil {
+		return nil
+	}
+	return m.BlockFn(ctx, blocker, blocked)
+}
+
+func (m *BlockRepo) Unblock(ctx context.Context, blocker, blocked string) error {
+	if m.UnblockFn == nil {
+		return nil
+	}
+	return m.UnblockFn(ctx, blocker, blocked)
+}
+
+func (m *BlockRepo) IsBlocked(ctx context.Context, blocker, blocked string) (bool, error) {
+	if m.IsBlockedFn == nil {
+		return false, nil
+	}
+	return m.IsBlockedFn(ctx, blocker, blocked)
+}
+
+func (m *BlockRepo) ListBlocked(ctx context.Context, blocker string, page domain.Page) ([]string, string, error) {
+	if m.ListBlockedFn == nil {
+		return nil, "", nil
+	}
+	return m.ListBlockedFn(ctx, blocker, page)
+}
+
 type Storage struct {
 	PutFn        func(ctx context.Context, ownerUID, name string, r io.Reader) (string, int64, error)
 	GetFn        func(ctx context.Context, key string) (io.ReadCloser, error)
@@ -379,5 +416,6 @@ var (
 	_ repository.MessageRepository      = (*MessageRepo)(nil)
 	_ repository.CommentRepository      = (*CommentRepo)(nil)
 	_ repository.NotificationRepository = (*NotificationRepo)(nil)
+	_ repository.BlockRepository        = (*BlockRepo)(nil)
 	_ storage.FileStorage               = (*Storage)(nil)
 )

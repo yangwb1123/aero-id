@@ -96,10 +96,26 @@ func actorUIDs(ns []*domain.Notification) []string {
 // is treated as a successful no-op so the event is not retried forever.
 type NotificationDispatcher struct {
 	notifs repository.NotificationRepository
+	blocks BlockChecker // nil => block suppression is inactive
 }
 
-func NewNotificationDispatcher(notifs repository.NotificationRepository) *NotificationDispatcher {
-	return &NotificationDispatcher{notifs: notifs}
+// DispatcherOption configures optional NotificationDispatcher behaviour.
+type DispatcherOption func(*NotificationDispatcher)
+
+// WithDispatcherBlockChecker suppresses notifications for a recipient who has
+// blocked the actor: before writing a notification for recipient R about actor X,
+// the row is skipped (no error, no row) when IsBlocked(blocker=R, blocked=X). When
+// unset (the default), every notification is dispatched.
+func WithDispatcherBlockChecker(blocks BlockChecker) DispatcherOption {
+	return func(d *NotificationDispatcher) { d.blocks = blocks }
+}
+
+func NewNotificationDispatcher(notifs repository.NotificationRepository, opts ...DispatcherOption) *NotificationDispatcher {
+	d := &NotificationDispatcher{notifs: notifs}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // messageSentPayload / commentRepliedPayload mirror the JSON emitted by the
@@ -120,6 +136,18 @@ func (d *NotificationDispatcher) Handle(ctx context.Context, e *outbox.Event) er
 	n := d.notificationFor(e)
 	if n == nil {
 		return nil // nothing to notify: unknown event, self-action, or malformed payload
+	}
+	// Block suppression: skip notifying a recipient who has blocked the actor.
+	// Directional — IsBlocked(blocker=recipient, blocked=actor). A blank actor (e.g.
+	// system) can never be blocked. Inactive unless a checker is wired.
+	if d.blocks != nil && n.ActorUID != "" {
+		blocked, err := d.blocks.IsBlocked(ctx, n.RecipientUID, n.ActorUID)
+		if err != nil {
+			return err // transient: leave the event unpublished so the relay retries
+		}
+		if blocked {
+			return nil // recipient blocked the actor: no notification
+		}
 	}
 	return d.notifs.Create(ctx, n)
 }

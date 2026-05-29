@@ -150,6 +150,44 @@ func TestMessageService_SendSystemRequiresToAndContent(t *testing.T) {
 	}
 }
 
+func TestMessageService_SendBlockedRecipientForbidden(t *testing.T) {
+	// Recipient "b" has blocked sender "a": IsBlocked(blocker=b, blocked=a) == true.
+	blocks := &mocks.BlockRepo{IsBlockedFn: func(_ context.Context, blocker, blocked string) (bool, error) {
+		return blocker == "b" && blocked == "a", nil
+	}}
+	created := false
+	repo := &mocks.MessageRepo{CreateFn: func(context.Context, *domain.Message, *outbox.Event) error {
+		created = true
+		return nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithBlockChecker(blocks))
+	ctx := service.WithActor(context.Background(), "a")
+	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Content: "hi"})
+	assertAppCode(t, err, 403)
+	if created {
+		t.Fatal("blocked message must not be persisted")
+	}
+}
+
+func TestMessageService_SendAllowedWhenNotBlocked(t *testing.T) {
+	blocks := &mocks.BlockRepo{IsBlockedFn: func(context.Context, string, string) (bool, error) {
+		return false, nil
+	}}
+	var saved *domain.Message
+	repo := &mocks.MessageRepo{CreateFn: func(_ context.Context, m *domain.Message, _ *outbox.Event) error {
+		saved = m
+		return nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithBlockChecker(blocks))
+	ctx := service.WithActor(context.Background(), "a")
+	if _, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil {
+		t.Fatal("message must be persisted when not blocked")
+	}
+}
+
 func TestMessageService_GetForbiddenForNonParticipant(t *testing.T) {
 	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
 		return &domain.Message{ID: id, FromUID: "a", ToUID: "b"}, nil

@@ -155,10 +155,14 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	msgRepo := repository.NewMessageRepository(gdb, outboxRepo)
 	commentRepo := repository.NewCommentRepository(gdb, outboxRepo)
 	notifRepo := repository.NewNotificationRepository(gdb)
+	blockRepo := repository.NewBlockRepository(gdb)
 
 	// The relay drains domain events written transactionally with their rows and
-	// fans them out to per-recipient notification rows (Direction 5).
-	dispatcher := service.NewNotificationDispatcher(notifRepo)
+	// fans them out to per-recipient notification rows (Direction 5). Block-aware:
+	// a recipient who blocked the actor gets no notification.
+	dispatcher := service.NewNotificationDispatcher(notifRepo,
+		service.WithDispatcherBlockChecker(blockRepo),
+	)
 	relay := outbox.NewRelay(outboxRepo, dispatcher, log, metricsReg)
 	stopRelay := relay.Start(outboxPollInterval)
 
@@ -186,9 +190,12 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithAllowedMimeTypes(cfg.Storage.AllowedMimeTypes),
 		service.WithFileShareRepo(fileShareRepo),
 	)
-	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient)
+	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient,
+		service.WithBlockChecker(blockRepo),
+	)
 	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
 	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
+	blockSvc := service.NewBlockService(blockRepo)
 
 	// Edge rate limiter, shared by HTTP middleware and the gRPC interceptor. OPT-IN
 	// and disabled by default; per-instance (distributed limiting would need shared
@@ -233,6 +240,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewMessageHandler(msgSvc),
 		httpapi.NewCommentHandler(commentSvc),
 		httpapi.NewNotificationHandler(notifSvc),
+		httpapi.NewBlockHandler(blockSvc),
 	)
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.HTTP.Host, cfg.Server.HTTP.Port),

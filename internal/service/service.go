@@ -134,6 +134,12 @@ type NotificationList struct {
 	Users         map[string]sso.User
 }
 
+// BlockList is a page of uids the caller has blocked.
+type BlockList struct {
+	UIDs       []string
+	NextCursor string
+}
+
 // ReactionResult is the outcome of a like/unlike: the caller's resulting like state
 // and the comment's updated like count.
 type ReactionResult struct {
@@ -191,6 +197,19 @@ type NotificationService interface {
 	MarkRead(ctx context.Context, id domain.ID) error
 	MarkAllRead(ctx context.Context) error
 	UnreadCount(ctx context.Context) (int64, error)
+}
+
+// BlockService is the safety primitive: the caller (blocker) can block/unblock
+// other uids and list whom they have blocked. Blocking is directional and private
+// to the blocker — A blocking B stops B's messages reaching A and suppresses
+// notifications about B's actions in A's feed.
+type BlockService interface {
+	// Block records that the caller has blocked uid. Idempotent.
+	Block(ctx context.Context, uid string) error
+	// Unblock removes the caller's block on uid. Idempotent.
+	Unblock(ctx context.Context, uid string) error
+	// ListBlocked lists uids the caller has blocked, newest first.
+	ListBlocked(ctx context.Context, page domain.Page) (*BlockList, error)
 }
 
 type CommentService interface {
