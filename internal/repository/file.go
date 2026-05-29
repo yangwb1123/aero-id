@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -21,6 +22,17 @@ type FileRepository interface {
 	// CountByStorageKey counts live files referencing a storage key, so the service
 	// can decide whether deleting a row should also delete the shared blob.
 	CountByStorageKey(ctx context.Context, storageKey string) (int64, error)
+	// ListSoftDeletedBefore returns soft-deleted file rows whose deleted_at is strictly
+	// older than before, capped at limit and ordered oldest-first. Used by the GC
+	// reconciliation sweep to purge rows past their retention window.
+	ListSoftDeletedBefore(ctx context.Context, before time.Time, limit int) ([]*domain.File, error)
+	// HardDelete permanently removes file rows by id (bypassing the soft-delete scope).
+	// It is idempotent: ids that no longer exist are silently skipped.
+	HardDelete(ctx context.Context, ids []domain.ID) error
+	// CountAnyByStorageKey counts files referencing a storage key INCLUDING soft-deleted
+	// rows, so the orphan sweep never reaps a blob still referenced by any row (live or
+	// soft-deleted-but-not-yet-purged).
+	CountAnyByStorageKey(ctx context.Context, storageKey string) (int64, error)
 }
 
 type fileRepo struct {
@@ -111,6 +123,54 @@ func (r *fileRepo) CountByStorageKey(ctx context.Context, storageKey string) (in
 		Where("storage_key = ?", storageKey).
 		Count(&n).Error; err != nil {
 		return 0, fmt.Errorf("count by storage key: %w", err)
+	}
+	return n, nil
+}
+
+// ListSoftDeletedBefore returns soft-deleted rows older than before, oldest-first.
+// Unscoped() lifts GORM's soft-delete scope so the otherwise-hidden rows are visible.
+func (r *fileRepo) ListSoftDeletedBefore(ctx context.Context, before time.Time, limit int) ([]*domain.File, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []fileRow
+	if err := r.db.WithContext(ctx).Unscoped().
+		Where("deleted_at IS NOT NULL AND deleted_at < ?", before).
+		Order("deleted_at ASC").
+		Limit(limit).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list soft-deleted before: %w", err)
+	}
+	out := make([]*domain.File, len(rows))
+	for i := range rows {
+		out[i] = fileRowToDomain(&rows[i])
+	}
+	return out, nil
+}
+
+// HardDelete permanently removes the given rows. Unscoped() turns GORM's soft delete
+// into a real DELETE. No-op when ids is empty.
+func (r *fileRepo) HardDelete(ctx context.Context, ids []domain.ID) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := r.db.WithContext(ctx).Unscoped().
+		Where("id IN ?", ids).
+		Delete(&fileRow{}).Error; err != nil {
+		return fmt.Errorf("hard delete files: %w", err)
+	}
+	return nil
+}
+
+// CountAnyByStorageKey counts files referencing storageKey including soft-deleted rows
+// (Unscoped lifts the soft-delete scope). The orphan sweep uses this so a blob whose row
+// is soft-deleted but not yet purged is never mistaken for an orphan.
+func (r *fileRepo) CountAnyByStorageKey(ctx context.Context, storageKey string) (int64, error) {
+	var n int64
+	if err := r.db.WithContext(ctx).Unscoped().Model(&fileRow{}).
+		Where("storage_key = ?", storageKey).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("count any by storage key: %w", err)
 	}
 	return n, nil
 }

@@ -45,5 +45,12 @@ storage:
   local:
     root: ./data/files
     public_base_url: http://127.0.0.1:8080
+  gc:                            # storage reconciliation sweep; OPT-IN, disabled by default
+    enabled: false               # master switch — when false the sweep never starts
+    interval: 1h                 # how often a reconciliation pass runs (required when enabled)
+    retention: 168h              # purge soft-deleted file rows older than this (7d; required when enabled)
+    min_orphan_age: 24h          # never sweep an orphan blob younger than this (guards in-flight uploads)
+    purge_batch: 500             # max soft-deleted rows purged per pass (0 => default 500)
+    sweep_orphans: false         # also delete orphaned blobs (best-effort; needs a listable backend)
 signing_key: change-me-please-very-long-random
 log:    { level: info, encoding: console }

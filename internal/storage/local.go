@@ -147,5 +147,62 @@ func (l *Local) VerifyPresignedURL(rawURL string, now time.Time) error {
 	return nil
 }
 
-// Ensure Local satisfies the interface.
-var _ FileStorage = (*Local)(nil)
+// List walks the storage root and reports every regular file as an object, with its
+// storage key (the root-relative slash path) and mtime. Directories are descended into
+// but not reported. Implements Lister so the GC sweep can detect orphaned blobs.
+func (l *Local) List(ctx context.Context, fn func(ObjectInfo) (bool, error)) error {
+	root := l.cfg.Root
+	stop := false
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil // root not created yet: nothing to sweep
+			}
+			return err
+		}
+		if stop {
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		key := filepath.ToSlash(rel)
+		info, ierr := d.Info()
+		if ierr != nil {
+			if errors.Is(ierr, os.ErrNotExist) {
+				return nil // raced with a delete; skip
+			}
+			return ierr
+		}
+		cont, ferr := fn(ObjectInfo{
+			Key:      key,
+			Size:     info.Size(),
+			Modified: info.ModTime().UTC(),
+		})
+		if ferr != nil {
+			return ferr
+		}
+		if !cont {
+			stop = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list local objects: %w", err)
+	}
+	return nil
+}
+
+// Ensure Local satisfies the interfaces.
+var (
+	_ FileStorage = (*Local)(nil)
+	_ Lister      = (*Local)(nil)
+)

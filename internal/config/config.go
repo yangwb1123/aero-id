@@ -102,6 +102,21 @@ type StorageConfig struct {
 	AllowedMimeTypes []string           `mapstructure:"allowed_mime_types"` // empty = allow any
 	Local            LocalStorageConfig `mapstructure:"local"`
 	S3               S3StorageConfig    `mapstructure:"s3"`
+	GC               StorageGCConfig    `mapstructure:"gc"`
+}
+
+// StorageGCConfig configures the storage reconciliation sweep. The job is OPT-IN:
+// disabled by default so it never surprises an operator. When Enabled, the sweep purges
+// soft-deleted file rows older than Retention (deleting each unreferenced blob) and,
+// when SweepOrphans is set and the backend can list objects, removes orphaned blobs
+// older than MinOrphanAge.
+type StorageGCConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`        // master switch; false = sweep never starts
+	Interval     time.Duration `mapstructure:"interval"`       // how often a reconciliation pass runs
+	Retention    time.Duration `mapstructure:"retention"`      // how long a soft-deleted row is kept before purge
+	MinOrphanAge time.Duration `mapstructure:"min_orphan_age"` // orphan blobs younger than this are never swept
+	PurgeBatch   int           `mapstructure:"purge_batch"`    // max rows purged per pass (<=0 => default)
+	SweepOrphans bool          `mapstructure:"sweep_orphans"`  // enable orphan-blob detection (best-effort, backend-dependent)
 }
 
 type LocalStorageConfig struct {
@@ -158,6 +173,14 @@ func (c *Config) validate() error {
 	case "local", "s3":
 	default:
 		return fmt.Errorf("storage.type must be 'local' or 's3'")
+	}
+	if c.Storage.GC.Enabled {
+		if c.Storage.GC.Interval <= 0 {
+			return fmt.Errorf("storage.gc.interval must be > 0 when storage.gc.enabled")
+		}
+		if c.Storage.GC.Retention <= 0 {
+			return fmt.Errorf("storage.gc.retention must be > 0 when storage.gc.enabled")
+		}
 	}
 	return nil
 }

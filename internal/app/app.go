@@ -27,6 +27,7 @@ import (
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/sso"
 	"github.com/aero/aero-id/internal/storage"
+	storagegc "github.com/aero/aero-id/internal/storage/gc"
 )
 
 // presignTTL is how long a generated download URL stays valid.
@@ -44,6 +45,7 @@ type App struct {
 	grpcServer    *grpclib.Server
 	grpcLis       net.Listener
 	stopRelay     func()
+	stopGC        func()
 	traceShutdown func(context.Context) error
 }
 
@@ -125,6 +127,25 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	relay := outbox.NewRelay(outboxRepo, dispatcher, log)
 	stopRelay := relay.Start(outboxPollInterval)
 
+	// Storage GC reconciliation sweep. OPT-IN and disabled by default: it only starts
+	// when storage.gc.enabled, so an operator must explicitly turn it on. It purges
+	// soft-deleted file rows past their retention (deleting unreferenced blobs) and,
+	// optionally, sweeps orphaned blobs the create path may have leaked.
+	var stopGC func()
+	if cfg.Storage.GC.Enabled {
+		sweeper := storagegc.New(fileRepo, store, storagegc.Config{
+			Retention:    cfg.Storage.GC.Retention,
+			MinOrphanAge: cfg.Storage.GC.MinOrphanAge,
+			PurgeBatch:   cfg.Storage.GC.PurgeBatch,
+			SweepOrphans: cfg.Storage.GC.SweepOrphans,
+		}, log)
+		stopGC = sweeper.Start(cfg.Storage.GC.Interval)
+		log.Info("storage gc sweep enabled",
+			zap.Duration("interval", cfg.Storage.GC.Interval),
+			zap.Duration("retention", cfg.Storage.GC.Retention),
+			zap.Bool("sweep_orphans", cfg.Storage.GC.SweepOrphans))
+	}
+
 	fileSvc := service.NewFileService(fileRepo, store, cfg.Storage.Type,
 		service.WithMaxUploadBytes(cfg.Storage.MaxUploadBytes),
 		service.WithAllowedMimeTypes(cfg.Storage.AllowedMimeTypes),
@@ -173,6 +194,9 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		stopRelay()
+		if stopGC != nil {
+			stopGC()
+		}
 		return nil, fmt.Errorf("grpc listen on %s: %w", grpcAddr, err)
 	}
 
@@ -185,6 +209,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		grpcServer:    grpcServer,
 		grpcLis:       grpcLis,
 		stopRelay:     stopRelay,
+		stopGC:        stopGC,
 		traceShutdown: traceShutdown,
 	}, nil
 }
@@ -251,6 +276,9 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) shutdown() {
 	if a.stopRelay != nil {
 		a.stopRelay()
+	}
+	if a.stopGC != nil {
+		a.stopGC()
 	}
 	shCtx, cancel := context.WithTimeout(context.Background(), a.cfg.Server.HTTP.ShutdownTimeout)
 	defer cancel()

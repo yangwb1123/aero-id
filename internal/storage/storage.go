@@ -43,3 +43,14 @@ type FileStorage interface {
 	NewKey(ownerUID string) string
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
+
+// Lister is an OPTIONAL capability: backends that can enumerate their stored objects
+// implement it so the GC reconciliation sweep can detect orphaned blobs (objects with
+// no referencing file row). Backends that cannot list objects simply don't implement it;
+// the sweep type-asserts for Lister and no-ops orphan detection when it's absent.
+type Lister interface {
+	// List invokes fn for every stored object. Iteration stops early (without error) if
+	// fn returns false, and is aborted if fn returns an error. Each ObjectInfo carries at
+	// least Key and Modified so the sweep can apply a minimum-age guard.
+	List(ctx context.Context, fn func(ObjectInfo) (bool, error)) error
+}

@@ -171,7 +171,51 @@ func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (str
 	return req.URL, nil
 }
 
-var _ FileStorage = (*S3)(nil)
+// List enumerates every object in the bucket via the ListObjectsV2 paginator and
+// reports each with its key and last-modified time. Implements Lister so the GC sweep
+// can detect orphaned blobs. Iteration honors ctx cancellation between pages.
+func (s *S3) List(ctx context.Context, fn func(ObjectInfo) (bool, error)) error {
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.cfg.Bucket),
+	})
+	for paginator.HasMorePages() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("list objects: %w", err)
+		}
+		for _, obj := range page.Contents {
+			info := ObjectInfo{}
+			if obj.Key != nil {
+				info.Key = *obj.Key
+			}
+			if obj.Size != nil {
+				info.Size = *obj.Size
+			}
+			if obj.ETag != nil {
+				info.ETag = *obj.ETag
+			}
+			if obj.LastModified != nil {
+				info.Modified = obj.LastModified.UTC()
+			}
+			cont, ferr := fn(info)
+			if ferr != nil {
+				return ferr
+			}
+			if !cont {
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+var (
+	_ FileStorage = (*S3)(nil)
+	_ Lister      = (*S3)(nil)
+)
 
 // EnsureBucket idempotently creates the configured bucket. Useful for tests.
 func (s *S3) EnsureBucket(ctx context.Context) error {

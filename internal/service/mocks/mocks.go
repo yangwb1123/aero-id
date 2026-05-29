@@ -16,12 +16,15 @@ import (
 )
 
 type FileRepo struct {
-	CreateFn            func(ctx context.Context, f *domain.File) error
-	GetFn               func(ctx context.Context, id domain.ID) (*domain.File, error)
-	ListByOwnerFn       func(ctx context.Context, ownerUID string, page domain.Page) ([]*domain.File, string, error)
-	DeleteFn            func(ctx context.Context, id domain.ID) error
-	FindByChecksumFn    func(ctx context.Context, ownerUID, checksum string) (*domain.File, error)
-	CountByStorageKeyFn func(ctx context.Context, storageKey string) (int64, error)
+	CreateFn                func(ctx context.Context, f *domain.File) error
+	GetFn                   func(ctx context.Context, id domain.ID) (*domain.File, error)
+	ListByOwnerFn           func(ctx context.Context, ownerUID string, page domain.Page) ([]*domain.File, string, error)
+	DeleteFn                func(ctx context.Context, id domain.ID) error
+	FindByChecksumFn        func(ctx context.Context, ownerUID, checksum string) (*domain.File, error)
+	CountByStorageKeyFn     func(ctx context.Context, storageKey string) (int64, error)
+	ListSoftDeletedBeforeFn func(ctx context.Context, before time.Time, limit int) ([]*domain.File, error)
+	HardDeleteFn            func(ctx context.Context, ids []domain.ID) error
+	CountAnyByStorageKeyFn  func(ctx context.Context, storageKey string) (int64, error)
 }
 
 func (m *FileRepo) Create(ctx context.Context, f *domain.File) error { return m.CreateFn(ctx, f) }
@@ -48,6 +51,30 @@ func (m *FileRepo) CountByStorageKey(ctx context.Context, storageKey string) (in
 		return 0, nil
 	}
 	return m.CountByStorageKeyFn(ctx, storageKey)
+}
+
+// ListSoftDeletedBefore, HardDelete, and CountAnyByStorageKey default to "nothing to
+// reconcile" (no soft-deleted rows, no-op delete, no other references) when their Fn is
+// unset, so tests that don't exercise the GC sweep need not wire them.
+func (m *FileRepo) ListSoftDeletedBefore(ctx context.Context, before time.Time, limit int) ([]*domain.File, error) {
+	if m.ListSoftDeletedBeforeFn == nil {
+		return nil, nil
+	}
+	return m.ListSoftDeletedBeforeFn(ctx, before, limit)
+}
+
+func (m *FileRepo) HardDelete(ctx context.Context, ids []domain.ID) error {
+	if m.HardDeleteFn == nil {
+		return nil
+	}
+	return m.HardDeleteFn(ctx, ids)
+}
+
+func (m *FileRepo) CountAnyByStorageKey(ctx context.Context, storageKey string) (int64, error) {
+	if m.CountAnyByStorageKeyFn == nil {
+		return 0, nil
+	}
+	return m.CountAnyByStorageKeyFn(ctx, storageKey)
 }
 
 type FileShareRepo struct {
