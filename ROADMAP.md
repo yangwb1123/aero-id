@@ -19,6 +19,15 @@ All five directions below have since been **implemented, tested (unit + testcont
 | 4 | Write-path correctness | ✅ Done | atomic reply-count txn, idempotency-key writes, transactional outbox |
 | 5 | Product surface | ✅ Done | reactions, unread counts, explicit file sharing, comment reporting/moderation, typed/system messages, outbox-driven notifications + unread feed |
 
+### Post-ROADMAP production hardening (also delivered)
+
+Beyond the five directions, a production-readiness pass closed the remaining operational gaps:
+
+- **Rate limiting** — per-actor (uid) / per-IP token-bucket on both HTTP (429 + Retry-After) and gRPC (ResourceExhausted), opt-in, with idle-bucket eviction.
+- **gRPC ops surface** — `grpc.health.v1` health service (flips to NOT_SERVING on graceful shutdown) + config-gated server reflection.
+- **Outbox observability** — published/failed counters, pending-count and oldest-event-age (lag) gauges, drain-duration histogram on `/metrics`.
+- **Migration tooling** — `cmd/migrate` CLI (`up`/`down N`/`version`) + Makefile targets + opt-in `database.auto_migrate` on startup.
+
 The original advisory text is retained below for provenance.
 
 ## Where the codebase stands
