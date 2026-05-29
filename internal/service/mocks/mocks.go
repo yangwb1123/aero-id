@@ -185,6 +185,51 @@ func (m *CommentRepo) SetStatus(ctx context.Context, commentID domain.ID, status
 	return m.SetStatusFn(ctx, commentID, status)
 }
 
+type NotificationRepo struct {
+	CreateFn          func(ctx context.Context, n *domain.Notification) error
+	ListByRecipientFn func(ctx context.Context, recipientUID string, page domain.Page) ([]*domain.Notification, string, error)
+	MarkReadFn        func(ctx context.Context, id domain.ID, at time.Time) error
+	MarkAllReadFn     func(ctx context.Context, recipientUID string, at time.Time) error
+	CountUnreadFn     func(ctx context.Context, recipientUID string) (int64, error)
+}
+
+// Defaults model an empty feed: Create/MarkRead/MarkAllRead succeed, lists are
+// empty, and the unread count is zero, so tests wire only the Fn they exercise.
+func (m *NotificationRepo) Create(ctx context.Context, n *domain.Notification) error {
+	if m.CreateFn == nil {
+		return nil
+	}
+	return m.CreateFn(ctx, n)
+}
+
+func (m *NotificationRepo) ListByRecipient(ctx context.Context, recipientUID string, page domain.Page) ([]*domain.Notification, string, error) {
+	if m.ListByRecipientFn == nil {
+		return nil, "", nil
+	}
+	return m.ListByRecipientFn(ctx, recipientUID, page)
+}
+
+func (m *NotificationRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) error {
+	if m.MarkReadFn == nil {
+		return nil
+	}
+	return m.MarkReadFn(ctx, id, at)
+}
+
+func (m *NotificationRepo) MarkAllRead(ctx context.Context, recipientUID string, at time.Time) error {
+	if m.MarkAllReadFn == nil {
+		return nil
+	}
+	return m.MarkAllReadFn(ctx, recipientUID, at)
+}
+
+func (m *NotificationRepo) CountUnread(ctx context.Context, recipientUID string) (int64, error) {
+	if m.CountUnreadFn == nil {
+		return 0, nil
+	}
+	return m.CountUnreadFn(ctx, recipientUID)
+}
+
 type Storage struct {
 	PutFn        func(ctx context.Context, ownerUID, name string, r io.Reader) (string, int64, error)
 	GetFn        func(ctx context.Context, key string) (io.ReadCloser, error)
@@ -236,9 +281,10 @@ func (m *UserDir) GetUsers(ctx context.Context, uids []string) (map[string]sso.U
 
 // Compile-time guarantees the doubles satisfy the real interfaces.
 var (
-	_ repository.FileRepository      = (*FileRepo)(nil)
-	_ repository.FileShareRepository = (*FileShareRepo)(nil)
-	_ repository.MessageRepository   = (*MessageRepo)(nil)
-	_ repository.CommentRepository   = (*CommentRepo)(nil)
-	_ storage.FileStorage            = (*Storage)(nil)
+	_ repository.FileRepository         = (*FileRepo)(nil)
+	_ repository.FileShareRepository    = (*FileShareRepo)(nil)
+	_ repository.MessageRepository      = (*MessageRepo)(nil)
+	_ repository.CommentRepository      = (*CommentRepo)(nil)
+	_ repository.NotificationRepository = (*NotificationRepo)(nil)
+	_ storage.FileStorage               = (*Storage)(nil)
 )

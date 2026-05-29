@@ -117,17 +117,12 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	outboxRepo := outbox.NewGormRepository(gdb)
 	msgRepo := repository.NewMessageRepository(gdb, outboxRepo)
 	commentRepo := repository.NewCommentRepository(gdb, outboxRepo)
+	notifRepo := repository.NewNotificationRepository(gdb)
 
-	// The relay drains domain events written transactionally with their rows. For
-	// now the only sink logs each event; notifications (Direction 5) will replace
-	// this Handler with one that fans out to recipients.
-	relay := outbox.NewRelay(outboxRepo, outbox.HandlerFunc(func(_ context.Context, e *outbox.Event) error {
-		log.Info("outbox event published",
-			zap.String("event_type", e.EventType),
-			zap.String("aggregate_type", e.AggregateType),
-			zap.String("aggregate_id", e.AggregateID))
-		return nil
-	}), log)
+	// The relay drains domain events written transactionally with their rows and
+	// fans them out to per-recipient notification rows (Direction 5).
+	dispatcher := service.NewNotificationDispatcher(notifRepo)
+	relay := outbox.NewRelay(outboxRepo, dispatcher, log)
 	stopRelay := relay.Start(outboxPollInterval)
 
 	fileSvc := service.NewFileService(fileRepo, store, cfg.Storage.Type,
@@ -137,6 +132,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	)
 	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient)
 	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
+	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
 
 	// HTTP transport. Readiness probes the DB (critical) and SSO (criticality is
 	// configurable so an SSO-less dev stack stays "ready" rather than 503-ing).
@@ -157,6 +153,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewFileHandler(fileSvc, downloader, presignTTL),
 		httpapi.NewMessageHandler(msgSvc),
 		httpapi.NewCommentHandler(commentSvc),
+		httpapi.NewNotificationHandler(notifSvc),
 	)
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.HTTP.Host, cfg.Server.HTTP.Port),

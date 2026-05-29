@@ -110,6 +110,13 @@ type CommentList struct {
 	Users      map[string]sso.User
 }
 
+// NotificationList is the recipient feed plus resolved actor display info.
+type NotificationList struct {
+	Notifications []*domain.Notification
+	NextCursor    string
+	Users         map[string]sso.User
+}
+
 // ReactionResult is the outcome of a like/unlike: the caller's resulting like state
 // and the comment's updated like count.
 type ReactionResult struct {
@@ -149,6 +156,13 @@ type MessageService interface {
 	Inbox(ctx context.Context, page domain.Page, unreadOnly bool) (*MessageList, error)
 	Conversation(ctx context.Context, withUID string, page domain.Page) (*MessageList, error)
 	MarkRead(ctx context.Context, id domain.ID) error
+	UnreadCount(ctx context.Context) (int64, error)
+}
+
+type NotificationService interface {
+	List(ctx context.Context, page domain.Page) (*NotificationList, error)
+	MarkRead(ctx context.Context, id domain.ID) error
+	MarkAllRead(ctx context.Context) error
 	UnreadCount(ctx context.Context) (int64, error)
 }
 

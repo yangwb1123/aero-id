@@ -203,3 +203,43 @@ type commentReportRow struct {
 }
 
 func (commentReportRow) TableName() string { return "comment_reports" }
+
+// notificationRow maps the notifications table: one row per recipient per event.
+type notificationRow struct {
+	ID           uuid.UUID  `gorm:"column:id;primaryKey"`
+	RecipientUID string     `gorm:"column:recipient_uid"`
+	Type         string     `gorm:"column:type"`
+	ActorUID     string     `gorm:"column:actor_uid"`
+	SubjectType  string     `gorm:"column:subject_type"`
+	SubjectID    string     `gorm:"column:subject_id"`
+	ReadAt       *time.Time `gorm:"column:read_at"`
+	CreatedAt    time.Time  `gorm:"column:created_at"`
+}
+
+func (notificationRow) TableName() string { return "notifications" }
+
+func notificationRowToDomain(r *notificationRow) *domain.Notification {
+	return &domain.Notification{
+		ID:           r.ID,
+		RecipientUID: r.RecipientUID,
+		Type:         r.Type,
+		ActorUID:     r.ActorUID,
+		SubjectType:  r.SubjectType,
+		SubjectID:    r.SubjectID,
+		ReadAt:       r.ReadAt,
+		CreatedAt:    r.CreatedAt,
+	}
+}
+
+func notificationDomainToRow(n *domain.Notification) *notificationRow {
+	return &notificationRow{
+		ID:           n.ID,
+		RecipientUID: n.RecipientUID,
+		Type:         n.Type,
+		ActorUID:     n.ActorUID,
+		SubjectType:  n.SubjectType,
+		SubjectID:    n.SubjectID,
+		ReadAt:       n.ReadAt,
+		CreatedAt:    n.CreatedAt,
+	}
+}
