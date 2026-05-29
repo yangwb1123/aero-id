@@ -1,7 +1,7 @@
 app:    { name: aero-id, env: dev, version: 0.1.0 }
 server:
   http: { host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s, idempotency_ttl: 24h }
-  grpc: { host: 0.0.0.0, port: 9090 }
+  grpc: { host: 0.0.0.0, port: 9090, reflection_enabled: false }  # reflection exposes the full RPC surface; opt-in
 database:
   host: 127.0.0.1
   port: 5432
@@ -40,6 +40,12 @@ tracing:
   insecure: true              # dial the collector without TLS (dev)
   timeout: 5s                 # exporter timeout
   sample_ratio: 0             # 0 or >=1 => always sample; otherwise parent-based ratio sampler
+rate_limit:                     # in-memory per-actor (uid) / per-IP edge limiter; OPT-IN, per-instance
+  enabled: false                # master switch — when false the limiter is never installed
+  rps: 20                       # sustained requests/second per key (required > 0 when enabled)
+  burst: 40                     # bucket capacity / max instantaneous burst (required > 0 when enabled)
+  idle_ttl: 10m                 # evict buckets untouched this long to bound memory (0 => default 10m)
+  cleanup_every: 1m             # how often the idle-bucket sweep runs (0 => default 1m)
 storage:
   type: local
   max_upload_bytes: 52428800   # 50 MiB; 0 = unlimited

@@ -9,6 +9,7 @@ import (
 	"github.com/aero/aero-id/internal/idempotency"
 	"github.com/aero/aero-id/internal/middleware"
 	"github.com/aero/aero-id/internal/pkg/metrics"
+	"github.com/aero/aero-id/internal/pkg/ratelimit"
 )
 
 // RouteRegistrar lets each feature handler attach its own routes without the
@@ -30,6 +31,7 @@ type RouterConfig struct {
 	Metrics        *metrics.Registry // when set, records RED metrics and serves /metrics
 	Idempotency    idempotency.Store // when set, makes keyed POSTs under /v1 safe to retry
 	IdempotencyTTL time.Duration
+	RateLimiter    *ratelimit.Limiter // when set & enabled, throttles per actor uid (IP for anon)
 }
 
 // NewRouter assembles the gin engine: global middleware, health probes, and the
@@ -58,13 +60,22 @@ func NewRouter(
 		e.GET("/metrics", gin.WrapH(cfg.Metrics.Handler()))
 	}
 
-	// The /v1 group requires auth; idempotency runs after it so keys are scoped per user.
+	// The /v1 group requires auth; the rate limiter runs AFTER auth so it keys on
+	// the resolved actor uid, then idempotency so keys are scoped per user.
 	authMW := []gin.HandlerFunc{middleware.Auth(validator)}
+	if cfg.RateLimiter != nil {
+		authMW = append(authMW, middleware.RateLimit(cfg.RateLimiter))
+	}
 	if cfg.Idempotency != nil {
 		authMW = append(authMW, middleware.Idempotency(cfg.Idempotency, cfg.IdempotencyTTL))
 	}
+	// Public (anonymous) routes still get limited, keyed by client IP.
+	var publicMW []gin.HandlerFunc
+	if cfg.RateLimiter != nil {
+		publicMW = append(publicMW, middleware.RateLimit(cfg.RateLimiter))
+	}
 	routes := Routes{
-		Public: e.Group(""),
+		Public: e.Group("", publicMW...),
 		Auth:   e.Group("/v1", authMW...),
 	}
 	for _, r := range registrars {

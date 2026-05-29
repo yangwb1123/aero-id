@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -11,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/ratelimit"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -49,6 +51,37 @@ func TestAuthInterceptor_invalidToken(t *testing.T) {
 	_, err := intc(ctx, nil, &grpc.UnaryServerInfo{}, func(context.Context, any) (any, error) { return nil, nil })
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+}
+
+func TestRateLimitInterceptor_overLimitResourceExhausted(t *testing.T) {
+	l := ratelimit.New(1, 2, time.Minute) // burst 2
+	intc := RateLimitInterceptor(l)
+	// Key on a resolved actor so all calls share one bucket.
+	ctx := service.WithActor(context.Background(), "u1")
+	pass := func() error {
+		_, err := intc(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/x/Y"},
+			func(context.Context, any) (any, error) { return "ok", nil })
+		return err
+	}
+	if err := pass(); err != nil {
+		t.Fatalf("first call should pass, got %v", err)
+	}
+	if err := pass(); err != nil {
+		t.Fatalf("second call (within burst) should pass, got %v", err)
+	}
+	if got := status.Code(pass()); got != codes.ResourceExhausted {
+		t.Fatalf("third call code = %v, want ResourceExhausted", got)
+	}
+}
+
+func TestRateLimitInterceptor_nilLimiterIsNoop(t *testing.T) {
+	intc := RateLimitInterceptor(nil)
+	for i := 0; i < 50; i++ {
+		if _, err := intc(context.Background(), nil, &grpc.UnaryServerInfo{},
+			func(context.Context, any) (any, error) { return "ok", nil }); err != nil {
+			t.Fatalf("nil limiter must pass, got %v", err)
+		}
 	}
 }
 

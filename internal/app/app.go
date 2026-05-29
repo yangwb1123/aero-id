@@ -23,6 +23,7 @@ import (
 	"github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/pkg/migrate"
+	"github.com/aero/aero-id/internal/pkg/ratelimit"
 	"github.com/aero/aero-id/internal/pkg/tracing"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
@@ -44,11 +45,20 @@ type App struct {
 	sso           *sso.Client
 	httpServer    *http.Server
 	grpcServer    *grpclib.Server
+	grpcHealth    *grpcsrv.HealthServer
 	grpcLis       net.Listener
 	stopRelay     func()
 	stopGC        func()
+	stopRateLimit func()
 	traceShutdown func(context.Context) error
 }
+
+// rateLimitDefaults fill in sane values when an operator enables limiting but
+// leaves the tuning knobs at zero.
+const (
+	defaultRateLimitIdleTTL      = 10 * time.Minute
+	defaultRateLimitCleanupEvery = time.Minute
+)
 
 // New builds the fully wired application. It opens the DB, storage, and SSO
 // connections; constructs repositories, services, and both transports.
@@ -180,6 +190,28 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
 	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
 
+	// Edge rate limiter, shared by HTTP middleware and the gRPC interceptor. OPT-IN
+	// and disabled by default; per-instance (distributed limiting would need shared
+	// state). When on, a background cleaner evicts idle buckets to bound memory.
+	var limiter *ratelimit.Limiter
+	var stopRateLimit func()
+	if cfg.RateLimit.Enabled {
+		idleTTL := cfg.RateLimit.IdleTTL
+		if idleTTL <= 0 {
+			idleTTL = defaultRateLimitIdleTTL
+		}
+		cleanupEvery := cfg.RateLimit.CleanupEvery
+		if cleanupEvery <= 0 {
+			cleanupEvery = defaultRateLimitCleanupEvery
+		}
+		limiter = ratelimit.New(cfg.RateLimit.RPS, cfg.RateLimit.Burst, idleTTL)
+		stopRateLimit = limiter.RunCleaner(cleanupEvery)
+		log.Info("rate limiting enabled",
+			zap.Float64("rps", cfg.RateLimit.RPS),
+			zap.Int("burst", cfg.RateLimit.Burst),
+			zap.Duration("idle_ttl", idleTTL))
+	}
+
 	// HTTP transport. Readiness probes the DB (critical) and SSO (criticality is
 	// configurable so an SSO-less dev stack stays "ready" rather than 503-ing).
 	idemStore := idempotency.NewGormStore(gdb)
@@ -193,6 +225,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 			Metrics:        metricsReg,
 			Idempotency:    idemStore,
 			IdempotencyTTL: cfg.Server.HTTP.IdempotencyTTL,
+			RateLimiter:    limiter,
 		},
 		ssoClient,
 		health,
@@ -209,19 +242,29 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	}
 
 	// gRPC transport
-	grpcServer := grpcsrv.NewServer(
+	grpcServer := grpcsrv.NewServerWithOptions(
 		ssoClient, log, metricsReg,
+		[]grpcsrv.ServerOption{grpcsrv.WithRateLimit(limiter)},
 		grpcsrv.NewFileServer(fileSvc),
 		grpcsrv.NewMessageServer(msgSvc),
 		grpcsrv.NewCommentServer(commentSvc),
 		grpcsrv.NewNotificationServer(notifSvc),
 	)
+	// Standard ops surface: health (reported SERVING) and, when enabled, reflection.
+	grpcHealth := grpcsrv.RegisterHealth(grpcServer)
+	if cfg.Server.GRPC.ReflectionEnabled {
+		grpcsrv.RegisterReflection(grpcServer)
+		log.Info("grpc reflection enabled")
+	}
 	grpcAddr := fmt.Sprintf("%s:%d", cfg.Server.GRPC.Host, cfg.Server.GRPC.Port)
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		stopRelay()
 		if stopGC != nil {
 			stopGC()
+		}
+		if stopRateLimit != nil {
+			stopRateLimit()
 		}
 		return nil, fmt.Errorf("grpc listen on %s: %w", grpcAddr, err)
 	}
@@ -233,9 +276,11 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		sso:           ssoClient,
 		httpServer:    httpServer,
 		grpcServer:    grpcServer,
+		grpcHealth:    grpcHealth,
 		grpcLis:       grpcLis,
 		stopRelay:     stopRelay,
 		stopGC:        stopGC,
+		stopRateLimit: stopRateLimit,
 		traceShutdown: traceShutdown,
 	}, nil
 }
@@ -300,11 +345,19 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) shutdown() {
+	// Flip gRPC health to NOT_SERVING first so load balancers drain this instance
+	// before the listener actually closes.
+	if a.grpcHealth != nil {
+		a.grpcHealth.SetServing(false)
+	}
 	if a.stopRelay != nil {
 		a.stopRelay()
 	}
 	if a.stopGC != nil {
 		a.stopGC()
+	}
+	if a.stopRateLimit != nil {
+		a.stopRateLimit()
 	}
 	shCtx, cancel := context.WithTimeout(context.Background(), a.cfg.Server.HTTP.ShutdownTimeout)
 	defer cancel()

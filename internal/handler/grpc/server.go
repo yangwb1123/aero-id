@@ -21,8 +21,11 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"google.golang.org/grpc/peer"
+
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/metrics"
+	"github.com/aero/aero-id/internal/pkg/ratelimit"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -38,12 +41,42 @@ type ServiceRegistrar interface {
 	Register(s *grpc.Server)
 }
 
+// ServerOption tunes optional NewServer behaviour (rate limiting, etc.) without
+// growing the positional signature that tests rely on.
+type ServerOption func(*serverOptions)
+
+type serverOptions struct {
+	limiter *ratelimit.Limiter
+}
+
+// WithRateLimit installs a per-actor rate-limit interceptor. A nil limiter (or
+// one disabled by config) is a no-op, so this is always safe to pass.
+func WithRateLimit(l *ratelimit.Limiter) ServerOption {
+	return func(o *serverOptions) { o.limiter = l }
+}
+
 // NewServer builds a *grpc.Server with metrics + recovery + auth interceptors and
 // registers each provided handler. A nil reg disables metrics (used by tests).
+// Options can add a rate-limit interceptor.
 func NewServer(validator TokenValidator, log *zap.Logger, reg *metrics.Registry, regs ...ServiceRegistrar) *grpc.Server {
+	return NewServerWithOptions(validator, log, reg, nil, regs...)
+}
+
+// NewServerWithOptions is NewServer with extra tuning options (e.g. rate limiting).
+func NewServerWithOptions(validator TokenValidator, log *zap.Logger, reg *metrics.Registry, opts []ServerOption, regs ...ServiceRegistrar) *grpc.Server {
+	var o serverOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+
+	// Chain executes in slice order. Recovery wraps everything below it; auth runs
+	// next; the rate limiter runs AFTER auth so it can key on the resolved actor uid.
 	interceptors := []grpc.UnaryServerInterceptor{
 		RecoveryInterceptor(log),
 		AuthInterceptor(validator),
+	}
+	if o.limiter != nil {
+		interceptors = append(interceptors, RateLimitInterceptor(o.limiter))
 	}
 	if reg != nil {
 		// Outermost (after tracing) so it measures the whole call, including auth and recovery.
@@ -123,10 +156,23 @@ func MetricsInterceptor(reg *metrics.Registry) grpc.UnaryServerInterceptor {
 	}
 }
 
+// infraMethod reports whether a fully-qualified gRPC method belongs to an
+// infrastructure service (health, reflection) that must bypass auth and rate
+// limiting — these are operational surfaces probed by load balancers and ops
+// tooling that carry no bearer token and should never be throttled.
+func infraMethod(fullMethod string) bool {
+	return strings.HasPrefix(fullMethod, "/grpc.health.v1.") ||
+		strings.HasPrefix(fullMethod, "/grpc.reflection.")
+}
+
 // AuthInterceptor validates the bearer token from request metadata and injects
-// the resulting uid as the request actor.
+// the resulting uid as the request actor. Infrastructure methods (health,
+// reflection) bypass auth so probes and ops tooling work without a token.
 func AuthInterceptor(v TokenValidator) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if info != nil && infraMethod(info.FullMethod) {
+			return handler(ctx, req)
+		}
 		token := bearerFromMD(ctx)
 		if token == "" {
 			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
@@ -137,6 +183,36 @@ func AuthInterceptor(v TokenValidator) grpc.UnaryServerInterceptor {
 		}
 		return handler(service.WithActor(ctx, uid), req)
 	}
+}
+
+// RateLimitInterceptor throttles unary calls using an in-memory per-key token
+// bucket. It keys on the authenticated actor uid when present (so it must be
+// chained AFTER auth), falling back to the client's peer address otherwise.
+// Over-limit calls get codes.ResourceExhausted. A nil/disabled limiter is a
+// no-op (fail-open by configuration).
+func RateLimitInterceptor(l *ratelimit.Limiter) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if l == nil || (info != nil && infraMethod(info.FullMethod)) {
+			return handler(ctx, req)
+		}
+		if l.Allow(rateLimitKey(ctx)) {
+			return handler(ctx, req)
+		}
+		return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+	}
+}
+
+// rateLimitKey prefers the authenticated actor uid (set by AuthInterceptor) so a
+// single user is limited consistently; it falls back to the gRPC peer address
+// for unauthenticated calls.
+func rateLimitKey(ctx context.Context) string {
+	if uid, ok := service.ActorFrom(ctx); ok {
+		return "uid:" + uid
+	}
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		return "ip:" + p.Addr.String()
+	}
+	return "ip:unknown"
 }
 
 // RecoveryInterceptor converts a panic into a logged Internal status.

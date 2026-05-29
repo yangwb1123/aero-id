@@ -9,14 +9,29 @@ import (
 )
 
 type Config struct {
-	App        AppConfig      `mapstructure:"app"`
-	Server     ServerConfig   `mapstructure:"server"`
-	Database   DatabaseConfig `mapstructure:"database"`
-	SSO        SSOConfig      `mapstructure:"sso"`
-	Storage    StorageConfig  `mapstructure:"storage"`
-	Tracing    TracingConfig  `mapstructure:"tracing"`
-	SigningKey string         `mapstructure:"signing_key"`
-	Log        LogConfig      `mapstructure:"log"`
+	App        AppConfig       `mapstructure:"app"`
+	Server     ServerConfig    `mapstructure:"server"`
+	Database   DatabaseConfig  `mapstructure:"database"`
+	SSO        SSOConfig       `mapstructure:"sso"`
+	Storage    StorageConfig   `mapstructure:"storage"`
+	Tracing    TracingConfig   `mapstructure:"tracing"`
+	RateLimit  RateLimitConfig `mapstructure:"rate_limit"`
+	SigningKey string          `mapstructure:"signing_key"`
+	Log        LogConfig       `mapstructure:"log"`
+}
+
+// RateLimitConfig configures the in-memory per-actor rate limiter applied on both
+// transports. It is OPT-IN: disabled by default so it never surprises dev/CI.
+// When enabled, each request consumes one token from a bucket keyed by the
+// authenticated actor uid (client IP for anonymous/public traffic), refilled at
+// RPS up to Burst. Limiting is PER-INSTANCE; distributed limiting would need
+// shared state (e.g. Redis) and is out of scope.
+type RateLimitConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`       // master switch; false = limiter never installed
+	RPS          float64       `mapstructure:"rps"`           // sustained requests/second per key
+	Burst        int           `mapstructure:"burst"`         // bucket capacity (max instantaneous burst)
+	IdleTTL      time.Duration `mapstructure:"idle_ttl"`      // evict buckets untouched this long (bounds memory)
+	CleanupEvery time.Duration `mapstructure:"cleanup_every"` // how often the idle-bucket sweep runs
 }
 
 // TracingConfig configures OpenTelemetry tracing. Tracing is opt-in: unless Enabled
@@ -53,6 +68,10 @@ type HTTPConfig struct {
 type GRPCConfig struct {
 	Host string `mapstructure:"host"`
 	Port int    `mapstructure:"port"`
+	// ReflectionEnabled registers the gRPC server reflection service. OFF by
+	// default: reflection exposes the full RPC surface, which is handy for
+	// internal ops (grpcurl) but should be opt-in on an untrusted edge.
+	ReflectionEnabled bool `mapstructure:"reflection_enabled"`
 }
 
 type DatabaseConfig struct {
@@ -180,6 +199,14 @@ func (c *Config) validate() error {
 	case "local", "s3":
 	default:
 		return fmt.Errorf("storage.type must be 'local' or 's3'")
+	}
+	if c.RateLimit.Enabled {
+		if c.RateLimit.RPS <= 0 {
+			return fmt.Errorf("rate_limit.rps must be > 0 when rate_limit.enabled")
+		}
+		if c.RateLimit.Burst <= 0 {
+			return fmt.Errorf("rate_limit.burst must be > 0 when rate_limit.enabled")
+		}
 	}
 	if c.Storage.GC.Enabled {
 		if c.Storage.GC.Interval <= 0 {
