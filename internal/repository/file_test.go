@@ -91,6 +91,67 @@ func TestFileRepo_ListPagination(t *testing.T) {
 	}
 }
 
+func TestFileRepo_UpdateMetadataChangesOnlyProvidedColumns(t *testing.T) {
+	ctx := context.Background()
+	repo := setupFileRepo(t)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	f := &domain.File{
+		ID: idgen.NewID(), OwnerUID: "u1", Name: "old.txt", Size: 7,
+		MimeType: "text/plain", StorageKey: "u1/x", StorageType: "local",
+		Checksum: "abc", Visibility: domain.VisibilityPrivate,
+		Meta: map[string]any{"k": "v"}, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repo.Create(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+
+	later := now.Add(time.Hour)
+	err := repo.UpdateMetadata(ctx, f.ID, map[string]any{
+		"name":       "new.txt",
+		"visibility": int16(domain.VisibilityPublic),
+		"meta":       map[string]any{"k": "v", "added": "1"},
+		"updated_at": later,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.Get(ctx, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "new.txt" {
+		t.Errorf("name = %q, want new.txt", got.Name)
+	}
+	if got.Visibility != domain.VisibilityPublic {
+		t.Errorf("visibility = %d, want public", got.Visibility)
+	}
+	if got.Meta["k"] != "v" || got.Meta["added"] != "1" {
+		t.Errorf("meta = %+v, want merged", got.Meta)
+	}
+	// Untouched columns must persist unchanged.
+	if got.Size != 7 || got.Checksum != "abc" || got.StorageKey != "u1/x" {
+		t.Errorf("untouched columns changed: %+v", got)
+	}
+	if !got.UpdatedAt.Equal(later) {
+		t.Errorf("updated_at = %v, want %v", got.UpdatedAt, later)
+	}
+
+	// Updating a missing row reports ErrNotFound.
+	if err := repo.UpdateMetadata(ctx, idgen.NewID(), map[string]any{"name": "z"}); err != repository.ErrNotFound {
+		t.Errorf("update of missing row = %v, want ErrNotFound", err)
+	}
+
+	// Soft-deleted rows are out of scope -> ErrNotFound.
+	if err := repo.Delete(ctx, f.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateMetadata(ctx, f.ID, map[string]any{"name": "zz"}); err != repository.ErrNotFound {
+		t.Errorf("update of soft-deleted row = %v, want ErrNotFound", err)
+	}
+}
+
 func TestFileRepo_FindByChecksumAndCount(t *testing.T) {
 	ctx := context.Background()
 	repo := setupFileRepo(t)

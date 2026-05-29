@@ -25,6 +25,7 @@ type FileRepo struct {
 	ListSoftDeletedBeforeFn func(ctx context.Context, before time.Time, limit int) ([]*domain.File, error)
 	HardDeleteFn            func(ctx context.Context, ids []domain.ID) error
 	CountAnyByStorageKeyFn  func(ctx context.Context, storageKey string) (int64, error)
+	UpdateMetadataFn        func(ctx context.Context, id domain.ID, fields map[string]any) error
 }
 
 func (m *FileRepo) Create(ctx context.Context, f *domain.File) error { return m.CreateFn(ctx, f) }
@@ -75,6 +76,14 @@ func (m *FileRepo) CountAnyByStorageKey(ctx context.Context, storageKey string) 
 		return 0, nil
 	}
 	return m.CountAnyByStorageKeyFn(ctx, storageKey)
+}
+
+// UpdateMetadata defaults to a successful no-op when its Fn is unset.
+func (m *FileRepo) UpdateMetadata(ctx context.Context, id domain.ID, fields map[string]any) error {
+	if m.UpdateMetadataFn == nil {
+		return nil
+	}
+	return m.UpdateMetadataFn(ctx, id, fields)
 }
 
 type FileShareRepo struct {

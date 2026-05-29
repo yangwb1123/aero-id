@@ -323,6 +323,65 @@ func (s *fileService) CompleteUpload(ctx context.Context, in CompleteUploadInput
 	return f, nil
 }
 
+// UpdateMetadata lets the file's owner change mutable metadata without re-uploading.
+// Only the provided (non-nil) fields are applied; a provided meta map is merged into
+// the existing meta. Validation: a provided name must be non-blank (BadRequest); a
+// provided visibility must be a known value (BadRequest); a soft-deleted/missing file
+// is NotFound; non-owners get Forbidden. updated_at is bumped on every change.
+func (s *fileService) UpdateMetadata(ctx context.Context, id domain.ID, in UpdateFileMetadataInput) (*domain.File, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f, err := s.ownedFile(ctx, id, actor)
+	if err != nil {
+		return nil, err
+	}
+
+	fields := map[string]any{}
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return nil, apperr.BadRequest("file.invalid", "name must not be blank")
+		}
+		fields["name"] = name
+		f.Name = name
+	}
+	if in.Visibility != nil {
+		v := *in.Visibility
+		if v != domain.VisibilityPrivate && v != domain.VisibilityPublic {
+			return nil, apperr.BadRequest("file.invalid_visibility", "visibility must be 0 (private) or 1 (public)")
+		}
+		fields["visibility"] = int16(v)
+		f.Visibility = v
+	}
+	if in.Meta != nil {
+		merged := make(map[string]any, len(f.Meta)+len(in.Meta))
+		for k, v := range f.Meta {
+			merged[k] = v
+		}
+		for k, v := range in.Meta {
+			merged[k] = v
+		}
+		fields["meta"] = merged
+		f.Meta = merged
+	}
+	if len(fields) == 0 {
+		return f, nil // nothing requested; return the current state unchanged
+	}
+
+	now := time.Now().UTC()
+	fields["updated_at"] = now
+	if err := s.files.UpdateMetadata(ctx, id, fields); err != nil {
+		if stderrors.Is(err, repository.ErrNotFound) {
+			return nil, apperr.NotFound("file.not_found", "file not found")
+		}
+		return nil, apperr.Internal("file.update_failed", "failed to update file").Wrap(err)
+	}
+	f.UpdatedAt = now
+	return f, nil
+}
+
 // ShareFile grants read access on a file the caller owns to each grantee uid. It is
 // idempotent and rejects blank uids and self-grants (the owner already has access).
 func (s *fileService) ShareFile(ctx context.Context, id domain.ID, granteeUIDs []string) error {

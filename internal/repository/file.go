@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -33,6 +34,10 @@ type FileRepository interface {
 	// rows, so the orphan sweep never reaps a blob still referenced by any row (live or
 	// soft-deleted-but-not-yet-purged).
 	CountAnyByStorageKey(ctx context.Context, storageKey string) (int64, error)
+	// UpdateMetadata applies a targeted update of only the columns named in fields to a
+	// single live row. It returns ErrNotFound when no live row matches id. fields maps
+	// column name -> new value (e.g. "name", "visibility", "meta", "updated_at").
+	UpdateMetadata(ctx context.Context, id domain.ID, fields map[string]any) error
 }
 
 type fileRepo struct {
@@ -158,6 +163,30 @@ func (r *fileRepo) HardDelete(ctx context.Context, ids []domain.ID) error {
 		Where("id IN ?", ids).
 		Delete(&fileRow{}).Error; err != nil {
 		return fmt.Errorf("hard delete files: %w", err)
+	}
+	return nil
+}
+
+// UpdateMetadata performs a column-scoped GORM update of the named fields on the live
+// row identified by id (the default soft-delete scope excludes deleted rows, so a
+// soft-deleted file is treated as missing). It returns ErrNotFound when nothing was
+// updated and is a no-op for an empty field set.
+func (r *fileRepo) UpdateMetadata(ctx context.Context, id domain.ID, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	// The meta column is JSONB; wrap a plain map so it implements driver.Valuer.
+	if meta, ok := fields["meta"].(map[string]any); ok {
+		fields["meta"] = datatypes.JSONMap(meta)
+	}
+	res := r.db.WithContext(ctx).Model(&fileRow{}).
+		Where("id = ?", id).
+		Updates(fields)
+	if res.Error != nil {
+		return fmt.Errorf("update file metadata: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

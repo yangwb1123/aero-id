@@ -42,6 +42,7 @@ func (h *FileHandler) RegisterRoutes(r Routes) {
 	r.Auth.POST("/files/upload-url", h.PresignUpload)
 	r.Auth.POST("/files/complete", h.CompleteUpload)
 	r.Auth.GET("/files/:id", h.Get)
+	r.Auth.PATCH("/files/:id", h.UpdateMetadata)
 	r.Auth.GET("/files/:id/url", h.DownloadURL)
 	r.Auth.DELETE("/files/:id", h.Delete)
 	r.Auth.POST("/files/:id/shares", h.Share)
@@ -171,6 +172,37 @@ func (h *FileHandler) Get(c *gin.Context) {
 		return
 	}
 	f, err := h.files.Get(c.Request.Context(), id)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, toFileResponse(f))
+}
+
+// UpdateMetadata lets a file's owner change name, visibility, and/or merge meta. Only
+// the keys present in the JSON body are treated as set (field-mask style); absent keys
+// are left unchanged. Responds 200 with the updated file.
+func (h *FileHandler) UpdateMetadata(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var body struct {
+		Name       *string        `json:"name"`
+		Visibility *int16         `json:"visibility"`
+		Meta       map[string]any `json:"meta"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("file.invalid", "invalid request body"))
+		return
+	}
+	in := service.UpdateFileMetadataInput{Name: body.Name, Meta: body.Meta}
+	if body.Visibility != nil {
+		v := domain.Visibility(*body.Visibility)
+		in.Visibility = &v
+	}
+	f, err := h.files.UpdateMetadata(c.Request.Context(), id, in)
 	if err != nil {
 		httpx.WriteError(c, err)
 		return

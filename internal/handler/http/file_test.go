@@ -47,6 +47,7 @@ type fakeFileService struct {
 	listSharedWithMeFn func(context.Context, domain.Page) (*service.FileList, error)
 	presignUploadFn    func(context.Context, service.PresignUploadInput, time.Duration) (*service.PresignUploadResult, error)
 	completeUploadFn   func(context.Context, service.CompleteUploadInput) (*domain.File, error)
+	updateMetadataFn   func(context.Context, domain.ID, service.UpdateFileMetadataInput) (*domain.File, error)
 }
 
 func (f *fakeFileService) Create(ctx context.Context, in service.CreateFileInput) (*domain.File, error) {
@@ -76,6 +77,9 @@ func (f *fakeFileService) PresignUpload(ctx context.Context, in service.PresignU
 }
 func (f *fakeFileService) CompleteUpload(ctx context.Context, in service.CompleteUploadInput) (*domain.File, error) {
 	return f.completeUploadFn(ctx, in)
+}
+func (f *fakeFileService) UpdateMetadata(ctx context.Context, id domain.ID, in service.UpdateFileMetadataInput) (*domain.File, error) {
+	return f.updateMetadataFn(ctx, id, in)
 }
 
 func TestFileHandler_Upload(t *testing.T) {
@@ -271,6 +275,61 @@ func TestFileHandler_ListSharedWithMe(t *testing.T) {
 	}
 	if len(body.Data.Files) != 1 || body.Data.NextCursor != "next" {
 		t.Fatalf("unexpected body: %+v", body)
+	}
+}
+
+func TestFileHandler_UpdateMetadata200(t *testing.T) {
+	var gotName *string
+	var gotVis *domain.Visibility
+	svc := &fakeFileService{updateMetadataFn: func(_ context.Context, id domain.ID, in service.UpdateFileMetadataInput) (*domain.File, error) {
+		gotName, gotVis = in.Name, in.Visibility
+		name := "renamed.txt"
+		if in.Name != nil {
+			name = *in.Name
+		}
+		return &domain.File{ID: id, OwnerUID: "u1", Name: name, Visibility: domain.VisibilityPublic}, nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/files/"+idgen.NewID().String(),
+		strings.NewReader(`{"name":"renamed.txt","visibility":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if gotName == nil || *gotName != "renamed.txt" {
+		t.Errorf("name passed = %v, want renamed.txt", gotName)
+	}
+	if gotVis == nil || *gotVis != domain.VisibilityPublic {
+		t.Errorf("visibility passed = %v, want public", gotVis)
+	}
+	var resp struct {
+		Data struct {
+			Name       string `json:"name"`
+			Visibility int16  `json:"visibility"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data.Name != "renamed.txt" || resp.Data.Visibility != 1 {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestFileHandler_UpdateMetadataForbidden(t *testing.T) {
+	svc := &fakeFileService{updateMetadataFn: func(context.Context, domain.ID, service.UpdateFileMetadataInput) (*domain.File, error) {
+		return nil, apperr.Forbidden("file.forbidden", "only the owner can update this file")
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "stranger")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/files/"+idgen.NewID().String(),
+		strings.NewReader(`{"name":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
 	}
 }
 

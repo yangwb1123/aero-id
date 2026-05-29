@@ -54,6 +54,15 @@ type FileList struct {
 	NextCursor string
 }
 
+// UpdateFileMetadataInput carries the owner-editable file metadata. Only non-nil
+// fields are applied (field-mask style); a nil field is left unchanged. Meta, when
+// provided, is merged into the existing meta (set keys overwrite, others remain).
+type UpdateFileMetadataInput struct {
+	Name       *string
+	Visibility *domain.Visibility
+	Meta       map[string]any
+}
+
 // PresignUploadInput requests a presigned direct-to-backend upload. Name/MimeType/
 // Visibility/Meta are carried through to the row created at finalize time.
 type PresignUploadInput struct {
@@ -153,6 +162,9 @@ type FileService interface {
 	// CompleteUpload finalizes a presigned direct upload by Stat-ing the object and
 	// persisting the file row. Dedup is skipped (no checksum without downloading).
 	CompleteUpload(ctx context.Context, in CompleteUploadInput) (*domain.File, error)
+	// UpdateMetadata lets the file's owner change mutable metadata (name, visibility,
+	// and/or a merged meta map) without re-uploading. Owner-only.
+	UpdateMetadata(ctx context.Context, id domain.ID, in UpdateFileMetadataInput) (*domain.File, error)
 }
 
 type MessageService interface {

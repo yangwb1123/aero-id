@@ -504,6 +504,132 @@ func TestFileService_CompleteUploadObjectMissing(t *testing.T) {
 	assertAppErrCode(t, err, "file.not_uploaded")
 }
 
+func strptr(s string) *string                       { return &s }
+func visptr(v domain.Visibility) *domain.Visibility { return &v }
+
+func TestFileService_UpdateMetadataOwnerRenames(t *testing.T) {
+	var gotFields map[string]any
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Name: "old.txt", Visibility: domain.VisibilityPrivate}, nil
+		},
+		UpdateMetadataFn: func(_ context.Context, _ domain.ID, fields map[string]any) error {
+			gotFields = fields
+			return nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	f, err := svc.UpdateMetadata(ctx, idgen.NewID(), service.UpdateFileMetadataInput{Name: strptr("new.txt")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Name != "new.txt" {
+		t.Fatalf("name = %q, want new.txt", f.Name)
+	}
+	if gotFields["name"] != "new.txt" {
+		t.Errorf("repo name field = %v, want new.txt", gotFields["name"])
+	}
+	if _, ok := gotFields["updated_at"]; !ok {
+		t.Error("updated_at must be bumped")
+	}
+	if _, ok := gotFields["visibility"]; ok {
+		t.Error("visibility must not be updated when not provided")
+	}
+}
+
+func TestFileService_UpdateMetadataNonOwnerForbidden(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+		UpdateMetadataFn: func(context.Context, domain.ID, map[string]any) error {
+			t.Fatal("UpdateMetadata must not be called for a non-owner")
+			return nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "stranger")
+	_, err := svc.UpdateMetadata(ctx, idgen.NewID(), service.UpdateFileMetadataInput{Name: strptr("x")})
+	assertAppCode(t, err, 403)
+}
+
+func TestFileService_UpdateMetadataEmptyName(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.UpdateMetadata(ctx, idgen.NewID(), service.UpdateFileMetadataInput{Name: strptr("   ")})
+	assertAppCode(t, err, 400)
+}
+
+func TestFileService_UpdateMetadataInvalidVisibility(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner"}, nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.UpdateMetadata(ctx, idgen.NewID(), service.UpdateFileMetadataInput{Visibility: visptr(domain.Visibility(99))})
+	assertAppErrCode(t, err, "file.invalid_visibility")
+}
+
+func TestFileService_UpdateMetadataPartialChangesOnlyProvided(t *testing.T) {
+	var gotFields map[string]any
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Name: "keep.txt", Visibility: domain.VisibilityPrivate, Meta: map[string]any{"a": "1"}}, nil
+		},
+		UpdateMetadataFn: func(_ context.Context, _ domain.ID, fields map[string]any) error {
+			gotFields = fields
+			return nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	f, err := svc.UpdateMetadata(ctx, idgen.NewID(), service.UpdateFileMetadataInput{
+		Visibility: visptr(domain.VisibilityPublic),
+		Meta:       map[string]any{"b": "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// name was not provided -> unchanged, not in the field set.
+	if _, ok := gotFields["name"]; ok {
+		t.Error("name must not be in the update set when unprovided")
+	}
+	if gotFields["visibility"] != int16(domain.VisibilityPublic) {
+		t.Errorf("visibility field = %v, want 1", gotFields["visibility"])
+	}
+	if f.Name != "keep.txt" {
+		t.Errorf("name = %q, want keep.txt (unchanged)", f.Name)
+	}
+	// meta is merged: original key preserved, new key added.
+	if f.Meta["a"] != "1" || f.Meta["b"] != "2" {
+		t.Errorf("meta = %+v, want merged {a,b}", f.Meta)
+	}
+}
+
+func TestFileService_UpdateMetadataSoftDeletedNotFound(t *testing.T) {
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Name: "old"}, nil
+		},
+		// The row was soft-deleted between the Get and the targeted update.
+		UpdateMetadataFn: func(context.Context, domain.ID, map[string]any) error {
+			return repository.ErrNotFound
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.UpdateMetadata(ctx, idgen.NewID(), service.UpdateFileMetadataInput{Name: strptr("new")})
+	assertAppCode(t, err, 404)
+}
+
 // assertAppErrCode asserts err is an *AppError carrying the given Code string.
 func assertAppErrCode(t *testing.T, err error, wantCode string) {
 	t.Helper()
