@@ -232,6 +232,126 @@ func TestCommentRepo_CreateReportDedup(t *testing.T) {
 	}
 }
 
+func TestCommentRepo_UpdateContent(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+	now := time.Now().UTC()
+
+	c := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
+		TargetID: idgen.NewID(), Content: "old", Status: domain.CommentStatusNormal,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	c.RootID = c.ID
+	if err := repo.Create(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	editAt := now.Add(time.Minute)
+	if err := repo.UpdateContent(ctx, c.ID, "new", editAt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Get(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Content != "new" {
+		t.Errorf("content = %q, want new", got.Content)
+	}
+	if got.EditedAt == nil {
+		t.Fatal("edited_at was not stamped")
+	}
+
+	// Editing a soft-deleted comment yields ErrNotFound.
+	if err := repo.SoftDelete(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateContent(ctx, c.ID, "x", editAt); err != repository.ErrNotFound {
+		t.Fatalf("update of removed comment err=%v, want ErrNotFound", err)
+	}
+	// Editing an unknown comment is ErrNotFound too.
+	if err := repo.UpdateContent(ctx, idgen.NewID(), "x", editAt); err != repository.ErrNotFound {
+		t.Fatalf("update of missing comment err=%v, want ErrNotFound", err)
+	}
+}
+
+func TestCommentRepo_ListAndResolveReports(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+	now := time.Now().UTC()
+
+	c := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "author", TargetType: domain.TargetTypeFile,
+		TargetID: idgen.NewID(), Content: "top", Status: domain.CommentStatusNormal,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	c.RootID = c.ID
+	if err := repo.Create(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	r1 := &domain.CommentReport{ID: idgen.NewID(), CommentID: c.ID, ReporterUID: "r1", Reason: "spam", CreatedAt: now}
+	r2 := &domain.CommentReport{ID: idgen.NewID(), CommentID: c.ID, ReporterUID: "r2", Reason: "abuse", CreatedAt: now.Add(time.Millisecond)}
+	if err := repo.CreateReport(ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateReport(ctx, r2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both reports start open.
+	open := domain.ReportStatusOpen
+	reports, _, err := repo.ListReports(ctx, c.ID, &open, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 2 {
+		t.Fatalf("open reports = %d, want 2", len(reports))
+	}
+	for _, r := range reports {
+		if r.Status != domain.ReportStatusOpen {
+			t.Errorf("report %s status = %d, want open", r.ID, r.Status)
+		}
+	}
+
+	// Resolve r1 -> it leaves the open filter and carries resolver metadata.
+	resolveAt := now.Add(time.Hour)
+	if err := repo.ResolveReport(ctx, r1.ID, domain.ReportStatusResolved, "author", resolveAt); err != nil {
+		t.Fatal(err)
+	}
+	openAfter, _, err := repo.ListReports(ctx, c.ID, &open, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(openAfter) != 1 || openAfter[0].ID != r2.ID {
+		t.Fatalf("open-after-resolve = %+v, want only r2", openAfter)
+	}
+	got, err := repo.GetReport(ctx, r1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ReportStatusResolved || got.ResolvedBy != "author" || got.ResolvedAt == nil {
+		t.Fatalf("resolved report metadata wrong: %+v", got)
+	}
+
+	// Unfiltered list returns both reports.
+	all, _, err := repo.ListReports(ctx, c.ID, nil, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all reports = %d, want 2", len(all))
+	}
+
+	// Resolving / getting a missing report is ErrNotFound.
+	if err := repo.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusDismissed, "author", resolveAt); err != repository.ErrNotFound {
+		t.Fatalf("resolve missing report err=%v, want ErrNotFound", err)
+	}
+	if _, err := repo.GetReport(ctx, idgen.NewID()); err != repository.ErrNotFound {
+		t.Fatalf("get missing report err=%v, want ErrNotFound", err)
+	}
+}
+
 func TestCommentRepo_SetStatusExcludesFromListings(t *testing.T) {
 	ctx := context.Background()
 	repo := setupCommentRepo(t)

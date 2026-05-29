@@ -24,6 +24,9 @@ type CommentRepository interface {
 	ListReplies(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	IncReplyCount(ctx context.Context, parentID domain.ID) error
 	SoftDelete(ctx context.Context, id domain.ID) error
+	// UpdateContent rewrites a comment's content and stamps edited_at (and updated_at)
+	// to at. Returns ErrNotFound if no live row matches.
+	UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error
 	// Like records a like by uid and returns the comment's updated like_count. A repeated
 	// like by the same uid is a no-op (idempotent). Unlike is the inverse.
 	Like(ctx context.Context, commentID domain.ID, uid string) (likeCount int, err error)
@@ -34,6 +37,14 @@ type CommentRepository interface {
 	CreateReport(ctx context.Context, r *domain.CommentReport) error
 	// SetStatus updates a comment's moderation status. Returns ErrNotFound if no row matches.
 	SetStatus(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
+	// ListReports returns reports against a single comment, newest first, cursor-paged.
+	// When status is non-nil only reports in that triage state are returned.
+	ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error)
+	// GetReport loads a single report by id. Returns ErrNotFound if absent.
+	GetReport(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
+	// ResolveReport transitions a report to a terminal status, stamping resolved_at/by.
+	// Returns ErrNotFound if no row matches.
+	ResolveReport(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
 }
 
 type commentRepo struct {
@@ -168,6 +179,26 @@ func (r *commentRepo) SoftDelete(ctx context.Context, id domain.ID) error {
 	return nil
 }
 
+// UpdateContent rewrites a comment's content and stamps edited_at and updated_at to
+// at. The default GORM scope excludes soft-deleted rows, so a removed comment yields
+// zero affected rows and ErrNotFound.
+func (r *commentRepo) UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error {
+	res := r.db.WithContext(ctx).Model(&commentRow{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"content":    content,
+			"edited_at":  at,
+			"updated_at": at,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("update comment content: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Like inserts a (comment, uid) like and bumps like_count in one transaction. A
 // duplicate like by the same uid is ignored (ON CONFLICT DO NOTHING), keeping the
 // count consistent. It returns the resulting like_count.
@@ -237,6 +268,7 @@ func (r *commentRepo) CreateReport(ctx context.Context, rep *domain.CommentRepor
 		CommentID:   rep.CommentID,
 		ReporterUID: rep.ReporterUID,
 		Reason:      rep.Reason,
+		Status:      int16(domain.ReportStatusOpen),
 		CreatedAt:   rep.CreatedAt,
 	}
 	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row)
@@ -257,6 +289,68 @@ func (r *commentRepo) SetStatus(ctx context.Context, commentID domain.ID, status
 		UpdateColumn("status", int16(status))
 	if res.Error != nil {
 		return fmt.Errorf("set comment status: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListReports returns reports against commentID newest-first, using the standard
+// id-cursor pagination. An optional status filter narrows to one triage state.
+func (r *commentRepo) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error) {
+	page.Normalize()
+	q := r.db.WithContext(ctx).Model(&commentReportRow{}).
+		Where("comment_id = ?", commentID).
+		Order("created_at DESC, id DESC").
+		Limit(page.Limit + 1)
+	if status != nil {
+		q = q.Where("status = ?", int16(*status))
+	}
+	if page.Cursor != "" {
+		q = q.Where("id < ?", page.Cursor)
+	}
+	var rows []commentReportRow
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, "", fmt.Errorf("list comment reports: %w", err)
+	}
+	cursor := ""
+	if len(rows) > page.Limit {
+		cursor = rows[page.Limit-1].ID.String()
+		rows = rows[:page.Limit]
+	}
+	out := make([]*domain.CommentReport, len(rows))
+	for i := range rows {
+		out[i] = commentReportRowToDomain(&rows[i])
+	}
+	return out, cursor, nil
+}
+
+// GetReport loads a single report by id, returning ErrNotFound when absent.
+func (r *commentRepo) GetReport(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error) {
+	var row commentReportRow
+	err := r.db.WithContext(ctx).First(&row, "id = ?", reportID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get comment report: %w", err)
+	}
+	return commentReportRowToDomain(&row), nil
+}
+
+// ResolveReport transitions a report to a terminal status and stamps resolved_at/by,
+// returning ErrNotFound when no row matches.
+func (r *commentRepo) ResolveReport(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error {
+	res := r.db.WithContext(ctx).Model(&commentReportRow{}).
+		Where("id = ?", reportID).
+		Updates(map[string]any{
+			"status":      int16(status),
+			"resolved_at": at,
+			"resolved_by": resolverUID,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("resolve comment report: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return ErrNotFound

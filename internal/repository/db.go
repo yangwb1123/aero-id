@@ -135,6 +135,7 @@ type commentRow struct {
 	Status     int16          `gorm:"column:status"`
 	CreatedAt  time.Time      `gorm:"column:created_at"`
 	UpdatedAt  time.Time      `gorm:"column:updated_at"`
+	EditedAt   *time.Time     `gorm:"column:edited_at"`
 	DeletedAt  gorm.DeletedAt `gorm:"column:deleted_at;index"`
 }
 
@@ -154,6 +155,7 @@ func commentRowToDomain(r *commentRow) *domain.Comment {
 		Status:     domain.CommentStatus(r.Status),
 		CreatedAt:  r.CreatedAt,
 		UpdatedAt:  r.UpdatedAt,
+		EditedAt:   r.EditedAt,
 	}
 }
 
@@ -171,6 +173,7 @@ func commentDomainToRow(c *domain.Comment) *commentRow {
 		Status:     int16(c.Status),
 		CreatedAt:  c.CreatedAt,
 		UpdatedAt:  c.UpdatedAt,
+		EditedAt:   c.EditedAt,
 	}
 }
 
@@ -195,14 +198,30 @@ func (fileShareRow) TableName() string { return "file_shares" }
 
 // commentReportRow maps the comment_reports table: one row per (comment, reporter).
 type commentReportRow struct {
-	ID          uuid.UUID `gorm:"column:id;primaryKey"`
-	CommentID   uuid.UUID `gorm:"column:comment_id"`
-	ReporterUID string    `gorm:"column:reporter_uid"`
-	Reason      string    `gorm:"column:reason"`
-	CreatedAt   time.Time `gorm:"column:created_at"`
+	ID          uuid.UUID  `gorm:"column:id;primaryKey"`
+	CommentID   uuid.UUID  `gorm:"column:comment_id"`
+	ReporterUID string     `gorm:"column:reporter_uid"`
+	Reason      string     `gorm:"column:reason"`
+	Status      int16      `gorm:"column:status"`
+	CreatedAt   time.Time  `gorm:"column:created_at"`
+	ResolvedAt  *time.Time `gorm:"column:resolved_at"`
+	ResolvedBy  string     `gorm:"column:resolved_by"`
 }
 
 func (commentReportRow) TableName() string { return "comment_reports" }
+
+func commentReportRowToDomain(r *commentReportRow) *domain.CommentReport {
+	return &domain.CommentReport{
+		ID:          r.ID,
+		CommentID:   r.CommentID,
+		ReporterUID: r.ReporterUID,
+		Reason:      r.Reason,
+		Status:      domain.ReportStatus(r.Status),
+		CreatedAt:   r.CreatedAt,
+		ResolvedAt:  r.ResolvedAt,
+		ResolvedBy:  r.ResolvedBy,
+	}
+}
 
 // notificationRow maps the notifications table: one row per recipient per event.
 type notificationRow struct {

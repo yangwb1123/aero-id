@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"testing"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/outbox"
@@ -338,6 +339,201 @@ func TestCommentService_HiddenCommentExcludedFromList(t *testing.T) {
 			t.Fatalf("non-visible comment leaked into listing: status=%d", cm.Status)
 		}
 	}
+}
+
+func TestCommentService_EditByAuthorSucceeds(t *testing.T) {
+	id := idgen.NewID()
+	var gotContent string
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author", Content: "old", Status: domain.CommentStatusNormal}, nil
+		},
+		UpdateContentFn: func(_ context.Context, _ domain.ID, content string, _ time.Time) error {
+			gotContent = content
+			return nil
+		},
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	c, err := svc.Edit(ctx, id, "new content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotContent != "new content" || c.Content != "new content" {
+		t.Fatalf("content not updated: repo=%q resp=%q", gotContent, c.Content)
+	}
+	if c.EditedAt == nil {
+		t.Fatal("edited_at not stamped on the returned comment")
+	}
+}
+
+func TestCommentService_EditByNonAuthorIsForbidden(t *testing.T) {
+	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+		return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
+	}}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "not-author")
+	_, err := svc.Edit(ctx, idgen.NewID(), "x")
+	assertAppCode(t, err, 403)
+}
+
+func TestCommentService_EditEmptyContentIsBadRequest(t *testing.T) {
+	svc := service.NewCommentService(&mocks.CommentRepo{}, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	_, err := svc.Edit(ctx, idgen.NewID(), "")
+	assertAppCode(t, err, 400)
+}
+
+func TestCommentService_EditRemovedCommentIsNotFound(t *testing.T) {
+	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.Comment, error) {
+		return nil, repository.ErrNotFound
+	}}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	_, err := svc.Edit(ctx, idgen.NewID(), "x")
+	assertAppCode(t, err, 404)
+}
+
+func TestCommentService_EditHiddenCommentIsConflict(t *testing.T) {
+	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+		return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusHidden}, nil
+	}}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	_, err := svc.Edit(ctx, idgen.NewID(), "x")
+	assertAppCode(t, err, 409)
+}
+
+func TestCommentService_ListReportsAuthorScoped(t *testing.T) {
+	commentID := idgen.NewID()
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author"}, nil
+		},
+		ListReportsFn: func(_ context.Context, _ domain.ID, _ *domain.ReportStatus, _ domain.Page) ([]*domain.CommentReport, string, error) {
+			return []*domain.CommentReport{
+				{ID: idgen.NewID(), CommentID: commentID, ReporterUID: "r1", Status: domain.ReportStatusOpen},
+				{ID: idgen.NewID(), CommentID: commentID, ReporterUID: "r2", Status: domain.ReportStatusOpen},
+			}, "next", nil
+		},
+	}
+	var requested []string
+	dir := &mocks.UserDir{GetUsersFn: func(_ context.Context, uids []string) (map[string]sso.User, error) {
+		requested = uids
+		return map[string]sso.User{}, nil
+	}}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, dir)
+
+	// The comment author may list reports.
+	ctx := service.WithActor(context.Background(), "author")
+	list, err := svc.ListReports(ctx, commentID, nil, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Reports) != 2 || list.NextCursor != "next" {
+		t.Fatalf("unexpected report list: %+v cursor=%q", list.Reports, list.NextCursor)
+	}
+	if len(requested) != 2 {
+		t.Fatalf("expected 2 reporter uids enriched, got %v", requested)
+	}
+
+	// A non-author is forbidden.
+	other := service.WithActor(context.Background(), "stranger")
+	if _, err := svc.ListReports(other, commentID, nil, domain.Page{}); err == nil {
+		assertAppCode(t, err, 403)
+	} else {
+		assertAppCode(t, err, 403)
+	}
+}
+
+func TestCommentService_ResolveReportTransitionsAndHides(t *testing.T) {
+	reportID := idgen.NewID()
+	commentID := idgen.NewID()
+	var resolvedStatus domain.ReportStatus
+	var resolver string
+	var hiddenComment *domain.ID
+	comments := &mocks.CommentRepo{
+		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
+			return &domain.CommentReport{ID: reportID, CommentID: commentID, Status: domain.ReportStatusOpen}, nil
+		},
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
+		},
+		ResolveReportFn: func(_ context.Context, _ domain.ID, s domain.ReportStatus, uid string, _ time.Time) error {
+			resolvedStatus = s
+			resolver = uid
+			return nil
+		},
+		SetStatusFn: func(_ context.Context, cid domain.ID, _ domain.CommentStatus) error {
+			hiddenComment = &cid
+			return nil
+		},
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	if err := svc.ResolveReport(ctx, reportID, domain.ReportStatusResolved); err != nil {
+		t.Fatal(err)
+	}
+	if resolvedStatus != domain.ReportStatusResolved || resolver != "author" {
+		t.Fatalf("resolve recorded wrong: status=%d by=%q", resolvedStatus, resolver)
+	}
+	if hiddenComment == nil || *hiddenComment != commentID {
+		t.Fatal("resolving a report should hide the offending comment")
+	}
+}
+
+func TestCommentService_ResolveReportDismissLeavesCommentVisible(t *testing.T) {
+	comments := &mocks.CommentRepo{
+		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
+			return &domain.CommentReport{ID: idgen.NewID(), CommentID: idgen.NewID(), Status: domain.ReportStatusOpen}, nil
+		},
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
+		},
+		SetStatusFn: func(_ context.Context, _ domain.ID, _ domain.CommentStatus) error {
+			t.Fatal("dismiss must not change the comment status")
+			return nil
+		},
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	if err := svc.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusDismissed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCommentService_ResolveReportByNonAuthorIsForbidden(t *testing.T) {
+	comments := &mocks.CommentRepo{
+		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
+			return &domain.CommentReport{ID: idgen.NewID(), CommentID: idgen.NewID(), Status: domain.ReportStatusOpen}, nil
+		},
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
+		},
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "stranger")
+	err := svc.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusResolved)
+	assertAppCode(t, err, 403)
+}
+
+func TestCommentService_ResolveUnknownReportIsNotFound(t *testing.T) {
+	comments := &mocks.CommentRepo{
+		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
+			return nil, repository.ErrNotFound
+		},
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	err := svc.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusResolved)
+	assertAppCode(t, err, 404)
+}
+
+func TestCommentService_ResolveReportInvalidStatusIsBadRequest(t *testing.T) {
+	svc := service.NewCommentService(&mocks.CommentRepo{}, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	err := svc.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusOpen)
+	assertAppCode(t, err, 400)
 }
 
 func TestCommentService_LikeForbiddenForPrivateTarget(t *testing.T) {

@@ -23,7 +23,13 @@ func NewCommentHandler(comments service.CommentService) *CommentHandler {
 func (h *CommentHandler) RegisterRoutes(r Routes) {
 	r.Auth.POST("/comments", h.Create)
 	r.Auth.GET("/comments", h.List)
+	// Static segment registered before the ":id" param so gin routes
+	// /comments/reports/... to the resolve handler rather than treating
+	// "reports" as a comment id.
+	r.Auth.POST("/comments/reports/:reportId/resolve", h.ResolveReport)
 	r.Auth.GET("/comments/:id/replies", h.Replies)
+	r.Auth.GET("/comments/:id/reports", h.ListReports)
+	r.Auth.PATCH("/comments/:id", h.Edit)
 	r.Auth.DELETE("/comments/:id", h.Delete)
 	r.Auth.POST("/comments/:id/like", h.Like)
 	r.Auth.DELETE("/comments/:id/like", h.Unlike)
@@ -97,6 +103,29 @@ func (h *CommentHandler) Replies(c *gin.Context) {
 		return
 	}
 	renderCommentList(c, list)
+}
+
+type editCommentRequest struct {
+	Content string `json:"content"`
+}
+
+func (h *CommentHandler) Edit(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var req editCommentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("comment.invalid", "invalid request body"))
+		return
+	}
+	updated, err := h.comments.Edit(c.Request.Context(), id, req.Content)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, toCommentResponse(updated))
 }
 
 func (h *CommentHandler) Delete(c *gin.Context) {
@@ -188,6 +217,106 @@ func (h *CommentHandler) Unhide(c *gin.Context) {
 	httpx.NoContent(c)
 }
 
+// reportStatusNames maps the lifecycle enum to/from the API's string form.
+var reportStatusByName = map[string]domain.ReportStatus{
+	"open":      domain.ReportStatusOpen,
+	"resolved":  domain.ReportStatusResolved,
+	"dismissed": domain.ReportStatusDismissed,
+}
+
+func reportStatusName(s domain.ReportStatus) string {
+	switch s {
+	case domain.ReportStatusResolved:
+		return "resolved"
+	case domain.ReportStatusDismissed:
+		return "dismissed"
+	default:
+		return "open"
+	}
+}
+
+func (h *CommentHandler) ListReports(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var status *domain.ReportStatus
+	if raw := c.Query("status"); raw != "" {
+		s, ok := reportStatusByName[raw]
+		if !ok {
+			httpx.WriteError(c, apperr.BadRequest("comment.invalid", "invalid status filter"))
+			return
+		}
+		status = &s
+	}
+	list, err := h.comments.ListReports(c.Request.Context(), id, status, httpx.PageFromQuery(c))
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	items := make([]reportResponse, 0, len(list.Reports))
+	for _, r := range list.Reports {
+		items = append(items, toReportResponse(r))
+	}
+	httpx.OK(c, gin.H{
+		"reports":     items,
+		"users":       toUserMap(list.Users),
+		"next_cursor": list.NextCursor,
+	})
+}
+
+type resolveReportRequest struct {
+	Status string `json:"status"`
+}
+
+func (h *CommentHandler) ResolveReport(c *gin.Context) {
+	reportID, err := parseID(c, "reportId")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var req resolveReportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("comment.invalid", "invalid request body"))
+		return
+	}
+	status, ok := reportStatusByName[req.Status]
+	if !ok {
+		httpx.WriteError(c, apperr.BadRequest("comment.invalid", "status must be resolved or dismissed"))
+		return
+	}
+	if err := h.comments.ResolveReport(c.Request.Context(), reportID, status); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+type reportResponse struct {
+	ID          string     `json:"id"`
+	CommentID   string     `json:"comment_id"`
+	ReporterUID string     `json:"reporter_uid"`
+	Reason      string     `json:"reason"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy  string     `json:"resolved_by,omitempty"`
+}
+
+func toReportResponse(r *domain.CommentReport) reportResponse {
+	return reportResponse{
+		ID:          r.ID.String(),
+		CommentID:   r.CommentID.String(),
+		ReporterUID: r.ReporterUID,
+		Reason:      r.Reason,
+		Status:      reportStatusName(r.Status),
+		CreatedAt:   r.CreatedAt,
+		ResolvedAt:  r.ResolvedAt,
+		ResolvedBy:  r.ResolvedBy,
+	}
+}
+
 func renderCommentList(c *gin.Context, list *service.CommentList) {
 	items := make([]commentResponse, 0, len(list.Comments))
 	for _, cm := range list.Comments {
@@ -201,17 +330,18 @@ func renderCommentList(c *gin.Context, list *service.CommentList) {
 }
 
 type commentResponse struct {
-	ID         string    `json:"id"`
-	OwnerUID   string    `json:"owner_uid"`
-	TargetType string    `json:"target_type"`
-	TargetID   string    `json:"target_id"`
-	ParentID   *string   `json:"parent_id,omitempty"`
-	RootID     string    `json:"root_id"`
-	Content    string    `json:"content"`
-	LikeCount  int       `json:"like_count"`
-	ReplyCount int       `json:"reply_count"`
-	Status     int16     `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         string     `json:"id"`
+	OwnerUID   string     `json:"owner_uid"`
+	TargetType string     `json:"target_type"`
+	TargetID   string     `json:"target_id"`
+	ParentID   *string    `json:"parent_id,omitempty"`
+	RootID     string     `json:"root_id"`
+	Content    string     `json:"content"`
+	LikeCount  int        `json:"like_count"`
+	ReplyCount int        `json:"reply_count"`
+	Status     int16      `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
 }
 
 func toCommentResponse(c *domain.Comment) commentResponse {
@@ -226,6 +356,7 @@ func toCommentResponse(c *domain.Comment) commentResponse {
 		ReplyCount: c.ReplyCount,
 		Status:     int16(c.Status),
 		CreatedAt:  c.CreatedAt,
+		EditedAt:   c.EditedAt,
 	}
 	if c.ParentID != nil {
 		s := c.ParentID.String()

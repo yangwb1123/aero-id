@@ -162,10 +162,14 @@ type CommentRepo struct {
 	ListRepliesFn         func(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	IncReplyCountFn       func(ctx context.Context, parentID domain.ID) error
 	SoftDeleteFn          func(ctx context.Context, id domain.ID) error
+	UpdateContentFn       func(ctx context.Context, id domain.ID, content string, at time.Time) error
 	LikeFn                func(ctx context.Context, commentID domain.ID, uid string) (int, error)
 	UnlikeFn              func(ctx context.Context, commentID domain.ID, uid string) (int, error)
 	CreateReportFn        func(ctx context.Context, r *domain.CommentReport) error
 	SetStatusFn           func(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
+	ListReportsFn         func(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error)
+	GetReportFn           func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
+	ResolveReportFn       func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
@@ -190,6 +194,12 @@ func (m *CommentRepo) IncReplyCount(ctx context.Context, parentID domain.ID) err
 func (m *CommentRepo) SoftDelete(ctx context.Context, id domain.ID) error {
 	return m.SoftDeleteFn(ctx, id)
 }
+func (m *CommentRepo) UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error {
+	if m.UpdateContentFn == nil {
+		return nil
+	}
+	return m.UpdateContentFn(ctx, id, content, at)
+}
 func (m *CommentRepo) Like(ctx context.Context, commentID domain.ID, uid string) (int, error) {
 	return m.LikeFn(ctx, commentID, uid)
 }
@@ -210,6 +220,28 @@ func (m *CommentRepo) SetStatus(ctx context.Context, commentID domain.ID, status
 		return nil
 	}
 	return m.SetStatusFn(ctx, commentID, status)
+}
+
+// ListReports, GetReport, and ResolveReport default to "empty queue / not found / no-op"
+// when their Fn is unset, so tests that don't exercise the moderation queue need not
+// wire them.
+func (m *CommentRepo) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error) {
+	if m.ListReportsFn == nil {
+		return nil, "", nil
+	}
+	return m.ListReportsFn(ctx, commentID, status, page)
+}
+func (m *CommentRepo) GetReport(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error) {
+	if m.GetReportFn == nil {
+		return nil, repository.ErrNotFound
+	}
+	return m.GetReportFn(ctx, reportID)
+}
+func (m *CommentRepo) ResolveReport(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error {
+	if m.ResolveReportFn == nil {
+		return nil
+	}
+	return m.ResolveReportFn(ctx, reportID, status, resolverUID, at)
 }
 
 type NotificationRepo struct {

@@ -110,6 +110,14 @@ type CommentList struct {
 	Users      map[string]sso.User
 }
 
+// ReportList is a page of moderation reports against a comment, plus resolved
+// display info for the reporters.
+type ReportList struct {
+	Reports    []*domain.CommentReport
+	NextCursor string
+	Users      map[string]sso.User
+}
+
 // NotificationList is the recipient feed plus resolved actor display info.
 type NotificationList struct {
 	Notifications []*domain.Notification
@@ -170,12 +178,19 @@ type CommentService interface {
 	Create(ctx context.Context, in CreateCommentInput) (*domain.Comment, error)
 	List(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) (*CommentList, error)
 	Replies(ctx context.Context, rootID domain.ID, page domain.Page) (*CommentList, error)
+	// Edit rewrites the content of a comment the caller authored.
+	Edit(ctx context.Context, id domain.ID, newContent string) (*domain.Comment, error)
 	Delete(ctx context.Context, id domain.ID) error
 	Like(ctx context.Context, id domain.ID) (*ReactionResult, error)
 	Unlike(ctx context.Context, id domain.ID) (*ReactionResult, error)
 	Report(ctx context.Context, id domain.ID, reason string) error
 	Hide(ctx context.Context, id domain.ID) error
 	Unhide(ctx context.Context, id domain.ID) error
+	// ListReports returns the moderation queue for a comment, scoped to its author.
+	ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) (*ReportList, error)
+	// ResolveReport triages a report (resolve/dismiss); only the reported comment's
+	// author may do so.
+	ResolveReport(ctx context.Context, reportID domain.ID, status domain.ReportStatus) error
 }
 
 // ---- shared helpers (unexported; reused across the three service impls) ----

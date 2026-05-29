@@ -20,6 +20,8 @@ type Comment struct {
 	Status     CommentStatus
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	// EditedAt is the time the author last edited the content; nil if never edited.
+	EditedAt *time.Time
 }
 
 // CommentReport is a single user's report against a comment. The (CommentID,
@@ -29,7 +31,11 @@ type CommentReport struct {
 	CommentID   ID
 	ReporterUID string
 	Reason      string
+	Status      ReportStatus
 	CreatedAt   time.Time
+	// ResolvedAt / ResolvedBy are set when a report leaves the open state.
+	ResolvedAt *time.Time
+	ResolvedBy string
 }
 
 // ErrNestingTooDeep is returned by ValidateNewComment when a reply would create

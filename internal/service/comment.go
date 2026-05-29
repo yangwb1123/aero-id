@@ -158,6 +158,44 @@ func (s *commentService) Replies(ctx context.Context, rootID domain.ID, page dom
 	return &CommentList{Comments: cs, NextCursor: next, Users: users}, nil
 }
 
+// Edit rewrites the content of a comment. Only the comment's author may edit it;
+// content must be non-empty; a soft-deleted comment cannot be edited (it surfaces as
+// NotFound from the repository), and a hidden comment is treated as immutable until
+// unhidden (Conflict). The updated comment is returned.
+func (s *commentService) Edit(ctx context.Context, id domain.ID, newContent string) (*domain.Comment, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if newContent == "" {
+		return nil, apperr.BadRequest("comment.invalid", "content is required")
+	}
+	c, err := s.comments.Get(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return nil, apperr.NotFound("comment.not_found", "comment not found")
+	}
+	if err != nil {
+		return nil, apperr.Internal("comment.get_failed", "failed to load comment").Wrap(err)
+	}
+	if c.OwnerUID != actor {
+		return nil, apperr.Forbidden("comment.forbidden", "only the author can edit this comment")
+	}
+	if c.Status != domain.CommentStatusNormal {
+		return nil, apperr.Conflict("comment.not_editable", "comment cannot be edited in its current state")
+	}
+	now := time.Now().UTC()
+	if err := s.comments.UpdateContent(ctx, id, newContent, now); err != nil {
+		if stderrors.Is(err, repository.ErrNotFound) {
+			return nil, apperr.NotFound("comment.not_found", "comment not found")
+		}
+		return nil, apperr.Internal("comment.edit_failed", "failed to edit comment").Wrap(err)
+	}
+	c.Content = newContent
+	c.UpdatedAt = now
+	c.EditedAt = &now
+	return c, nil
+}
+
 func (s *commentService) Delete(ctx context.Context, id domain.ID) error {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -295,6 +333,97 @@ func (s *commentService) setStatusAsAuthor(ctx context.Context, id domain.ID, st
 		return apperr.Internal("comment.status_failed", "failed to update comment status").Wrap(err)
 	}
 	return nil
+}
+
+// ListReports returns the moderation queue for a comment. AUTHZ: aero-id has no role
+// system, so the queue is scoped to the reported comment's author — the owner of a
+// comment may see and triage reports filed against it (the same author-scoped
+// self-moderation model as Hide/Unhide). An optional status filter narrows the page.
+func (s *commentService) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) (*ReportList, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.comments.Get(ctx, commentID)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return nil, apperr.NotFound("comment.not_found", "comment not found")
+	}
+	if err != nil {
+		return nil, apperr.Internal("comment.get_failed", "failed to load comment").Wrap(err)
+	}
+	if c.OwnerUID != actor {
+		return nil, apperr.Forbidden("comment.forbidden", "only the comment author may view its reports")
+	}
+	reports, next, err := s.comments.ListReports(ctx, commentID, status, page)
+	if err != nil {
+		return nil, apperr.Internal("comment.report_list_failed", "failed to list reports").Wrap(err)
+	}
+	users, err := enrichUsers(ctx, s.dir, reporterUIDs(reports))
+	if err != nil {
+		return nil, apperr.Internal("comment.enrich_failed", "failed to resolve reporters").Wrap(err)
+	}
+	return &ReportList{Reports: reports, NextCursor: next, Users: users}, nil
+}
+
+// ResolveReport triages a report by transitioning it to resolved or dismissed. AUTHZ:
+// only the reported comment's author may resolve. Dismissing leaves the comment as-is;
+// resolving hides the offending comment (an explicit, simple moderation action).
+func (s *commentService) ResolveReport(ctx context.Context, reportID domain.ID, status domain.ReportStatus) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	if status != domain.ReportStatusResolved && status != domain.ReportStatusDismissed {
+		return apperr.BadRequest("comment.invalid", "status must be resolved or dismissed")
+	}
+	rep, err := s.comments.GetReport(ctx, reportID)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("comment.report_not_found", "report not found")
+	}
+	if err != nil {
+		return apperr.Internal("comment.get_failed", "failed to load report").Wrap(err)
+	}
+	c, err := s.comments.Get(ctx, rep.CommentID)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("comment.not_found", "comment not found")
+	}
+	if err != nil {
+		return apperr.Internal("comment.get_failed", "failed to load comment").Wrap(err)
+	}
+	if c.OwnerUID != actor {
+		return apperr.Forbidden("comment.forbidden", "only the comment author may resolve its reports")
+	}
+	now := time.Now().UTC()
+	if err := s.comments.ResolveReport(ctx, reportID, status, actor, now); err != nil {
+		if stderrors.Is(err, repository.ErrNotFound) {
+			return apperr.NotFound("comment.report_not_found", "report not found")
+		}
+		return apperr.Internal("comment.resolve_failed", "failed to resolve report").Wrap(err)
+	}
+	// Resolving a report hides the offending comment; dismissing leaves it visible.
+	if status == domain.ReportStatusResolved && c.Status == domain.CommentStatusNormal {
+		if err := s.comments.SetStatus(ctx, rep.CommentID, domain.CommentStatusHidden); err != nil {
+			if stderrors.Is(err, repository.ErrNotFound) {
+				return apperr.NotFound("comment.not_found", "comment not found")
+			}
+			return apperr.Internal("comment.status_failed", "failed to update comment status").Wrap(err)
+		}
+	}
+	return nil
+}
+
+// reporterUIDs returns the distinct reporter uids preserving first-seen order.
+func reporterUIDs(rs []*domain.CommentReport) []string {
+	seen := make(map[string]struct{}, len(rs))
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		if _, ok := seen[r.ReporterUID]; ok {
+			continue
+		}
+		seen[r.ReporterUID] = struct{}{}
+		out = append(out, r.ReporterUID)
+	}
+	return out
 }
 
 // authorUIDs returns the distinct owner_uids preserving first-seen order.

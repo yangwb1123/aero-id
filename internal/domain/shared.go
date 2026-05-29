@@ -46,6 +46,20 @@ const (
 	CommentStatusHidden  CommentStatus = 3
 )
 
+// ReportStatus tracks the triage lifecycle of a comment report.
+type ReportStatus int16
+
+const (
+	ReportStatusOpen      ReportStatus = 1
+	ReportStatusResolved  ReportStatus = 2
+	ReportStatusDismissed ReportStatus = 3
+)
+
+// IsTerminal reports whether s is a closed (resolved/dismissed) report state.
+func (s ReportStatus) IsTerminal() bool {
+	return s == ReportStatusResolved || s == ReportStatusDismissed
+}
+
 // TargetType is the polymorphic discriminator for what a comment is attached to.
 type TargetType string
 
