@@ -133,6 +133,8 @@ type CommentRepo struct {
 	SoftDeleteFn          func(ctx context.Context, id domain.ID) error
 	LikeFn                func(ctx context.Context, commentID domain.ID, uid string) (int, error)
 	UnlikeFn              func(ctx context.Context, commentID domain.ID, uid string) (int, error)
+	CreateReportFn        func(ctx context.Context, r *domain.CommentReport) error
+	SetStatusFn           func(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
@@ -159,6 +161,21 @@ func (m *CommentRepo) Like(ctx context.Context, commentID domain.ID, uid string)
 }
 func (m *CommentRepo) Unlike(ctx context.Context, commentID domain.ID, uid string) (int, error) {
 	return m.UnlikeFn(ctx, commentID, uid)
+}
+
+// CreateReport and SetStatus default to success when their Fn is unset, so tests that
+// don't exercise reporting/moderation need not wire them.
+func (m *CommentRepo) CreateReport(ctx context.Context, r *domain.CommentReport) error {
+	if m.CreateReportFn == nil {
+		return nil
+	}
+	return m.CreateReportFn(ctx, r)
+}
+func (m *CommentRepo) SetStatus(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error {
+	if m.SetStatusFn == nil {
+		return nil
+	}
+	return m.SetStatusFn(ctx, commentID, status)
 }
 
 type Storage struct {

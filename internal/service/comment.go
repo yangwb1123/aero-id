@@ -214,6 +214,79 @@ func (s *commentService) react(ctx context.Context, id domain.ID, like bool) (in
 	return count, nil
 }
 
+// Report files a report against a comment by the authenticated actor. Any user who
+// can read the comment's target may report it; a repeat report by the same user is a
+// Conflict.
+func (s *commentService) Report(ctx context.Context, id domain.ID, reason string) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	if reason == "" {
+		return apperr.BadRequest("comment.invalid", "reason is required")
+	}
+	c, err := s.comments.Get(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("comment.not_found", "comment not found")
+	}
+	if err != nil {
+		return apperr.Internal("comment.get_failed", "failed to load comment").Wrap(err)
+	}
+	if err := s.assertTargetReadable(ctx, actor, c.TargetType, c.TargetID); err != nil {
+		return err
+	}
+	report := &domain.CommentReport{
+		ID:          idgen.NewID(),
+		CommentID:   id,
+		ReporterUID: actor,
+		Reason:      reason,
+		CreatedAt:   time.Now().UTC(),
+	}
+	err = s.comments.CreateReport(ctx, report)
+	if stderrors.Is(err, repository.ErrDuplicate) {
+		return apperr.Conflict("comment.already_reported", "comment already reported by this user")
+	}
+	if err != nil {
+		return apperr.Internal("comment.report_failed", "failed to report comment").Wrap(err)
+	}
+	return nil
+}
+
+// Hide marks a comment hidden so it is excluded from listings. Only the comment's
+// author may hide it (author-scoped self-moderation; there is no admin role).
+func (s *commentService) Hide(ctx context.Context, id domain.ID) error {
+	return s.setStatusAsAuthor(ctx, id, domain.CommentStatusHidden)
+}
+
+// Unhide restores a hidden comment to normal visibility. Author-only.
+func (s *commentService) Unhide(ctx context.Context, id domain.ID) error {
+	return s.setStatusAsAuthor(ctx, id, domain.CommentStatusNormal)
+}
+
+func (s *commentService) setStatusAsAuthor(ctx context.Context, id domain.ID, status domain.CommentStatus) error {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return err
+	}
+	c, err := s.comments.Get(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("comment.not_found", "comment not found")
+	}
+	if err != nil {
+		return apperr.Internal("comment.get_failed", "failed to load comment").Wrap(err)
+	}
+	if c.OwnerUID != actor {
+		return apperr.Forbidden("comment.forbidden", "only the author can change this comment's visibility")
+	}
+	if err := s.comments.SetStatus(ctx, id, status); err != nil {
+		if stderrors.Is(err, repository.ErrNotFound) {
+			return apperr.NotFound("comment.not_found", "comment not found")
+		}
+		return apperr.Internal("comment.status_failed", "failed to update comment status").Wrap(err)
+	}
+	return nil
+}
+
 // authorUIDs returns the distinct owner_uids preserving first-seen order.
 func authorUIDs(cs []*domain.Comment) []string {
 	seen := make(map[string]struct{}, len(cs))

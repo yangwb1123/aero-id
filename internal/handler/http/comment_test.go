@@ -21,6 +21,9 @@ type fakeCommentService struct {
 	deleteFn  func(context.Context, domain.ID) error
 	likeFn    func(context.Context, domain.ID) (*service.ReactionResult, error)
 	unlikeFn  func(context.Context, domain.ID) (*service.ReactionResult, error)
+	reportFn  func(context.Context, domain.ID, string) error
+	hideFn    func(context.Context, domain.ID) error
+	unhideFn  func(context.Context, domain.ID) error
 }
 
 func (f *fakeCommentService) Create(ctx context.Context, in service.CreateCommentInput) (*domain.Comment, error) {
@@ -32,12 +35,32 @@ func (f *fakeCommentService) List(ctx context.Context, t domain.TargetType, id d
 func (f *fakeCommentService) Replies(ctx context.Context, root domain.ID, p domain.Page) (*service.CommentList, error) {
 	return f.repliesFn(ctx, root, p)
 }
-func (f *fakeCommentService) Delete(ctx context.Context, id domain.ID) error { return f.deleteFn(ctx, id) }
+func (f *fakeCommentService) Delete(ctx context.Context, id domain.ID) error {
+	return f.deleteFn(ctx, id)
+}
 func (f *fakeCommentService) Like(ctx context.Context, id domain.ID) (*service.ReactionResult, error) {
 	return f.likeFn(ctx, id)
 }
 func (f *fakeCommentService) Unlike(ctx context.Context, id domain.ID) (*service.ReactionResult, error) {
 	return f.unlikeFn(ctx, id)
+}
+func (f *fakeCommentService) Report(ctx context.Context, id domain.ID, reason string) error {
+	if f.reportFn == nil {
+		return nil
+	}
+	return f.reportFn(ctx, id, reason)
+}
+func (f *fakeCommentService) Hide(ctx context.Context, id domain.ID) error {
+	if f.hideFn == nil {
+		return nil
+	}
+	return f.hideFn(ctx, id)
+}
+func (f *fakeCommentService) Unhide(ctx context.Context, id domain.ID) error {
+	if f.unhideFn == nil {
+		return nil
+	}
+	return f.unhideFn(ctx, id)
 }
 
 func TestCommentHandler_Create(t *testing.T) {
@@ -118,5 +141,60 @@ func TestCommentHandler_Like(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"like_count":3`) || !strings.Contains(w.Body.String(), `"liked":true`) {
 		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestCommentHandler_Report204(t *testing.T) {
+	var gotReason string
+	svc := &fakeCommentService{reportFn: func(_ context.Context, _ domain.ID, reason string) error {
+		gotReason = reason
+		return nil
+	}}
+	e := serveWithActor(httpapi.NewCommentHandler(svc), "a")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/comments/"+idgen.NewID().String()+"/report", strings.NewReader(`{"reason":"spam"}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+	if gotReason != "spam" {
+		t.Errorf("reason = %q, want spam", gotReason)
+	}
+}
+
+func TestCommentHandler_ReportConflict(t *testing.T) {
+	svc := &fakeCommentService{reportFn: func(context.Context, domain.ID, string) error {
+		return apperr.Conflict("comment.already_reported", "dup")
+	}}
+	e := serveWithActor(httpapi.NewCommentHandler(svc), "a")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/comments/"+idgen.NewID().String()+"/report", strings.NewReader(`{"reason":"spam"}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestCommentHandler_Hide204(t *testing.T) {
+	svc := &fakeCommentService{hideFn: func(context.Context, domain.ID) error { return nil }}
+	e := serveWithActor(httpapi.NewCommentHandler(svc), "a")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/comments/"+idgen.NewID().String()+"/hide", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestCommentHandler_UnhideForbidden(t *testing.T) {
+	svc := &fakeCommentService{unhideFn: func(context.Context, domain.ID) error {
+		return apperr.Forbidden("comment.forbidden", "nope")
+	}}
+	e := serveWithActor(httpapi.NewCommentHandler(svc), "a")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/comments/"+idgen.NewID().String()+"/unhide", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
 	}
 }

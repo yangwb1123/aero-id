@@ -229,6 +229,107 @@ func TestCommentService_LikeAndUnlike(t *testing.T) {
 	}
 }
 
+func TestCommentService_ReportSucceeds(t *testing.T) {
+	target := idgen.NewID()
+	var saved *domain.CommentReport
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: id, OwnerUID: "author", TargetType: domain.TargetTypeFile, TargetID: target}, nil
+		},
+		CreateReportFn: func(_ context.Context, r *domain.CommentReport) error { saved = r; return nil },
+	}
+	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "reporter")
+	if err := svc.Report(ctx, idgen.NewID(), "spam"); err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil || saved.ReporterUID != "reporter" || saved.Reason != "spam" {
+		t.Fatalf("report not persisted correctly: %+v", saved)
+	}
+}
+
+func TestCommentService_ReportDuplicateIsConflict(t *testing.T) {
+	target := idgen.NewID()
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: id, OwnerUID: "author", TargetType: domain.TargetTypeFile, TargetID: target}, nil
+		},
+		CreateReportFn: func(_ context.Context, _ *domain.CommentReport) error { return repository.ErrDuplicate },
+	}
+	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "reporter")
+	err := svc.Report(ctx, idgen.NewID(), "spam")
+	assertAppCode(t, err, 409)
+}
+
+func TestCommentService_ReportBlankReasonIsBadRequest(t *testing.T) {
+	svc := service.NewCommentService(&mocks.CommentRepo{}, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "reporter")
+	err := svc.Report(ctx, idgen.NewID(), "")
+	assertAppCode(t, err, 400)
+}
+
+func TestCommentService_HideByNonAuthorIsForbidden(t *testing.T) {
+	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+		return &domain.Comment{ID: id, OwnerUID: "author"}, nil
+	}}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "not-author")
+	err := svc.Hide(ctx, idgen.NewID())
+	assertAppCode(t, err, 403)
+}
+
+func TestCommentService_HideByAuthorSetsHiddenStatus(t *testing.T) {
+	var gotStatus domain.CommentStatus
+	comments := &mocks.CommentRepo{
+		GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: id, OwnerUID: "author"}, nil
+		},
+		SetStatusFn: func(_ context.Context, _ domain.ID, s domain.CommentStatus) error { gotStatus = s; return nil },
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "author")
+	if err := svc.Hide(ctx, idgen.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	if gotStatus != domain.CommentStatusHidden {
+		t.Fatalf("status = %d, want hidden(%d)", gotStatus, domain.CommentStatusHidden)
+	}
+}
+
+// TestCommentService_HiddenCommentExcludedFromList asserts the service returns only
+// what the repository returns, and that the repository (which filters by status) is
+// what drives visibility: a hidden comment never appears because the repo omits it.
+func TestCommentService_HiddenCommentExcludedFromList(t *testing.T) {
+	target := idgen.NewID()
+	// The repo mock stands in for the status-filtered query: it returns only the
+	// visible comment, never the hidden one.
+	comments := &mocks.CommentRepo{ListByTargetFn: func(_ context.Context, _ domain.TargetType, _ domain.ID, _ domain.Page) ([]*domain.Comment, string, error) {
+		return []*domain.Comment{{OwnerUID: "x", Status: domain.CommentStatusNormal}}, "", nil
+	}}
+	dir := &mocks.UserDir{GetUsersFn: func(_ context.Context, uids []string) (map[string]sso.User, error) {
+		out := map[string]sso.User{}
+		for _, u := range uids {
+			out[u] = sso.User{UID: u}
+		}
+		return out, nil
+	}}
+	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, dir)
+	ctx := service.WithActor(context.Background(), "viewer")
+	list, err := svc.List(ctx, domain.TargetTypeFile, target, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Comments) != 1 {
+		t.Fatalf("expected 1 visible comment, got %d", len(list.Comments))
+	}
+	for _, cm := range list.Comments {
+		if cm.Status != domain.CommentStatusNormal {
+			t.Fatalf("non-visible comment leaked into listing: status=%d", cm.Status)
+		}
+	}
+}
+
 func TestCommentService_LikeForbiddenForPrivateTarget(t *testing.T) {
 	target := idgen.NewID()
 	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {

@@ -22,6 +22,16 @@ type Comment struct {
 	UpdatedAt  time.Time
 }
 
+// CommentReport is a single user's report against a comment. The (CommentID,
+// ReporterUID) pair is unique so a user can report a given comment at most once.
+type CommentReport struct {
+	ID          ID
+	CommentID   ID
+	ReporterUID string
+	Reason      string
+	CreatedAt   time.Time
+}
+
 // ErrNestingTooDeep is returned by ValidateNewComment when a reply would create
 // a depth >= 3 chain (root → reply → reply-of-reply).
 var ErrNestingTooDeep = errors.New("comment nesting must not exceed two levels")

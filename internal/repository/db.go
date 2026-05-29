@@ -14,6 +14,10 @@ import (
 // ErrNotFound is returned by repository methods when no row matches.
 var ErrNotFound = errors.New("repository: not found")
 
+// ErrDuplicate is returned when an insert violates a uniqueness constraint that the
+// caller is expected to treat as a benign conflict (e.g. a repeated report).
+var ErrDuplicate = errors.New("repository: duplicate")
+
 // fileRow is the GORM-mapped representation of the files table.
 type fileRow struct {
 	ID          uuid.UUID         `gorm:"column:id;primaryKey"`
@@ -188,3 +192,14 @@ type fileShareRow struct {
 }
 
 func (fileShareRow) TableName() string { return "file_shares" }
+
+// commentReportRow maps the comment_reports table: one row per (comment, reporter).
+type commentReportRow struct {
+	ID          uuid.UUID `gorm:"column:id;primaryKey"`
+	CommentID   uuid.UUID `gorm:"column:comment_id"`
+	ReporterUID string    `gorm:"column:reporter_uid"`
+	Reason      string    `gorm:"column:reason"`
+	CreatedAt   time.Time `gorm:"column:created_at"`
+}
+
+func (commentReportRow) TableName() string { return "comment_reports" }

@@ -26,6 +26,12 @@ type CommentRepository interface {
 	// like by the same uid is a no-op (idempotent). Unlike is the inverse.
 	Like(ctx context.Context, commentID domain.ID, uid string) (likeCount int, err error)
 	Unlike(ctx context.Context, commentID domain.ID, uid string) (likeCount int, err error)
+	// CreateReport records a report. A repeat report by the same reporter for the same
+	// comment violates the (comment_id, reporter_uid) unique constraint and is surfaced
+	// as ErrDuplicate.
+	CreateReport(ctx context.Context, r *domain.CommentReport) error
+	// SetStatus updates a comment's moderation status. Returns ErrNotFound if no row matches.
+	SetStatus(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
 }
 
 type commentRepo struct{ db *gorm.DB }
@@ -78,7 +84,7 @@ func (r *commentRepo) Get(ctx context.Context, id domain.ID) (*domain.Comment, e
 func (r *commentRepo) ListByTarget(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error) {
 	page.Normalize()
 	q := r.db.WithContext(ctx).
-		Where("target_type = ? AND target_id = ? AND parent_id IS NULL", string(t), target).
+		Where("target_type = ? AND target_id = ? AND parent_id IS NULL AND status = ?", string(t), target, int16(domain.CommentStatusNormal)).
 		Order("created_at DESC, id DESC").
 		Limit(page.Limit + 1)
 	if page.Cursor != "" {
@@ -103,7 +109,7 @@ func (r *commentRepo) ListByTarget(ctx context.Context, t domain.TargetType, tar
 func (r *commentRepo) ListReplies(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error) {
 	page.Normalize()
 	q := r.db.WithContext(ctx).
-		Where("root_id = ? AND id <> root_id", rootID).
+		Where("root_id = ? AND id <> root_id AND status = ?", rootID, int16(domain.CommentStatusNormal)).
 		Order("created_at ASC, id ASC").
 		Limit(page.Limit + 1)
 	if page.Cursor != "" {
@@ -203,4 +209,41 @@ func (r *commentRepo) Unlike(ctx context.Context, commentID domain.ID, uid strin
 		return 0, fmt.Errorf("unlike comment: %w", err)
 	}
 	return count, nil
+}
+
+// CreateReport inserts a report. A repeat report by the same reporter for the same
+// comment hits the (comment_id, reporter_uid) unique constraint; rather than relying
+// on a driver-specific error code we insert with ON CONFLICT DO NOTHING and report a
+// zero-row insert as ErrDuplicate.
+func (r *commentRepo) CreateReport(ctx context.Context, rep *domain.CommentReport) error {
+	row := &commentReportRow{
+		ID:          rep.ID,
+		CommentID:   rep.CommentID,
+		ReporterUID: rep.ReporterUID,
+		Reason:      rep.Reason,
+		CreatedAt:   rep.CreatedAt,
+	}
+	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+	if res.Error != nil {
+		return fmt.Errorf("create comment report: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrDuplicate
+	}
+	return nil
+}
+
+// SetStatus updates a comment's moderation status, returning ErrNotFound when no
+// (non-deleted) row matches.
+func (r *commentRepo) SetStatus(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error {
+	res := r.db.WithContext(ctx).Model(&commentRow{}).
+		Where("id = ?", commentID).
+		UpdateColumn("status", int16(status))
+	if res.Error != nil {
+		return fmt.Errorf("set comment status: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

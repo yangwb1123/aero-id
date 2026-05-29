@@ -27,6 +27,9 @@ func (h *CommentHandler) RegisterRoutes(r Routes) {
 	r.Auth.DELETE("/comments/:id", h.Delete)
 	r.Auth.POST("/comments/:id/like", h.Like)
 	r.Auth.DELETE("/comments/:id/like", h.Unlike)
+	r.Auth.POST("/comments/:id/report", h.Report)
+	r.Auth.POST("/comments/:id/hide", h.Hide)
+	r.Auth.POST("/comments/:id/unhide", h.Unhide)
 }
 
 type createCommentRequest struct {
@@ -135,6 +138,54 @@ func (h *CommentHandler) Unlike(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"liked": res.Liked, "like_count": res.LikeCount})
+}
+
+type reportCommentRequest struct {
+	Reason string `json:"reason"`
+}
+
+func (h *CommentHandler) Report(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	var req reportCommentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("comment.invalid", "invalid request body"))
+		return
+	}
+	if err := h.comments.Report(c.Request.Context(), id, req.Reason); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+func (h *CommentHandler) Hide(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	if err := h.comments.Hide(c.Request.Context(), id); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+func (h *CommentHandler) Unhide(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	if err := h.comments.Unhide(c.Request.Context(), id); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
 }
 
 func renderCommentList(c *gin.Context, list *service.CommentList) {

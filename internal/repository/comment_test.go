@@ -75,7 +75,7 @@ func TestCommentRepo_ListByTargetPagination(t *testing.T) {
 		c := &domain.Comment{
 			ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
 			TargetID: target, Content: "top-level comment",
-			Status: domain.CommentStatusNormal,
+			Status:    domain.CommentStatusNormal,
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		}
 		c.RootID = c.ID
@@ -193,5 +193,95 @@ func TestCommentRepo_LikeUnlike(t *testing.T) {
 	}
 	if n, err := repo.Unlike(ctx, c.ID, "viewer"); err != nil || n != 1 {
 		t.Fatalf("duplicate unlike n=%d err=%v, want 1 (idempotent)", n, err)
+	}
+}
+
+func TestCommentRepo_CreateReportDedup(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+	now := time.Now().UTC()
+
+	c := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
+		TargetID: idgen.NewID(), Content: "top", Status: domain.CommentStatusNormal,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	c.RootID = c.ID
+	if err := repo.Create(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.CreateReport(ctx, &domain.CommentReport{
+		ID: idgen.NewID(), CommentID: c.ID, ReporterUID: "reporter", Reason: "spam", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("first report: %v", err)
+	}
+	// A repeat report by the same reporter must surface as ErrDuplicate.
+	err := repo.CreateReport(ctx, &domain.CommentReport{
+		ID: idgen.NewID(), CommentID: c.ID, ReporterUID: "reporter", Reason: "again", CreatedAt: now,
+	})
+	if err != repository.ErrDuplicate {
+		t.Fatalf("duplicate report err=%v, want ErrDuplicate", err)
+	}
+	// A different reporter may report the same comment.
+	if err := repo.CreateReport(ctx, &domain.CommentReport{
+		ID: idgen.NewID(), CommentID: c.ID, ReporterUID: "reporter2", Reason: "spam", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("second reporter: %v", err)
+	}
+}
+
+func TestCommentRepo_SetStatusExcludesFromListings(t *testing.T) {
+	ctx := context.Background()
+	repo := setupCommentRepo(t)
+	now := time.Now().UTC()
+
+	target := idgen.NewID()
+	root := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u1", TargetType: domain.TargetTypeFile,
+		TargetID: target, Content: "top", Status: domain.CommentStatusNormal,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	root.RootID = root.ID
+	if err := repo.Create(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	reply := &domain.Comment{
+		ID: idgen.NewID(), OwnerUID: "u2", TargetType: domain.TargetTypeFile,
+		TargetID: target, ParentID: &root.ID, RootID: root.ID,
+		Content: "child", Status: domain.CommentStatusNormal,
+		CreatedAt: now.Add(time.Millisecond), UpdatedAt: now.Add(time.Millisecond),
+	}
+	if err := repo.Create(ctx, reply); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hide the top-level comment: it must drop out of ListByTarget.
+	if err := repo.SetStatus(ctx, root.ID, domain.CommentStatusHidden); err != nil {
+		t.Fatal(err)
+	}
+	tops, _, err := repo.ListByTarget(ctx, domain.TargetTypeFile, target, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tops) != 0 {
+		t.Fatalf("hidden top-level comment leaked: got %d", len(tops))
+	}
+
+	// Hide the reply: it must drop out of ListReplies.
+	if err := repo.SetStatus(ctx, reply.ID, domain.CommentStatusHidden); err != nil {
+		t.Fatal(err)
+	}
+	replies, _, err := repo.ListReplies(ctx, root.ID, domain.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replies) != 0 {
+		t.Fatalf("hidden reply leaked: got %d", len(replies))
+	}
+
+	// SetStatus on a missing comment is ErrNotFound.
+	if err := repo.SetStatus(ctx, idgen.NewID(), domain.CommentStatusHidden); err != repository.ErrNotFound {
+		t.Fatalf("set status on missing comment err=%v, want ErrNotFound", err)
 	}
 }

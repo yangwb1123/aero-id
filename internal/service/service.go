@@ -120,6 +120,9 @@ type CommentService interface {
 	Delete(ctx context.Context, id domain.ID) error
 	Like(ctx context.Context, id domain.ID) (*ReactionResult, error)
 	Unlike(ctx context.Context, id domain.ID) (*ReactionResult, error)
+	Report(ctx context.Context, id domain.ID, reason string) error
+	Hide(ctx context.Context, id domain.ID) error
+	Unhide(ctx context.Context, id domain.ID) error
 }
 
 // ---- shared helpers (unexported; reused across the three service impls) ----
