@@ -54,6 +54,35 @@ type FileList struct {
 	NextCursor string
 }
 
+// PresignUploadInput requests a presigned direct-to-backend upload. Name/MimeType/
+// Visibility/Meta are carried through to the row created at finalize time.
+type PresignUploadInput struct {
+	Name       string
+	MimeType   string
+	Visibility domain.Visibility
+	Meta       map[string]any
+}
+
+// PresignUploadResult is returned to a client that will PUT the object directly to
+// the storage backend, then call CompleteUpload with the same FileID.
+type PresignUploadResult struct {
+	FileID     domain.ID
+	UploadURL  string
+	StorageKey string
+}
+
+// CompleteUploadInput finalizes a presigned direct upload: the client has PUT the
+// object to StorageKey under the FileID handed back by PresignUpload. Name/MimeType/
+// Visibility/Meta describe the row to persist (no row exists until finalize).
+type CompleteUploadInput struct {
+	FileID     domain.ID
+	StorageKey string
+	Name       string
+	MimeType   string
+	Visibility domain.Visibility
+	Meta       map[string]any
+}
+
 type SendMessageInput struct {
 	ToUID   string
 	Kind    domain.MessageKind
@@ -102,6 +131,13 @@ type FileService interface {
 	UnshareFile(ctx context.Context, id domain.ID, granteeUID string) error
 	// ListSharedWithMe lists files other owners have shared with the caller.
 	ListSharedWithMe(ctx context.Context, page domain.Page) (*FileList, error)
+	// PresignUpload allocates a file id + owner-scoped storage key and returns a
+	// presigned URL the client PUTs the object to directly (S3 only). Unsupported
+	// backends (local) return a BadRequest.
+	PresignUpload(ctx context.Context, in PresignUploadInput, ttl time.Duration) (*PresignUploadResult, error)
+	// CompleteUpload finalizes a presigned direct upload by Stat-ing the object and
+	// persisting the file row. Dedup is skipped (no checksum without downloading).
+	CompleteUpload(ctx context.Context, in CompleteUploadInput) (*domain.File, error)
 }
 
 type MessageService interface {

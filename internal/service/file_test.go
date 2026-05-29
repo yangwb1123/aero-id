@@ -14,6 +14,7 @@ import (
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/service/mocks"
+	"github.com/aero/aero-id/internal/storage"
 )
 
 // assertAppCode asserts err is an *AppError with the given HTTP status. Defined
@@ -385,6 +386,122 @@ func TestFileService_ListSharedWithMe(t *testing.T) {
 	if list.NextCursor != "next" || len(list.Files) != 1 {
 		t.Fatalf("unexpected list: %+v", list)
 	}
+}
+
+func TestFileService_PresignUploadUnsupportedBackend(t *testing.T) {
+	// Default mock Storage.PresignPut reports ErrNotSupported (mirrors the local
+	// backend); the service must translate that to a BadRequest.
+	svc := service.NewFileService(&mocks.FileRepo{}, &mocks.Storage{}, "local")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.PresignUpload(ctx, service.PresignUploadInput{Name: "big.bin"}, time.Minute)
+	assertAppCode(t, err, 400)
+}
+
+func TestFileService_PresignUploadHappyPath(t *testing.T) {
+	store := &mocks.Storage{
+		NewKeyFn: func(owner string) string { return owner + "/2026/05/abc" },
+		PresignPutFn: func(_ context.Context, key string, _ time.Duration) (string, error) {
+			return "https://s3/put/" + key, nil
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "s3")
+	ctx := service.WithActor(context.Background(), "owner")
+	res, err := svc.PresignUpload(ctx, service.PresignUploadInput{Name: "big.bin"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StorageKey != "owner/2026/05/abc" || res.UploadURL != "https://s3/put/owner/2026/05/abc" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if res.FileID == (domain.ID{}) {
+		t.Fatal("expected an allocated file id")
+	}
+}
+
+func TestFileService_PresignUploadRejectsBlankName(t *testing.T) {
+	store := &mocks.Storage{
+		PresignPutFn: func(context.Context, string, time.Duration) (string, error) {
+			t.Fatal("PresignPut must not be called for an invalid request")
+			return "", nil
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "s3")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.PresignUpload(ctx, service.PresignUploadInput{}, time.Minute)
+	assertAppErrCode(t, err, "file.invalid")
+}
+
+func TestFileService_CompleteUploadPersistsRow(t *testing.T) {
+	var persisted *domain.File
+	repo := &mocks.FileRepo{CreateFn: func(_ context.Context, f *domain.File) error { persisted = f; return nil }}
+	store := &mocks.Storage{
+		StatFn: func(_ context.Context, key string) (*storage.ObjectInfo, error) {
+			return &storage.ObjectInfo{Key: key, Size: 42}, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "s3")
+	ctx := service.WithActor(context.Background(), "owner")
+	id := idgen.NewID()
+	f, err := svc.CompleteUpload(ctx, service.CompleteUploadInput{
+		FileID: id, StorageKey: "owner/2026/05/abc", Name: "big.bin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ID != id || f.Size != 42 || f.OwnerUID != "owner" || f.StorageType != "s3" {
+		t.Fatalf("unexpected file: %+v", f)
+	}
+	if persisted == nil {
+		t.Fatal("repo.Create was not called")
+	}
+}
+
+func TestFileService_CompleteUploadRejectsForeignKey(t *testing.T) {
+	store := &mocks.Storage{
+		StatFn: func(context.Context, string) (*storage.ObjectInfo, error) {
+			t.Fatal("Stat must not run for a key the actor doesn't own")
+			return nil, nil
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "s3")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.CompleteUpload(ctx, service.CompleteUploadInput{
+		FileID: idgen.NewID(), StorageKey: "someone-else/2026/05/abc", Name: "x",
+	})
+	assertAppCode(t, err, 403)
+}
+
+func TestFileService_CompleteUploadRejectsOversized(t *testing.T) {
+	var deleted string
+	store := &mocks.Storage{
+		StatFn: func(_ context.Context, key string) (*storage.ObjectInfo, error) {
+			return &storage.ObjectInfo{Key: key, Size: 100}, nil
+		},
+		DeleteFn: func(_ context.Context, key string) error { deleted = key; return nil },
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "s3", service.WithMaxUploadBytes(10))
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.CompleteUpload(ctx, service.CompleteUploadInput{
+		FileID: idgen.NewID(), StorageKey: "owner/2026/05/abc", Name: "big.bin",
+	})
+	assertAppErrCode(t, err, "file.too_large")
+	if deleted != "owner/2026/05/abc" {
+		t.Errorf("oversized object should be deleted, got %q", deleted)
+	}
+}
+
+func TestFileService_CompleteUploadObjectMissing(t *testing.T) {
+	store := &mocks.Storage{
+		StatFn: func(context.Context, string) (*storage.ObjectInfo, error) {
+			return nil, storage.ErrNotFound
+		},
+	}
+	svc := service.NewFileService(&mocks.FileRepo{}, store, "s3")
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.CompleteUpload(ctx, service.CompleteUploadInput{
+		FileID: idgen.NewID(), StorageKey: "owner/2026/05/abc", Name: "x",
+	})
+	assertAppErrCode(t, err, "file.not_uploaded")
 }
 
 // assertAppErrCode asserts err is an *AppError carrying the given Code string.

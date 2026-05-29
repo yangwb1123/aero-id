@@ -36,9 +36,11 @@ func NewFileHandler(files service.FileService, downloader SignedDownloader, urlT
 func (h *FileHandler) RegisterRoutes(r Routes) {
 	r.Auth.POST("/files", h.Upload)
 	r.Auth.GET("/files", h.List)
-	// Static path registered before the /files/:id param route so gin routes it as a
-	// literal, not as a file id.
+	// Static paths registered before the /files/:id param route so gin routes them as
+	// literals, not as a file id.
 	r.Auth.GET("/files/shared-with-me", h.ListSharedWithMe)
+	r.Auth.POST("/files/upload-url", h.PresignUpload)
+	r.Auth.POST("/files/complete", h.CompleteUpload)
 	r.Auth.GET("/files/:id", h.Get)
 	r.Auth.GET("/files/:id/url", h.DownloadURL)
 	r.Auth.DELETE("/files/:id", h.Delete)
@@ -76,6 +78,71 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		Size:       fh.Size,
 		Visibility: vis,
 		Reader:     src,
+	})
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.Created(c, toFileResponse(created))
+}
+
+// PresignUpload allocates a file id + storage key and returns a presigned URL the
+// client PUTs the object to directly (S3 only). The local backend yields a BadRequest.
+func (h *FileHandler) PresignUpload(c *gin.Context) {
+	var body struct {
+		Name       string         `json:"name"`
+		MimeType   string         `json:"mime_type"`
+		Visibility int16          `json:"visibility"`
+		Meta       map[string]any `json:"meta"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("file.invalid", "invalid request body"))
+		return
+	}
+	res, err := h.files.PresignUpload(c.Request.Context(), service.PresignUploadInput{
+		Name:       body.Name,
+		MimeType:   body.MimeType,
+		Visibility: domain.Visibility(body.Visibility),
+		Meta:       body.Meta,
+	}, h.urlTTL)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{
+		"file_id":     res.FileID.String(),
+		"upload_url":  res.UploadURL,
+		"storage_key": res.StorageKey,
+	})
+}
+
+// CompleteUpload finalizes a presigned direct upload after the client has PUT the
+// object to the storage key. Dedup is skipped for direct uploads (no checksum).
+func (h *FileHandler) CompleteUpload(c *gin.Context) {
+	var body struct {
+		FileID     string         `json:"file_id"`
+		StorageKey string         `json:"storage_key"`
+		Name       string         `json:"name"`
+		MimeType   string         `json:"mime_type"`
+		Visibility int16          `json:"visibility"`
+		Meta       map[string]any `json:"meta"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("file.invalid", "invalid request body"))
+		return
+	}
+	fileID, err := idgen.Parse(body.FileID)
+	if err != nil {
+		httpx.WriteError(c, apperr.BadRequest("request.invalid_id", "invalid file_id"))
+		return
+	}
+	created, err := h.files.CompleteUpload(c.Request.Context(), service.CompleteUploadInput{
+		FileID:     fileID,
+		StorageKey: body.StorageKey,
+		Name:       body.Name,
+		MimeType:   body.MimeType,
+		Visibility: domain.Visibility(body.Visibility),
+		Meta:       body.Meta,
 	})
 	if err != nil {
 		httpx.WriteError(c, err)

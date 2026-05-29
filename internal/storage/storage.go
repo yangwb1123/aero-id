@@ -30,10 +30,16 @@ type ObjectInfo struct {
 //   - Delete returns ErrNotFound when the key doesn't exist.
 //   - PresignGet returns a time-limited URL the client can fetch directly.
 //     Backends that cannot pre-sign return ErrNotSupported.
+//   - NewKey allocates an owner-scoped storage key without writing anything, so a
+//     direct-to-backend upload (see PresignPut) and its later finalize agree on the key.
+//   - PresignPut returns a time-limited URL the client can PUT an object to directly,
+//     bypassing the app process. Backends that cannot pre-sign return ErrNotSupported.
 type FileStorage interface {
 	Put(ctx context.Context, ownerUID, name string, r io.Reader) (key string, size int64, err error)
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 	Stat(ctx context.Context, key string) (*ObjectInfo, error)
+	NewKey(ownerUID string) string
+	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
 }

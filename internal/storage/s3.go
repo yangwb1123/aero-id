@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
@@ -55,22 +55,43 @@ func (s *S3) buildKey(ownerUID string) string {
 	return fmt.Sprintf("%s/%s/%s/%s", ownerUID, now.Format("2006"), now.Format("01"), idgen.NewID())
 }
 
+// NewKey allocates an owner-scoped storage key without touching S3, so a presigned
+// direct upload and its later finalize agree on where the object lives.
+func (s *S3) NewKey(ownerUID string) string { return s.buildKey(ownerUID) }
+
+// countingReader records how many bytes have flowed through it so the streaming
+// upload can report the object size without buffering the body in memory.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
 func (s *S3) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, int64, error) {
-	// io.Reader → []byte via io.ReadAll for size accounting; service should pre-bound size.
-	body, err := io.ReadAll(r)
-	if err != nil {
-		return "", 0, fmt.Errorf("read body: %w", err)
-	}
+	// Stream straight to S3 with the multipart manager so memory stays bounded
+	// regardless of object size; a countingReader gives us the byte total without
+	// buffering. Any size-cap/hashing wrappers the service layered onto r are
+	// honored here because they sit upstream in the same single read pass.
+	cr := &countingReader{r: r}
 	key := s.buildKey(ownerUID)
-	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+	uploader := manager.NewUploader(s.client)
+	_, err := uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.cfg.Bucket),
 		Key:    aws.String(key),
-		Body:   bytes.NewReader(body),
+		Body:   cr,
 	})
 	if err != nil {
-		return "", 0, fmt.Errorf("put object: %w", err)
+		// Best-effort cleanup of any partial/aborted multipart object before surfacing
+		// the error (e.g. the service's size cap tripping mid-stream).
+		_ = s.Delete(ctx, key)
+		return "", 0, fmt.Errorf("upload object: %w", err)
 	}
-	return key, int64(len(body)), nil
+	return key, cr.n, nil
 }
 
 func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
@@ -132,6 +153,20 @@ func (s *S3) PresignGet(ctx context.Context, key string, ttl time.Duration) (str
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("presign: %w", err)
+	}
+	return req.URL, nil
+}
+
+// PresignPut returns a time-limited URL the client can PUT an object to directly,
+// letting large uploads bypass the app process entirely.
+func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	presigner := s3.NewPresignClient(s.client)
+	req, err := presigner.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", fmt.Errorf("presign put: %w", err)
 	}
 	return req.URL, nil
 }

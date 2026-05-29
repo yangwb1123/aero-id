@@ -45,6 +45,8 @@ type fakeFileService struct {
 	shareFn            func(context.Context, domain.ID, []string) error
 	unshareFn          func(context.Context, domain.ID, string) error
 	listSharedWithMeFn func(context.Context, domain.Page) (*service.FileList, error)
+	presignUploadFn    func(context.Context, service.PresignUploadInput, time.Duration) (*service.PresignUploadResult, error)
+	completeUploadFn   func(context.Context, service.CompleteUploadInput) (*domain.File, error)
 }
 
 func (f *fakeFileService) Create(ctx context.Context, in service.CreateFileInput) (*domain.File, error) {
@@ -68,6 +70,12 @@ func (f *fakeFileService) UnshareFile(ctx context.Context, id domain.ID, uid str
 }
 func (f *fakeFileService) ListSharedWithMe(ctx context.Context, p domain.Page) (*service.FileList, error) {
 	return f.listSharedWithMeFn(ctx, p)
+}
+func (f *fakeFileService) PresignUpload(ctx context.Context, in service.PresignUploadInput, ttl time.Duration) (*service.PresignUploadResult, error) {
+	return f.presignUploadFn(ctx, in, ttl)
+}
+func (f *fakeFileService) CompleteUpload(ctx context.Context, in service.CompleteUploadInput) (*domain.File, error) {
+	return f.completeUploadFn(ctx, in)
 }
 
 func TestFileHandler_Upload(t *testing.T) {
@@ -164,6 +172,64 @@ func TestFileHandler_Share204(t *testing.T) {
 	}
 	if len(gotUIDs) != 2 {
 		t.Fatalf("uids = %v, want 2", gotUIDs)
+	}
+}
+
+func TestFileHandler_PresignUpload200(t *testing.T) {
+	id := idgen.NewID()
+	svc := &fakeFileService{presignUploadFn: func(_ context.Context, in service.PresignUploadInput, _ time.Duration) (*service.PresignUploadResult, error) {
+		if in.Name != "big.bin" {
+			t.Errorf("name = %q", in.Name)
+		}
+		return &service.PresignUploadResult{FileID: id, UploadURL: "https://s3/put", StorageKey: "u1/k"}, nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/files/upload-url",
+		strings.NewReader(`{"name":"big.bin","mime_type":"application/octet-stream"}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	if env.Data["file_id"] != id.String() || env.Data["upload_url"] != "https://s3/put" || env.Data["storage_key"] != "u1/k" {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestFileHandler_CompleteUpload201(t *testing.T) {
+	svc := &fakeFileService{completeUploadFn: func(_ context.Context, in service.CompleteUploadInput) (*domain.File, error) {
+		return &domain.File{ID: in.FileID, OwnerUID: "u1", Name: in.Name, Size: 42, StorageKey: in.StorageKey}, nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	id := idgen.NewID()
+	req := httptest.NewRequest(http.MethodPost, "/v1/files/complete",
+		strings.NewReader(`{"file_id":"`+id.String()+`","storage_key":"u1/k","name":"big.bin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestFileHandler_CompleteUploadBadID(t *testing.T) {
+	svc := &fakeFileService{completeUploadFn: func(context.Context, service.CompleteUploadInput) (*domain.File, error) {
+		t.Fatal("service must not be called with an unparseable file_id")
+		return nil, nil
+	}}
+	e := serveWithActor(httpapi.NewFileHandler(svc, nil, time.Minute), "u1")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/files/complete",
+		strings.NewReader(`{"file_id":"not-a-uuid","storage_key":"u1/k","name":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
 	}
 }
 

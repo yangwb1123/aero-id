@@ -33,10 +33,16 @@ func (l *Local) keyToPath(key string) string {
 	return filepath.Join(l.cfg.Root, key)
 }
 
-func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, int64, error) {
+// NewKey allocates an owner-scoped storage key (kept identical to Put's layout) so
+// the interface stays consistent across backends.
+func (l *Local) NewKey(ownerUID string) string {
 	now := time.Now().UTC()
 	id := idgen.NewID().String()
-	key := filepath.ToSlash(filepath.Join(ownerUID, now.Format("2006"), now.Format("01"), id))
+	return filepath.ToSlash(filepath.Join(ownerUID, now.Format("2006"), now.Format("01"), id))
+}
+
+func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, int64, error) {
+	key := l.NewKey(ownerUID)
 	path := l.keyToPath(key)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
@@ -99,6 +105,12 @@ func (l *Local) PresignGet(ctx context.Context, key string, ttl time.Duration) (
 	v.Set("exp", strconv.FormatInt(expires, 10))
 	v.Set("sig", sig)
 	return l.cfg.PublicBaseURL + "/files/dl?" + v.Encode(), nil
+}
+
+// PresignPut is unsupported on the local backend: there is no object store to PUT
+// to directly, so direct uploads must go through the normal Put path.
+func (l *Local) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return "", ErrNotSupported
 }
 
 func (l *Local) sign(key string, expires int64) string {

@@ -191,6 +191,8 @@ type Storage struct {
 	DeleteFn     func(ctx context.Context, key string) error
 	PresignGetFn func(ctx context.Context, key string, ttl time.Duration) (string, error)
 	StatFn       func(ctx context.Context, key string) (*storage.ObjectInfo, error)
+	NewKeyFn     func(ownerUID string) string
+	PresignPutFn func(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
 func (m *Storage) Put(ctx context.Context, ownerUID, name string, r io.Reader) (string, int64, error) {
@@ -205,6 +207,23 @@ func (m *Storage) PresignGet(ctx context.Context, key string, ttl time.Duration)
 }
 func (m *Storage) Stat(ctx context.Context, key string) (*storage.ObjectInfo, error) {
 	return m.StatFn(ctx, key)
+}
+
+// NewKey and PresignPut default to "direct upload unsupported": NewKey hands back a
+// fixed owner-scoped key and PresignPut reports the backend can't presign, mirroring
+// the local backend, so tests need not wire them unless exercising direct uploads.
+func (m *Storage) NewKey(ownerUID string) string {
+	if m.NewKeyFn == nil {
+		return ownerUID + "/key"
+	}
+	return m.NewKeyFn(ownerUID)
+}
+
+func (m *Storage) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if m.PresignPutFn == nil {
+		return "", storage.ErrNotSupported
+	}
+	return m.PresignPutFn(ctx, key, ttl)
 }
 
 type UserDir struct {
