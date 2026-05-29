@@ -5,6 +5,22 @@
 > grounded in a scan of the current code, **not** a wish list — each item cites what exists today.
 > No code was changed to produce this.
 
+---
+
+## ✅ Delivery status (updated 2026-05-29)
+
+All five directions below have since been **implemented, tested (unit + testcontainers integration), and verified green** on branch `feat/roadmap`. gRPC transport parity was also completed for every endpoint that had been added HTTP-first.
+
+| # | Direction | Status | Notes |
+|---|-----------|--------|-------|
+| 1 | Observability & operability | ✅ Done | per-dependency `/readyz`, dependency-free RED `/metrics`, OpenTelemetry tracing through the SSO hop, SSO/cache health gauges |
+| 2 | SSO resilience & TLS | ✅ Done | serve-stale fallback, singleflight, circuit breaker, bounded retries+backoff, gRPC keepalive, TLS/mTLS credential path |
+| 3 | File pipeline | ✅ Done | size cap + MIME allow-list, content-checksum dedup, streaming S3 uploads, presigned direct-to-S3 upload, GC/reconciliation sweep |
+| 4 | Write-path correctness | ✅ Done | atomic reply-count txn, idempotency-key writes, transactional outbox |
+| 5 | Product surface | ✅ Done | reactions, unread counts, explicit file sharing, comment reporting/moderation, typed/system messages, outbox-driven notifications + unread feed |
+
+The original advisory text is retained below for provenance.
+
 ## Where the codebase stands
 
 The service is cleanly layered (handler → service → repository, with storage + SSO as
