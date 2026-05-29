@@ -10,13 +10,15 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 )
 
 type CommentRepository interface {
 	Create(ctx context.Context, c *domain.Comment) error
 	// CreateWithReplyBump inserts a comment and, when it is a reply (ParentID set),
-	// increments the parent's reply_count in the same transaction.
-	CreateWithReplyBump(ctx context.Context, c *domain.Comment) error
+	// increments the parent's reply_count in the same transaction. When evt is
+	// non-nil it is also appended to the outbox within that same transaction.
+	CreateWithReplyBump(ctx context.Context, c *domain.Comment, evt *outbox.Event) error
 	Get(ctx context.Context, id domain.ID) (*domain.Comment, error)
 	ListByTarget(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	ListReplies(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
@@ -34,9 +36,17 @@ type CommentRepository interface {
 	SetStatus(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
 }
 
-type commentRepo struct{ db *gorm.DB }
+type commentRepo struct {
+	db     *gorm.DB
+	outbox outbox.Repository
+}
 
-func NewCommentRepository(db *gorm.DB) CommentRepository { return &commentRepo{db: db} }
+// NewCommentRepository builds a comment repository. ob is the outbox repository
+// used to append domain events transactionally with comment writes; it may be nil
+// (events are then simply not emitted), keeping existing wiring/tests working.
+func NewCommentRepository(db *gorm.DB, ob outbox.Repository) CommentRepository {
+	return &commentRepo{db: db, outbox: ob}
+}
 
 func (r *commentRepo) Create(ctx context.Context, c *domain.Comment) error {
 	if err := r.db.WithContext(ctx).Create(commentDomainToRow(c)).Error; err != nil {
@@ -47,8 +57,9 @@ func (r *commentRepo) Create(ctx context.Context, c *domain.Comment) error {
 
 // CreateWithReplyBump inserts a comment and, when it is a reply (ParentID set),
 // increments the parent's reply_count in the same transaction so the comment and
-// the denormalized counter commit together (or not at all).
-func (r *commentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment) error {
+// the denormalized counter commit together (or not at all). When evt is non-nil
+// and an outbox repository is configured, evt is appended in that same tx too.
+func (r *commentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment, evt *outbox.Event) error {
 	row := commentDomainToRow(c)
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(row).Error; err != nil {
@@ -58,6 +69,11 @@ func (r *commentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment
 			if err := tx.Model(&commentRow{}).
 				Where("id = ?", *c.ParentID).
 				UpdateColumn("reply_count", gorm.Expr("reply_count + 1")).Error; err != nil {
+				return err
+			}
+		}
+		if evt != nil && r.outbox != nil {
+			if err := r.outbox.Append(ctx, tx, evt); err != nil {
 				return err
 			}
 		}

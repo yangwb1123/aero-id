@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/repository/testpg"
@@ -18,7 +19,7 @@ func setupMsgRepo(t *testing.T) repository.MessageRepository {
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewMessageRepository(db)
+	return repository.NewMessageRepository(db, outbox.NewGormRepository(db))
 }
 
 func TestMessageRepo_CountUnread(t *testing.T) {
@@ -30,7 +31,7 @@ func TestMessageRepo_CountUnread(t *testing.T) {
 		return &domain.Message{ID: idgen.NewID(), FromUID: "alice", ToUID: to, Kind: domain.MessageKindText, Content: "hi", CreatedAt: now}
 	}
 	for _, to := range []string{"bob", "bob", "carol"} { // bob: 2 unread, carol: 1
-		if err := repo.Create(ctx, mk(to)); err != nil {
+		if err := repo.Create(ctx, mk(to), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -64,7 +65,7 @@ func TestMessageRepo_CreateAndRead(t *testing.T) {
 		ID: idgen.NewID(), FromUID: "alice", ToUID: "bob",
 		Kind: domain.MessageKindText, Content: "hi", CreatedAt: now,
 	}
-	if err := repo.Create(ctx, m); err != nil {
+	if err := repo.Create(ctx, m, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +95,7 @@ func TestMessageRepo_ListInboxPagination(t *testing.T) {
 			ID: idgen.NewID(), FromUID: "sender", ToUID: "carol",
 			Kind: domain.MessageKindText, Content: "msg",
 			CreatedAt: time.Now().UTC(),
-		}); err != nil {
+		}, nil); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -129,7 +130,7 @@ func TestMessageRepo_Conversation(t *testing.T) {
 		if err := repo.Create(ctx, &domain.Message{
 			ID: idgen.NewID(), FromUID: p.from, ToUID: p.to,
 			Kind: domain.MessageKindText, Content: "x", CreatedAt: now,
-		}); err != nil {
+		}, nil); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(2 * time.Millisecond)

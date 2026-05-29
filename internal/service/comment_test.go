@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
@@ -24,7 +25,7 @@ func readableFileRepo(target domain.ID) *mocks.FileRepo {
 func TestCommentService_CreateTopLevel(t *testing.T) {
 	target := idgen.NewID()
 	var saved *domain.Comment
-	comments := &mocks.CommentRepo{CreateWithReplyBumpFn: func(_ context.Context, c *domain.Comment) error { saved = c; return nil }}
+	comments := &mocks.CommentRepo{CreateWithReplyBumpFn: func(_ context.Context, c *domain.Comment, _ *outbox.Event) error { saved = c; return nil }}
 	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "author")
 	c, err := svc.Create(ctx, service.CreateCommentInput{TargetType: domain.TargetTypeFile, TargetID: target, Content: "nice"})
@@ -43,11 +44,16 @@ func TestCommentService_CreateReplyIncrementsParent(t *testing.T) {
 	target := idgen.NewID()
 	root := idgen.NewID()
 	var bumpedFor *domain.ID
+	var evt *outbox.Event
 	comments := &mocks.CommentRepo{
 		GetFn: func(_ context.Context, _ domain.ID) (*domain.Comment, error) {
-			return &domain.Comment{ID: root, ParentID: nil, RootID: root, TargetType: domain.TargetTypeFile, TargetID: target}, nil
+			return &domain.Comment{ID: root, ParentID: nil, RootID: root, TargetType: domain.TargetTypeFile, TargetID: target, OwnerUID: "rootauthor"}, nil
 		},
-		CreateWithReplyBumpFn: func(_ context.Context, c *domain.Comment) error { bumpedFor = c.ParentID; return nil },
+		CreateWithReplyBumpFn: func(_ context.Context, c *domain.Comment, e *outbox.Event) error {
+			bumpedFor = c.ParentID
+			evt = e
+			return nil
+		},
 	}
 	svc := service.NewCommentService(comments, readableFileRepo(target), &mocks.MessageRepo{}, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "author")
@@ -62,6 +68,10 @@ func TestCommentService_CreateReplyIncrementsParent(t *testing.T) {
 	// is exercised by the repository integration test).
 	if bumpedFor == nil || *bumpedFor != root {
 		t.Fatal("reply was not routed through the atomic reply-count bump with the parent set")
+	}
+	// A reply must also emit a "comment.replied" event transactionally.
+	if evt == nil || evt.EventType != "comment.replied" || evt.AggregateType != "comment" {
+		t.Fatalf("expected comment.replied event, got %+v", evt)
 	}
 }
 

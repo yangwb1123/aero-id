@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
@@ -22,7 +23,12 @@ func TestMessageService_SendRequiresToUID(t *testing.T) {
 
 func TestMessageService_SendDefaultsKindAndPersists(t *testing.T) {
 	var saved *domain.Message
-	repo := &mocks.MessageRepo{CreateFn: func(_ context.Context, m *domain.Message) error { saved = m; return nil }}
+	var evt *outbox.Event
+	repo := &mocks.MessageRepo{CreateFn: func(_ context.Context, m *domain.Message, e *outbox.Event) error {
+		saved = m
+		evt = e
+		return nil
+	}}
 	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "a")
 	m, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Content: "hi"})
@@ -34,6 +40,10 @@ func TestMessageService_SendDefaultsKindAndPersists(t *testing.T) {
 	}
 	if saved == nil {
 		t.Fatal("repo.Create was not called")
+	}
+	// Send must emit a "message.sent" outbox event transactionally with the insert.
+	if evt == nil || evt.EventType != "message.sent" || evt.AggregateType != "message" {
+		t.Fatalf("expected message.sent event, got %+v", evt)
 	}
 }
 

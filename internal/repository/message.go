@@ -9,10 +9,14 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 )
 
 type MessageRepository interface {
-	Create(ctx context.Context, m *domain.Message) error
+	// Create inserts a message. When evt is non-nil it is appended to the outbox
+	// in the SAME transaction, so the message and its domain event commit together
+	// (or not at all).
+	Create(ctx context.Context, m *domain.Message, evt *outbox.Event) error
 	Get(ctx context.Context, id domain.ID) (*domain.Message, error)
 	ListInbox(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversation(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
@@ -20,12 +24,34 @@ type MessageRepository interface {
 	CountUnread(ctx context.Context, toUID string) (int64, error)
 }
 
-type messageRepo struct{ db *gorm.DB }
+type messageRepo struct {
+	db     *gorm.DB
+	outbox outbox.Repository
+}
 
-func NewMessageRepository(db *gorm.DB) MessageRepository { return &messageRepo{db: db} }
+// NewMessageRepository builds a message repository. ob is the outbox repository
+// used to append domain events transactionally with message writes; it may be nil
+// (events are then simply not emitted), keeping existing wiring/tests working.
+func NewMessageRepository(db *gorm.DB, ob outbox.Repository) MessageRepository {
+	return &messageRepo{db: db, outbox: ob}
+}
 
-func (r *messageRepo) Create(ctx context.Context, m *domain.Message) error {
-	if err := r.db.WithContext(ctx).Create(msgDomainToRow(m)).Error; err != nil {
+// Create inserts the message and, when evt is non-nil and an outbox repository is
+// configured, appends evt within the same transaction so the row and the event
+// commit atomically.
+func (r *messageRepo) Create(ctx context.Context, m *domain.Message, evt *outbox.Event) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(msgDomainToRow(m)).Error; err != nil {
+			return err
+		}
+		if evt != nil && r.outbox != nil {
+			if err := r.outbox.Append(ctx, tx, evt); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return fmt.Errorf("create message: %w", err)
 	}
 	return nil

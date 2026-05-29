@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/repository/testpg"
@@ -18,7 +19,7 @@ func setupCommentRepo(t *testing.T) repository.CommentRepository {
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewCommentRepository(db)
+	return repository.NewCommentRepository(db, outbox.NewGormRepository(db))
 }
 
 func TestCommentRepo_TopLevelAndReply(t *testing.T) {
@@ -137,7 +138,7 @@ func TestCommentRepo_CreateWithReplyBumpIsAtomic(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	}
 	root.RootID = root.ID
-	if err := repo.CreateWithReplyBump(ctx, root); err != nil {
+	if err := repo.CreateWithReplyBump(ctx, root, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,7 +148,7 @@ func TestCommentRepo_CreateWithReplyBumpIsAtomic(t *testing.T) {
 		Content: "child", Status: domain.CommentStatusNormal,
 		CreatedAt: now.Add(time.Millisecond), UpdatedAt: now.Add(time.Millisecond),
 	}
-	if err := repo.CreateWithReplyBump(ctx, reply); err != nil {
+	if err := repo.CreateWithReplyBump(ctx, reply, nil); err != nil {
 		t.Fatal(err)
 	}
 

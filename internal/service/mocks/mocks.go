@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/sso"
 	"github.com/aero/aero-id/internal/storage"
@@ -96,7 +97,7 @@ func (m *FileShareRepo) IsSharedWith(ctx context.Context, fileID domain.ID, uid 
 }
 
 type MessageRepo struct {
-	CreateFn           func(ctx context.Context, m *domain.Message) error
+	CreateFn           func(ctx context.Context, m *domain.Message, evt *outbox.Event) error
 	GetFn              func(ctx context.Context, id domain.ID) (*domain.Message, error)
 	ListInboxFn        func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversationFn func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
@@ -104,8 +105,11 @@ type MessageRepo struct {
 	CountUnreadFn      func(ctx context.Context, toUID string) (int64, error)
 }
 
-func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message) error {
-	return m.CreateFn(ctx, msg)
+func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message, evt *outbox.Event) error {
+	if m.CreateFn == nil {
+		return nil
+	}
+	return m.CreateFn(ctx, msg, evt)
 }
 func (m *MessageRepo) Get(ctx context.Context, id domain.ID) (*domain.Message, error) {
 	return m.GetFn(ctx, id)
@@ -125,7 +129,7 @@ func (m *MessageRepo) CountUnread(ctx context.Context, toUID string) (int64, err
 
 type CommentRepo struct {
 	CreateFn              func(ctx context.Context, c *domain.Comment) error
-	CreateWithReplyBumpFn func(ctx context.Context, c *domain.Comment) error
+	CreateWithReplyBumpFn func(ctx context.Context, c *domain.Comment, evt *outbox.Event) error
 	GetFn                 func(ctx context.Context, id domain.ID) (*domain.Comment, error)
 	ListByTargetFn        func(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	ListRepliesFn         func(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
@@ -138,8 +142,11 @@ type CommentRepo struct {
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
-func (m *CommentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment) error {
-	return m.CreateWithReplyBumpFn(ctx, c)
+func (m *CommentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment, evt *outbox.Event) error {
+	if m.CreateWithReplyBumpFn == nil {
+		return nil
+	}
+	return m.CreateWithReplyBumpFn(ctx, c, evt)
 }
 func (m *CommentRepo) Get(ctx context.Context, id domain.ID) (*domain.Comment, error) {
 	return m.GetFn(ctx, id)

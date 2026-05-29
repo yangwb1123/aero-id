@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
@@ -58,10 +60,32 @@ func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain
 		Meta:      in.Meta,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := s.messages.Create(ctx, m); err != nil {
+	// Emit a "message.sent" domain event in the same transaction as the insert so
+	// downstream effects (notifications) become reliable rather than best-effort.
+	evt := newEvent("message", m.ID.String(), "message.sent", map[string]any{
+		"message_id": m.ID.String(),
+		"from_uid":   m.FromUID,
+		"to_uid":     m.ToUID,
+	})
+	if err := s.messages.Create(ctx, m, evt); err != nil {
 		return nil, apperr.Internal("message.send_failed", "failed to send message").Wrap(err)
 	}
 	return m, nil
+}
+
+// newEvent builds an outbox.Event with a fresh UUIDv7 id and JSON-encoded payload.
+// A payload that fails to marshal yields a nil-payload event rather than failing
+// the write; the maps used here are always marshalable.
+func newEvent(aggregateType, aggregateID, eventType string, payload map[string]any) *outbox.Event {
+	b, _ := json.Marshal(payload)
+	return &outbox.Event{
+		ID:            idgen.NewID(),
+		AggregateType: aggregateType,
+		AggregateID:   aggregateID,
+		EventType:     eventType,
+		Payload:       b,
+		CreatedAt:     time.Now().UTC(),
+	}
 }
 
 func (s *messageService) Get(ctx context.Context, id domain.ID) (*domain.Message, error) {

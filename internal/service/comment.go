@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/outbox"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
@@ -95,9 +96,18 @@ func (s *commentService) Create(ctx context.Context, in CreateCommentInput) (*do
 	now := time.Now().UTC()
 	c.CreatedAt = now
 	c.UpdatedAt = now
+	// For replies, emit a "comment.replied" event in the same transaction as the
+	// insert + reply_count bump so the notification substrate is reliable.
+	var evt *outbox.Event
+	if parent != nil {
+		evt = newEvent("comment", c.ID.String(), "comment.replied", map[string]any{
+			"comment_id":        c.ID.String(),
+			"parent_author_uid": parent.OwnerUID,
+		})
+	}
 	// Persist the comment and bump the parent's reply_count atomically so the
 	// denormalized counter can never drift from the rows that back it.
-	if err := s.comments.CreateWithReplyBump(ctx, c); err != nil {
+	if err := s.comments.CreateWithReplyBump(ctx, c, evt); err != nil {
 		return nil, apperr.Internal("comment.create_failed", "failed to create comment").Wrap(err)
 	}
 	return c, nil

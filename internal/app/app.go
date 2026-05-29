@@ -19,6 +19,7 @@ import (
 	grpcsrv "github.com/aero/aero-id/internal/handler/grpc"
 	httpapi "github.com/aero/aero-id/internal/handler/http"
 	"github.com/aero/aero-id/internal/idempotency"
+	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/repository"
@@ -30,6 +31,9 @@ import (
 // presignTTL is how long a generated download URL stays valid.
 const presignTTL = 5 * time.Minute
 
+// outboxPollInterval is how often the relay drains unpublished domain events.
+const outboxPollInterval = 5 * time.Second
+
 type App struct {
 	cfg        *config.Config
 	log        *zap.Logger
@@ -38,6 +42,7 @@ type App struct {
 	httpServer *http.Server
 	grpcServer *grpclib.Server
 	grpcLis    net.Listener
+	stopRelay  func()
 }
 
 // New builds the fully wired application. It opens the DB, storage, and SSO
@@ -87,8 +92,21 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	fileRepo := repository.NewFileRepository(gdb)
 	fileShareRepo := repository.NewFileShareRepository(gdb)
-	msgRepo := repository.NewMessageRepository(gdb)
-	commentRepo := repository.NewCommentRepository(gdb)
+	outboxRepo := outbox.NewGormRepository(gdb)
+	msgRepo := repository.NewMessageRepository(gdb, outboxRepo)
+	commentRepo := repository.NewCommentRepository(gdb, outboxRepo)
+
+	// The relay drains domain events written transactionally with their rows. For
+	// now the only sink logs each event; notifications (Direction 5) will replace
+	// this Handler with one that fans out to recipients.
+	relay := outbox.NewRelay(outboxRepo, outbox.HandlerFunc(func(_ context.Context, e *outbox.Event) error {
+		log.Info("outbox event published",
+			zap.String("event_type", e.EventType),
+			zap.String("aggregate_type", e.AggregateType),
+			zap.String("aggregate_id", e.AggregateID))
+		return nil
+	}), log)
+	stopRelay := relay.Start(outboxPollInterval)
 
 	fileSvc := service.NewFileService(fileRepo, store, cfg.Storage.Type,
 		service.WithMaxUploadBytes(cfg.Storage.MaxUploadBytes),
@@ -136,6 +154,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	grpcAddr := fmt.Sprintf("%s:%d", cfg.Server.GRPC.Host, cfg.Server.GRPC.Port)
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
+		stopRelay()
 		return nil, fmt.Errorf("grpc listen on %s: %w", grpcAddr, err)
 	}
 
@@ -147,6 +166,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpServer: httpServer,
 		grpcServer: grpcServer,
 		grpcLis:    grpcLis,
+		stopRelay:  stopRelay,
 	}, nil
 }
 
@@ -210,6 +230,9 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) shutdown() {
+	if a.stopRelay != nil {
+		a.stopRelay()
+	}
 	shCtx, cancel := context.WithTimeout(context.Background(), a.cfg.Server.HTTP.ShutdownTimeout)
 	defer cancel()
 	if err := a.httpServer.Shutdown(shCtx); err != nil {
