@@ -71,6 +71,8 @@ type SSOConfig struct {
 	TokenCacheTTL     time.Duration `mapstructure:"token_cache_ttl"`
 	StaleTTL          time.Duration `mapstructure:"stale_ttl"` // serve last-known identity past expiry when SSO is down
 	UserCacheTTL      time.Duration `mapstructure:"user_cache_ttl"`
+	BreakerThreshold  int           `mapstructure:"breaker_threshold"` // consecutive availability failures that trip the breaker (0 = off)
+	BreakerCooldown   time.Duration `mapstructure:"breaker_cooldown"`  // how long the breaker fast-fails before probing SSO again
 }
 
 type StorageConfig struct {

@@ -21,6 +21,8 @@ sso:
   token_cache_ttl: 60s
   stale_ttl: 300s             # serve last-known identity up to this long past expiry when SSO is down (0 = off)
   user_cache_ttl: 300s
+  breaker_threshold: 5        # consecutive SSO availability failures before fast-failing new tokens (0 = off)
+  breaker_cooldown: 10s       # how long to fast-fail before admitting a single recovery probe
 storage:
   type: local
   max_upload_bytes: 52428800   # 50 MiB; 0 = unlimited

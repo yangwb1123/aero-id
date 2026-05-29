@@ -19,6 +19,11 @@ type ClientConfig struct {
 	UserCacheTTL  time.Duration
 	StaleTTL      time.Duration // serve a last-known uid this long past expiry when SSO is down
 	Timeout       time.Duration
+	// BreakerThreshold is the number of consecutive availability failures that trip
+	// the circuit breaker open; 0 disables it. BreakerCooldown is how long the
+	// breaker fast-fails before admitting a recovery probe.
+	BreakerThreshold int
+	BreakerCooldown  time.Duration
 }
 
 type Client struct {
@@ -27,6 +32,7 @@ type Client struct {
 	tokenCache *TokenCache
 	userCache  *UserCache
 	sf         singleflight.Group // collapses concurrent validations of the same token
+	breaker    *breaker           // trips on sustained SSO outage so new tokens fast-fail
 	stopFn     func()
 	timeout    time.Duration
 }
@@ -50,6 +56,7 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 		conn:       conn,
 		rpc:        ssopb.NewSSOClient(conn),
 		tokenCache: NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
+		breaker:    newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown),
 		timeout:    cfg.Timeout,
 	}
 	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
@@ -114,8 +121,22 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (string, error
 // validateUpstream performs the actual SSO ValidateToken RPC under the configured
 // timeout. It is only ever invoked by the singleflight leader; because the result is
 // shared with all waiters it uses a detached, timeout-bounded context rather than any
-// single caller's. On failure it falls back to a stale cached identity.
+// single caller's.
+//
+// A circuit breaker guards the RPC: after sustained SSO outages it skips the call
+// entirely and serves a stale identity (or fast-fails), so new uncached tokens no
+// longer each wait out a full timeout. Only availability failures (SSO unreachable
+// or too slow) trip the breaker and trigger stale fallback; a business rejection
+// (e.g. an invalid token) proves SSO is alive, so it neither trips the breaker nor
+// gets served from stale cache.
 func (c *Client) validateUpstream(token string) (string, error) {
+	if !c.breaker.Allow() {
+		// Breaker open: skip the doomed RPC and serve a last-known identity if we have one.
+		if uid, ok := c.tokenCache.GetStale(token); ok {
+			return uid, nil
+		}
+		return "", fmt.Errorf("sso validate: %w", errCircuitOpen)
+	}
 	ctx := context.Background()
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
@@ -124,13 +145,22 @@ func (c *Client) validateUpstream(token string) (string, error) {
 	}
 	resp, err := c.rpc.ValidateToken(ctx, &ssopb.ValidateTokenRequest{Token: token})
 	if err != nil {
-		// SSO is unreachable: fall back to a recently-cached identity within the stale
-		// grace window so a transient outage doesn't reject every authenticated request.
-		if uid, ok := c.tokenCache.GetStale(token); ok {
-			return uid, nil
+		if isAvailabilityError(err) {
+			// SSO is unreachable: record the failure (may trip the breaker) and fall back
+			// to a recently-cached identity within the stale grace window so a transient
+			// outage doesn't reject every authenticated request.
+			c.breaker.Record(false)
+			if uid, ok := c.tokenCache.GetStale(token); ok {
+				return uid, nil
+			}
+		} else {
+			// A response that rejects the token: SSO is healthy, so close the breaker and
+			// do NOT serve a stale identity for a token the upstream explicitly refused.
+			c.breaker.Record(true)
 		}
 		return "", fmt.Errorf("sso validate: %w", err)
 	}
+	c.breaker.Record(true)
 	var exp time.Time
 	if resp.ExpiresAtUnix > 0 {
 		exp = time.Unix(resp.ExpiresAtUnix, 0)

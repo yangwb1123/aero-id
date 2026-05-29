@@ -3,6 +3,7 @@ package sso_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -346,5 +347,127 @@ func TestClient_ValidateTokenSingleflight(t *testing.T) {
 	}
 	if got := server.Calls(); got != 1 {
 		t.Errorf("SSO ValidateToken calls = %d, want 1 (singleflight must collapse the stampede)", got)
+	}
+}
+
+// toggleSSO returns Unavailable while "down" and a valid identity otherwise, counting
+// every ValidateToken call. It lets a test trip the breaker, then flip SSO healthy to
+// observe recovery, while asserting on how many calls actually reached the server.
+type toggleSSO struct {
+	ssopb.UnimplementedSSOServer
+	mu    sync.Mutex
+	down  bool
+	calls int
+}
+
+func (s *toggleSSO) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
+	s.mu.Lock()
+	s.calls++
+	down := s.down
+	s.mu.Unlock()
+	if down {
+		return nil, status.Error(codes.Unavailable, "sso down")
+	}
+	return &ssopb.ValidateTokenResponse{Uid: "uid-" + req.Token, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()}, nil
+}
+
+func (s *toggleSSO) setDown(d bool) {
+	s.mu.Lock()
+	s.down = d
+	s.mu.Unlock()
+}
+
+func (s *toggleSSO) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func startToggleSSO(t *testing.T, down bool, cfg sso.ClientConfig) (*sso.Client, *toggleSSO) {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	server := &toggleSSO{down: down}
+	ssopb.RegisterSSOServer(srv, server)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sso.NewClientFromConn(conn, cfg), server
+}
+
+func TestClient_BreakerOpensAndStopsCallingSSO(t *testing.T) {
+	const threshold = 3
+	c, server := startToggleSSO(t, true, sso.ClientConfig{ // down from the first call
+		TokenCacheTTL:    time.Minute,
+		UserCacheTTL:     time.Minute,
+		BreakerThreshold: threshold,
+		BreakerCooldown:  time.Hour, // stay open for the rest of the test
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	// Each distinct, uncached token is its own singleflight leader, so each reaches
+	// the upstream until the threshold-th consecutive availability failure trips the breaker.
+	for i := 0; i < threshold; i++ {
+		if _, err := c.ValidateToken(ctx, fmt.Sprintf("tok-%d", i)); err == nil {
+			t.Fatalf("call %d: expected error from down SSO", i)
+		}
+	}
+	if got := server.Calls(); got != threshold {
+		t.Fatalf("SSO calls before trip = %d, want %d", got, threshold)
+	}
+
+	// Breaker is now open: further uncached validations fast-fail without touching SSO.
+	for i := 0; i < 5; i++ {
+		if _, err := c.ValidateToken(ctx, fmt.Sprintf("after-%d", i)); err == nil {
+			t.Fatalf("post-trip call %d: expected fast-fail error", i)
+		}
+	}
+	if got := server.Calls(); got != threshold {
+		t.Errorf("SSO calls after trip = %d, want %d (breaker must short-circuit)", got, threshold)
+	}
+}
+
+func TestClient_BreakerRecoversAfterCooldown(t *testing.T) {
+	const threshold = 2
+	const cooldown = 40 * time.Millisecond
+	c, server := startToggleSSO(t, true, sso.ClientConfig{
+		TokenCacheTTL:    time.Minute,
+		UserCacheTTL:     time.Minute,
+		BreakerThreshold: threshold,
+		BreakerCooldown:  cooldown,
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	// Trip the breaker.
+	for i := 0; i < threshold; i++ {
+		_, _ = c.ValidateToken(ctx, fmt.Sprintf("t%d", i))
+	}
+	callsAtTrip := server.Calls()
+	if _, err := c.ValidateToken(ctx, "blocked"); err == nil {
+		t.Fatal("expected fast-fail while breaker is open")
+	}
+	if server.Calls() != callsAtTrip {
+		t.Fatalf("breaker should short-circuit while open: calls went %d -> %d", callsAtTrip, server.Calls())
+	}
+
+	// SSO recovers; after the cooldown the next call is admitted as the half-open probe.
+	server.setDown(false)
+	time.Sleep(cooldown + 20*time.Millisecond)
+	if uid, err := c.ValidateToken(ctx, "probe"); err != nil || uid != "uid-probe" {
+		t.Fatalf("recovery probe uid=%q err=%v (want it admitted and successful)", uid, err)
+	}
+	// Breaker closed again: subsequent calls flow normally.
+	if uid, err := c.ValidateToken(ctx, "after"); err != nil || uid != "uid-after" {
+		t.Fatalf("post-recovery uid=%q err=%v", uid, err)
 	}
 }
