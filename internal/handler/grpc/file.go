@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -137,6 +138,29 @@ func (s *FileServer) CompleteUpload(ctx context.Context, req *aeropb.CompleteUpl
 	return &aeropb.CompleteUploadResponse{File: fileToPB(f)}, nil
 }
 
+// UpdateFileMetadata mirrors the HTTP PATCH field-mask semantics: only the fields
+// present on the request are applied. name/visibility are proto3 optional (pointer
+// presence); meta, when set, is merged into the file's existing meta map.
+func (s *FileServer) UpdateFileMetadata(ctx context.Context, req *aeropb.UpdateFileMetadataRequest) (*aeropb.UpdateFileMetadataResponse, error) {
+	id, err := idgen.Parse(req.Id)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+	}
+	in := service.UpdateFileMetadataInput{Name: req.Name}
+	if req.Visibility != nil {
+		v := domain.Visibility(*req.Visibility)
+		in.Visibility = &v
+	}
+	if req.Meta != nil {
+		in.Meta = req.Meta.AsMap()
+	}
+	f, err := s.files.UpdateMetadata(ctx, id, in)
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.UpdateFileMetadataResponse{File: fileToPB(f)}, nil
+}
+
 // ---- shared converters (used by message.go and comment.go too) ----
 
 func pageFromPB(p *aeropb.Page) domain.Page {
@@ -147,7 +171,7 @@ func pageFromPB(p *aeropb.Page) domain.Page {
 }
 
 func fileToPB(f *domain.File) *aeropb.File {
-	return &aeropb.File{
+	pb := &aeropb.File{
 		Id:          f.ID.String(),
 		OwnerUid:    f.OwnerUID,
 		Name:        f.Name,
@@ -158,6 +182,14 @@ func fileToPB(f *domain.File) *aeropb.File {
 		CreatedAt:   timestamppb.New(f.CreatedAt),
 		UpdatedAt:   timestamppb.New(f.UpdatedAt),
 	}
+	if len(f.Meta) > 0 {
+		// Meta originates from JSON, so it is always struct-encodable; on the
+		// off chance it is not, drop it rather than fail the whole response.
+		if m, err := structpb.NewStruct(f.Meta); err == nil {
+			pb.Meta = m
+		}
+	}
+	return pb
 }
 
 func filesToPB(fs []*domain.File) []*aeropb.File {

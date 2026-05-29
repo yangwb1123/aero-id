@@ -5,6 +5,7 @@ package aero_id.v1;
 option go_package = "github.com/aero/aero-id/internal/handler/grpc/aeropb";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
 
 // ---- shared ----
 message User {
@@ -29,6 +30,7 @@ message File {
   string storage_type                    = 7;
   google.protobuf.Timestamp created_at   = 8;
   google.protobuf.Timestamp updated_at   = 9;
+  google.protobuf.Struct meta            = 10;
 }
 
 message GetFileRequest { string id = 1; }
@@ -50,6 +52,17 @@ message PresignUploadResponse { string file_id = 1; string upload_url = 2; strin
 message CompleteUploadRequest { string file_id = 1; string storage_key = 2; string name = 3; string mime_type = 4; int32 visibility = 5; }
 message CompleteUploadResponse { File file = 1; }
 
+// UpdateFileMetadataRequest mirrors the HTTP PATCH field-mask semantics: only the
+// fields explicitly present are applied. name/visibility use proto3 `optional`
+// (presence-tracked); meta, when set, is merged into the existing meta map.
+message UpdateFileMetadataRequest {
+  string id                     = 1;
+  optional string name          = 2;
+  optional int32  visibility    = 3;
+  google.protobuf.Struct meta   = 4;
+}
+message UpdateFileMetadataResponse { File file = 1; }
+
 service FileService {
   rpc GetFile(GetFileRequest) returns (GetFileResponse);
   rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
@@ -60,6 +73,7 @@ service FileService {
   rpc ListSharedWithMe(ListSharedWithMeRequest) returns (ListFilesResponse);
   rpc PresignUpload(PresignUploadRequest) returns (PresignUploadResponse);
   rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
+  rpc UpdateFileMetadata(UpdateFileMetadataRequest) returns (UpdateFileMetadataResponse);
 }
 
 // ---- messages ----
@@ -72,6 +86,7 @@ message Message {
   string file_id                       = 6;
   google.protobuf.Timestamp read_at    = 7;
   google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp edited_at  = 9;
 }
 
 message SendMessageRequest { string to_uid = 1; int32 kind = 2; string content = 3; string file_id = 4; }
@@ -86,6 +101,12 @@ message MarkReadRequest { string id = 1; }
 message MarkReadResponse {}
 message UnreadCountRequest {}
 message UnreadCountResponse { int64 unread_count = 1; }
+message EditMessageRequest { string id = 1; string content = 2; }
+message EditMessageResponse { Message message = 1; }
+message DeleteMessageRequest { string id = 1; }
+message DeleteMessageResponse {}
+message MarkConversationReadRequest { string with_uid = 1; }
+message MarkConversationReadResponse {}
 
 service MessageService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
@@ -94,6 +115,9 @@ service MessageService {
   rpc Conversation(ConversationRequest) returns (ConversationResponse);
   rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
   rpc UnreadCount(UnreadCountRequest) returns (UnreadCountResponse);
+  rpc EditMessage(EditMessageRequest) returns (EditMessageResponse);
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+  rpc MarkConversationRead(MarkConversationReadRequest) returns (MarkConversationReadResponse);
 }
 
 // ---- comments ----
@@ -109,6 +133,19 @@ message Comment {
   int32  status                        = 9;
   google.protobuf.Timestamp created_at = 10;
   int32  like_count                    = 11;
+  google.protobuf.Timestamp edited_at  = 12;
+}
+
+// CommentReport mirrors the HTTP moderation report response.
+message CommentReport {
+  string id                             = 1;
+  string comment_id                     = 2;
+  string reporter_uid                   = 3;
+  string reason                         = 4;
+  string status                         = 5;
+  google.protobuf.Timestamp created_at  = 6;
+  google.protobuf.Timestamp resolved_at = 7;
+  string resolved_by                    = 8;
 }
 
 message CreateCommentRequest { string target_type = 1; string target_id = 2; string parent_id = 3; string content = 4; }
@@ -131,6 +168,15 @@ message HideCommentResponse {}
 message UnhideCommentRequest { string comment_id = 1; }
 message UnhideCommentResponse {}
 
+message EditCommentRequest { string id = 1; string content = 2; }
+message EditCommentResponse { Comment comment = 1; }
+// ListReportsRequest scopes to one comment; status, when set, filters by lifecycle
+// state ("open"/"resolved"/"dismissed"), matching the HTTP query parameter.
+message ListReportsRequest { string comment_id = 1; optional string status = 2; Page page = 3; }
+message ListReportsResponse { repeated CommentReport reports = 1; map<string, User> users = 2; string next_cursor = 3; }
+message ResolveReportRequest { string report_id = 1; string status = 2; }
+message ResolveReportResponse {}
+
 service CommentService {
   rpc CreateComment(CreateCommentRequest) returns (CreateCommentResponse);
   rpc ListComments(ListCommentsRequest) returns (ListCommentsResponse);
@@ -141,6 +187,9 @@ service CommentService {
   rpc ReportComment(ReportCommentRequest) returns (ReportCommentResponse);
   rpc HideComment(HideCommentRequest) returns (HideCommentResponse);
   rpc UnhideComment(UnhideCommentRequest) returns (UnhideCommentResponse);
+  rpc EditComment(EditCommentRequest) returns (EditCommentResponse);
+  rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
+  rpc ResolveReport(ResolveReportRequest) returns (ResolveReportResponse);
 }
 
 // ---- notifications ----

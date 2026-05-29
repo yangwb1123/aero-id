@@ -19,15 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FileService_GetFile_FullMethodName          = "/aero_id.v1.FileService/GetFile"
-	FileService_ListFiles_FullMethodName        = "/aero_id.v1.FileService/ListFiles"
-	FileService_DeleteFile_FullMethodName       = "/aero_id.v1.FileService/DeleteFile"
-	FileService_GetDownloadURL_FullMethodName   = "/aero_id.v1.FileService/GetDownloadURL"
-	FileService_ShareFile_FullMethodName        = "/aero_id.v1.FileService/ShareFile"
-	FileService_UnshareFile_FullMethodName      = "/aero_id.v1.FileService/UnshareFile"
-	FileService_ListSharedWithMe_FullMethodName = "/aero_id.v1.FileService/ListSharedWithMe"
-	FileService_PresignUpload_FullMethodName    = "/aero_id.v1.FileService/PresignUpload"
-	FileService_CompleteUpload_FullMethodName   = "/aero_id.v1.FileService/CompleteUpload"
+	FileService_GetFile_FullMethodName            = "/aero_id.v1.FileService/GetFile"
+	FileService_ListFiles_FullMethodName          = "/aero_id.v1.FileService/ListFiles"
+	FileService_DeleteFile_FullMethodName         = "/aero_id.v1.FileService/DeleteFile"
+	FileService_GetDownloadURL_FullMethodName     = "/aero_id.v1.FileService/GetDownloadURL"
+	FileService_ShareFile_FullMethodName          = "/aero_id.v1.FileService/ShareFile"
+	FileService_UnshareFile_FullMethodName        = "/aero_id.v1.FileService/UnshareFile"
+	FileService_ListSharedWithMe_FullMethodName   = "/aero_id.v1.FileService/ListSharedWithMe"
+	FileService_PresignUpload_FullMethodName      = "/aero_id.v1.FileService/PresignUpload"
+	FileService_CompleteUpload_FullMethodName     = "/aero_id.v1.FileService/CompleteUpload"
+	FileService_UpdateFileMetadata_FullMethodName = "/aero_id.v1.FileService/UpdateFileMetadata"
 )
 
 // FileServiceClient is the client API for FileService service.
@@ -43,6 +44,7 @@ type FileServiceClient interface {
 	ListSharedWithMe(ctx context.Context, in *ListSharedWithMeRequest, opts ...grpc.CallOption) (*ListFilesResponse, error)
 	PresignUpload(ctx context.Context, in *PresignUploadRequest, opts ...grpc.CallOption) (*PresignUploadResponse, error)
 	CompleteUpload(ctx context.Context, in *CompleteUploadRequest, opts ...grpc.CallOption) (*CompleteUploadResponse, error)
+	UpdateFileMetadata(ctx context.Context, in *UpdateFileMetadataRequest, opts ...grpc.CallOption) (*UpdateFileMetadataResponse, error)
 }
 
 type fileServiceClient struct {
@@ -143,6 +145,16 @@ func (c *fileServiceClient) CompleteUpload(ctx context.Context, in *CompleteUplo
 	return out, nil
 }
 
+func (c *fileServiceClient) UpdateFileMetadata(ctx context.Context, in *UpdateFileMetadataRequest, opts ...grpc.CallOption) (*UpdateFileMetadataResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateFileMetadataResponse)
+	err := c.cc.Invoke(ctx, FileService_UpdateFileMetadata_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FileServiceServer is the server API for FileService service.
 // All implementations must embed UnimplementedFileServiceServer
 // for forward compatibility.
@@ -156,6 +168,7 @@ type FileServiceServer interface {
 	ListSharedWithMe(context.Context, *ListSharedWithMeRequest) (*ListFilesResponse, error)
 	PresignUpload(context.Context, *PresignUploadRequest) (*PresignUploadResponse, error)
 	CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadResponse, error)
+	UpdateFileMetadata(context.Context, *UpdateFileMetadataRequest) (*UpdateFileMetadataResponse, error)
 	mustEmbedUnimplementedFileServiceServer()
 }
 
@@ -192,6 +205,9 @@ func (UnimplementedFileServiceServer) PresignUpload(context.Context, *PresignUpl
 }
 func (UnimplementedFileServiceServer) CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompleteUpload not implemented")
+}
+func (UnimplementedFileServiceServer) UpdateFileMetadata(context.Context, *UpdateFileMetadataRequest) (*UpdateFileMetadataResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateFileMetadata not implemented")
 }
 func (UnimplementedFileServiceServer) mustEmbedUnimplementedFileServiceServer() {}
 func (UnimplementedFileServiceServer) testEmbeddedByValue()                     {}
@@ -376,6 +392,24 @@ func _FileService_CompleteUpload_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileService_UpdateFileMetadata_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateFileMetadataRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).UpdateFileMetadata(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_UpdateFileMetadata_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).UpdateFileMetadata(ctx, req.(*UpdateFileMetadataRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FileService_ServiceDesc is the grpc.ServiceDesc for FileService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -419,18 +453,25 @@ var FileService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "CompleteUpload",
 			Handler:    _FileService_CompleteUpload_Handler,
 		},
+		{
+			MethodName: "UpdateFileMetadata",
+			Handler:    _FileService_UpdateFileMetadata_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "aero_id/v1/aero_id.proto",
 }
 
 const (
-	MessageService_SendMessage_FullMethodName  = "/aero_id.v1.MessageService/SendMessage"
-	MessageService_GetMessage_FullMethodName   = "/aero_id.v1.MessageService/GetMessage"
-	MessageService_Inbox_FullMethodName        = "/aero_id.v1.MessageService/Inbox"
-	MessageService_Conversation_FullMethodName = "/aero_id.v1.MessageService/Conversation"
-	MessageService_MarkRead_FullMethodName     = "/aero_id.v1.MessageService/MarkRead"
-	MessageService_UnreadCount_FullMethodName  = "/aero_id.v1.MessageService/UnreadCount"
+	MessageService_SendMessage_FullMethodName          = "/aero_id.v1.MessageService/SendMessage"
+	MessageService_GetMessage_FullMethodName           = "/aero_id.v1.MessageService/GetMessage"
+	MessageService_Inbox_FullMethodName                = "/aero_id.v1.MessageService/Inbox"
+	MessageService_Conversation_FullMethodName         = "/aero_id.v1.MessageService/Conversation"
+	MessageService_MarkRead_FullMethodName             = "/aero_id.v1.MessageService/MarkRead"
+	MessageService_UnreadCount_FullMethodName          = "/aero_id.v1.MessageService/UnreadCount"
+	MessageService_EditMessage_FullMethodName          = "/aero_id.v1.MessageService/EditMessage"
+	MessageService_DeleteMessage_FullMethodName        = "/aero_id.v1.MessageService/DeleteMessage"
+	MessageService_MarkConversationRead_FullMethodName = "/aero_id.v1.MessageService/MarkConversationRead"
 )
 
 // MessageServiceClient is the client API for MessageService service.
@@ -443,6 +484,9 @@ type MessageServiceClient interface {
 	Conversation(ctx context.Context, in *ConversationRequest, opts ...grpc.CallOption) (*ConversationResponse, error)
 	MarkRead(ctx context.Context, in *MarkReadRequest, opts ...grpc.CallOption) (*MarkReadResponse, error)
 	UnreadCount(ctx context.Context, in *UnreadCountRequest, opts ...grpc.CallOption) (*UnreadCountResponse, error)
+	EditMessage(ctx context.Context, in *EditMessageRequest, opts ...grpc.CallOption) (*EditMessageResponse, error)
+	DeleteMessage(ctx context.Context, in *DeleteMessageRequest, opts ...grpc.CallOption) (*DeleteMessageResponse, error)
+	MarkConversationRead(ctx context.Context, in *MarkConversationReadRequest, opts ...grpc.CallOption) (*MarkConversationReadResponse, error)
 }
 
 type messageServiceClient struct {
@@ -513,6 +557,36 @@ func (c *messageServiceClient) UnreadCount(ctx context.Context, in *UnreadCountR
 	return out, nil
 }
 
+func (c *messageServiceClient) EditMessage(ctx context.Context, in *EditMessageRequest, opts ...grpc.CallOption) (*EditMessageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EditMessageResponse)
+	err := c.cc.Invoke(ctx, MessageService_EditMessage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *messageServiceClient) DeleteMessage(ctx context.Context, in *DeleteMessageRequest, opts ...grpc.CallOption) (*DeleteMessageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteMessageResponse)
+	err := c.cc.Invoke(ctx, MessageService_DeleteMessage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *messageServiceClient) MarkConversationRead(ctx context.Context, in *MarkConversationReadRequest, opts ...grpc.CallOption) (*MarkConversationReadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MarkConversationReadResponse)
+	err := c.cc.Invoke(ctx, MessageService_MarkConversationRead_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MessageServiceServer is the server API for MessageService service.
 // All implementations must embed UnimplementedMessageServiceServer
 // for forward compatibility.
@@ -523,6 +597,9 @@ type MessageServiceServer interface {
 	Conversation(context.Context, *ConversationRequest) (*ConversationResponse, error)
 	MarkRead(context.Context, *MarkReadRequest) (*MarkReadResponse, error)
 	UnreadCount(context.Context, *UnreadCountRequest) (*UnreadCountResponse, error)
+	EditMessage(context.Context, *EditMessageRequest) (*EditMessageResponse, error)
+	DeleteMessage(context.Context, *DeleteMessageRequest) (*DeleteMessageResponse, error)
+	MarkConversationRead(context.Context, *MarkConversationReadRequest) (*MarkConversationReadResponse, error)
 	mustEmbedUnimplementedMessageServiceServer()
 }
 
@@ -550,6 +627,15 @@ func (UnimplementedMessageServiceServer) MarkRead(context.Context, *MarkReadRequ
 }
 func (UnimplementedMessageServiceServer) UnreadCount(context.Context, *UnreadCountRequest) (*UnreadCountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UnreadCount not implemented")
+}
+func (UnimplementedMessageServiceServer) EditMessage(context.Context, *EditMessageRequest) (*EditMessageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EditMessage not implemented")
+}
+func (UnimplementedMessageServiceServer) DeleteMessage(context.Context, *DeleteMessageRequest) (*DeleteMessageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteMessage not implemented")
+}
+func (UnimplementedMessageServiceServer) MarkConversationRead(context.Context, *MarkConversationReadRequest) (*MarkConversationReadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MarkConversationRead not implemented")
 }
 func (UnimplementedMessageServiceServer) mustEmbedUnimplementedMessageServiceServer() {}
 func (UnimplementedMessageServiceServer) testEmbeddedByValue()                        {}
@@ -680,6 +766,60 @@ func _MessageService_UnreadCount_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MessageService_EditMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EditMessageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageServiceServer).EditMessage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageService_EditMessage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageServiceServer).EditMessage(ctx, req.(*EditMessageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MessageService_DeleteMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteMessageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageServiceServer).DeleteMessage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageService_DeleteMessage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageServiceServer).DeleteMessage(ctx, req.(*DeleteMessageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MessageService_MarkConversationRead_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MarkConversationReadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageServiceServer).MarkConversationRead(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageService_MarkConversationRead_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageServiceServer).MarkConversationRead(ctx, req.(*MarkConversationReadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MessageService_ServiceDesc is the grpc.ServiceDesc for MessageService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -711,6 +851,18 @@ var MessageService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "UnreadCount",
 			Handler:    _MessageService_UnreadCount_Handler,
 		},
+		{
+			MethodName: "EditMessage",
+			Handler:    _MessageService_EditMessage_Handler,
+		},
+		{
+			MethodName: "DeleteMessage",
+			Handler:    _MessageService_DeleteMessage_Handler,
+		},
+		{
+			MethodName: "MarkConversationRead",
+			Handler:    _MessageService_MarkConversationRead_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "aero_id/v1/aero_id.proto",
@@ -726,6 +878,9 @@ const (
 	CommentService_ReportComment_FullMethodName = "/aero_id.v1.CommentService/ReportComment"
 	CommentService_HideComment_FullMethodName   = "/aero_id.v1.CommentService/HideComment"
 	CommentService_UnhideComment_FullMethodName = "/aero_id.v1.CommentService/UnhideComment"
+	CommentService_EditComment_FullMethodName   = "/aero_id.v1.CommentService/EditComment"
+	CommentService_ListReports_FullMethodName   = "/aero_id.v1.CommentService/ListReports"
+	CommentService_ResolveReport_FullMethodName = "/aero_id.v1.CommentService/ResolveReport"
 )
 
 // CommentServiceClient is the client API for CommentService service.
@@ -741,6 +896,9 @@ type CommentServiceClient interface {
 	ReportComment(ctx context.Context, in *ReportCommentRequest, opts ...grpc.CallOption) (*ReportCommentResponse, error)
 	HideComment(ctx context.Context, in *HideCommentRequest, opts ...grpc.CallOption) (*HideCommentResponse, error)
 	UnhideComment(ctx context.Context, in *UnhideCommentRequest, opts ...grpc.CallOption) (*UnhideCommentResponse, error)
+	EditComment(ctx context.Context, in *EditCommentRequest, opts ...grpc.CallOption) (*EditCommentResponse, error)
+	ListReports(ctx context.Context, in *ListReportsRequest, opts ...grpc.CallOption) (*ListReportsResponse, error)
+	ResolveReport(ctx context.Context, in *ResolveReportRequest, opts ...grpc.CallOption) (*ResolveReportResponse, error)
 }
 
 type commentServiceClient struct {
@@ -841,6 +999,36 @@ func (c *commentServiceClient) UnhideComment(ctx context.Context, in *UnhideComm
 	return out, nil
 }
 
+func (c *commentServiceClient) EditComment(ctx context.Context, in *EditCommentRequest, opts ...grpc.CallOption) (*EditCommentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EditCommentResponse)
+	err := c.cc.Invoke(ctx, CommentService_EditComment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *commentServiceClient) ListReports(ctx context.Context, in *ListReportsRequest, opts ...grpc.CallOption) (*ListReportsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReportsResponse)
+	err := c.cc.Invoke(ctx, CommentService_ListReports_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *commentServiceClient) ResolveReport(ctx context.Context, in *ResolveReportRequest, opts ...grpc.CallOption) (*ResolveReportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveReportResponse)
+	err := c.cc.Invoke(ctx, CommentService_ResolveReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CommentServiceServer is the server API for CommentService service.
 // All implementations must embed UnimplementedCommentServiceServer
 // for forward compatibility.
@@ -854,6 +1042,9 @@ type CommentServiceServer interface {
 	ReportComment(context.Context, *ReportCommentRequest) (*ReportCommentResponse, error)
 	HideComment(context.Context, *HideCommentRequest) (*HideCommentResponse, error)
 	UnhideComment(context.Context, *UnhideCommentRequest) (*UnhideCommentResponse, error)
+	EditComment(context.Context, *EditCommentRequest) (*EditCommentResponse, error)
+	ListReports(context.Context, *ListReportsRequest) (*ListReportsResponse, error)
+	ResolveReport(context.Context, *ResolveReportRequest) (*ResolveReportResponse, error)
 	mustEmbedUnimplementedCommentServiceServer()
 }
 
@@ -890,6 +1081,15 @@ func (UnimplementedCommentServiceServer) HideComment(context.Context, *HideComme
 }
 func (UnimplementedCommentServiceServer) UnhideComment(context.Context, *UnhideCommentRequest) (*UnhideCommentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UnhideComment not implemented")
+}
+func (UnimplementedCommentServiceServer) EditComment(context.Context, *EditCommentRequest) (*EditCommentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EditComment not implemented")
+}
+func (UnimplementedCommentServiceServer) ListReports(context.Context, *ListReportsRequest) (*ListReportsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListReports not implemented")
+}
+func (UnimplementedCommentServiceServer) ResolveReport(context.Context, *ResolveReportRequest) (*ResolveReportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveReport not implemented")
 }
 func (UnimplementedCommentServiceServer) mustEmbedUnimplementedCommentServiceServer() {}
 func (UnimplementedCommentServiceServer) testEmbeddedByValue()                        {}
@@ -1074,6 +1274,60 @@ func _CommentService_UnhideComment_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CommentService_EditComment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EditCommentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CommentServiceServer).EditComment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CommentService_EditComment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CommentServiceServer).EditComment(ctx, req.(*EditCommentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CommentService_ListReports_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReportsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CommentServiceServer).ListReports(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CommentService_ListReports_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CommentServiceServer).ListReports(ctx, req.(*ListReportsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CommentService_ResolveReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CommentServiceServer).ResolveReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CommentService_ResolveReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CommentServiceServer).ResolveReport(ctx, req.(*ResolveReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CommentService_ServiceDesc is the grpc.ServiceDesc for CommentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1116,6 +1370,18 @@ var CommentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UnhideComment",
 			Handler:    _CommentService_UnhideComment_Handler,
+		},
+		{
+			MethodName: "EditComment",
+			Handler:    _CommentService_EditComment_Handler,
+		},
+		{
+			MethodName: "ListReports",
+			Handler:    _CommentService_ListReports_Handler,
+		},
+		{
+			MethodName: "ResolveReport",
+			Handler:    _CommentService_ResolveReport_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

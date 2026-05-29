@@ -9,6 +9,7 @@ package aeropb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -147,6 +148,7 @@ type File struct {
 	StorageType   string                 `protobuf:"bytes,7,opt,name=storage_type,json=storageType,proto3" json:"storage_type,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Meta          *structpb.Struct       `protobuf:"bytes,10,opt,name=meta,proto3" json:"meta,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -240,6 +242,13 @@ func (x *File) GetCreatedAt() *timestamppb.Timestamp {
 func (x *File) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *File) GetMeta() *structpb.Struct {
+	if x != nil {
+		return x.Meta
 	}
 	return nil
 }
@@ -1072,6 +1081,121 @@ func (x *CompleteUploadResponse) GetFile() *File {
 	return nil
 }
 
+// UpdateFileMetadataRequest mirrors the HTTP PATCH field-mask semantics: only the
+// fields explicitly present are applied. name/visibility use proto3 `optional`
+// (presence-tracked); meta, when set, is merged into the existing meta map.
+type UpdateFileMetadataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Visibility    *int32                 `protobuf:"varint,3,opt,name=visibility,proto3,oneof" json:"visibility,omitempty"`
+	Meta          *structpb.Struct       `protobuf:"bytes,4,opt,name=meta,proto3" json:"meta,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateFileMetadataRequest) Reset() {
+	*x = UpdateFileMetadataRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateFileMetadataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateFileMetadataRequest) ProtoMessage() {}
+
+func (x *UpdateFileMetadataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateFileMetadataRequest.ProtoReflect.Descriptor instead.
+func (*UpdateFileMetadataRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *UpdateFileMetadataRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateFileMetadataRequest) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *UpdateFileMetadataRequest) GetVisibility() int32 {
+	if x != nil && x.Visibility != nil {
+		return *x.Visibility
+	}
+	return 0
+}
+
+func (x *UpdateFileMetadataRequest) GetMeta() *structpb.Struct {
+	if x != nil {
+		return x.Meta
+	}
+	return nil
+}
+
+type UpdateFileMetadataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	File          *File                  `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateFileMetadataResponse) Reset() {
+	*x = UpdateFileMetadataResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateFileMetadataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateFileMetadataResponse) ProtoMessage() {}
+
+func (x *UpdateFileMetadataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateFileMetadataResponse.ProtoReflect.Descriptor instead.
+func (*UpdateFileMetadataResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *UpdateFileMetadataResponse) GetFile() *File {
+	if x != nil {
+		return x.File
+	}
+	return nil
+}
+
 // ---- messages ----
 type Message struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1083,13 +1207,14 @@ type Message struct {
 	FileId        string                 `protobuf:"bytes,6,opt,name=file_id,json=fileId,proto3" json:"file_id,omitempty"`
 	ReadAt        *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=read_at,json=readAt,proto3" json:"read_at,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	EditedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=edited_at,json=editedAt,proto3" json:"edited_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[20]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1101,7 +1226,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[20]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1114,7 +1239,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{20}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Message) GetId() string {
@@ -1173,6 +1298,13 @@ func (x *Message) GetCreatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Message) GetEditedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EditedAt
+	}
+	return nil
+}
+
 type SendMessageRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ToUid         string                 `protobuf:"bytes,1,opt,name=to_uid,json=toUid,proto3" json:"to_uid,omitempty"`
@@ -1185,7 +1317,7 @@ type SendMessageRequest struct {
 
 func (x *SendMessageRequest) Reset() {
 	*x = SendMessageRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[21]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1197,7 +1329,7 @@ func (x *SendMessageRequest) String() string {
 func (*SendMessageRequest) ProtoMessage() {}
 
 func (x *SendMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[21]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1210,7 +1342,7 @@ func (x *SendMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendMessageRequest.ProtoReflect.Descriptor instead.
 func (*SendMessageRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{21}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SendMessageRequest) GetToUid() string {
@@ -1250,7 +1382,7 @@ type SendMessageResponse struct {
 
 func (x *SendMessageResponse) Reset() {
 	*x = SendMessageResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[22]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1262,7 +1394,7 @@ func (x *SendMessageResponse) String() string {
 func (*SendMessageResponse) ProtoMessage() {}
 
 func (x *SendMessageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[22]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1275,7 +1407,7 @@ func (x *SendMessageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendMessageResponse.ProtoReflect.Descriptor instead.
 func (*SendMessageResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{22}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SendMessageResponse) GetMessage() *Message {
@@ -1294,7 +1426,7 @@ type GetMessageRequest struct {
 
 func (x *GetMessageRequest) Reset() {
 	*x = GetMessageRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[23]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1306,7 +1438,7 @@ func (x *GetMessageRequest) String() string {
 func (*GetMessageRequest) ProtoMessage() {}
 
 func (x *GetMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[23]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1319,7 +1451,7 @@ func (x *GetMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMessageRequest.ProtoReflect.Descriptor instead.
 func (*GetMessageRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{23}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetMessageRequest) GetId() string {
@@ -1338,7 +1470,7 @@ type GetMessageResponse struct {
 
 func (x *GetMessageResponse) Reset() {
 	*x = GetMessageResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[24]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1350,7 +1482,7 @@ func (x *GetMessageResponse) String() string {
 func (*GetMessageResponse) ProtoMessage() {}
 
 func (x *GetMessageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[24]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1363,7 +1495,7 @@ func (x *GetMessageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMessageResponse.ProtoReflect.Descriptor instead.
 func (*GetMessageResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{24}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetMessageResponse) GetMessage() *Message {
@@ -1383,7 +1515,7 @@ type InboxRequest struct {
 
 func (x *InboxRequest) Reset() {
 	*x = InboxRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[25]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1395,7 +1527,7 @@ func (x *InboxRequest) String() string {
 func (*InboxRequest) ProtoMessage() {}
 
 func (x *InboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[25]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1408,7 +1540,7 @@ func (x *InboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InboxRequest.ProtoReflect.Descriptor instead.
 func (*InboxRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{25}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *InboxRequest) GetPage() *Page {
@@ -1436,7 +1568,7 @@ type InboxResponse struct {
 
 func (x *InboxResponse) Reset() {
 	*x = InboxResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[26]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1448,7 +1580,7 @@ func (x *InboxResponse) String() string {
 func (*InboxResponse) ProtoMessage() {}
 
 func (x *InboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[26]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1461,7 +1593,7 @@ func (x *InboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InboxResponse.ProtoReflect.Descriptor instead.
 func (*InboxResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{26}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *InboxResponse) GetMessages() []*Message {
@@ -1495,7 +1627,7 @@ type ConversationRequest struct {
 
 func (x *ConversationRequest) Reset() {
 	*x = ConversationRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[27]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1507,7 +1639,7 @@ func (x *ConversationRequest) String() string {
 func (*ConversationRequest) ProtoMessage() {}
 
 func (x *ConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[27]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1520,7 +1652,7 @@ func (x *ConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConversationRequest.ProtoReflect.Descriptor instead.
 func (*ConversationRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{27}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ConversationRequest) GetWithUid() string {
@@ -1548,7 +1680,7 @@ type ConversationResponse struct {
 
 func (x *ConversationResponse) Reset() {
 	*x = ConversationResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[28]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1560,7 +1692,7 @@ func (x *ConversationResponse) String() string {
 func (*ConversationResponse) ProtoMessage() {}
 
 func (x *ConversationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[28]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1573,7 +1705,7 @@ func (x *ConversationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConversationResponse.ProtoReflect.Descriptor instead.
 func (*ConversationResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{28}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ConversationResponse) GetMessages() []*Message {
@@ -1606,7 +1738,7 @@ type MarkReadRequest struct {
 
 func (x *MarkReadRequest) Reset() {
 	*x = MarkReadRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[29]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1618,7 +1750,7 @@ func (x *MarkReadRequest) String() string {
 func (*MarkReadRequest) ProtoMessage() {}
 
 func (x *MarkReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[29]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1631,7 +1763,7 @@ func (x *MarkReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkReadRequest.ProtoReflect.Descriptor instead.
 func (*MarkReadRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{29}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *MarkReadRequest) GetId() string {
@@ -1649,7 +1781,7 @@ type MarkReadResponse struct {
 
 func (x *MarkReadResponse) Reset() {
 	*x = MarkReadResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[30]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1661,7 +1793,7 @@ func (x *MarkReadResponse) String() string {
 func (*MarkReadResponse) ProtoMessage() {}
 
 func (x *MarkReadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[30]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1674,7 +1806,7 @@ func (x *MarkReadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkReadResponse.ProtoReflect.Descriptor instead.
 func (*MarkReadResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{30}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{32}
 }
 
 type UnreadCountRequest struct {
@@ -1685,7 +1817,7 @@ type UnreadCountRequest struct {
 
 func (x *UnreadCountRequest) Reset() {
 	*x = UnreadCountRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[31]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1697,7 +1829,7 @@ func (x *UnreadCountRequest) String() string {
 func (*UnreadCountRequest) ProtoMessage() {}
 
 func (x *UnreadCountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[31]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1710,7 +1842,7 @@ func (x *UnreadCountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnreadCountRequest.ProtoReflect.Descriptor instead.
 func (*UnreadCountRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{31}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{33}
 }
 
 type UnreadCountResponse struct {
@@ -1722,7 +1854,7 @@ type UnreadCountResponse struct {
 
 func (x *UnreadCountResponse) Reset() {
 	*x = UnreadCountResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[32]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1734,7 +1866,7 @@ func (x *UnreadCountResponse) String() string {
 func (*UnreadCountResponse) ProtoMessage() {}
 
 func (x *UnreadCountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[32]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1747,7 +1879,7 @@ func (x *UnreadCountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnreadCountResponse.ProtoReflect.Descriptor instead.
 func (*UnreadCountResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{32}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *UnreadCountResponse) GetUnreadCount() int64 {
@@ -1755,6 +1887,262 @@ func (x *UnreadCountResponse) GetUnreadCount() int64 {
 		return x.UnreadCount
 	}
 	return 0
+}
+
+type EditMessageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EditMessageRequest) Reset() {
+	*x = EditMessageRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EditMessageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EditMessageRequest) ProtoMessage() {}
+
+func (x *EditMessageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EditMessageRequest.ProtoReflect.Descriptor instead.
+func (*EditMessageRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *EditMessageRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *EditMessageRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+type EditMessageResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       *Message               `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EditMessageResponse) Reset() {
+	*x = EditMessageResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EditMessageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EditMessageResponse) ProtoMessage() {}
+
+func (x *EditMessageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EditMessageResponse.ProtoReflect.Descriptor instead.
+func (*EditMessageResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *EditMessageResponse) GetMessage() *Message {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+type DeleteMessageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteMessageRequest) Reset() {
+	*x = DeleteMessageRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMessageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMessageRequest) ProtoMessage() {}
+
+func (x *DeleteMessageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMessageRequest.ProtoReflect.Descriptor instead.
+func (*DeleteMessageRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *DeleteMessageRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type DeleteMessageResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteMessageResponse) Reset() {
+	*x = DeleteMessageResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMessageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMessageResponse) ProtoMessage() {}
+
+func (x *DeleteMessageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMessageResponse.ProtoReflect.Descriptor instead.
+func (*DeleteMessageResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{38}
+}
+
+type MarkConversationReadRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WithUid       string                 `protobuf:"bytes,1,opt,name=with_uid,json=withUid,proto3" json:"with_uid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkConversationReadRequest) Reset() {
+	*x = MarkConversationReadRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkConversationReadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkConversationReadRequest) ProtoMessage() {}
+
+func (x *MarkConversationReadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkConversationReadRequest.ProtoReflect.Descriptor instead.
+func (*MarkConversationReadRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *MarkConversationReadRequest) GetWithUid() string {
+	if x != nil {
+		return x.WithUid
+	}
+	return ""
+}
+
+type MarkConversationReadResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkConversationReadResponse) Reset() {
+	*x = MarkConversationReadResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkConversationReadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkConversationReadResponse) ProtoMessage() {}
+
+func (x *MarkConversationReadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkConversationReadResponse.ProtoReflect.Descriptor instead.
+func (*MarkConversationReadResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{40}
 }
 
 // ---- comments ----
@@ -1771,13 +2159,14 @@ type Comment struct {
 	Status        int32                  `protobuf:"varint,9,opt,name=status,proto3" json:"status,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	LikeCount     int32                  `protobuf:"varint,11,opt,name=like_count,json=likeCount,proto3" json:"like_count,omitempty"`
+	EditedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=edited_at,json=editedAt,proto3" json:"edited_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Comment) Reset() {
 	*x = Comment{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[33]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1789,7 +2178,7 @@ func (x *Comment) String() string {
 func (*Comment) ProtoMessage() {}
 
 func (x *Comment) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[33]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1802,7 +2191,7 @@ func (x *Comment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Comment.ProtoReflect.Descriptor instead.
 func (*Comment) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{33}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *Comment) GetId() string {
@@ -1882,6 +2271,114 @@ func (x *Comment) GetLikeCount() int32 {
 	return 0
 }
 
+func (x *Comment) GetEditedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EditedAt
+	}
+	return nil
+}
+
+// CommentReport mirrors the HTTP moderation report response.
+type CommentReport struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CommentId     string                 `protobuf:"bytes,2,opt,name=comment_id,json=commentId,proto3" json:"comment_id,omitempty"`
+	ReporterUid   string                 `protobuf:"bytes,3,opt,name=reporter_uid,json=reporterUid,proto3" json:"reporter_uid,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ResolvedAt    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=resolved_at,json=resolvedAt,proto3" json:"resolved_at,omitempty"`
+	ResolvedBy    string                 `protobuf:"bytes,8,opt,name=resolved_by,json=resolvedBy,proto3" json:"resolved_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommentReport) Reset() {
+	*x = CommentReport{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommentReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommentReport) ProtoMessage() {}
+
+func (x *CommentReport) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommentReport.ProtoReflect.Descriptor instead.
+func (*CommentReport) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *CommentReport) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *CommentReport) GetCommentId() string {
+	if x != nil {
+		return x.CommentId
+	}
+	return ""
+}
+
+func (x *CommentReport) GetReporterUid() string {
+	if x != nil {
+		return x.ReporterUid
+	}
+	return ""
+}
+
+func (x *CommentReport) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *CommentReport) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CommentReport) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *CommentReport) GetResolvedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ResolvedAt
+	}
+	return nil
+}
+
+func (x *CommentReport) GetResolvedBy() string {
+	if x != nil {
+		return x.ResolvedBy
+	}
+	return ""
+}
+
 type CreateCommentRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TargetType    string                 `protobuf:"bytes,1,opt,name=target_type,json=targetType,proto3" json:"target_type,omitempty"`
@@ -1894,7 +2391,7 @@ type CreateCommentRequest struct {
 
 func (x *CreateCommentRequest) Reset() {
 	*x = CreateCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[34]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1906,7 +2403,7 @@ func (x *CreateCommentRequest) String() string {
 func (*CreateCommentRequest) ProtoMessage() {}
 
 func (x *CreateCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[34]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1919,7 +2416,7 @@ func (x *CreateCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCommentRequest.ProtoReflect.Descriptor instead.
 func (*CreateCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{34}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *CreateCommentRequest) GetTargetType() string {
@@ -1959,7 +2456,7 @@ type CreateCommentResponse struct {
 
 func (x *CreateCommentResponse) Reset() {
 	*x = CreateCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[35]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1971,7 +2468,7 @@ func (x *CreateCommentResponse) String() string {
 func (*CreateCommentResponse) ProtoMessage() {}
 
 func (x *CreateCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[35]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1984,7 +2481,7 @@ func (x *CreateCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCommentResponse.ProtoReflect.Descriptor instead.
 func (*CreateCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{35}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *CreateCommentResponse) GetComment() *Comment {
@@ -2005,7 +2502,7 @@ type ListCommentsRequest struct {
 
 func (x *ListCommentsRequest) Reset() {
 	*x = ListCommentsRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[36]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2017,7 +2514,7 @@ func (x *ListCommentsRequest) String() string {
 func (*ListCommentsRequest) ProtoMessage() {}
 
 func (x *ListCommentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[36]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2030,7 +2527,7 @@ func (x *ListCommentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCommentsRequest.ProtoReflect.Descriptor instead.
 func (*ListCommentsRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{36}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ListCommentsRequest) GetTargetType() string {
@@ -2065,7 +2562,7 @@ type ListCommentsResponse struct {
 
 func (x *ListCommentsResponse) Reset() {
 	*x = ListCommentsResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[37]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2077,7 +2574,7 @@ func (x *ListCommentsResponse) String() string {
 func (*ListCommentsResponse) ProtoMessage() {}
 
 func (x *ListCommentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[37]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2090,7 +2587,7 @@ func (x *ListCommentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCommentsResponse.ProtoReflect.Descriptor instead.
 func (*ListCommentsResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{37}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ListCommentsResponse) GetComments() []*Comment {
@@ -2124,7 +2621,7 @@ type RepliesRequest struct {
 
 func (x *RepliesRequest) Reset() {
 	*x = RepliesRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[38]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2136,7 +2633,7 @@ func (x *RepliesRequest) String() string {
 func (*RepliesRequest) ProtoMessage() {}
 
 func (x *RepliesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[38]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2149,7 +2646,7 @@ func (x *RepliesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepliesRequest.ProtoReflect.Descriptor instead.
 func (*RepliesRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{38}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *RepliesRequest) GetRootId() string {
@@ -2177,7 +2674,7 @@ type RepliesResponse struct {
 
 func (x *RepliesResponse) Reset() {
 	*x = RepliesResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[39]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2189,7 +2686,7 @@ func (x *RepliesResponse) String() string {
 func (*RepliesResponse) ProtoMessage() {}
 
 func (x *RepliesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[39]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2202,7 +2699,7 @@ func (x *RepliesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepliesResponse.ProtoReflect.Descriptor instead.
 func (*RepliesResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{39}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *RepliesResponse) GetComments() []*Comment {
@@ -2235,7 +2732,7 @@ type DeleteCommentRequest struct {
 
 func (x *DeleteCommentRequest) Reset() {
 	*x = DeleteCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[40]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2247,7 +2744,7 @@ func (x *DeleteCommentRequest) String() string {
 func (*DeleteCommentRequest) ProtoMessage() {}
 
 func (x *DeleteCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[40]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2260,7 +2757,7 @@ func (x *DeleteCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCommentRequest.ProtoReflect.Descriptor instead.
 func (*DeleteCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{40}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *DeleteCommentRequest) GetId() string {
@@ -2278,7 +2775,7 @@ type DeleteCommentResponse struct {
 
 func (x *DeleteCommentResponse) Reset() {
 	*x = DeleteCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[41]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2290,7 +2787,7 @@ func (x *DeleteCommentResponse) String() string {
 func (*DeleteCommentResponse) ProtoMessage() {}
 
 func (x *DeleteCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[41]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2303,7 +2800,7 @@ func (x *DeleteCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCommentResponse.ProtoReflect.Descriptor instead.
 func (*DeleteCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{41}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{50}
 }
 
 type LikeCommentRequest struct {
@@ -2315,7 +2812,7 @@ type LikeCommentRequest struct {
 
 func (x *LikeCommentRequest) Reset() {
 	*x = LikeCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[42]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2327,7 +2824,7 @@ func (x *LikeCommentRequest) String() string {
 func (*LikeCommentRequest) ProtoMessage() {}
 
 func (x *LikeCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[42]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2340,7 +2837,7 @@ func (x *LikeCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LikeCommentRequest.ProtoReflect.Descriptor instead.
 func (*LikeCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{42}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *LikeCommentRequest) GetCommentId() string {
@@ -2359,7 +2856,7 @@ type LikeCommentResponse struct {
 
 func (x *LikeCommentResponse) Reset() {
 	*x = LikeCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[43]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2371,7 +2868,7 @@ func (x *LikeCommentResponse) String() string {
 func (*LikeCommentResponse) ProtoMessage() {}
 
 func (x *LikeCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[43]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2384,7 +2881,7 @@ func (x *LikeCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LikeCommentResponse.ProtoReflect.Descriptor instead.
 func (*LikeCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{43}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *LikeCommentResponse) GetLikeCount() int32 {
@@ -2403,7 +2900,7 @@ type UnlikeCommentRequest struct {
 
 func (x *UnlikeCommentRequest) Reset() {
 	*x = UnlikeCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[44]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2415,7 +2912,7 @@ func (x *UnlikeCommentRequest) String() string {
 func (*UnlikeCommentRequest) ProtoMessage() {}
 
 func (x *UnlikeCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[44]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2428,7 +2925,7 @@ func (x *UnlikeCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnlikeCommentRequest.ProtoReflect.Descriptor instead.
 func (*UnlikeCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{44}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *UnlikeCommentRequest) GetCommentId() string {
@@ -2447,7 +2944,7 @@ type UnlikeCommentResponse struct {
 
 func (x *UnlikeCommentResponse) Reset() {
 	*x = UnlikeCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[45]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2459,7 +2956,7 @@ func (x *UnlikeCommentResponse) String() string {
 func (*UnlikeCommentResponse) ProtoMessage() {}
 
 func (x *UnlikeCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[45]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2472,7 +2969,7 @@ func (x *UnlikeCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnlikeCommentResponse.ProtoReflect.Descriptor instead.
 func (*UnlikeCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{45}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *UnlikeCommentResponse) GetLikeCount() int32 {
@@ -2492,7 +2989,7 @@ type ReportCommentRequest struct {
 
 func (x *ReportCommentRequest) Reset() {
 	*x = ReportCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[46]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2504,7 +3001,7 @@ func (x *ReportCommentRequest) String() string {
 func (*ReportCommentRequest) ProtoMessage() {}
 
 func (x *ReportCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[46]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2517,7 +3014,7 @@ func (x *ReportCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportCommentRequest.ProtoReflect.Descriptor instead.
 func (*ReportCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{46}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ReportCommentRequest) GetCommentId() string {
@@ -2542,7 +3039,7 @@ type ReportCommentResponse struct {
 
 func (x *ReportCommentResponse) Reset() {
 	*x = ReportCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[47]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2554,7 +3051,7 @@ func (x *ReportCommentResponse) String() string {
 func (*ReportCommentResponse) ProtoMessage() {}
 
 func (x *ReportCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[47]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2567,7 +3064,7 @@ func (x *ReportCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportCommentResponse.ProtoReflect.Descriptor instead.
 func (*ReportCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{47}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{56}
 }
 
 type HideCommentRequest struct {
@@ -2579,7 +3076,7 @@ type HideCommentRequest struct {
 
 func (x *HideCommentRequest) Reset() {
 	*x = HideCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[48]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2591,7 +3088,7 @@ func (x *HideCommentRequest) String() string {
 func (*HideCommentRequest) ProtoMessage() {}
 
 func (x *HideCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[48]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2604,7 +3101,7 @@ func (x *HideCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HideCommentRequest.ProtoReflect.Descriptor instead.
 func (*HideCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{48}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *HideCommentRequest) GetCommentId() string {
@@ -2622,7 +3119,7 @@ type HideCommentResponse struct {
 
 func (x *HideCommentResponse) Reset() {
 	*x = HideCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[49]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2634,7 +3131,7 @@ func (x *HideCommentResponse) String() string {
 func (*HideCommentResponse) ProtoMessage() {}
 
 func (x *HideCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[49]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2647,7 +3144,7 @@ func (x *HideCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HideCommentResponse.ProtoReflect.Descriptor instead.
 func (*HideCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{49}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{58}
 }
 
 type UnhideCommentRequest struct {
@@ -2659,7 +3156,7 @@ type UnhideCommentRequest struct {
 
 func (x *UnhideCommentRequest) Reset() {
 	*x = UnhideCommentRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[50]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2671,7 +3168,7 @@ func (x *UnhideCommentRequest) String() string {
 func (*UnhideCommentRequest) ProtoMessage() {}
 
 func (x *UnhideCommentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[50]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2684,7 +3181,7 @@ func (x *UnhideCommentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnhideCommentRequest.ProtoReflect.Descriptor instead.
 func (*UnhideCommentRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{50}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *UnhideCommentRequest) GetCommentId() string {
@@ -2702,7 +3199,7 @@ type UnhideCommentResponse struct {
 
 func (x *UnhideCommentResponse) Reset() {
 	*x = UnhideCommentResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[51]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2714,7 +3211,7 @@ func (x *UnhideCommentResponse) String() string {
 func (*UnhideCommentResponse) ProtoMessage() {}
 
 func (x *UnhideCommentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[51]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2727,7 +3224,313 @@ func (x *UnhideCommentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnhideCommentResponse.ProtoReflect.Descriptor instead.
 func (*UnhideCommentResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{51}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{60}
+}
+
+type EditCommentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EditCommentRequest) Reset() {
+	*x = EditCommentRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EditCommentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EditCommentRequest) ProtoMessage() {}
+
+func (x *EditCommentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EditCommentRequest.ProtoReflect.Descriptor instead.
+func (*EditCommentRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *EditCommentRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *EditCommentRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+type EditCommentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Comment       *Comment               `protobuf:"bytes,1,opt,name=comment,proto3" json:"comment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EditCommentResponse) Reset() {
+	*x = EditCommentResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EditCommentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EditCommentResponse) ProtoMessage() {}
+
+func (x *EditCommentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EditCommentResponse.ProtoReflect.Descriptor instead.
+func (*EditCommentResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *EditCommentResponse) GetComment() *Comment {
+	if x != nil {
+		return x.Comment
+	}
+	return nil
+}
+
+// ListReportsRequest scopes to one comment; status, when set, filters by lifecycle
+// state ("open"/"resolved"/"dismissed"), matching the HTTP query parameter.
+type ListReportsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommentId     string                 `protobuf:"bytes,1,opt,name=comment_id,json=commentId,proto3" json:"comment_id,omitempty"`
+	Status        *string                `protobuf:"bytes,2,opt,name=status,proto3,oneof" json:"status,omitempty"`
+	Page          *Page                  `protobuf:"bytes,3,opt,name=page,proto3" json:"page,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListReportsRequest) Reset() {
+	*x = ListReportsRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListReportsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListReportsRequest) ProtoMessage() {}
+
+func (x *ListReportsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListReportsRequest.ProtoReflect.Descriptor instead.
+func (*ListReportsRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *ListReportsRequest) GetCommentId() string {
+	if x != nil {
+		return x.CommentId
+	}
+	return ""
+}
+
+func (x *ListReportsRequest) GetStatus() string {
+	if x != nil && x.Status != nil {
+		return *x.Status
+	}
+	return ""
+}
+
+func (x *ListReportsRequest) GetPage() *Page {
+	if x != nil {
+		return x.Page
+	}
+	return nil
+}
+
+type ListReportsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Reports       []*CommentReport       `protobuf:"bytes,1,rep,name=reports,proto3" json:"reports,omitempty"`
+	Users         map[string]*User       `protobuf:"bytes,2,rep,name=users,proto3" json:"users,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	NextCursor    string                 `protobuf:"bytes,3,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListReportsResponse) Reset() {
+	*x = ListReportsResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListReportsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListReportsResponse) ProtoMessage() {}
+
+func (x *ListReportsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListReportsResponse.ProtoReflect.Descriptor instead.
+func (*ListReportsResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *ListReportsResponse) GetReports() []*CommentReport {
+	if x != nil {
+		return x.Reports
+	}
+	return nil
+}
+
+func (x *ListReportsResponse) GetUsers() map[string]*User {
+	if x != nil {
+		return x.Users
+	}
+	return nil
+}
+
+func (x *ListReportsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+type ResolveReportRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReportId      string                 `protobuf:"bytes,1,opt,name=report_id,json=reportId,proto3" json:"report_id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveReportRequest) Reset() {
+	*x = ResolveReportRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveReportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveReportRequest) ProtoMessage() {}
+
+func (x *ResolveReportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveReportRequest.ProtoReflect.Descriptor instead.
+func (*ResolveReportRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *ResolveReportRequest) GetReportId() string {
+	if x != nil {
+		return x.ReportId
+	}
+	return ""
+}
+
+func (x *ResolveReportRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+type ResolveReportResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveReportResponse) Reset() {
+	*x = ResolveReportResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveReportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveReportResponse) ProtoMessage() {}
+
+func (x *ResolveReportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveReportResponse.ProtoReflect.Descriptor instead.
+func (*ResolveReportResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{66}
 }
 
 // ---- notifications ----
@@ -2747,7 +3550,7 @@ type Notification struct {
 
 func (x *Notification) Reset() {
 	*x = Notification{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[52]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2759,7 +3562,7 @@ func (x *Notification) String() string {
 func (*Notification) ProtoMessage() {}
 
 func (x *Notification) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[52]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2772,7 +3575,7 @@ func (x *Notification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Notification.ProtoReflect.Descriptor instead.
 func (*Notification) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{52}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *Notification) GetId() string {
@@ -2840,7 +3643,7 @@ type ListNotificationsRequest struct {
 
 func (x *ListNotificationsRequest) Reset() {
 	*x = ListNotificationsRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[53]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2852,7 +3655,7 @@ func (x *ListNotificationsRequest) String() string {
 func (*ListNotificationsRequest) ProtoMessage() {}
 
 func (x *ListNotificationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[53]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2865,7 +3668,7 @@ func (x *ListNotificationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotificationsRequest.ProtoReflect.Descriptor instead.
 func (*ListNotificationsRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{53}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ListNotificationsRequest) GetPage() *Page {
@@ -2886,7 +3689,7 @@ type ListNotificationsResponse struct {
 
 func (x *ListNotificationsResponse) Reset() {
 	*x = ListNotificationsResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[54]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2898,7 +3701,7 @@ func (x *ListNotificationsResponse) String() string {
 func (*ListNotificationsResponse) ProtoMessage() {}
 
 func (x *ListNotificationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[54]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2911,7 +3714,7 @@ func (x *ListNotificationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotificationsResponse.ProtoReflect.Descriptor instead.
 func (*ListNotificationsResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{54}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *ListNotificationsResponse) GetNotifications() []*Notification {
@@ -2943,7 +3746,7 @@ type NotificationUnreadCountRequest struct {
 
 func (x *NotificationUnreadCountRequest) Reset() {
 	*x = NotificationUnreadCountRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[55]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2955,7 +3758,7 @@ func (x *NotificationUnreadCountRequest) String() string {
 func (*NotificationUnreadCountRequest) ProtoMessage() {}
 
 func (x *NotificationUnreadCountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[55]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2968,7 +3771,7 @@ func (x *NotificationUnreadCountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotificationUnreadCountRequest.ProtoReflect.Descriptor instead.
 func (*NotificationUnreadCountRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{55}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{70}
 }
 
 type NotificationUnreadCountResponse struct {
@@ -2980,7 +3783,7 @@ type NotificationUnreadCountResponse struct {
 
 func (x *NotificationUnreadCountResponse) Reset() {
 	*x = NotificationUnreadCountResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[56]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2992,7 +3795,7 @@ func (x *NotificationUnreadCountResponse) String() string {
 func (*NotificationUnreadCountResponse) ProtoMessage() {}
 
 func (x *NotificationUnreadCountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[56]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3005,7 +3808,7 @@ func (x *NotificationUnreadCountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotificationUnreadCountResponse.ProtoReflect.Descriptor instead.
 func (*NotificationUnreadCountResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{56}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *NotificationUnreadCountResponse) GetUnreadCount() int64 {
@@ -3024,7 +3827,7 @@ type MarkNotificationReadRequest struct {
 
 func (x *MarkNotificationReadRequest) Reset() {
 	*x = MarkNotificationReadRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[57]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3036,7 +3839,7 @@ func (x *MarkNotificationReadRequest) String() string {
 func (*MarkNotificationReadRequest) ProtoMessage() {}
 
 func (x *MarkNotificationReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[57]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3049,7 +3852,7 @@ func (x *MarkNotificationReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkNotificationReadRequest.ProtoReflect.Descriptor instead.
 func (*MarkNotificationReadRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{57}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *MarkNotificationReadRequest) GetId() string {
@@ -3067,7 +3870,7 @@ type MarkNotificationReadResponse struct {
 
 func (x *MarkNotificationReadResponse) Reset() {
 	*x = MarkNotificationReadResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[58]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3079,7 +3882,7 @@ func (x *MarkNotificationReadResponse) String() string {
 func (*MarkNotificationReadResponse) ProtoMessage() {}
 
 func (x *MarkNotificationReadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[58]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3092,7 +3895,7 @@ func (x *MarkNotificationReadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkNotificationReadResponse.ProtoReflect.Descriptor instead.
 func (*MarkNotificationReadResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{58}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{73}
 }
 
 type MarkAllNotificationsReadRequest struct {
@@ -3103,7 +3906,7 @@ type MarkAllNotificationsReadRequest struct {
 
 func (x *MarkAllNotificationsReadRequest) Reset() {
 	*x = MarkAllNotificationsReadRequest{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[59]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3115,7 +3918,7 @@ func (x *MarkAllNotificationsReadRequest) String() string {
 func (*MarkAllNotificationsReadRequest) ProtoMessage() {}
 
 func (x *MarkAllNotificationsReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[59]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3128,7 +3931,7 @@ func (x *MarkAllNotificationsReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkAllNotificationsReadRequest.ProtoReflect.Descriptor instead.
 func (*MarkAllNotificationsReadRequest) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{59}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{74}
 }
 
 type MarkAllNotificationsReadResponse struct {
@@ -3139,7 +3942,7 @@ type MarkAllNotificationsReadResponse struct {
 
 func (x *MarkAllNotificationsReadResponse) Reset() {
 	*x = MarkAllNotificationsReadResponse{}
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[60]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3151,7 +3954,7 @@ func (x *MarkAllNotificationsReadResponse) String() string {
 func (*MarkAllNotificationsReadResponse) ProtoMessage() {}
 
 func (x *MarkAllNotificationsReadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_aero_id_v1_aero_id_proto_msgTypes[60]
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3164,7 +3967,7 @@ func (x *MarkAllNotificationsReadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkAllNotificationsReadResponse.ProtoReflect.Descriptor instead.
 func (*MarkAllNotificationsReadResponse) Descriptor() ([]byte, []int) {
-	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{60}
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{75}
 }
 
 var File_aero_id_v1_aero_id_proto protoreflect.FileDescriptor
@@ -3172,14 +3975,14 @@ var File_aero_id_v1_aero_id_proto protoreflect.FileDescriptor
 const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\n" +
 	"\x18aero_id/v1/aero_id.proto\x12\n" +
-	"aero_id.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"L\n" +
+	"aero_id.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"L\n" +
 	"\x04User\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\tR\x03uid\x12\x1a\n" +
 	"\bnickname\x18\x02 \x01(\tR\bnickname\x12\x16\n" +
 	"\x06avatar\x18\x03 \x01(\tR\x06avatar\"4\n" +
 	"\x04Page\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
-	"\x06cursor\x18\x02 \x01(\tR\x06cursor\"\xb1\x02\n" +
+	"\x06cursor\x18\x02 \x01(\tR\x06cursor\"\xde\x02\n" +
 	"\x04File\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\towner_uid\x18\x02 \x01(\tR\bownerUid\x12\x12\n" +
@@ -3193,7 +3996,9 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\" \n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12+\n" +
+	"\x04meta\x18\n" +
+	" \x01(\v2\x17.google.protobuf.StructR\x04meta\" \n" +
 	"\x0eGetFileRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"7\n" +
 	"\x0fGetFileResponse\x12$\n" +
@@ -3247,7 +4052,18 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"visibility\x18\x05 \x01(\x05R\n" +
 	"visibility\">\n" +
 	"\x16CompleteUploadResponse\x12$\n" +
-	"\x04file\x18\x01 \x01(\v2\x10.aero_id.v1.FileR\x04file\"\x82\x02\n" +
+	"\x04file\x18\x01 \x01(\v2\x10.aero_id.v1.FileR\x04file\"\xae\x01\n" +
+	"\x19UpdateFileMetadataRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12#\n" +
+	"\n" +
+	"visibility\x18\x03 \x01(\x05H\x01R\n" +
+	"visibility\x88\x01\x01\x12+\n" +
+	"\x04meta\x18\x04 \x01(\v2\x17.google.protobuf.StructR\x04metaB\a\n" +
+	"\x05_nameB\r\n" +
+	"\v_visibility\"B\n" +
+	"\x1aUpdateFileMetadataResponse\x12$\n" +
+	"\x04file\x18\x01 \x01(\v2\x10.aero_id.v1.FileR\x04file\"\xbb\x02\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bfrom_uid\x18\x02 \x01(\tR\afromUid\x12\x15\n" +
@@ -3257,7 +4073,8 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\afile_id\x18\x06 \x01(\tR\x06fileId\x123\n" +
 	"\aread_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x06readAt\x129\n" +
 	"\n" +
-	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"r\n" +
+	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x127\n" +
+	"\tedited_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\beditedAt\"r\n" +
 	"\x12SendMessageRequest\x12\x15\n" +
 	"\x06to_uid\x18\x01 \x01(\tR\x05toUid\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\x05R\x04kind\x12\x18\n" +
@@ -3299,7 +4116,18 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\x10MarkReadResponse\"\x14\n" +
 	"\x12UnreadCountRequest\"8\n" +
 	"\x13UnreadCountResponse\x12!\n" +
-	"\funread_count\x18\x01 \x01(\x03R\vunreadCount\"\xd7\x02\n" +
+	"\funread_count\x18\x01 \x01(\x03R\vunreadCount\">\n" +
+	"\x12EditMessageRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"D\n" +
+	"\x13EditMessageResponse\x12-\n" +
+	"\amessage\x18\x01 \x01(\v2\x13.aero_id.v1.MessageR\amessage\"&\n" +
+	"\x14DeleteMessageRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x17\n" +
+	"\x15DeleteMessageResponse\"8\n" +
+	"\x1bMarkConversationReadRequest\x12\x19\n" +
+	"\bwith_uid\x18\x01 \x01(\tR\awithUid\"\x1e\n" +
+	"\x1cMarkConversationReadResponse\"\x90\x03\n" +
 	"\aComment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\towner_uid\x18\x02 \x01(\tR\bownerUid\x12\x1f\n" +
@@ -3316,7 +4144,21 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"like_count\x18\v \x01(\x05R\tlikeCount\"\x8b\x01\n" +
+	"like_count\x18\v \x01(\x05R\tlikeCount\x127\n" +
+	"\tedited_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\beditedAt\"\xaa\x02\n" +
+	"\rCommentReport\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"comment_id\x18\x02 \x01(\tR\tcommentId\x12!\n" +
+	"\freporter_uid\x18\x03 \x01(\tR\vreporterUid\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x129\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12;\n" +
+	"\vresolved_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"resolvedAt\x12\x1f\n" +
+	"\vresolved_by\x18\b \x01(\tR\n" +
+	"resolvedBy\"\x8b\x01\n" +
 	"\x14CreateCommentRequest\x12\x1f\n" +
 	"\vtarget_type\x18\x01 \x01(\tR\n" +
 	"targetType\x12\x1b\n" +
@@ -3378,7 +4220,31 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\x14UnhideCommentRequest\x12\x1d\n" +
 	"\n" +
 	"comment_id\x18\x01 \x01(\tR\tcommentId\"\x17\n" +
-	"\x15UnhideCommentResponse\"\xa6\x02\n" +
+	"\x15UnhideCommentResponse\">\n" +
+	"\x12EditCommentRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"D\n" +
+	"\x13EditCommentResponse\x12-\n" +
+	"\acomment\x18\x01 \x01(\v2\x13.aero_id.v1.CommentR\acomment\"\x81\x01\n" +
+	"\x12ListReportsRequest\x12\x1d\n" +
+	"\n" +
+	"comment_id\x18\x01 \x01(\tR\tcommentId\x12\x1b\n" +
+	"\x06status\x18\x02 \x01(\tH\x00R\x06status\x88\x01\x01\x12$\n" +
+	"\x04page\x18\x03 \x01(\v2\x10.aero_id.v1.PageR\x04pageB\t\n" +
+	"\a_status\"\xf9\x01\n" +
+	"\x13ListReportsResponse\x123\n" +
+	"\areports\x18\x01 \x03(\v2\x19.aero_id.v1.CommentReportR\areports\x12@\n" +
+	"\x05users\x18\x02 \x03(\v2*.aero_id.v1.ListReportsResponse.UsersEntryR\x05users\x12\x1f\n" +
+	"\vnext_cursor\x18\x03 \x01(\tR\n" +
+	"nextCursor\x1aJ\n" +
+	"\n" +
+	"UsersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12&\n" +
+	"\x05value\x18\x02 \x01(\v2\x10.aero_id.v1.UserR\x05value:\x028\x01\"K\n" +
+	"\x14ResolveReportRequest\x12\x1b\n" +
+	"\treport_id\x18\x01 \x01(\tR\breportId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x17\n" +
+	"\x15ResolveReportResponse\"\xa6\x02\n" +
 	"\fNotification\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12#\n" +
 	"\rrecipient_uid\x18\x02 \x01(\tR\frecipientUid\x12\x12\n" +
@@ -3408,7 +4274,7 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x1e\n" +
 	"\x1cMarkNotificationReadResponse\"!\n" +
 	"\x1fMarkAllNotificationsReadRequest\"\"\n" +
-	" MarkAllNotificationsReadResponse2\xdc\x05\n" +
+	" MarkAllNotificationsReadResponse2\xc1\x06\n" +
 	"\vFileService\x12B\n" +
 	"\aGetFile\x12\x1a.aero_id.v1.GetFileRequest\x1a\x1b.aero_id.v1.GetFileResponse\x12H\n" +
 	"\tListFiles\x12\x1c.aero_id.v1.ListFilesRequest\x1a\x1d.aero_id.v1.ListFilesResponse\x12K\n" +
@@ -3419,7 +4285,8 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\vUnshareFile\x12\x1e.aero_id.v1.UnshareFileRequest\x1a\x1f.aero_id.v1.UnshareFileResponse\x12V\n" +
 	"\x10ListSharedWithMe\x12#.aero_id.v1.ListSharedWithMeRequest\x1a\x1d.aero_id.v1.ListFilesResponse\x12T\n" +
 	"\rPresignUpload\x12 .aero_id.v1.PresignUploadRequest\x1a!.aero_id.v1.PresignUploadResponse\x12W\n" +
-	"\x0eCompleteUpload\x12!.aero_id.v1.CompleteUploadRequest\x1a\".aero_id.v1.CompleteUploadResponse2\xd5\x03\n" +
+	"\x0eCompleteUpload\x12!.aero_id.v1.CompleteUploadRequest\x1a\".aero_id.v1.CompleteUploadResponse\x12c\n" +
+	"\x12UpdateFileMetadata\x12%.aero_id.v1.UpdateFileMetadataRequest\x1a&.aero_id.v1.UpdateFileMetadataResponse2\xe6\x05\n" +
 	"\x0eMessageService\x12N\n" +
 	"\vSendMessage\x12\x1e.aero_id.v1.SendMessageRequest\x1a\x1f.aero_id.v1.SendMessageResponse\x12K\n" +
 	"\n" +
@@ -3427,7 +4294,10 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\x05Inbox\x12\x18.aero_id.v1.InboxRequest\x1a\x19.aero_id.v1.InboxResponse\x12Q\n" +
 	"\fConversation\x12\x1f.aero_id.v1.ConversationRequest\x1a .aero_id.v1.ConversationResponse\x12E\n" +
 	"\bMarkRead\x12\x1b.aero_id.v1.MarkReadRequest\x1a\x1c.aero_id.v1.MarkReadResponse\x12N\n" +
-	"\vUnreadCount\x12\x1e.aero_id.v1.UnreadCountRequest\x1a\x1f.aero_id.v1.UnreadCountResponse2\xf5\x05\n" +
+	"\vUnreadCount\x12\x1e.aero_id.v1.UnreadCountRequest\x1a\x1f.aero_id.v1.UnreadCountResponse\x12N\n" +
+	"\vEditMessage\x12\x1e.aero_id.v1.EditMessageRequest\x1a\x1f.aero_id.v1.EditMessageResponse\x12T\n" +
+	"\rDeleteMessage\x12 .aero_id.v1.DeleteMessageRequest\x1a!.aero_id.v1.DeleteMessageResponse\x12i\n" +
+	"\x14MarkConversationRead\x12'.aero_id.v1.MarkConversationReadRequest\x1a(.aero_id.v1.MarkConversationReadResponse2\xeb\a\n" +
 	"\x0eCommentService\x12T\n" +
 	"\rCreateComment\x12 .aero_id.v1.CreateCommentRequest\x1a!.aero_id.v1.CreateCommentResponse\x12Q\n" +
 	"\fListComments\x12\x1f.aero_id.v1.ListCommentsRequest\x1a .aero_id.v1.ListCommentsResponse\x12B\n" +
@@ -3437,7 +4307,10 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\rUnlikeComment\x12 .aero_id.v1.UnlikeCommentRequest\x1a!.aero_id.v1.UnlikeCommentResponse\x12T\n" +
 	"\rReportComment\x12 .aero_id.v1.ReportCommentRequest\x1a!.aero_id.v1.ReportCommentResponse\x12N\n" +
 	"\vHideComment\x12\x1e.aero_id.v1.HideCommentRequest\x1a\x1f.aero_id.v1.HideCommentResponse\x12T\n" +
-	"\rUnhideComment\x12 .aero_id.v1.UnhideCommentRequest\x1a!.aero_id.v1.UnhideCommentResponse2\xa8\x03\n" +
+	"\rUnhideComment\x12 .aero_id.v1.UnhideCommentRequest\x1a!.aero_id.v1.UnhideCommentResponse\x12N\n" +
+	"\vEditComment\x12\x1e.aero_id.v1.EditCommentRequest\x1a\x1f.aero_id.v1.EditCommentResponse\x12N\n" +
+	"\vListReports\x12\x1e.aero_id.v1.ListReportsRequest\x1a\x1f.aero_id.v1.ListReportsResponse\x12T\n" +
+	"\rResolveReport\x12 .aero_id.v1.ResolveReportRequest\x1a!.aero_id.v1.ResolveReportResponse2\xa8\x03\n" +
 	"\x13NotificationService\x12`\n" +
 	"\x11ListNotifications\x12$.aero_id.v1.ListNotificationsRequest\x1a%.aero_id.v1.ListNotificationsResponse\x12f\n" +
 	"\vUnreadCount\x12*.aero_id.v1.NotificationUnreadCountRequest\x1a+.aero_id.v1.NotificationUnreadCountResponse\x12]\n" +
@@ -3456,7 +4329,7 @@ func file_aero_id_v1_aero_id_proto_rawDescGZIP() []byte {
 	return file_aero_id_v1_aero_id_proto_rawDescData
 }
 
-var file_aero_id_v1_aero_id_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_aero_id_v1_aero_id_proto_msgTypes = make([]protoimpl.MessageInfo, 82)
 var file_aero_id_v1_aero_id_proto_goTypes = []any{
 	(*User)(nil),                             // 0: aero_id.v1.User
 	(*Page)(nil),                             // 1: aero_id.v1.Page
@@ -3478,151 +4351,195 @@ var file_aero_id_v1_aero_id_proto_goTypes = []any{
 	(*PresignUploadResponse)(nil),            // 17: aero_id.v1.PresignUploadResponse
 	(*CompleteUploadRequest)(nil),            // 18: aero_id.v1.CompleteUploadRequest
 	(*CompleteUploadResponse)(nil),           // 19: aero_id.v1.CompleteUploadResponse
-	(*Message)(nil),                          // 20: aero_id.v1.Message
-	(*SendMessageRequest)(nil),               // 21: aero_id.v1.SendMessageRequest
-	(*SendMessageResponse)(nil),              // 22: aero_id.v1.SendMessageResponse
-	(*GetMessageRequest)(nil),                // 23: aero_id.v1.GetMessageRequest
-	(*GetMessageResponse)(nil),               // 24: aero_id.v1.GetMessageResponse
-	(*InboxRequest)(nil),                     // 25: aero_id.v1.InboxRequest
-	(*InboxResponse)(nil),                    // 26: aero_id.v1.InboxResponse
-	(*ConversationRequest)(nil),              // 27: aero_id.v1.ConversationRequest
-	(*ConversationResponse)(nil),             // 28: aero_id.v1.ConversationResponse
-	(*MarkReadRequest)(nil),                  // 29: aero_id.v1.MarkReadRequest
-	(*MarkReadResponse)(nil),                 // 30: aero_id.v1.MarkReadResponse
-	(*UnreadCountRequest)(nil),               // 31: aero_id.v1.UnreadCountRequest
-	(*UnreadCountResponse)(nil),              // 32: aero_id.v1.UnreadCountResponse
-	(*Comment)(nil),                          // 33: aero_id.v1.Comment
-	(*CreateCommentRequest)(nil),             // 34: aero_id.v1.CreateCommentRequest
-	(*CreateCommentResponse)(nil),            // 35: aero_id.v1.CreateCommentResponse
-	(*ListCommentsRequest)(nil),              // 36: aero_id.v1.ListCommentsRequest
-	(*ListCommentsResponse)(nil),             // 37: aero_id.v1.ListCommentsResponse
-	(*RepliesRequest)(nil),                   // 38: aero_id.v1.RepliesRequest
-	(*RepliesResponse)(nil),                  // 39: aero_id.v1.RepliesResponse
-	(*DeleteCommentRequest)(nil),             // 40: aero_id.v1.DeleteCommentRequest
-	(*DeleteCommentResponse)(nil),            // 41: aero_id.v1.DeleteCommentResponse
-	(*LikeCommentRequest)(nil),               // 42: aero_id.v1.LikeCommentRequest
-	(*LikeCommentResponse)(nil),              // 43: aero_id.v1.LikeCommentResponse
-	(*UnlikeCommentRequest)(nil),             // 44: aero_id.v1.UnlikeCommentRequest
-	(*UnlikeCommentResponse)(nil),            // 45: aero_id.v1.UnlikeCommentResponse
-	(*ReportCommentRequest)(nil),             // 46: aero_id.v1.ReportCommentRequest
-	(*ReportCommentResponse)(nil),            // 47: aero_id.v1.ReportCommentResponse
-	(*HideCommentRequest)(nil),               // 48: aero_id.v1.HideCommentRequest
-	(*HideCommentResponse)(nil),              // 49: aero_id.v1.HideCommentResponse
-	(*UnhideCommentRequest)(nil),             // 50: aero_id.v1.UnhideCommentRequest
-	(*UnhideCommentResponse)(nil),            // 51: aero_id.v1.UnhideCommentResponse
-	(*Notification)(nil),                     // 52: aero_id.v1.Notification
-	(*ListNotificationsRequest)(nil),         // 53: aero_id.v1.ListNotificationsRequest
-	(*ListNotificationsResponse)(nil),        // 54: aero_id.v1.ListNotificationsResponse
-	(*NotificationUnreadCountRequest)(nil),   // 55: aero_id.v1.NotificationUnreadCountRequest
-	(*NotificationUnreadCountResponse)(nil),  // 56: aero_id.v1.NotificationUnreadCountResponse
-	(*MarkNotificationReadRequest)(nil),      // 57: aero_id.v1.MarkNotificationReadRequest
-	(*MarkNotificationReadResponse)(nil),     // 58: aero_id.v1.MarkNotificationReadResponse
-	(*MarkAllNotificationsReadRequest)(nil),  // 59: aero_id.v1.MarkAllNotificationsReadRequest
-	(*MarkAllNotificationsReadResponse)(nil), // 60: aero_id.v1.MarkAllNotificationsReadResponse
-	nil,                                      // 61: aero_id.v1.InboxResponse.UsersEntry
-	nil,                                      // 62: aero_id.v1.ConversationResponse.UsersEntry
-	nil,                                      // 63: aero_id.v1.ListCommentsResponse.UsersEntry
-	nil,                                      // 64: aero_id.v1.RepliesResponse.UsersEntry
-	nil,                                      // 65: aero_id.v1.ListNotificationsResponse.UsersEntry
-	(*timestamppb.Timestamp)(nil),            // 66: google.protobuf.Timestamp
+	(*UpdateFileMetadataRequest)(nil),        // 20: aero_id.v1.UpdateFileMetadataRequest
+	(*UpdateFileMetadataResponse)(nil),       // 21: aero_id.v1.UpdateFileMetadataResponse
+	(*Message)(nil),                          // 22: aero_id.v1.Message
+	(*SendMessageRequest)(nil),               // 23: aero_id.v1.SendMessageRequest
+	(*SendMessageResponse)(nil),              // 24: aero_id.v1.SendMessageResponse
+	(*GetMessageRequest)(nil),                // 25: aero_id.v1.GetMessageRequest
+	(*GetMessageResponse)(nil),               // 26: aero_id.v1.GetMessageResponse
+	(*InboxRequest)(nil),                     // 27: aero_id.v1.InboxRequest
+	(*InboxResponse)(nil),                    // 28: aero_id.v1.InboxResponse
+	(*ConversationRequest)(nil),              // 29: aero_id.v1.ConversationRequest
+	(*ConversationResponse)(nil),             // 30: aero_id.v1.ConversationResponse
+	(*MarkReadRequest)(nil),                  // 31: aero_id.v1.MarkReadRequest
+	(*MarkReadResponse)(nil),                 // 32: aero_id.v1.MarkReadResponse
+	(*UnreadCountRequest)(nil),               // 33: aero_id.v1.UnreadCountRequest
+	(*UnreadCountResponse)(nil),              // 34: aero_id.v1.UnreadCountResponse
+	(*EditMessageRequest)(nil),               // 35: aero_id.v1.EditMessageRequest
+	(*EditMessageResponse)(nil),              // 36: aero_id.v1.EditMessageResponse
+	(*DeleteMessageRequest)(nil),             // 37: aero_id.v1.DeleteMessageRequest
+	(*DeleteMessageResponse)(nil),            // 38: aero_id.v1.DeleteMessageResponse
+	(*MarkConversationReadRequest)(nil),      // 39: aero_id.v1.MarkConversationReadRequest
+	(*MarkConversationReadResponse)(nil),     // 40: aero_id.v1.MarkConversationReadResponse
+	(*Comment)(nil),                          // 41: aero_id.v1.Comment
+	(*CommentReport)(nil),                    // 42: aero_id.v1.CommentReport
+	(*CreateCommentRequest)(nil),             // 43: aero_id.v1.CreateCommentRequest
+	(*CreateCommentResponse)(nil),            // 44: aero_id.v1.CreateCommentResponse
+	(*ListCommentsRequest)(nil),              // 45: aero_id.v1.ListCommentsRequest
+	(*ListCommentsResponse)(nil),             // 46: aero_id.v1.ListCommentsResponse
+	(*RepliesRequest)(nil),                   // 47: aero_id.v1.RepliesRequest
+	(*RepliesResponse)(nil),                  // 48: aero_id.v1.RepliesResponse
+	(*DeleteCommentRequest)(nil),             // 49: aero_id.v1.DeleteCommentRequest
+	(*DeleteCommentResponse)(nil),            // 50: aero_id.v1.DeleteCommentResponse
+	(*LikeCommentRequest)(nil),               // 51: aero_id.v1.LikeCommentRequest
+	(*LikeCommentResponse)(nil),              // 52: aero_id.v1.LikeCommentResponse
+	(*UnlikeCommentRequest)(nil),             // 53: aero_id.v1.UnlikeCommentRequest
+	(*UnlikeCommentResponse)(nil),            // 54: aero_id.v1.UnlikeCommentResponse
+	(*ReportCommentRequest)(nil),             // 55: aero_id.v1.ReportCommentRequest
+	(*ReportCommentResponse)(nil),            // 56: aero_id.v1.ReportCommentResponse
+	(*HideCommentRequest)(nil),               // 57: aero_id.v1.HideCommentRequest
+	(*HideCommentResponse)(nil),              // 58: aero_id.v1.HideCommentResponse
+	(*UnhideCommentRequest)(nil),             // 59: aero_id.v1.UnhideCommentRequest
+	(*UnhideCommentResponse)(nil),            // 60: aero_id.v1.UnhideCommentResponse
+	(*EditCommentRequest)(nil),               // 61: aero_id.v1.EditCommentRequest
+	(*EditCommentResponse)(nil),              // 62: aero_id.v1.EditCommentResponse
+	(*ListReportsRequest)(nil),               // 63: aero_id.v1.ListReportsRequest
+	(*ListReportsResponse)(nil),              // 64: aero_id.v1.ListReportsResponse
+	(*ResolveReportRequest)(nil),             // 65: aero_id.v1.ResolveReportRequest
+	(*ResolveReportResponse)(nil),            // 66: aero_id.v1.ResolveReportResponse
+	(*Notification)(nil),                     // 67: aero_id.v1.Notification
+	(*ListNotificationsRequest)(nil),         // 68: aero_id.v1.ListNotificationsRequest
+	(*ListNotificationsResponse)(nil),        // 69: aero_id.v1.ListNotificationsResponse
+	(*NotificationUnreadCountRequest)(nil),   // 70: aero_id.v1.NotificationUnreadCountRequest
+	(*NotificationUnreadCountResponse)(nil),  // 71: aero_id.v1.NotificationUnreadCountResponse
+	(*MarkNotificationReadRequest)(nil),      // 72: aero_id.v1.MarkNotificationReadRequest
+	(*MarkNotificationReadResponse)(nil),     // 73: aero_id.v1.MarkNotificationReadResponse
+	(*MarkAllNotificationsReadRequest)(nil),  // 74: aero_id.v1.MarkAllNotificationsReadRequest
+	(*MarkAllNotificationsReadResponse)(nil), // 75: aero_id.v1.MarkAllNotificationsReadResponse
+	nil,                                      // 76: aero_id.v1.InboxResponse.UsersEntry
+	nil,                                      // 77: aero_id.v1.ConversationResponse.UsersEntry
+	nil,                                      // 78: aero_id.v1.ListCommentsResponse.UsersEntry
+	nil,                                      // 79: aero_id.v1.RepliesResponse.UsersEntry
+	nil,                                      // 80: aero_id.v1.ListReportsResponse.UsersEntry
+	nil,                                      // 81: aero_id.v1.ListNotificationsResponse.UsersEntry
+	(*timestamppb.Timestamp)(nil),            // 82: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                  // 83: google.protobuf.Struct
 }
 var file_aero_id_v1_aero_id_proto_depIdxs = []int32{
-	66, // 0: aero_id.v1.File.created_at:type_name -> google.protobuf.Timestamp
-	66, // 1: aero_id.v1.File.updated_at:type_name -> google.protobuf.Timestamp
-	2,  // 2: aero_id.v1.GetFileResponse.file:type_name -> aero_id.v1.File
-	1,  // 3: aero_id.v1.ListFilesRequest.page:type_name -> aero_id.v1.Page
-	2,  // 4: aero_id.v1.ListFilesResponse.files:type_name -> aero_id.v1.File
-	1,  // 5: aero_id.v1.ListSharedWithMeRequest.page:type_name -> aero_id.v1.Page
-	2,  // 6: aero_id.v1.CompleteUploadResponse.file:type_name -> aero_id.v1.File
-	66, // 7: aero_id.v1.Message.read_at:type_name -> google.protobuf.Timestamp
-	66, // 8: aero_id.v1.Message.created_at:type_name -> google.protobuf.Timestamp
-	20, // 9: aero_id.v1.SendMessageResponse.message:type_name -> aero_id.v1.Message
-	20, // 10: aero_id.v1.GetMessageResponse.message:type_name -> aero_id.v1.Message
-	1,  // 11: aero_id.v1.InboxRequest.page:type_name -> aero_id.v1.Page
-	20, // 12: aero_id.v1.InboxResponse.messages:type_name -> aero_id.v1.Message
-	61, // 13: aero_id.v1.InboxResponse.users:type_name -> aero_id.v1.InboxResponse.UsersEntry
-	1,  // 14: aero_id.v1.ConversationRequest.page:type_name -> aero_id.v1.Page
-	20, // 15: aero_id.v1.ConversationResponse.messages:type_name -> aero_id.v1.Message
-	62, // 16: aero_id.v1.ConversationResponse.users:type_name -> aero_id.v1.ConversationResponse.UsersEntry
-	66, // 17: aero_id.v1.Comment.created_at:type_name -> google.protobuf.Timestamp
-	33, // 18: aero_id.v1.CreateCommentResponse.comment:type_name -> aero_id.v1.Comment
-	1,  // 19: aero_id.v1.ListCommentsRequest.page:type_name -> aero_id.v1.Page
-	33, // 20: aero_id.v1.ListCommentsResponse.comments:type_name -> aero_id.v1.Comment
-	63, // 21: aero_id.v1.ListCommentsResponse.users:type_name -> aero_id.v1.ListCommentsResponse.UsersEntry
-	1,  // 22: aero_id.v1.RepliesRequest.page:type_name -> aero_id.v1.Page
-	33, // 23: aero_id.v1.RepliesResponse.comments:type_name -> aero_id.v1.Comment
-	64, // 24: aero_id.v1.RepliesResponse.users:type_name -> aero_id.v1.RepliesResponse.UsersEntry
-	66, // 25: aero_id.v1.Notification.read_at:type_name -> google.protobuf.Timestamp
-	66, // 26: aero_id.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
-	1,  // 27: aero_id.v1.ListNotificationsRequest.page:type_name -> aero_id.v1.Page
-	52, // 28: aero_id.v1.ListNotificationsResponse.notifications:type_name -> aero_id.v1.Notification
-	65, // 29: aero_id.v1.ListNotificationsResponse.users:type_name -> aero_id.v1.ListNotificationsResponse.UsersEntry
-	0,  // 30: aero_id.v1.InboxResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 31: aero_id.v1.ConversationResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 32: aero_id.v1.ListCommentsResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 33: aero_id.v1.RepliesResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 34: aero_id.v1.ListNotificationsResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	3,  // 35: aero_id.v1.FileService.GetFile:input_type -> aero_id.v1.GetFileRequest
-	5,  // 36: aero_id.v1.FileService.ListFiles:input_type -> aero_id.v1.ListFilesRequest
-	7,  // 37: aero_id.v1.FileService.DeleteFile:input_type -> aero_id.v1.DeleteFileRequest
-	9,  // 38: aero_id.v1.FileService.GetDownloadURL:input_type -> aero_id.v1.DownloadURLRequest
-	11, // 39: aero_id.v1.FileService.ShareFile:input_type -> aero_id.v1.ShareFileRequest
-	13, // 40: aero_id.v1.FileService.UnshareFile:input_type -> aero_id.v1.UnshareFileRequest
-	15, // 41: aero_id.v1.FileService.ListSharedWithMe:input_type -> aero_id.v1.ListSharedWithMeRequest
-	16, // 42: aero_id.v1.FileService.PresignUpload:input_type -> aero_id.v1.PresignUploadRequest
-	18, // 43: aero_id.v1.FileService.CompleteUpload:input_type -> aero_id.v1.CompleteUploadRequest
-	21, // 44: aero_id.v1.MessageService.SendMessage:input_type -> aero_id.v1.SendMessageRequest
-	23, // 45: aero_id.v1.MessageService.GetMessage:input_type -> aero_id.v1.GetMessageRequest
-	25, // 46: aero_id.v1.MessageService.Inbox:input_type -> aero_id.v1.InboxRequest
-	27, // 47: aero_id.v1.MessageService.Conversation:input_type -> aero_id.v1.ConversationRequest
-	29, // 48: aero_id.v1.MessageService.MarkRead:input_type -> aero_id.v1.MarkReadRequest
-	31, // 49: aero_id.v1.MessageService.UnreadCount:input_type -> aero_id.v1.UnreadCountRequest
-	34, // 50: aero_id.v1.CommentService.CreateComment:input_type -> aero_id.v1.CreateCommentRequest
-	36, // 51: aero_id.v1.CommentService.ListComments:input_type -> aero_id.v1.ListCommentsRequest
-	38, // 52: aero_id.v1.CommentService.Replies:input_type -> aero_id.v1.RepliesRequest
-	40, // 53: aero_id.v1.CommentService.DeleteComment:input_type -> aero_id.v1.DeleteCommentRequest
-	42, // 54: aero_id.v1.CommentService.LikeComment:input_type -> aero_id.v1.LikeCommentRequest
-	44, // 55: aero_id.v1.CommentService.UnlikeComment:input_type -> aero_id.v1.UnlikeCommentRequest
-	46, // 56: aero_id.v1.CommentService.ReportComment:input_type -> aero_id.v1.ReportCommentRequest
-	48, // 57: aero_id.v1.CommentService.HideComment:input_type -> aero_id.v1.HideCommentRequest
-	50, // 58: aero_id.v1.CommentService.UnhideComment:input_type -> aero_id.v1.UnhideCommentRequest
-	53, // 59: aero_id.v1.NotificationService.ListNotifications:input_type -> aero_id.v1.ListNotificationsRequest
-	55, // 60: aero_id.v1.NotificationService.UnreadCount:input_type -> aero_id.v1.NotificationUnreadCountRequest
-	57, // 61: aero_id.v1.NotificationService.MarkRead:input_type -> aero_id.v1.MarkNotificationReadRequest
-	59, // 62: aero_id.v1.NotificationService.MarkAllRead:input_type -> aero_id.v1.MarkAllNotificationsReadRequest
-	4,  // 63: aero_id.v1.FileService.GetFile:output_type -> aero_id.v1.GetFileResponse
-	6,  // 64: aero_id.v1.FileService.ListFiles:output_type -> aero_id.v1.ListFilesResponse
-	8,  // 65: aero_id.v1.FileService.DeleteFile:output_type -> aero_id.v1.DeleteFileResponse
-	10, // 66: aero_id.v1.FileService.GetDownloadURL:output_type -> aero_id.v1.DownloadURLResponse
-	12, // 67: aero_id.v1.FileService.ShareFile:output_type -> aero_id.v1.ShareFileResponse
-	14, // 68: aero_id.v1.FileService.UnshareFile:output_type -> aero_id.v1.UnshareFileResponse
-	6,  // 69: aero_id.v1.FileService.ListSharedWithMe:output_type -> aero_id.v1.ListFilesResponse
-	17, // 70: aero_id.v1.FileService.PresignUpload:output_type -> aero_id.v1.PresignUploadResponse
-	19, // 71: aero_id.v1.FileService.CompleteUpload:output_type -> aero_id.v1.CompleteUploadResponse
-	22, // 72: aero_id.v1.MessageService.SendMessage:output_type -> aero_id.v1.SendMessageResponse
-	24, // 73: aero_id.v1.MessageService.GetMessage:output_type -> aero_id.v1.GetMessageResponse
-	26, // 74: aero_id.v1.MessageService.Inbox:output_type -> aero_id.v1.InboxResponse
-	28, // 75: aero_id.v1.MessageService.Conversation:output_type -> aero_id.v1.ConversationResponse
-	30, // 76: aero_id.v1.MessageService.MarkRead:output_type -> aero_id.v1.MarkReadResponse
-	32, // 77: aero_id.v1.MessageService.UnreadCount:output_type -> aero_id.v1.UnreadCountResponse
-	35, // 78: aero_id.v1.CommentService.CreateComment:output_type -> aero_id.v1.CreateCommentResponse
-	37, // 79: aero_id.v1.CommentService.ListComments:output_type -> aero_id.v1.ListCommentsResponse
-	39, // 80: aero_id.v1.CommentService.Replies:output_type -> aero_id.v1.RepliesResponse
-	41, // 81: aero_id.v1.CommentService.DeleteComment:output_type -> aero_id.v1.DeleteCommentResponse
-	43, // 82: aero_id.v1.CommentService.LikeComment:output_type -> aero_id.v1.LikeCommentResponse
-	45, // 83: aero_id.v1.CommentService.UnlikeComment:output_type -> aero_id.v1.UnlikeCommentResponse
-	47, // 84: aero_id.v1.CommentService.ReportComment:output_type -> aero_id.v1.ReportCommentResponse
-	49, // 85: aero_id.v1.CommentService.HideComment:output_type -> aero_id.v1.HideCommentResponse
-	51, // 86: aero_id.v1.CommentService.UnhideComment:output_type -> aero_id.v1.UnhideCommentResponse
-	54, // 87: aero_id.v1.NotificationService.ListNotifications:output_type -> aero_id.v1.ListNotificationsResponse
-	56, // 88: aero_id.v1.NotificationService.UnreadCount:output_type -> aero_id.v1.NotificationUnreadCountResponse
-	58, // 89: aero_id.v1.NotificationService.MarkRead:output_type -> aero_id.v1.MarkNotificationReadResponse
-	60, // 90: aero_id.v1.NotificationService.MarkAllRead:output_type -> aero_id.v1.MarkAllNotificationsReadResponse
-	63, // [63:91] is the sub-list for method output_type
-	35, // [35:63] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	82, // 0: aero_id.v1.File.created_at:type_name -> google.protobuf.Timestamp
+	82, // 1: aero_id.v1.File.updated_at:type_name -> google.protobuf.Timestamp
+	83, // 2: aero_id.v1.File.meta:type_name -> google.protobuf.Struct
+	2,  // 3: aero_id.v1.GetFileResponse.file:type_name -> aero_id.v1.File
+	1,  // 4: aero_id.v1.ListFilesRequest.page:type_name -> aero_id.v1.Page
+	2,  // 5: aero_id.v1.ListFilesResponse.files:type_name -> aero_id.v1.File
+	1,  // 6: aero_id.v1.ListSharedWithMeRequest.page:type_name -> aero_id.v1.Page
+	2,  // 7: aero_id.v1.CompleteUploadResponse.file:type_name -> aero_id.v1.File
+	83, // 8: aero_id.v1.UpdateFileMetadataRequest.meta:type_name -> google.protobuf.Struct
+	2,  // 9: aero_id.v1.UpdateFileMetadataResponse.file:type_name -> aero_id.v1.File
+	82, // 10: aero_id.v1.Message.read_at:type_name -> google.protobuf.Timestamp
+	82, // 11: aero_id.v1.Message.created_at:type_name -> google.protobuf.Timestamp
+	82, // 12: aero_id.v1.Message.edited_at:type_name -> google.protobuf.Timestamp
+	22, // 13: aero_id.v1.SendMessageResponse.message:type_name -> aero_id.v1.Message
+	22, // 14: aero_id.v1.GetMessageResponse.message:type_name -> aero_id.v1.Message
+	1,  // 15: aero_id.v1.InboxRequest.page:type_name -> aero_id.v1.Page
+	22, // 16: aero_id.v1.InboxResponse.messages:type_name -> aero_id.v1.Message
+	76, // 17: aero_id.v1.InboxResponse.users:type_name -> aero_id.v1.InboxResponse.UsersEntry
+	1,  // 18: aero_id.v1.ConversationRequest.page:type_name -> aero_id.v1.Page
+	22, // 19: aero_id.v1.ConversationResponse.messages:type_name -> aero_id.v1.Message
+	77, // 20: aero_id.v1.ConversationResponse.users:type_name -> aero_id.v1.ConversationResponse.UsersEntry
+	22, // 21: aero_id.v1.EditMessageResponse.message:type_name -> aero_id.v1.Message
+	82, // 22: aero_id.v1.Comment.created_at:type_name -> google.protobuf.Timestamp
+	82, // 23: aero_id.v1.Comment.edited_at:type_name -> google.protobuf.Timestamp
+	82, // 24: aero_id.v1.CommentReport.created_at:type_name -> google.protobuf.Timestamp
+	82, // 25: aero_id.v1.CommentReport.resolved_at:type_name -> google.protobuf.Timestamp
+	41, // 26: aero_id.v1.CreateCommentResponse.comment:type_name -> aero_id.v1.Comment
+	1,  // 27: aero_id.v1.ListCommentsRequest.page:type_name -> aero_id.v1.Page
+	41, // 28: aero_id.v1.ListCommentsResponse.comments:type_name -> aero_id.v1.Comment
+	78, // 29: aero_id.v1.ListCommentsResponse.users:type_name -> aero_id.v1.ListCommentsResponse.UsersEntry
+	1,  // 30: aero_id.v1.RepliesRequest.page:type_name -> aero_id.v1.Page
+	41, // 31: aero_id.v1.RepliesResponse.comments:type_name -> aero_id.v1.Comment
+	79, // 32: aero_id.v1.RepliesResponse.users:type_name -> aero_id.v1.RepliesResponse.UsersEntry
+	41, // 33: aero_id.v1.EditCommentResponse.comment:type_name -> aero_id.v1.Comment
+	1,  // 34: aero_id.v1.ListReportsRequest.page:type_name -> aero_id.v1.Page
+	42, // 35: aero_id.v1.ListReportsResponse.reports:type_name -> aero_id.v1.CommentReport
+	80, // 36: aero_id.v1.ListReportsResponse.users:type_name -> aero_id.v1.ListReportsResponse.UsersEntry
+	82, // 37: aero_id.v1.Notification.read_at:type_name -> google.protobuf.Timestamp
+	82, // 38: aero_id.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
+	1,  // 39: aero_id.v1.ListNotificationsRequest.page:type_name -> aero_id.v1.Page
+	67, // 40: aero_id.v1.ListNotificationsResponse.notifications:type_name -> aero_id.v1.Notification
+	81, // 41: aero_id.v1.ListNotificationsResponse.users:type_name -> aero_id.v1.ListNotificationsResponse.UsersEntry
+	0,  // 42: aero_id.v1.InboxResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 43: aero_id.v1.ConversationResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 44: aero_id.v1.ListCommentsResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 45: aero_id.v1.RepliesResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 46: aero_id.v1.ListReportsResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 47: aero_id.v1.ListNotificationsResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	3,  // 48: aero_id.v1.FileService.GetFile:input_type -> aero_id.v1.GetFileRequest
+	5,  // 49: aero_id.v1.FileService.ListFiles:input_type -> aero_id.v1.ListFilesRequest
+	7,  // 50: aero_id.v1.FileService.DeleteFile:input_type -> aero_id.v1.DeleteFileRequest
+	9,  // 51: aero_id.v1.FileService.GetDownloadURL:input_type -> aero_id.v1.DownloadURLRequest
+	11, // 52: aero_id.v1.FileService.ShareFile:input_type -> aero_id.v1.ShareFileRequest
+	13, // 53: aero_id.v1.FileService.UnshareFile:input_type -> aero_id.v1.UnshareFileRequest
+	15, // 54: aero_id.v1.FileService.ListSharedWithMe:input_type -> aero_id.v1.ListSharedWithMeRequest
+	16, // 55: aero_id.v1.FileService.PresignUpload:input_type -> aero_id.v1.PresignUploadRequest
+	18, // 56: aero_id.v1.FileService.CompleteUpload:input_type -> aero_id.v1.CompleteUploadRequest
+	20, // 57: aero_id.v1.FileService.UpdateFileMetadata:input_type -> aero_id.v1.UpdateFileMetadataRequest
+	23, // 58: aero_id.v1.MessageService.SendMessage:input_type -> aero_id.v1.SendMessageRequest
+	25, // 59: aero_id.v1.MessageService.GetMessage:input_type -> aero_id.v1.GetMessageRequest
+	27, // 60: aero_id.v1.MessageService.Inbox:input_type -> aero_id.v1.InboxRequest
+	29, // 61: aero_id.v1.MessageService.Conversation:input_type -> aero_id.v1.ConversationRequest
+	31, // 62: aero_id.v1.MessageService.MarkRead:input_type -> aero_id.v1.MarkReadRequest
+	33, // 63: aero_id.v1.MessageService.UnreadCount:input_type -> aero_id.v1.UnreadCountRequest
+	35, // 64: aero_id.v1.MessageService.EditMessage:input_type -> aero_id.v1.EditMessageRequest
+	37, // 65: aero_id.v1.MessageService.DeleteMessage:input_type -> aero_id.v1.DeleteMessageRequest
+	39, // 66: aero_id.v1.MessageService.MarkConversationRead:input_type -> aero_id.v1.MarkConversationReadRequest
+	43, // 67: aero_id.v1.CommentService.CreateComment:input_type -> aero_id.v1.CreateCommentRequest
+	45, // 68: aero_id.v1.CommentService.ListComments:input_type -> aero_id.v1.ListCommentsRequest
+	47, // 69: aero_id.v1.CommentService.Replies:input_type -> aero_id.v1.RepliesRequest
+	49, // 70: aero_id.v1.CommentService.DeleteComment:input_type -> aero_id.v1.DeleteCommentRequest
+	51, // 71: aero_id.v1.CommentService.LikeComment:input_type -> aero_id.v1.LikeCommentRequest
+	53, // 72: aero_id.v1.CommentService.UnlikeComment:input_type -> aero_id.v1.UnlikeCommentRequest
+	55, // 73: aero_id.v1.CommentService.ReportComment:input_type -> aero_id.v1.ReportCommentRequest
+	57, // 74: aero_id.v1.CommentService.HideComment:input_type -> aero_id.v1.HideCommentRequest
+	59, // 75: aero_id.v1.CommentService.UnhideComment:input_type -> aero_id.v1.UnhideCommentRequest
+	61, // 76: aero_id.v1.CommentService.EditComment:input_type -> aero_id.v1.EditCommentRequest
+	63, // 77: aero_id.v1.CommentService.ListReports:input_type -> aero_id.v1.ListReportsRequest
+	65, // 78: aero_id.v1.CommentService.ResolveReport:input_type -> aero_id.v1.ResolveReportRequest
+	68, // 79: aero_id.v1.NotificationService.ListNotifications:input_type -> aero_id.v1.ListNotificationsRequest
+	70, // 80: aero_id.v1.NotificationService.UnreadCount:input_type -> aero_id.v1.NotificationUnreadCountRequest
+	72, // 81: aero_id.v1.NotificationService.MarkRead:input_type -> aero_id.v1.MarkNotificationReadRequest
+	74, // 82: aero_id.v1.NotificationService.MarkAllRead:input_type -> aero_id.v1.MarkAllNotificationsReadRequest
+	4,  // 83: aero_id.v1.FileService.GetFile:output_type -> aero_id.v1.GetFileResponse
+	6,  // 84: aero_id.v1.FileService.ListFiles:output_type -> aero_id.v1.ListFilesResponse
+	8,  // 85: aero_id.v1.FileService.DeleteFile:output_type -> aero_id.v1.DeleteFileResponse
+	10, // 86: aero_id.v1.FileService.GetDownloadURL:output_type -> aero_id.v1.DownloadURLResponse
+	12, // 87: aero_id.v1.FileService.ShareFile:output_type -> aero_id.v1.ShareFileResponse
+	14, // 88: aero_id.v1.FileService.UnshareFile:output_type -> aero_id.v1.UnshareFileResponse
+	6,  // 89: aero_id.v1.FileService.ListSharedWithMe:output_type -> aero_id.v1.ListFilesResponse
+	17, // 90: aero_id.v1.FileService.PresignUpload:output_type -> aero_id.v1.PresignUploadResponse
+	19, // 91: aero_id.v1.FileService.CompleteUpload:output_type -> aero_id.v1.CompleteUploadResponse
+	21, // 92: aero_id.v1.FileService.UpdateFileMetadata:output_type -> aero_id.v1.UpdateFileMetadataResponse
+	24, // 93: aero_id.v1.MessageService.SendMessage:output_type -> aero_id.v1.SendMessageResponse
+	26, // 94: aero_id.v1.MessageService.GetMessage:output_type -> aero_id.v1.GetMessageResponse
+	28, // 95: aero_id.v1.MessageService.Inbox:output_type -> aero_id.v1.InboxResponse
+	30, // 96: aero_id.v1.MessageService.Conversation:output_type -> aero_id.v1.ConversationResponse
+	32, // 97: aero_id.v1.MessageService.MarkRead:output_type -> aero_id.v1.MarkReadResponse
+	34, // 98: aero_id.v1.MessageService.UnreadCount:output_type -> aero_id.v1.UnreadCountResponse
+	36, // 99: aero_id.v1.MessageService.EditMessage:output_type -> aero_id.v1.EditMessageResponse
+	38, // 100: aero_id.v1.MessageService.DeleteMessage:output_type -> aero_id.v1.DeleteMessageResponse
+	40, // 101: aero_id.v1.MessageService.MarkConversationRead:output_type -> aero_id.v1.MarkConversationReadResponse
+	44, // 102: aero_id.v1.CommentService.CreateComment:output_type -> aero_id.v1.CreateCommentResponse
+	46, // 103: aero_id.v1.CommentService.ListComments:output_type -> aero_id.v1.ListCommentsResponse
+	48, // 104: aero_id.v1.CommentService.Replies:output_type -> aero_id.v1.RepliesResponse
+	50, // 105: aero_id.v1.CommentService.DeleteComment:output_type -> aero_id.v1.DeleteCommentResponse
+	52, // 106: aero_id.v1.CommentService.LikeComment:output_type -> aero_id.v1.LikeCommentResponse
+	54, // 107: aero_id.v1.CommentService.UnlikeComment:output_type -> aero_id.v1.UnlikeCommentResponse
+	56, // 108: aero_id.v1.CommentService.ReportComment:output_type -> aero_id.v1.ReportCommentResponse
+	58, // 109: aero_id.v1.CommentService.HideComment:output_type -> aero_id.v1.HideCommentResponse
+	60, // 110: aero_id.v1.CommentService.UnhideComment:output_type -> aero_id.v1.UnhideCommentResponse
+	62, // 111: aero_id.v1.CommentService.EditComment:output_type -> aero_id.v1.EditCommentResponse
+	64, // 112: aero_id.v1.CommentService.ListReports:output_type -> aero_id.v1.ListReportsResponse
+	66, // 113: aero_id.v1.CommentService.ResolveReport:output_type -> aero_id.v1.ResolveReportResponse
+	69, // 114: aero_id.v1.NotificationService.ListNotifications:output_type -> aero_id.v1.ListNotificationsResponse
+	71, // 115: aero_id.v1.NotificationService.UnreadCount:output_type -> aero_id.v1.NotificationUnreadCountResponse
+	73, // 116: aero_id.v1.NotificationService.MarkRead:output_type -> aero_id.v1.MarkNotificationReadResponse
+	75, // 117: aero_id.v1.NotificationService.MarkAllRead:output_type -> aero_id.v1.MarkAllNotificationsReadResponse
+	83, // [83:118] is the sub-list for method output_type
+	48, // [48:83] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_aero_id_v1_aero_id_proto_init() }
@@ -3630,13 +4547,15 @@ func file_aero_id_v1_aero_id_proto_init() {
 	if File_aero_id_v1_aero_id_proto != nil {
 		return
 	}
+	file_aero_id_v1_aero_id_proto_msgTypes[20].OneofWrappers = []any{}
+	file_aero_id_v1_aero_id_proto_msgTypes[63].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_aero_id_v1_aero_id_proto_rawDesc), len(file_aero_id_v1_aero_id_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   66,
+			NumMessages:   82,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

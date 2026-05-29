@@ -100,6 +100,36 @@ func (s *MessageServer) UnreadCount(ctx context.Context, _ *aeropb.UnreadCountRe
 	return &aeropb.UnreadCountResponse{UnreadCount: n}, nil
 }
 
+func (s *MessageServer) EditMessage(ctx context.Context, req *aeropb.EditMessageRequest) (*aeropb.EditMessageResponse, error) {
+	id, err := idgen.Parse(req.Id)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+	}
+	m, err := s.messages.Edit(ctx, id, req.Content)
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.EditMessageResponse{Message: msgToPB(m)}, nil
+}
+
+func (s *MessageServer) DeleteMessage(ctx context.Context, req *aeropb.DeleteMessageRequest) (*aeropb.DeleteMessageResponse, error) {
+	id, err := idgen.Parse(req.Id)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+	}
+	if err := s.messages.Delete(ctx, id); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.DeleteMessageResponse{}, nil
+}
+
+func (s *MessageServer) MarkConversationRead(ctx context.Context, req *aeropb.MarkConversationReadRequest) (*aeropb.MarkConversationReadResponse, error) {
+	if err := s.messages.MarkConversationRead(ctx, req.WithUid); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.MarkConversationReadResponse{}, nil
+}
+
 func msgToPB(m *domain.Message) *aeropb.Message {
 	pb := &aeropb.Message{
 		Id:        m.ID.String(),
@@ -114,6 +144,9 @@ func msgToPB(m *domain.Message) *aeropb.Message {
 	}
 	if m.ReadAt != nil {
 		pb.ReadAt = timestamppb.New(*m.ReadAt)
+	}
+	if m.EditedAt != nil {
+		pb.EditedAt = timestamppb.New(*m.EditedAt)
 	}
 	return pb
 }
