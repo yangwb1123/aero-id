@@ -9,7 +9,6 @@ import (
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/aero/aero-id/internal/sso/ssopb"
 )
@@ -24,6 +23,15 @@ type ClientConfig struct {
 	// breaker fast-fails before admitting a recovery probe.
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+	// MaxAttempts bounds the upstream tries per call (1 = no retry). RetryBackoff is
+	// the base for exponential backoff between availability-error retries; both
+	// fall back to sane defaults when non-positive.
+	MaxAttempts  int
+	RetryBackoff time.Duration
+
+	// Keepalive ping cadence; non-positive values fall back to defaults.
+	KeepaliveTime    time.Duration
+	KeepaliveTimeout time.Duration
 }
 
 type Client struct {
@@ -35,13 +43,18 @@ type Client struct {
 	breaker    *breaker           // trips on sustained SSO outage so new tokens fast-fail
 	stopFn     func()
 	timeout    time.Duration
+
+	maxAttempts  int
+	retryBackoff time.Duration
 }
 
 // NewClient dials the SSO endpoint and returns a Client with caches running.
-func NewClient(ctx context.Context, endpoint string, insecureConn bool, cfg ClientConfig) (*Client, error) {
-	var opts []grpc.DialOption
-	if insecureConn {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// tlsCfg carries the transport-security knobs (insecure for dev/bufconn, otherwise
+// TLS/mTLS); its Insecure mirrors the legacy insecureConn flag callers passed.
+func NewClient(ctx context.Context, endpoint string, tlsCfg TLSConfig, cfg ClientConfig) (*Client, error) {
+	opts, err := dialOptions(tlsCfg, cfg.KeepaliveTime, cfg.KeepaliveTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("dial sso: %w", err)
 	}
 	conn, err := grpc.NewClient(endpoint, opts...)
 	if err != nil {
@@ -53,11 +66,19 @@ func NewClient(ctx context.Context, endpoint string, insecureConn bool, cfg Clie
 // NewClientFromConn lets tests inject a bufconn-backed *grpc.ClientConn.
 func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	c := &Client{
-		conn:       conn,
-		rpc:        ssopb.NewSSOClient(conn),
-		tokenCache: NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
-		breaker:    newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown),
-		timeout:    cfg.Timeout,
+		conn:         conn,
+		rpc:          ssopb.NewSSOClient(conn),
+		tokenCache:   NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
+		breaker:      newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown),
+		timeout:      cfg.Timeout,
+		maxAttempts:  cfg.MaxAttempts,
+		retryBackoff: cfg.RetryBackoff,
+	}
+	if c.maxAttempts < 1 {
+		c.maxAttempts = 1
+	}
+	if c.retryBackoff <= 0 {
+		c.retryBackoff = 50 * time.Millisecond
 	}
 	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
 	stop := c.tokenCache.RunCleaner(30 * time.Second)
@@ -118,6 +139,37 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (string, error
 	}
 }
 
+// callWithRetry runs fn up to maxAttempts times, retrying ONLY on availability
+// errors with exponential backoff, all within the caller's (timeout-bounded) ctx.
+// Business rejections return immediately. It returns the last outcome so the caller
+// records a single breaker outcome for the whole attempt sequence — never one per
+// retry — keeping the breaker from tripping far too eagerly. Retries stop early if
+// the deadline would not leave room for another backoff + attempt.
+func callWithRetry[T any](ctx context.Context, maxAttempts int, backoff time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	var resp T
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		resp, err = fn(ctx)
+		if err == nil || !isAvailabilityError(err) {
+			return resp, err
+		}
+		if attempt == maxAttempts-1 {
+			break
+		}
+		// Exponential backoff for this attempt; bail if it would breach the deadline.
+		wait := backoff << attempt
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= wait {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return resp, err
+		case <-time.After(wait):
+		}
+	}
+	return resp, err
+}
+
 // validateUpstream performs the actual SSO ValidateToken RPC under the configured
 // timeout. It is only ever invoked by the singleflight leader; because the result is
 // shared with all waiters it uses a detached, timeout-bounded context rather than any
@@ -143,7 +195,9 @@ func (c *Client) validateUpstream(token string) (string, error) {
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
-	resp, err := c.rpc.ValidateToken(ctx, &ssopb.ValidateTokenRequest{Token: token})
+	resp, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.ValidateTokenResponse, error) {
+		return c.rpc.ValidateToken(ctx, &ssopb.ValidateTokenRequest{Token: token})
+	})
 	if err != nil {
 		if isAvailabilityError(err) {
 			// SSO is unreachable: record the failure (may trip the breaker) and fall back
@@ -180,7 +234,9 @@ func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
-	resp, err := c.rpc.GetUsers(ctx, &ssopb.GetUsersRequest{Uids: uids})
+	resp, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.GetUsersResponse, error) {
+		return c.rpc.GetUsers(ctx, &ssopb.GetUsersRequest{Uids: uids})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("sso get users: %w", err)
 	}

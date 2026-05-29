@@ -63,13 +63,23 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		return nil, err
 	}
 
-	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, cfg.SSO.Insecure, sso.ClientConfig{
+	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, sso.TLSConfig{
+		Insecure:   cfg.SSO.Insecure,
+		CAFile:     cfg.SSO.TLSCAFile,
+		CertFile:   cfg.SSO.TLSCertFile,
+		KeyFile:    cfg.SSO.TLSKeyFile,
+		ServerName: cfg.SSO.TLSServerName,
+	}, sso.ClientConfig{
 		TokenCacheTTL:    cfg.SSO.TokenCacheTTL,
 		UserCacheTTL:     cfg.SSO.UserCacheTTL,
 		StaleTTL:         cfg.SSO.StaleTTL,
 		Timeout:          cfg.SSO.Timeout,
 		BreakerThreshold: cfg.SSO.BreakerThreshold,
 		BreakerCooldown:  cfg.SSO.BreakerCooldown,
+		MaxAttempts:      cfg.SSO.MaxAttempts,
+		RetryBackoff:     cfg.SSO.RetryBackoff,
+		KeepaliveTime:    cfg.SSO.KeepaliveTime,
+		KeepaliveTimeout: cfg.SSO.KeepaliveTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sso client: %w", err)

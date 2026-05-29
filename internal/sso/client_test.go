@@ -436,6 +436,119 @@ func TestClient_BreakerOpensAndStopsCallingSSO(t *testing.T) {
 	}
 }
 
+// retryThenOKSSO returns Unavailable for the first failCalls ValidateToken calls of
+// the whole server, then succeeds — letting a test assert that a bounded retry rides
+// over a transient outage within one logical call.
+type retryThenOKSSO struct {
+	ssopb.UnimplementedSSOServer
+	mu        sync.Mutex
+	calls     int
+	failCalls int
+}
+
+func (s *retryThenOKSSO) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
+	s.mu.Lock()
+	s.calls++
+	fail := s.calls <= s.failCalls
+	s.mu.Unlock()
+	if fail {
+		return nil, status.Error(codes.Unavailable, "sso transiently down")
+	}
+	return &ssopb.ValidateTokenResponse{Uid: "uid-" + req.Token, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()}, nil
+}
+
+func (s *retryThenOKSSO) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func startRetrySSO(t *testing.T, failCalls int, cfg sso.ClientConfig) (*sso.Client, *retryThenOKSSO) {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	server := &retryThenOKSSO{failCalls: failCalls}
+	ssopb.RegisterSSOServer(srv, server)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sso.NewClientFromConn(conn, cfg), server
+}
+
+func TestClient_RetryRecoversWithinTimeout(t *testing.T) {
+	const failCalls = 2 // first two attempts Unavailable, third succeeds
+	const threshold = 1 // a single recorded failure would trip the breaker
+	c, server := startRetrySSO(t, failCalls, sso.ClientConfig{
+		TokenCacheTTL:    time.Minute,
+		UserCacheTTL:     time.Minute,
+		Timeout:          2 * time.Second,
+		BreakerThreshold: threshold,
+		BreakerCooldown:  time.Hour,
+		MaxAttempts:      3,
+		RetryBackoff:     5 * time.Millisecond,
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	uid, err := c.ValidateToken(ctx, "tok")
+	if err != nil || uid != "uid-tok" {
+		t.Fatalf("validate uid=%q err=%v (want success after retries)", uid, err)
+	}
+	if got := server.Calls(); got != failCalls+1 {
+		t.Fatalf("server calls = %d, want %d (retries then success)", got, failCalls+1)
+	}
+
+	// The retried availability errors must NOT have tripped the breaker: a second,
+	// uncached token still reaches the now-healthy server (breaker stayed closed).
+	if uid, err := c.ValidateToken(ctx, "tok2"); err != nil || uid != "uid-tok2" {
+		t.Fatalf("post-retry uid=%q err=%v (breaker should not have tripped)", uid, err)
+	}
+	if got := server.Calls(); got != failCalls+2 {
+		t.Fatalf("server calls = %d, want %d (breaker closed, second token reached SSO)", got, failCalls+2)
+	}
+}
+
+func TestClient_RetriesGiveUpRecordOneBreakerFailure(t *testing.T) {
+	const threshold = 1 // one recorded sequence-failure must trip the breaker
+	c, server := startToggleSSO(t, true, sso.ClientConfig{ // always down
+		TokenCacheTTL:    time.Minute,
+		UserCacheTTL:     time.Minute,
+		Timeout:          2 * time.Second,
+		BreakerThreshold: threshold,
+		BreakerCooldown:  time.Hour,
+		MaxAttempts:      3,
+		RetryBackoff:     5 * time.Millisecond,
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	// One logical call: bounded retries all exhaust on Unavailable -> error.
+	if _, err := c.ValidateToken(ctx, "tok"); err == nil {
+		t.Fatal("expected error after retries exhaust")
+	}
+	if got := server.Calls(); got != 3 {
+		t.Fatalf("server calls = %d, want 3 (all attempts of one sequence)", got)
+	}
+
+	// Exactly one breaker failure should have been recorded for that whole sequence,
+	// which (threshold=1) trips it open: the next uncached token must fast-fail
+	// WITHOUT reaching SSO.
+	if _, err := c.ValidateToken(ctx, "tok2"); err == nil {
+		t.Fatal("expected fast-fail with breaker open")
+	}
+	if got := server.Calls(); got != 3 {
+		t.Fatalf("server calls = %d, want 3 (breaker open, no further upstream calls)", got)
+	}
+}
+
 func TestClient_BreakerRecoversAfterCooldown(t *testing.T) {
 	const threshold = 2
 	const cooldown = 40 * time.Millisecond

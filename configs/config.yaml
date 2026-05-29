@@ -23,6 +23,15 @@ sso:
   user_cache_ttl: 300s
   breaker_threshold: 5        # consecutive SSO availability failures before fast-failing new tokens (0 = off)
   breaker_cooldown: 10s       # how long to fast-fail before admitting a single recovery probe
+  max_attempts: 3             # upstream tries per call within the timeout budget (1 = no retry)
+  retry_backoff: 50ms         # base exponential backoff between availability-error retries
+  keepalive_time: 30s         # send a keepalive ping after this much idle time
+  keepalive_timeout: 10s      # wait this long for the keepalive ping ack before closing
+  # TLS / mTLS (used only when insecure=false; empty tls_ca_file falls back to the system cert pool):
+  tls_ca_file: ""             # CA bundle to verify the SSO server
+  tls_cert_file: ""           # client certificate for mTLS (pair with tls_key_file)
+  tls_key_file: ""            # client key for mTLS (pair with tls_cert_file)
+  tls_server_name: ""         # override the verified server hostname (e.g. behind a proxy)
 storage:
   type: local
   max_upload_bytes: 52428800   # 50 MiB; 0 = unlimited

@@ -73,6 +73,15 @@ type SSOConfig struct {
 	UserCacheTTL      time.Duration `mapstructure:"user_cache_ttl"`
 	BreakerThreshold  int           `mapstructure:"breaker_threshold"` // consecutive availability failures that trip the breaker (0 = off)
 	BreakerCooldown   time.Duration `mapstructure:"breaker_cooldown"`  // how long the breaker fast-fails before probing SSO again
+	MaxAttempts       int           `mapstructure:"max_attempts"`      // upstream tries per call within the timeout budget (1 = no retry)
+	RetryBackoff      time.Duration `mapstructure:"retry_backoff"`     // base exponential backoff between availability-error retries
+	KeepaliveTime     time.Duration `mapstructure:"keepalive_time"`    // gRPC keepalive ping interval
+	KeepaliveTimeout  time.Duration `mapstructure:"keepalive_timeout"` // gRPC keepalive ping ack timeout
+	// mTLS / TLS transport security (used only when insecure=false).
+	TLSCAFile     string `mapstructure:"tls_ca_file"`     // CA bundle to verify the SSO server (empty = system pool)
+	TLSCertFile   string `mapstructure:"tls_cert_file"`   // client cert for mTLS (with tls_key_file)
+	TLSKeyFile    string `mapstructure:"tls_key_file"`    // client key for mTLS (with tls_cert_file)
+	TLSServerName string `mapstructure:"tls_server_name"` // override the verified server hostname
 }
 
 type StorageConfig struct {
@@ -89,12 +98,12 @@ type LocalStorageConfig struct {
 }
 
 type S3StorageConfig struct {
-	Region     string `mapstructure:"region"`
-	Bucket     string `mapstructure:"bucket"`
-	Endpoint   string `mapstructure:"endpoint"`
-	AccessKey  string `mapstructure:"access_key"`
-	SecretKey  string `mapstructure:"secret_key"`
-	UsePathStyle bool `mapstructure:"use_path_style"`
+	Region       string `mapstructure:"region"`
+	Bucket       string `mapstructure:"bucket"`
+	Endpoint     string `mapstructure:"endpoint"`
+	AccessKey    string `mapstructure:"access_key"`
+	SecretKey    string `mapstructure:"secret_key"`
+	UsePathStyle bool   `mapstructure:"use_path_style"`
 }
 
 type LogConfig struct {
