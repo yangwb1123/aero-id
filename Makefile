@@ -22,13 +22,16 @@ proto:
 	  api/proto/aero_id/v1/aero_id.proto
 
 MIGRATIONS_DIR := migrations
-MIGRATE_DSN    := postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
+CONFIG         ?= configs/config.yaml
+# N is the number of steps for migrate-down (default 1).
+N              ?= 1
 
-.PHONY: migrate-up migrate-down migrate-create
+# Migration tooling — runs the in-repo cmd/migrate against the configured DB
+# (reads the DSN from $(CONFIG); no external `migrate` binary required).
+.PHONY: migrate-up migrate-down migrate-version
 migrate-up:
-	migrate -path $(MIGRATIONS_DIR) -database "$(MIGRATE_DSN)" up
+	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) up
 migrate-down:
-	migrate -path $(MIGRATIONS_DIR) -database "$(MIGRATE_DSN)" down 1
-migrate-create:
-	@if [ -z "$(name)" ]; then echo "name=... required"; exit 1; fi
-	migrate create -ext sql -dir $(MIGRATIONS_DIR) -seq $(name)
+	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) down $(N)
+migrate-version:
+	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) version

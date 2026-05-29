@@ -13,6 +13,8 @@ database:
   max_idle_conns: 10
   conn_max_lifetime: 1h
   log_level: warn
+  auto_migrate: false          # when true, apply pending up-migrations during startup (default off; explicit in prod)
+  migrations_dir: migrations   # directory of SQL migration files used by auto_migrate
 sso:
   endpoint: 127.0.0.1:9000
   timeout: 5s

@@ -66,6 +66,13 @@ type DatabaseConfig struct {
 	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 	LogLevel        string        `mapstructure:"log_level"`
+	// AutoMigrate, when true, applies all pending up-migrations during app
+	// startup (before the servers begin serving). Default FALSE so production
+	// stays explicit; convenient for dev/CI. See MigrationsDir.
+	AutoMigrate bool `mapstructure:"auto_migrate"`
+	// MigrationsDir is the directory of SQL migration files used by AutoMigrate.
+	// Defaults to "migrations" when empty.
+	MigrationsDir string `mapstructure:"migrations_dir"`
 }
 
 func (d DatabaseConfig) DSN() string {

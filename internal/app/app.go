@@ -22,6 +22,7 @@ import (
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/metrics"
+	"github.com/aero/aero-id/internal/pkg/migrate"
 	"github.com/aero/aero-id/internal/pkg/tracing"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
@@ -65,6 +66,30 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	sqlDB, err := gdb.DB()
 	if err != nil {
 		return nil, fmt.Errorf("sql db handle: %w", err)
+	}
+
+	// Optional startup auto-migrate. OFF by default so production applies
+	// migrations explicitly (via cmd/migrate); when database.auto_migrate is
+	// set we run all pending up-migrations before any server starts serving.
+	if cfg.Database.AutoMigrate {
+		dir := cfg.Database.MigrationsDir
+		if dir == "" {
+			dir = "migrations"
+		}
+		m := migrate.New(gdb, dir, func(format string, a ...any) {
+			log.Info("auto-migrate: " + fmt.Sprintf(format, a...))
+		})
+		applied, err := m.Up()
+		if err != nil {
+			return nil, fmt.Errorf("auto-migrate: %w", err)
+		}
+		if len(applied) == 0 {
+			log.Info("auto-migrate: schema already up to date")
+		} else {
+			log.Info("auto-migrate: applied pending migrations",
+				zap.Int("count", len(applied)),
+				zap.Uint64("version", applied[len(applied)-1]))
+		}
 	}
 
 	store, downloader, err := buildStorage(ctx, cfg)
