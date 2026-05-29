@@ -22,6 +22,7 @@ import (
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/metrics"
+	"github.com/aero/aero-id/internal/pkg/tracing"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/sso"
@@ -35,14 +36,15 @@ const presignTTL = 5 * time.Minute
 const outboxPollInterval = 5 * time.Second
 
 type App struct {
-	cfg        *config.Config
-	log        *zap.Logger
-	sqlDB      *sql.DB
-	sso        *sso.Client
-	httpServer *http.Server
-	grpcServer *grpclib.Server
-	grpcLis    net.Listener
-	stopRelay  func()
+	cfg           *config.Config
+	log           *zap.Logger
+	sqlDB         *sql.DB
+	sso           *sso.Client
+	httpServer    *http.Server
+	grpcServer    *grpclib.Server
+	grpcLis       net.Listener
+	stopRelay     func()
+	traceShutdown func(context.Context) error
 }
 
 // New builds the fully wired application. It opens the DB, storage, and SSO
@@ -68,6 +70,25 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		return nil, err
 	}
 
+	// Tracing first so the global tracer is installed before the SSO client (whose
+	// client spans bind a tracer at construction). No-op unless tracing is configured.
+	traceShutdown, err := tracing.Init(ctx, tracing.Config{
+		Enabled:        cfg.Tracing.Enabled,
+		Endpoint:       cfg.Tracing.Endpoint,
+		Insecure:       cfg.Tracing.Insecure,
+		Timeout:        cfg.Tracing.Timeout,
+		SampleRatio:    cfg.Tracing.SampleRatio,
+		ServiceName:    cfg.App.Name,
+		ServiceVersion: cfg.App.Version,
+		Environment:    cfg.App.Env,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tracing init: %w", err)
+	}
+
+	// One metrics registry, shared by HTTP/gRPC RED metrics and SSO health gauges.
+	metricsReg := metrics.NewRegistry()
+
 	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, sso.TLSConfig{
 		Insecure:   cfg.SSO.Insecure,
 		CAFile:     cfg.SSO.TLSCAFile,
@@ -85,6 +106,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		RetryBackoff:     cfg.SSO.RetryBackoff,
 		KeepaliveTime:    cfg.SSO.KeepaliveTime,
 		KeepaliveTimeout: cfg.SSO.KeepaliveTimeout,
+		Metrics:          metricsReg,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sso client: %w", err)
@@ -118,7 +140,6 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	// HTTP transport. Readiness probes the DB (critical) and SSO (criticality is
 	// configurable so an SSO-less dev stack stays "ready" rather than 503-ing).
-	metricsReg := metrics.NewRegistry()
 	idemStore := idempotency.NewGormStore(gdb)
 	health := httpapi.NewHealthHandler(
 		httpapi.Check{Name: "database", Critical: true, Probe: sqlDB.PingContext},
@@ -159,14 +180,15 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	}
 
 	return &App{
-		cfg:        cfg,
-		log:        log,
-		sqlDB:      sqlDB,
-		sso:        ssoClient,
-		httpServer: httpServer,
-		grpcServer: grpcServer,
-		grpcLis:    grpcLis,
-		stopRelay:  stopRelay,
+		cfg:           cfg,
+		log:           log,
+		sqlDB:         sqlDB,
+		sso:           ssoClient,
+		httpServer:    httpServer,
+		grpcServer:    grpcServer,
+		grpcLis:       grpcLis,
+		stopRelay:     stopRelay,
+		traceShutdown: traceShutdown,
 	}, nil
 }
 
@@ -239,6 +261,11 @@ func (a *App) shutdown() {
 		a.log.Error("http shutdown error", zap.Error(err))
 	}
 	a.grpcServer.GracefulStop()
+	if a.traceShutdown != nil {
+		if err := a.traceShutdown(shCtx); err != nil {
+			a.log.Error("tracer shutdown error", zap.Error(err))
+		}
+	}
 }
 
 // Close releases long-lived resources. Safe to call after Run returns.

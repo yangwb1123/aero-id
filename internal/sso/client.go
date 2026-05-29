@@ -6,12 +6,28 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 
 	"github.com/aero/aero-id/internal/sso/ssopb"
 )
+
+// ssoTracerName identifies aero-id's SSO client instrumentation scope.
+const ssoTracerName = "github.com/aero/aero-id/internal/sso"
+
+// MetricsSink receives SSO dependency-health observations. *metrics.Registry
+// satisfies it; the SSO client treats a nil sink as a no-op so existing
+// NewClientFromConn callers (and tests) need not provide one.
+type MetricsSink interface {
+	// ObserveSSOCache records a cache lookup ("token" or "user") as hit or miss.
+	ObserveSSOCache(cache string, hit bool)
+	// ObserveSSOCall records an upstream RPC ("validate" or "get_users") latency and outcome.
+	ObserveSSOCall(op string, dur time.Duration, ok bool)
+}
 
 type ClientConfig struct {
 	TokenCacheTTL time.Duration
@@ -32,6 +48,10 @@ type ClientConfig struct {
 	// Keepalive ping cadence; non-positive values fall back to defaults.
 	KeepaliveTime    time.Duration
 	KeepaliveTimeout time.Duration
+
+	// Metrics, when non-nil, receives SSO cache/latency/error observations. A nil
+	// sink disables metrics entirely (used by tests).
+	Metrics MetricsSink
 }
 
 type Client struct {
@@ -46,6 +66,23 @@ type Client struct {
 
 	maxAttempts  int
 	retryBackoff time.Duration
+
+	metrics MetricsSink // nil-safe: observations are skipped when unset
+	tracer  oteltrace.Tracer
+}
+
+// recordCache reports a token/user cache lookup outcome when a sink is configured.
+func (c *Client) recordCache(cache string, hit bool) {
+	if c.metrics != nil {
+		c.metrics.ObserveSSOCache(cache, hit)
+	}
+}
+
+// recordCall reports an upstream SSO RPC latency/outcome when a sink is configured.
+func (c *Client) recordCall(op string, start time.Time, err error) {
+	if c.metrics != nil {
+		c.metrics.ObserveSSOCall(op, time.Since(start), err == nil)
+	}
 }
 
 // NewClient dials the SSO endpoint and returns a Client with caches running.
@@ -73,6 +110,8 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 		timeout:      cfg.Timeout,
 		maxAttempts:  cfg.MaxAttempts,
 		retryBackoff: cfg.RetryBackoff,
+		metrics:      cfg.Metrics,
+		tracer:       otel.Tracer(ssoTracerName),
 	}
 	if c.maxAttempts < 1 {
 		c.maxAttempts = 1
@@ -81,6 +120,9 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 		c.retryBackoff = 50 * time.Millisecond
 	}
 	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
+	if c.metrics != nil {
+		c.userCache.SetLookupObserver(func(hit bool) { c.recordCache("user", hit) })
+	}
 	stop := c.tokenCache.RunCleaner(30 * time.Second)
 	c.stopFn = stop
 	return c
@@ -119,8 +161,10 @@ func (c *Client) HealthCheck(_ context.Context) error {
 // upstream call via singleflight, so a cache-miss stampede cannot fan out to SSO.
 func (c *Client) ValidateToken(ctx context.Context, token string) (string, error) {
 	if uid, ok := c.tokenCache.Get(token); ok {
+		c.recordCache("token", true)
 		return uid, nil
 	}
+	c.recordCache("token", false)
 	ch := c.sf.DoChan(token, func() (interface{}, error) {
 		// A concurrent leader may have populated the cache while we queued.
 		if uid, ok := c.tokenCache.Get(token); ok {
@@ -195,9 +239,17 @@ func (c *Client) validateUpstream(token string) (string, error) {
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
+	// Client span over the SSO hop so a request trace extends into the dependency.
+	ctx, span := c.tracer.Start(ctx, "sso.ValidateToken", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	start := time.Now()
 	resp, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.ValidateTokenResponse, error) {
 		return c.rpc.ValidateToken(ctx, &ssopb.ValidateTokenRequest{Token: token})
 	})
+	c.recordCall("validate", start, err)
+	if err != nil {
+		span.SetStatus(otelcodes.Error, err.Error())
+	}
+	span.End()
 	if err != nil {
 		if isAvailabilityError(err) {
 			// SSO is unreachable: record the failure (may trip the breaker) and fall back
@@ -234,9 +286,16 @@ func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
+	ctx, span := c.tracer.Start(ctx, "sso.GetUsers", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	start := time.Now()
 	resp, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.GetUsersResponse, error) {
 		return c.rpc.GetUsers(ctx, &ssopb.GetUsersRequest{Uids: uids})
 	})
+	c.recordCall("get_users", start, err)
+	if err != nil {
+		span.SetStatus(otelcodes.Error, err.Error())
+	}
+	span.End()
 	if err != nil {
 		return nil, fmt.Errorf("sso get users: %w", err)
 	}

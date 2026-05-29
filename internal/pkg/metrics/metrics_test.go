@@ -49,6 +49,36 @@ func TestRegistry_GRPCExposition(t *testing.T) {
 	}
 }
 
+func TestRegistry_SSOExposition(t *testing.T) {
+	r := metrics.NewRegistry()
+	r.ObserveSSOCache("token", true)
+	r.ObserveSSOCache("token", false)
+	r.ObserveSSOCache("user", true)
+	r.ObserveSSOCall("validate", 3*time.Millisecond, true)
+	r.ObserveSSOCall("validate", 2*time.Millisecond, false) // an error
+	r.ObserveSSOCall("get_users", 1*time.Millisecond, true)
+
+	var b strings.Builder
+	r.WriteText(&b)
+	out := b.String()
+
+	for _, want := range []string{
+		`# TYPE aeroid_sso_cache_hits_total counter`,
+		`aeroid_sso_cache_hits_total{cache="token"} 1`,
+		`aeroid_sso_cache_misses_total{cache="token"} 1`,
+		`aeroid_sso_cache_hits_total{cache="user"} 1`,
+		`# TYPE aeroid_sso_errors_total counter`,
+		`aeroid_sso_errors_total{op="validate"} 1`,
+		`# TYPE aeroid_sso_call_duration_seconds histogram`,
+		`aeroid_sso_call_duration_seconds_count{op="validate"} 2`,
+		`aeroid_sso_call_duration_seconds_count{op="get_users"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition missing line:\n  %s\n--- full output ---\n%s", want, out)
+		}
+	}
+}
+
 func TestRegistry_UnmatchedRouteLabel(t *testing.T) {
 	r := metrics.NewRegistry()
 	r.ObserveHTTP("GET", "", 404, time.Millisecond) // no matched template

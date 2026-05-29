@@ -30,13 +30,23 @@ type Registry struct {
 	mu       sync.Mutex
 	requests map[string]uint64     // "transport|method|route|status" -> count
 	latency  map[string]*histogram // "transport|route" -> histogram
+
+	// SSO dependency health, populated by the SSO client (see SSOSink).
+	ssoCacheHits   map[string]uint64     // cache ("token"|"user") -> hits
+	ssoCacheMisses map[string]uint64     // cache ("token"|"user") -> misses
+	ssoErrors      map[string]uint64     // op ("validate"|"get_users") -> errors
+	ssoLatency     map[string]*histogram // op ("validate"|"get_users") -> upstream latency
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		buckets:  defaultBuckets,
-		requests: make(map[string]uint64),
-		latency:  make(map[string]*histogram),
+		buckets:        defaultBuckets,
+		requests:       make(map[string]uint64),
+		latency:        make(map[string]*histogram),
+		ssoCacheHits:   make(map[string]uint64),
+		ssoCacheMisses: make(map[string]uint64),
+		ssoErrors:      make(map[string]uint64),
+		ssoLatency:     make(map[string]*histogram),
 	}
 }
 
@@ -74,6 +84,42 @@ func (r *Registry) observe(transport, method, route, status string, dur time.Dur
 	}
 	h.sum += secs
 	h.count++
+}
+
+// ObserveSSOCache records one SSO cache lookup. cache is "token" or "user"; hit
+// distinguishes a cache hit from a miss. Together they expose a per-cache hit ratio.
+func (r *Registry) ObserveSSOCache(cache string, hit bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if hit {
+		r.ssoCacheHits[cache]++
+	} else {
+		r.ssoCacheMisses[cache]++
+	}
+}
+
+// ObserveSSOCall records one upstream SSO RPC. op is "validate" or "get_users", dur
+// is the call latency, and ok is false when the RPC failed (counts toward the error
+// rate). Latency is recorded for every call regardless of outcome.
+func (r *Registry) ObserveSSOCall(op string, dur time.Duration, ok bool) {
+	secs := dur.Seconds()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.ssoLatency[op]
+	if h == nil {
+		h = &histogram{bucketCounts: make([]uint64, len(r.buckets))}
+		r.ssoLatency[op] = h
+	}
+	for i, b := range r.buckets {
+		if secs <= b {
+			h.bucketCounts[i]++
+		}
+	}
+	h.sum += secs
+	h.count++
+	if !ok {
+		r.ssoErrors[op]++
+	}
 }
 
 // Handler serves the current metrics in Prometheus text format.
@@ -114,6 +160,52 @@ func (r *Registry) WriteText(w io.Writer) {
 		fmt.Fprintf(w, "aeroid_request_duration_seconds_bucket{transport=%q,route=%q,le=\"+Inf\"} %d\n", p[0], p[1], h.count)
 		fmt.Fprintf(w, "aeroid_request_duration_seconds_sum{transport=%q,route=%q} %g\n", p[0], p[1], h.sum)
 		fmt.Fprintf(w, "aeroid_request_duration_seconds_count{transport=%q,route=%q} %d\n", p[0], p[1], h.count)
+	}
+
+	r.writeSSOText(w)
+}
+
+// writeSSOText renders the SSO dependency-health series. Caller holds r.mu.
+func (r *Registry) writeSSOText(w io.Writer) {
+	if len(r.ssoCacheHits) > 0 || len(r.ssoCacheMisses) > 0 {
+		fmt.Fprintln(w, "# HELP aeroid_sso_cache_hits_total SSO cache hits by cache.")
+		fmt.Fprintln(w, "# TYPE aeroid_sso_cache_hits_total counter")
+		for _, k := range sortedKeys(r.ssoCacheHits) {
+			fmt.Fprintf(w, "aeroid_sso_cache_hits_total{cache=%q} %d\n", k, r.ssoCacheHits[k])
+		}
+		fmt.Fprintln(w, "# HELP aeroid_sso_cache_misses_total SSO cache misses by cache.")
+		fmt.Fprintln(w, "# TYPE aeroid_sso_cache_misses_total counter")
+		for _, k := range sortedKeys(r.ssoCacheMisses) {
+			fmt.Fprintf(w, "aeroid_sso_cache_misses_total{cache=%q} %d\n", k, r.ssoCacheMisses[k])
+		}
+	}
+
+	if len(r.ssoErrors) > 0 {
+		fmt.Fprintln(w, "# HELP aeroid_sso_errors_total SSO upstream errors by op.")
+		fmt.Fprintln(w, "# TYPE aeroid_sso_errors_total counter")
+		for _, k := range sortedKeys(r.ssoErrors) {
+			fmt.Fprintf(w, "aeroid_sso_errors_total{op=%q} %d\n", k, r.ssoErrors[k])
+		}
+	}
+
+	if len(r.ssoLatency) > 0 {
+		fmt.Fprintln(w, "# HELP aeroid_sso_call_duration_seconds SSO upstream call latency in seconds.")
+		fmt.Fprintln(w, "# TYPE aeroid_sso_call_duration_seconds histogram")
+		ops := make([]string, 0, len(r.ssoLatency))
+		for k := range r.ssoLatency {
+			ops = append(ops, k)
+		}
+		sort.Strings(ops)
+		for _, op := range ops {
+			h := r.ssoLatency[op]
+			for i, b := range r.buckets {
+				fmt.Fprintf(w, "aeroid_sso_call_duration_seconds_bucket{op=%q,le=%q} %d\n",
+					op, strconv.FormatFloat(b, 'g', -1, 64), h.bucketCounts[i])
+			}
+			fmt.Fprintf(w, "aeroid_sso_call_duration_seconds_bucket{op=%q,le=\"+Inf\"} %d\n", op, h.count)
+			fmt.Fprintf(w, "aeroid_sso_call_duration_seconds_sum{op=%q} %g\n", op, h.sum)
+			fmt.Fprintf(w, "aeroid_sso_call_duration_seconds_count{op=%q} %d\n", op, h.count)
+		}
 	}
 }
 

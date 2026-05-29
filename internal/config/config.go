@@ -14,8 +14,20 @@ type Config struct {
 	Database   DatabaseConfig `mapstructure:"database"`
 	SSO        SSOConfig      `mapstructure:"sso"`
 	Storage    StorageConfig  `mapstructure:"storage"`
+	Tracing    TracingConfig  `mapstructure:"tracing"`
 	SigningKey string         `mapstructure:"signing_key"`
 	Log        LogConfig      `mapstructure:"log"`
+}
+
+// TracingConfig configures OpenTelemetry tracing. Tracing is opt-in: unless Enabled
+// is true (or an Endpoint is set) a no-op tracer is installed so dev/tests/CI need
+// no collector. Endpoint is an OTLP/gRPC collector address (host:port).
+type TracingConfig struct {
+	Enabled     bool          `mapstructure:"enabled"`
+	Endpoint    string        `mapstructure:"endpoint"`     // OTLP/gRPC collector, e.g. "localhost:4317"
+	Insecure    bool          `mapstructure:"insecure"`     // dial the collector without TLS
+	Timeout     time.Duration `mapstructure:"timeout"`      // exporter timeout; <=0 falls back to a default
+	SampleRatio float64       `mapstructure:"sample_ratio"` // 0..1 parent-based ratio sampler; <=0 => always-on
 }
 
 type AppConfig struct {

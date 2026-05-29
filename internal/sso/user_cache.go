@@ -26,6 +26,10 @@ type UserCache struct {
 	mu      sync.RWMutex
 	items   map[string]userEntry
 	fetcher Fetcher
+	// onLookup, when set, is called once per (deduplicated) requested uid with
+	// whether it was served from cache. It lets the client export a hit ratio
+	// without exposing cache internals. nil-safe.
+	onLookup func(hit bool)
 }
 
 func NewUserCache(ttl time.Duration, fetcher Fetcher) *UserCache {
@@ -35,6 +39,10 @@ func NewUserCache(ttl time.Duration, fetcher Fetcher) *UserCache {
 		fetcher: fetcher,
 	}
 }
+
+// SetLookupObserver registers a callback invoked once per deduplicated requested uid
+// with its cache hit/miss outcome. Pass nil to disable.
+func (c *UserCache) SetLookupObserver(fn func(hit bool)) { c.onLookup = fn }
 
 // GetMany returns a map keyed by uid. UIDs not found in cache trigger a single
 // batch call to the configured Fetcher. Duplicate input uids are deduplicated.
@@ -52,8 +60,14 @@ func (c *UserCache) GetMany(ctx context.Context, uids []string) (map[string]User
 		seen[u] = struct{}{}
 		if e, ok := c.items[u]; ok && now.Before(e.expiry) {
 			out[u] = e.user
+			if c.onLookup != nil {
+				c.onLookup(true)
+			}
 		} else {
 			missing = append(missing, u)
+			if c.onLookup != nil {
+				c.onLookup(false)
+			}
 		}
 	}
 	c.mu.RUnlock()

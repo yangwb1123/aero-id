@@ -44,6 +44,7 @@ func NewRouter(
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
 	e.Use(middleware.RequestID())
+	e.Use(middleware.Tracing())
 	e.Use(middleware.Recovery(log))
 	if cfg.Metrics != nil {
 		e.Use(middleware.Metrics(cfg.Metrics))

@@ -9,6 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,15 +46,71 @@ func NewServer(validator TokenValidator, log *zap.Logger, reg *metrics.Registry,
 		AuthInterceptor(validator),
 	}
 	if reg != nil {
-		// Outermost so it measures the whole call, including auth and recovery.
+		// Outermost (after tracing) so it measures the whole call, including auth and recovery.
 		interceptors = append([]grpc.UnaryServerInterceptor{MetricsInterceptor(reg)}, interceptors...)
 	}
+	// Tracing is outermost so the server span parents metrics, auth, recovery and the
+	// handler. It relies on the global tracer/propagator (no-op when tracing is off).
+	interceptors = append([]grpc.UnaryServerInterceptor{TracingInterceptor()}, interceptors...)
 	s := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptors...))
 	for _, r := range regs {
 		r.Register(s)
 	}
 	return s
 }
+
+// grpcTracerName identifies aero-id's gRPC server instrumentation scope.
+const grpcTracerName = "github.com/aero/aero-id/internal/handler/grpc"
+
+// TracingInterceptor starts a server span per unary call, continuing any inbound
+// trace context carried in the request metadata, and records the resulting gRPC
+// status. It uses the globally-installed tracer/propagator, so it is a cheap no-op
+// when tracing is disabled.
+func TracingInterceptor() grpc.UnaryServerInterceptor {
+	tracer := otel.Tracer(grpcTracerName)
+	propagator := otel.GetTextMapPropagator()
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			ctx = propagator.Extract(ctx, metadataCarrier(md))
+		}
+		ctx, span := tracer.Start(ctx, info.FullMethod,
+			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
+			oteltrace.WithAttributes(semconv.RPCMethodKey.String(info.FullMethod)),
+		)
+		defer span.End()
+
+		resp, err := handler(ctx, req)
+		code := status.Code(err)
+		span.SetAttributes(attribute.String("rpc.grpc.status_code", code.String()))
+		if err != nil {
+			span.SetStatus(otelcodes.Error, code.String())
+		}
+		return resp, err
+	}
+}
+
+// metadataCarrier adapts gRPC metadata to the OTel TextMapCarrier for trace
+// context extraction.
+type metadataCarrier metadata.MD
+
+func (c metadataCarrier) Get(key string) string {
+	if v := metadata.MD(c).Get(key); len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+func (c metadataCarrier) Set(key, value string) { metadata.MD(c).Set(key, value) }
+
+func (c metadataCarrier) Keys() []string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+var _ propagation.TextMapCarrier = metadataCarrier{}
 
 // MetricsInterceptor records one RED observation per unary call, keyed by the gRPC
 // method and resulting status code.
