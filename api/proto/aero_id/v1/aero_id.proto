@@ -219,3 +219,19 @@ service NotificationService {
   rpc MarkRead(MarkNotificationReadRequest) returns (MarkNotificationReadResponse);
   rpc MarkAllRead(MarkAllNotificationsReadRequest) returns (MarkAllNotificationsReadResponse);
 }
+
+// ---- blocks ----
+// Blocking is directional and private to the caller (the blocker); the actor uid
+// comes from the auth interceptor, so requests carry only the target uid.
+message BlockRequest { string uid = 1; }
+message BlockResponse {}
+message UnblockRequest { string uid = 1; }
+message UnblockResponse {}
+message ListBlockedRequest { Page page = 1; }
+message ListBlockedResponse { repeated string uids = 1; string next_cursor = 2; }
+
+service BlockService {
+  rpc Block(BlockRequest) returns (BlockResponse);
+  rpc Unblock(UnblockRequest) returns (UnblockResponse);
+  rpc ListBlocked(ListBlockedRequest) returns (ListBlockedResponse);
+}

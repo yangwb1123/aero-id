@@ -1603,3 +1603,181 @@ var NotificationService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "aero_id/v1/aero_id.proto",
 }
+
+const (
+	BlockService_Block_FullMethodName       = "/aero_id.v1.BlockService/Block"
+	BlockService_Unblock_FullMethodName     = "/aero_id.v1.BlockService/Unblock"
+	BlockService_ListBlocked_FullMethodName = "/aero_id.v1.BlockService/ListBlocked"
+)
+
+// BlockServiceClient is the client API for BlockService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type BlockServiceClient interface {
+	Block(ctx context.Context, in *BlockRequest, opts ...grpc.CallOption) (*BlockResponse, error)
+	Unblock(ctx context.Context, in *UnblockRequest, opts ...grpc.CallOption) (*UnblockResponse, error)
+	ListBlocked(ctx context.Context, in *ListBlockedRequest, opts ...grpc.CallOption) (*ListBlockedResponse, error)
+}
+
+type blockServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewBlockServiceClient(cc grpc.ClientConnInterface) BlockServiceClient {
+	return &blockServiceClient{cc}
+}
+
+func (c *blockServiceClient) Block(ctx context.Context, in *BlockRequest, opts ...grpc.CallOption) (*BlockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BlockResponse)
+	err := c.cc.Invoke(ctx, BlockService_Block_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *blockServiceClient) Unblock(ctx context.Context, in *UnblockRequest, opts ...grpc.CallOption) (*UnblockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnblockResponse)
+	err := c.cc.Invoke(ctx, BlockService_Unblock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *blockServiceClient) ListBlocked(ctx context.Context, in *ListBlockedRequest, opts ...grpc.CallOption) (*ListBlockedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBlockedResponse)
+	err := c.cc.Invoke(ctx, BlockService_ListBlocked_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// BlockServiceServer is the server API for BlockService service.
+// All implementations must embed UnimplementedBlockServiceServer
+// for forward compatibility.
+type BlockServiceServer interface {
+	Block(context.Context, *BlockRequest) (*BlockResponse, error)
+	Unblock(context.Context, *UnblockRequest) (*UnblockResponse, error)
+	ListBlocked(context.Context, *ListBlockedRequest) (*ListBlockedResponse, error)
+	mustEmbedUnimplementedBlockServiceServer()
+}
+
+// UnimplementedBlockServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedBlockServiceServer struct{}
+
+func (UnimplementedBlockServiceServer) Block(context.Context, *BlockRequest) (*BlockResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Block not implemented")
+}
+func (UnimplementedBlockServiceServer) Unblock(context.Context, *UnblockRequest) (*UnblockResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Unblock not implemented")
+}
+func (UnimplementedBlockServiceServer) ListBlocked(context.Context, *ListBlockedRequest) (*ListBlockedResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBlocked not implemented")
+}
+func (UnimplementedBlockServiceServer) mustEmbedUnimplementedBlockServiceServer() {}
+func (UnimplementedBlockServiceServer) testEmbeddedByValue()                      {}
+
+// UnsafeBlockServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to BlockServiceServer will
+// result in compilation errors.
+type UnsafeBlockServiceServer interface {
+	mustEmbedUnimplementedBlockServiceServer()
+}
+
+func RegisterBlockServiceServer(s grpc.ServiceRegistrar, srv BlockServiceServer) {
+	// If the following call panics, it indicates UnimplementedBlockServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&BlockService_ServiceDesc, srv)
+}
+
+func _BlockService_Block_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BlockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BlockServiceServer).Block(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BlockService_Block_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BlockServiceServer).Block(ctx, req.(*BlockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BlockService_Unblock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnblockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BlockServiceServer).Unblock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BlockService_Unblock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BlockServiceServer).Unblock(ctx, req.(*UnblockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BlockService_ListBlocked_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBlockedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BlockServiceServer).ListBlocked(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BlockService_ListBlocked_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BlockServiceServer).ListBlocked(ctx, req.(*ListBlockedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// BlockService_ServiceDesc is the grpc.ServiceDesc for BlockService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var BlockService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "aero_id.v1.BlockService",
+	HandlerType: (*BlockServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Block",
+			Handler:    _BlockService_Block_Handler,
+		},
+		{
+			MethodName: "Unblock",
+			Handler:    _BlockService_Unblock_Handler,
+		},
+		{
+			MethodName: "ListBlocked",
+			Handler:    _BlockService_ListBlocked_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "aero_id/v1/aero_id.proto",
+}

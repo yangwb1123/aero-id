@@ -257,6 +257,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		grpcsrv.NewMessageServer(msgSvc),
 		grpcsrv.NewCommentServer(commentSvc),
 		grpcsrv.NewNotificationServer(notifSvc),
+		grpcsrv.NewBlockServer(blockSvc),
 	)
 	// Standard ops surface: health (reported SERVING) and, when enabled, reflection.
 	grpcHealth := grpcsrv.RegisterHealth(grpcServer)
