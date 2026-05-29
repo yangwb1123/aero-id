@@ -69,6 +69,87 @@ func TestMessageService_SendRejectsMissingFile(t *testing.T) {
 	assertAppCode(t, err, 400)
 }
 
+func TestMessageService_SendRejectsUnknownKind(t *testing.T) {
+	svc := service.NewMessageService(&mocks.MessageRepo{}, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKind(99), Content: "hi"})
+	assertAppCode(t, err, 400)
+}
+
+func TestMessageService_SendRejectsUserSystemKind(t *testing.T) {
+	svc := service.NewMessageService(&mocks.MessageRepo{}, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKindSystem, Content: "hi"})
+	assertAppCode(t, err, 403)
+}
+
+func TestMessageService_SendFileKindRequiresFileOwnership(t *testing.T) {
+	// File-kind with a file_id owned by the actor still succeeds, unchanged from before.
+	fid := idgen.NewID()
+	files := &mocks.FileRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+		return &domain.File{OwnerUID: "a"}, nil
+	}}
+	var saved *domain.Message
+	repo := &mocks.MessageRepo{CreateFn: func(_ context.Context, m *domain.Message, _ *outbox.Event) error {
+		saved = m
+		return nil
+	}}
+	svc := service.NewMessageService(repo, files, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "a")
+	m, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKindFile, FileID: &fid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil || m.Kind != domain.MessageKindFile || m.FileID == nil {
+		t.Fatalf("unexpected file message: %+v", m)
+	}
+}
+
+func TestMessageService_SendSystemCreatesSystemKind(t *testing.T) {
+	var saved *domain.Message
+	var evt *outbox.Event
+	repo := &mocks.MessageRepo{CreateFn: func(_ context.Context, m *domain.Message, e *outbox.Event) error {
+		saved = m
+		evt = e
+		return nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	// No actor in context: SendSystem is an internal emit path.
+	m, err := svc.SendSystem(context.Background(), "b", "welcome", map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil {
+		t.Fatal("repo.Create was not called")
+	}
+	if m.Kind != domain.MessageKindSystem {
+		t.Fatalf("kind = %d, want system", m.Kind)
+	}
+	if m.FromUID != domain.SystemSenderUID {
+		t.Fatalf("from_uid = %q, want %q", m.FromUID, domain.SystemSenderUID)
+	}
+	if m.ToUID != "b" || m.Content != "welcome" {
+		t.Fatalf("unexpected system message: %+v", m)
+	}
+	if evt == nil || evt.EventType != "message.sent" {
+		t.Fatalf("expected message.sent event, got %+v", evt)
+	}
+}
+
+func TestMessageService_SendSystemRequiresToAndContent(t *testing.T) {
+	svc := service.NewMessageService(&mocks.MessageRepo{}, &mocks.FileRepo{}, &mocks.UserDir{})
+	if _, err := svc.SendSystem(context.Background(), "", "hi", nil); err == nil {
+		t.Fatal("expected error for empty to_uid")
+	} else {
+		assertAppCode(t, err, 400)
+	}
+	if _, err := svc.SendSystem(context.Background(), "b", "", nil); err == nil {
+		t.Fatal("expected error for empty content")
+	} else {
+		assertAppCode(t, err, 400)
+	}
+}
+
 func TestMessageService_GetForbiddenForNonParticipant(t *testing.T) {
 	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
 		return &domain.Message{ID: id, FromUID: "a", ToUID: "b"}, nil

@@ -23,6 +23,20 @@ const (
 	MessageKindSystem MessageKind = 4
 )
 
+// IsValid reports whether k is a known, supported message kind.
+func (k MessageKind) IsValid() bool {
+	switch k {
+	case MessageKindText, MessageKindImage, MessageKindFile, MessageKindSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsSystem reports whether k denotes a server-emitted system message. System
+// messages must never be forgeable through the normal user send path.
+func (k MessageKind) IsSystem() bool { return k == MessageKindSystem }
+
 // CommentStatus tracks moderation state.
 type CommentStatus int16
 

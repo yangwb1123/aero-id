@@ -142,6 +142,9 @@ type FileService interface {
 
 type MessageService interface {
 	Send(ctx context.Context, in SendMessageInput) (*domain.Message, error)
+	// SendSystem posts a server-emitted system-kind message. Internal callers
+	// only; it bypasses the user "cannot send system" rule.
+	SendSystem(ctx context.Context, toUID, content string, meta map[string]any) (*domain.Message, error)
 	Get(ctx context.Context, id domain.ID) (*domain.Message, error)
 	Inbox(ctx context.Context, page domain.Page, unreadOnly bool) (*MessageList, error)
 	Conversation(ctx context.Context, withUID string, page domain.Page) (*MessageList, error)

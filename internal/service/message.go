@@ -34,6 +34,14 @@ func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain
 	if in.Kind == 0 {
 		in.Kind = domain.MessageKindText
 	}
+	if !in.Kind.IsValid() {
+		return nil, apperr.BadRequest("message.invalid", "unsupported message kind")
+	}
+	// System messages are server-emitted only (see SendSystem); they must not be
+	// forgeable through the user-facing send path.
+	if in.Kind.IsSystem() {
+		return nil, apperr.Forbidden("message.forbidden", "system messages cannot be sent by users")
+	}
 	if in.Content == "" && in.FileID == nil {
 		return nil, apperr.BadRequest("message.invalid", "content or file_id is required")
 	}
@@ -69,6 +77,38 @@ func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain
 	})
 	if err := s.messages.Create(ctx, m, evt); err != nil {
 		return nil, apperr.Internal("message.send_failed", "failed to send message").Wrap(err)
+	}
+	return m, nil
+}
+
+// SendSystem posts a system-kind message to toUID. It is an internal-only emit
+// path: it does NOT require an authenticated actor and is exempt from the rule
+// that forbids users from sending system messages, so server code (e.g. the
+// notifications/outbox machinery) can post system notices. The message is
+// stamped with domain.SystemSenderUID as the sender.
+func (s *messageService) SendSystem(ctx context.Context, toUID, content string, meta map[string]any) (*domain.Message, error) {
+	if toUID == "" {
+		return nil, apperr.BadRequest("message.invalid", "to_uid is required")
+	}
+	if content == "" {
+		return nil, apperr.BadRequest("message.invalid", "content is required")
+	}
+	m := &domain.Message{
+		ID:        idgen.NewID(),
+		FromUID:   domain.SystemSenderUID,
+		ToUID:     toUID,
+		Kind:      domain.MessageKindSystem,
+		Content:   content,
+		Meta:      meta,
+		CreatedAt: time.Now().UTC(),
+	}
+	evt := newEvent("message", m.ID.String(), "message.sent", map[string]any{
+		"message_id": m.ID.String(),
+		"from_uid":   m.FromUID,
+		"to_uid":     m.ToUID,
+	})
+	if err := s.messages.Create(ctx, m, evt); err != nil {
+		return nil, apperr.Internal("message.send_failed", "failed to send system message").Wrap(err)
 	}
 	return m, nil
 }

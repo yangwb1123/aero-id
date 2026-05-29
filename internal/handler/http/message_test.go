@@ -28,6 +28,9 @@ type fakeMessageService struct {
 func (f *fakeMessageService) Send(ctx context.Context, in service.SendMessageInput) (*domain.Message, error) {
 	return f.sendFn(ctx, in)
 }
+func (f *fakeMessageService) SendSystem(ctx context.Context, toUID, content string, meta map[string]any) (*domain.Message, error) {
+	return nil, nil
+}
 func (f *fakeMessageService) Get(ctx context.Context, id domain.ID) (*domain.Message, error) {
 	return f.getFn(ctx, id)
 }
