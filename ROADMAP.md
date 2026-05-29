@@ -28,6 +28,15 @@ Beyond the five directions, a production-readiness pass closed the remaining ope
 - **Outbox observability** — published/failed counters, pending-count and oldest-event-age (lag) gauges, drain-duration histogram on `/metrics`.
 - **Migration tooling** — `cmd/migrate` CLI (`up`/`down N`/`version`) + Makefile targets + opt-in `database.auto_migrate` on startup.
 
+And a content-lifecycle + safety wave:
+
+- **Editing** — author-only edit of comments and messages (`edited_at`), with validation and soft-delete safety.
+- **Moderation queue** — triage/resolve over the `comment_reports` collected earlier (author-scoped; no role system).
+- **Message lifecycle** — sender soft-delete + per-conversation mark-all-read.
+- **File metadata update** — owner rename / visibility / meta change (PATCH) without re-upload.
+- **User blocking** — directional blocks suppress inbound messages and notifications.
+- **Full gRPC parity** — every data-plane HTTP route now has a matching gRPC RPC (38 RPCs across 5 services); only infra endpoints (`/healthz`, `/readyz`, `/metrics`, signed `/files/dl`) remain HTTP-only, with gRPC liveness covered by `grpc.health.v1`.
+
 The original advisory text is retained below for provenance.
 
 ## Where the codebase stands
