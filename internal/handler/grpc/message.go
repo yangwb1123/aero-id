@@ -92,6 +92,14 @@ func (s *MessageServer) MarkRead(ctx context.Context, req *aeropb.MarkReadReques
 	return &aeropb.MarkReadResponse{}, nil
 }
 
+func (s *MessageServer) UnreadCount(ctx context.Context, _ *aeropb.UnreadCountRequest) (*aeropb.UnreadCountResponse, error) {
+	n, err := s.messages.UnreadCount(ctx)
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.UnreadCountResponse{UnreadCount: n}, nil
+}
+
 func msgToPB(m *domain.Message) *aeropb.Message {
 	pb := &aeropb.Message{
 		Id:        m.ID.String(),

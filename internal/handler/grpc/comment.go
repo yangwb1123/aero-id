@@ -91,6 +91,63 @@ func (s *CommentServer) DeleteComment(ctx context.Context, req *aeropb.DeleteCom
 	return &aeropb.DeleteCommentResponse{}, nil
 }
 
+func (s *CommentServer) LikeComment(ctx context.Context, req *aeropb.LikeCommentRequest) (*aeropb.LikeCommentResponse, error) {
+	id, err := idgen.Parse(req.CommentId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+	}
+	res, err := s.comments.Like(ctx, id)
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.LikeCommentResponse{LikeCount: int32(res.LikeCount)}, nil
+}
+
+func (s *CommentServer) UnlikeComment(ctx context.Context, req *aeropb.UnlikeCommentRequest) (*aeropb.UnlikeCommentResponse, error) {
+	id, err := idgen.Parse(req.CommentId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+	}
+	res, err := s.comments.Unlike(ctx, id)
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.UnlikeCommentResponse{LikeCount: int32(res.LikeCount)}, nil
+}
+
+func (s *CommentServer) ReportComment(ctx context.Context, req *aeropb.ReportCommentRequest) (*aeropb.ReportCommentResponse, error) {
+	id, err := idgen.Parse(req.CommentId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+	}
+	if err := s.comments.Report(ctx, id, req.Reason); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.ReportCommentResponse{}, nil
+}
+
+func (s *CommentServer) HideComment(ctx context.Context, req *aeropb.HideCommentRequest) (*aeropb.HideCommentResponse, error) {
+	id, err := idgen.Parse(req.CommentId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+	}
+	if err := s.comments.Hide(ctx, id); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.HideCommentResponse{}, nil
+}
+
+func (s *CommentServer) UnhideComment(ctx context.Context, req *aeropb.UnhideCommentRequest) (*aeropb.UnhideCommentResponse, error) {
+	id, err := idgen.Parse(req.CommentId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+	}
+	if err := s.comments.Unhide(ctx, id); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.UnhideCommentResponse{}, nil
+}
+
 func commentToPB(c *domain.Comment) *aeropb.Comment {
 	pb := &aeropb.Comment{
 		Id:         c.ID.String(),
@@ -100,6 +157,7 @@ func commentToPB(c *domain.Comment) *aeropb.Comment {
 		RootId:     c.RootID.String(),
 		Content:    c.Content,
 		ReplyCount: int32(c.ReplyCount),
+		LikeCount:  int32(c.LikeCount),
 		Status:     int32(c.Status),
 		CreatedAt:  timestamppb.New(c.CreatedAt),
 	}

@@ -40,11 +40,26 @@ message DeleteFileResponse {}
 message DownloadURLRequest { string id = 1; int64 ttl_seconds = 2; }
 message DownloadURLResponse { string url = 1; }
 
+message ShareFileRequest { string file_id = 1; repeated string grantee_uids = 2; }
+message ShareFileResponse {}
+message UnshareFileRequest { string file_id = 1; string grantee_uid = 2; }
+message UnshareFileResponse {}
+message ListSharedWithMeRequest { Page page = 1; }
+message PresignUploadRequest { string name = 1; string mime_type = 2; int32 visibility = 3; }
+message PresignUploadResponse { string file_id = 1; string upload_url = 2; string storage_key = 3; }
+message CompleteUploadRequest { string file_id = 1; string storage_key = 2; string name = 3; string mime_type = 4; int32 visibility = 5; }
+message CompleteUploadResponse { File file = 1; }
+
 service FileService {
   rpc GetFile(GetFileRequest) returns (GetFileResponse);
   rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
   rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
   rpc GetDownloadURL(DownloadURLRequest) returns (DownloadURLResponse);
+  rpc ShareFile(ShareFileRequest) returns (ShareFileResponse);
+  rpc UnshareFile(UnshareFileRequest) returns (UnshareFileResponse);
+  rpc ListSharedWithMe(ListSharedWithMeRequest) returns (ListFilesResponse);
+  rpc PresignUpload(PresignUploadRequest) returns (PresignUploadResponse);
+  rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
 }
 
 // ---- messages ----
@@ -69,6 +84,8 @@ message ConversationRequest { string with_uid = 1; Page page = 2; }
 message ConversationResponse { repeated Message messages = 1; map<string, User> users = 2; string next_cursor = 3; }
 message MarkReadRequest { string id = 1; }
 message MarkReadResponse {}
+message UnreadCountRequest {}
+message UnreadCountResponse { int64 unread_count = 1; }
 
 service MessageService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
@@ -76,6 +93,7 @@ service MessageService {
   rpc Inbox(InboxRequest) returns (InboxResponse);
   rpc Conversation(ConversationRequest) returns (ConversationResponse);
   rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+  rpc UnreadCount(UnreadCountRequest) returns (UnreadCountResponse);
 }
 
 // ---- comments ----
@@ -90,6 +108,7 @@ message Comment {
   int32  reply_count                   = 8;
   int32  status                        = 9;
   google.protobuf.Timestamp created_at = 10;
+  int32  like_count                    = 11;
 }
 
 message CreateCommentRequest { string target_type = 1; string target_id = 2; string parent_id = 3; string content = 4; }
@@ -101,9 +120,53 @@ message RepliesResponse { repeated Comment comments = 1; map<string, User> users
 message DeleteCommentRequest { string id = 1; }
 message DeleteCommentResponse {}
 
+message LikeCommentRequest { string comment_id = 1; }
+message LikeCommentResponse { int32 like_count = 1; }
+message UnlikeCommentRequest { string comment_id = 1; }
+message UnlikeCommentResponse { int32 like_count = 1; }
+message ReportCommentRequest { string comment_id = 1; string reason = 2; }
+message ReportCommentResponse {}
+message HideCommentRequest { string comment_id = 1; }
+message HideCommentResponse {}
+message UnhideCommentRequest { string comment_id = 1; }
+message UnhideCommentResponse {}
+
 service CommentService {
   rpc CreateComment(CreateCommentRequest) returns (CreateCommentResponse);
   rpc ListComments(ListCommentsRequest) returns (ListCommentsResponse);
   rpc Replies(RepliesRequest) returns (RepliesResponse);
   rpc DeleteComment(DeleteCommentRequest) returns (DeleteCommentResponse);
+  rpc LikeComment(LikeCommentRequest) returns (LikeCommentResponse);
+  rpc UnlikeComment(UnlikeCommentRequest) returns (UnlikeCommentResponse);
+  rpc ReportComment(ReportCommentRequest) returns (ReportCommentResponse);
+  rpc HideComment(HideCommentRequest) returns (HideCommentResponse);
+  rpc UnhideComment(UnhideCommentRequest) returns (UnhideCommentResponse);
+}
+
+// ---- notifications ----
+message Notification {
+  string id                            = 1;
+  string recipient_uid                 = 2;
+  string type                          = 3;
+  string actor_uid                     = 4;
+  string subject_type                  = 5;
+  string subject_id                    = 6;
+  google.protobuf.Timestamp read_at    = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListNotificationsRequest { Page page = 1; }
+message ListNotificationsResponse { repeated Notification notifications = 1; map<string, User> users = 2; string next_cursor = 3; }
+message NotificationUnreadCountRequest {}
+message NotificationUnreadCountResponse { int64 unread_count = 1; }
+message MarkNotificationReadRequest { string id = 1; }
+message MarkNotificationReadResponse {}
+message MarkAllNotificationsReadRequest {}
+message MarkAllNotificationsReadResponse {}
+
+service NotificationService {
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc UnreadCount(NotificationUnreadCountRequest) returns (NotificationUnreadCountResponse);
+  rpc MarkRead(MarkNotificationReadRequest) returns (MarkNotificationReadResponse);
+  rpc MarkAllRead(MarkAllNotificationsReadRequest) returns (MarkAllNotificationsReadResponse);
 }

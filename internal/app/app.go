@@ -189,6 +189,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		grpcsrv.NewFileServer(fileSvc),
 		grpcsrv.NewMessageServer(msgSvc),
 		grpcsrv.NewCommentServer(commentSvc),
+		grpcsrv.NewNotificationServer(notifSvc),
 	)
 	grpcAddr := fmt.Sprintf("%s:%d", cfg.Server.GRPC.Host, cfg.Server.GRPC.Port)
 	grpcLis, err := net.Listen("tcp", grpcAddr)

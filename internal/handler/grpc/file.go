@@ -73,6 +73,70 @@ func (s *FileServer) GetDownloadURL(ctx context.Context, req *aeropb.DownloadURL
 	return &aeropb.DownloadURLResponse{Url: url}, nil
 }
 
+func (s *FileServer) ShareFile(ctx context.Context, req *aeropb.ShareFileRequest) (*aeropb.ShareFileResponse, error) {
+	id, err := idgen.Parse(req.FileId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
+	}
+	if err := s.files.ShareFile(ctx, id, req.GranteeUids); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.ShareFileResponse{}, nil
+}
+
+func (s *FileServer) UnshareFile(ctx context.Context, req *aeropb.UnshareFileRequest) (*aeropb.UnshareFileResponse, error) {
+	id, err := idgen.Parse(req.FileId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
+	}
+	if err := s.files.UnshareFile(ctx, id, req.GranteeUid); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.UnshareFileResponse{}, nil
+}
+
+func (s *FileServer) ListSharedWithMe(ctx context.Context, req *aeropb.ListSharedWithMeRequest) (*aeropb.ListFilesResponse, error) {
+	list, err := s.files.ListSharedWithMe(ctx, pageFromPB(req.Page))
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.ListFilesResponse{Files: filesToPB(list.Files), NextCursor: list.NextCursor}, nil
+}
+
+func (s *FileServer) PresignUpload(ctx context.Context, req *aeropb.PresignUploadRequest) (*aeropb.PresignUploadResponse, error) {
+	res, err := s.files.PresignUpload(ctx, service.PresignUploadInput{
+		Name:       req.Name,
+		MimeType:   req.MimeType,
+		Visibility: domain.Visibility(req.Visibility),
+	}, defaultDownloadTTL)
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.PresignUploadResponse{
+		FileId:     res.FileID.String(),
+		UploadUrl:  res.UploadURL,
+		StorageKey: res.StorageKey,
+	}, nil
+}
+
+func (s *FileServer) CompleteUpload(ctx context.Context, req *aeropb.CompleteUploadRequest) (*aeropb.CompleteUploadResponse, error) {
+	fileID, err := idgen.Parse(req.FileId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
+	}
+	f, err := s.files.CompleteUpload(ctx, service.CompleteUploadInput{
+		FileID:     fileID,
+		StorageKey: req.StorageKey,
+		Name:       req.Name,
+		MimeType:   req.MimeType,
+		Visibility: domain.Visibility(req.Visibility),
+	})
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.CompleteUploadResponse{File: fileToPB(f)}, nil
+}
+
 // ---- shared converters (used by message.go and comment.go too) ----
 
 func pageFromPB(p *aeropb.Page) domain.Page {

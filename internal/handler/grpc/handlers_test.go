@@ -32,7 +32,9 @@ type fileSvc struct {
 	getFn func(context.Context, domain.ID) (*domain.File, error)
 }
 
-func (f fileSvc) Get(ctx context.Context, id domain.ID) (*domain.File, error) { return f.getFn(ctx, id) }
+func (f fileSvc) Get(ctx context.Context, id domain.ID) (*domain.File, error) {
+	return f.getFn(ctx, id)
+}
 
 type msgSvc struct {
 	service.MessageService
