@@ -36,6 +36,14 @@ type Registry struct {
 	ssoCacheMisses map[string]uint64     // cache ("token"|"user") -> misses
 	ssoErrors      map[string]uint64     // op ("validate"|"get_users") -> errors
 	ssoLatency     map[string]*histogram // op ("validate"|"get_users") -> upstream latency
+
+	// Transactional-outbox relay observability, populated by the relay (see
+	// outbox.MetricsSink).
+	outboxPublished map[string]uint64 // event_type -> events successfully published
+	outboxFailed    map[string]uint64 // event_type -> handler failures (left for retry)
+	outboxPending   float64           // unpublished events seen on the last drain pass
+	outboxLagSecs   float64           // age (now - oldest CreatedAt) of the oldest unpublished event
+	outboxDrain     *histogram        // per-pass drain duration in seconds
 }
 
 func NewRegistry() *Registry {
@@ -47,6 +55,9 @@ func NewRegistry() *Registry {
 		ssoCacheMisses: make(map[string]uint64),
 		ssoErrors:      make(map[string]uint64),
 		ssoLatency:     make(map[string]*histogram),
+
+		outboxPublished: make(map[string]uint64),
+		outboxFailed:    make(map[string]uint64),
 	}
 }
 
@@ -122,6 +133,51 @@ func (r *Registry) ObserveSSOCall(op string, dur time.Duration, ok bool) {
 	}
 }
 
+// ObserveOutboxPublished records one successfully published outbox event of the
+// given event_type. eventType "" is bucketed under "unknown" to keep the series
+// well-formed.
+func (r *Registry) ObserveOutboxPublished(eventType string) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	r.mu.Lock()
+	r.outboxPublished[eventType]++
+	r.mu.Unlock()
+}
+
+// ObserveOutboxFailed records one outbox event whose handler errored (the event
+// stays unpublished and is retried on the next tick).
+func (r *Registry) ObserveOutboxFailed(eventType string) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	r.mu.Lock()
+	r.outboxFailed[eventType]++
+	r.mu.Unlock()
+}
+
+// ObserveOutboxDrain records one drain pass: pending is the number of unpublished
+// events the pass observed, oldestAge is the age of the oldest such event (0 when
+// the outbox was empty), and dur is the pass duration. pending and oldestAge are
+// last-write gauges so /metrics always reflects the most recent pass.
+func (r *Registry) ObserveOutboxDrain(pending int, oldestAge, dur time.Duration) {
+	secs := dur.Seconds()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outboxPending = float64(pending)
+	r.outboxLagSecs = oldestAge.Seconds()
+	if r.outboxDrain == nil {
+		r.outboxDrain = &histogram{bucketCounts: make([]uint64, len(r.buckets))}
+	}
+	for i, b := range r.buckets {
+		if secs <= b {
+			r.outboxDrain.bucketCounts[i]++
+		}
+	}
+	r.outboxDrain.sum += secs
+	r.outboxDrain.count++
+}
+
 // Handler serves the current metrics in Prometheus text format.
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -163,6 +219,47 @@ func (r *Registry) WriteText(w io.Writer) {
 	}
 
 	r.writeSSOText(w)
+	r.writeOutboxText(w)
+}
+
+// writeOutboxText renders the transactional-outbox relay series. Caller holds r.mu.
+func (r *Registry) writeOutboxText(w io.Writer) {
+	if len(r.outboxPublished) > 0 {
+		fmt.Fprintln(w, "# HELP aeroid_outbox_published_total Outbox events successfully published by event_type.")
+		fmt.Fprintln(w, "# TYPE aeroid_outbox_published_total counter")
+		for _, k := range sortedKeys(r.outboxPublished) {
+			fmt.Fprintf(w, "aeroid_outbox_published_total{event_type=%q} %d\n", k, r.outboxPublished[k])
+		}
+	}
+
+	if len(r.outboxFailed) > 0 {
+		fmt.Fprintln(w, "# HELP aeroid_outbox_failed_total Outbox events whose handler errored (retried) by event_type.")
+		fmt.Fprintln(w, "# TYPE aeroid_outbox_failed_total counter")
+		for _, k := range sortedKeys(r.outboxFailed) {
+			fmt.Fprintf(w, "aeroid_outbox_failed_total{event_type=%q} %d\n", k, r.outboxFailed[k])
+		}
+	}
+
+	if r.outboxDrain != nil {
+		fmt.Fprintln(w, "# HELP aeroid_outbox_pending Unpublished outbox events seen on the last drain pass.")
+		fmt.Fprintln(w, "# TYPE aeroid_outbox_pending gauge")
+		fmt.Fprintf(w, "aeroid_outbox_pending %g\n", r.outboxPending)
+
+		fmt.Fprintln(w, "# HELP aeroid_outbox_oldest_age_seconds Age of the oldest unpublished outbox event in seconds.")
+		fmt.Fprintln(w, "# TYPE aeroid_outbox_oldest_age_seconds gauge")
+		fmt.Fprintf(w, "aeroid_outbox_oldest_age_seconds %g\n", r.outboxLagSecs)
+
+		fmt.Fprintln(w, "# HELP aeroid_outbox_drain_duration_seconds Outbox relay drain-pass duration in seconds.")
+		fmt.Fprintln(w, "# TYPE aeroid_outbox_drain_duration_seconds histogram")
+		h := r.outboxDrain
+		for i, b := range r.buckets {
+			fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=%q} %d\n",
+				strconv.FormatFloat(b, 'g', -1, 64), h.bucketCounts[i])
+		}
+		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=\"+Inf\"} %d\n", h.count)
+		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_sum %g\n", h.sum)
+		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_count %d\n", h.count)
+	}
 }
 
 // writeSSOText renders the SSO dependency-health series. Caller holds r.mu.

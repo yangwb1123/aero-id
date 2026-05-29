@@ -79,6 +79,36 @@ func TestRegistry_SSOExposition(t *testing.T) {
 	}
 }
 
+func TestRegistry_OutboxExposition(t *testing.T) {
+	r := metrics.NewRegistry()
+	r.ObserveOutboxPublished("message.sent")
+	r.ObserveOutboxPublished("message.sent")
+	r.ObserveOutboxFailed("comment.replied")
+	r.ObserveOutboxDrain(3, 90*time.Second, 4*time.Millisecond)
+
+	var b strings.Builder
+	r.WriteText(&b)
+	out := b.String()
+
+	for _, want := range []string{
+		`# TYPE aeroid_outbox_published_total counter`,
+		`aeroid_outbox_published_total{event_type="message.sent"} 2`,
+		`# TYPE aeroid_outbox_failed_total counter`,
+		`aeroid_outbox_failed_total{event_type="comment.replied"} 1`,
+		`# TYPE aeroid_outbox_pending gauge`,
+		`aeroid_outbox_pending 3`,
+		`# TYPE aeroid_outbox_oldest_age_seconds gauge`,
+		`aeroid_outbox_oldest_age_seconds 90`,
+		`# TYPE aeroid_outbox_drain_duration_seconds histogram`,
+		`aeroid_outbox_drain_duration_seconds_count 1`,
+		`aeroid_outbox_drain_duration_seconds_bucket{le="+Inf"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition missing line:\n  %s\n--- full output ---\n%s", want, out)
+		}
+	}
+}
+
 func TestRegistry_UnmatchedRouteLabel(t *testing.T) {
 	r := metrics.NewRegistry()
 	r.ObserveHTTP("GET", "", 404, time.Millisecond) // no matched template

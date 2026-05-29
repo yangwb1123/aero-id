@@ -159,7 +159,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	// The relay drains domain events written transactionally with their rows and
 	// fans them out to per-recipient notification rows (Direction 5).
 	dispatcher := service.NewNotificationDispatcher(notifRepo)
-	relay := outbox.NewRelay(outboxRepo, dispatcher, log)
+	relay := outbox.NewRelay(outboxRepo, dispatcher, log, metricsReg)
 	stopRelay := relay.Start(outboxPollInterval)
 
 	// Storage GC reconciliation sweep. OPT-IN and disabled by default: it only starts
