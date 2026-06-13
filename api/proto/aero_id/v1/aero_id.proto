@@ -107,6 +107,10 @@ message DeleteMessageRequest { string id = 1; }
 message DeleteMessageResponse {}
 message MarkConversationReadRequest { string with_uid = 1; }
 message MarkConversationReadResponse {}
+message ReactToMessageRequest { string message_id = 1; }
+message ReactToMessageResponse {}
+message UnreactMessageRequest { string message_id = 1; }
+message UnreactMessageResponse {}
 
 service MessageService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
@@ -118,6 +122,8 @@ service MessageService {
   rpc EditMessage(EditMessageRequest) returns (EditMessageResponse);
   rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
   rpc MarkConversationRead(MarkConversationReadRequest) returns (MarkConversationReadResponse);
+  rpc ReactToMessage(ReactToMessageRequest) returns (ReactToMessageResponse);
+  rpc UnreactMessage(UnreactMessageRequest) returns (UnreactMessageResponse);
 }
 
 // ---- comments ----

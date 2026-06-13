@@ -58,6 +58,12 @@ func (f *fakeMessageService) Delete(ctx context.Context, id domain.ID) error {
 func (f *fakeMessageService) UnreadCount(ctx context.Context) (int64, error) {
 	return f.unreadCountFn(ctx)
 }
+func (f *fakeMessageService) ReactToMessage(_ context.Context, _ domain.ID, _ string) error {
+	return nil
+}
+func (f *fakeMessageService) UnreactMessage(_ context.Context, _ domain.ID, _ string) error {
+	return nil
+}
 
 func TestMessageHandler_UnreadCount(t *testing.T) {
 	svc := &fakeMessageService{unreadCountFn: func(context.Context) (int64, error) { return 5, nil }}

@@ -472,6 +472,8 @@ const (
 	MessageService_EditMessage_FullMethodName          = "/aero_id.v1.MessageService/EditMessage"
 	MessageService_DeleteMessage_FullMethodName        = "/aero_id.v1.MessageService/DeleteMessage"
 	MessageService_MarkConversationRead_FullMethodName = "/aero_id.v1.MessageService/MarkConversationRead"
+	MessageService_ReactToMessage_FullMethodName       = "/aero_id.v1.MessageService/ReactToMessage"
+	MessageService_UnreactMessage_FullMethodName       = "/aero_id.v1.MessageService/UnreactMessage"
 )
 
 // MessageServiceClient is the client API for MessageService service.
@@ -487,6 +489,8 @@ type MessageServiceClient interface {
 	EditMessage(ctx context.Context, in *EditMessageRequest, opts ...grpc.CallOption) (*EditMessageResponse, error)
 	DeleteMessage(ctx context.Context, in *DeleteMessageRequest, opts ...grpc.CallOption) (*DeleteMessageResponse, error)
 	MarkConversationRead(ctx context.Context, in *MarkConversationReadRequest, opts ...grpc.CallOption) (*MarkConversationReadResponse, error)
+	ReactToMessage(ctx context.Context, in *ReactToMessageRequest, opts ...grpc.CallOption) (*ReactToMessageResponse, error)
+	UnreactMessage(ctx context.Context, in *UnreactMessageRequest, opts ...grpc.CallOption) (*UnreactMessageResponse, error)
 }
 
 type messageServiceClient struct {
@@ -587,6 +591,26 @@ func (c *messageServiceClient) MarkConversationRead(ctx context.Context, in *Mar
 	return out, nil
 }
 
+func (c *messageServiceClient) ReactToMessage(ctx context.Context, in *ReactToMessageRequest, opts ...grpc.CallOption) (*ReactToMessageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReactToMessageResponse)
+	err := c.cc.Invoke(ctx, MessageService_ReactToMessage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *messageServiceClient) UnreactMessage(ctx context.Context, in *UnreactMessageRequest, opts ...grpc.CallOption) (*UnreactMessageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnreactMessageResponse)
+	err := c.cc.Invoke(ctx, MessageService_UnreactMessage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MessageServiceServer is the server API for MessageService service.
 // All implementations must embed UnimplementedMessageServiceServer
 // for forward compatibility.
@@ -600,6 +624,8 @@ type MessageServiceServer interface {
 	EditMessage(context.Context, *EditMessageRequest) (*EditMessageResponse, error)
 	DeleteMessage(context.Context, *DeleteMessageRequest) (*DeleteMessageResponse, error)
 	MarkConversationRead(context.Context, *MarkConversationReadRequest) (*MarkConversationReadResponse, error)
+	ReactToMessage(context.Context, *ReactToMessageRequest) (*ReactToMessageResponse, error)
+	UnreactMessage(context.Context, *UnreactMessageRequest) (*UnreactMessageResponse, error)
 	mustEmbedUnimplementedMessageServiceServer()
 }
 
@@ -636,6 +662,12 @@ func (UnimplementedMessageServiceServer) DeleteMessage(context.Context, *DeleteM
 }
 func (UnimplementedMessageServiceServer) MarkConversationRead(context.Context, *MarkConversationReadRequest) (*MarkConversationReadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MarkConversationRead not implemented")
+}
+func (UnimplementedMessageServiceServer) ReactToMessage(context.Context, *ReactToMessageRequest) (*ReactToMessageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReactToMessage not implemented")
+}
+func (UnimplementedMessageServiceServer) UnreactMessage(context.Context, *UnreactMessageRequest) (*UnreactMessageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnreactMessage not implemented")
 }
 func (UnimplementedMessageServiceServer) mustEmbedUnimplementedMessageServiceServer() {}
 func (UnimplementedMessageServiceServer) testEmbeddedByValue()                        {}
@@ -820,6 +852,42 @@ func _MessageService_MarkConversationRead_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MessageService_ReactToMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReactToMessageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageServiceServer).ReactToMessage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageService_ReactToMessage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageServiceServer).ReactToMessage(ctx, req.(*ReactToMessageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MessageService_UnreactMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnreactMessageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageServiceServer).UnreactMessage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageService_UnreactMessage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageServiceServer).UnreactMessage(ctx, req.(*UnreactMessageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MessageService_ServiceDesc is the grpc.ServiceDesc for MessageService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -862,6 +930,14 @@ var MessageService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MarkConversationRead",
 			Handler:    _MessageService_MarkConversationRead_Handler,
+		},
+		{
+			MethodName: "ReactToMessage",
+			Handler:    _MessageService_ReactToMessage_Handler,
+		},
+		{
+			MethodName: "UnreactMessage",
+			Handler:    _MessageService_UnreactMessage_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

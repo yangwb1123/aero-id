@@ -226,6 +226,15 @@ func commentReportRowToDomain(r *commentReportRow) *domain.CommentReport {
 	}
 }
 
+// messageReactionRow maps the message_reactions join table: one row per (message, user) reaction.
+type messageReactionRow struct {
+	MessageID uuid.UUID `gorm:"column:message_id;primaryKey"`
+	UID       string    `gorm:"column:uid;primaryKey"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+}
+
+func (messageReactionRow) TableName() string { return "message_reactions" }
+
 // notificationRow maps the notifications table: one row per recipient per event.
 type notificationRow struct {
 	ID           uuid.UUID  `gorm:"column:id;primaryKey"`

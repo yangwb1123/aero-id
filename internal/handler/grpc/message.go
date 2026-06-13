@@ -130,6 +130,36 @@ func (s *MessageServer) MarkConversationRead(ctx context.Context, req *aeropb.Ma
 	return &aeropb.MarkConversationReadResponse{}, nil
 }
 
+func (s *MessageServer) ReactToMessage(ctx context.Context, req *aeropb.ReactToMessageRequest) (*aeropb.ReactToMessageResponse, error) {
+	id, err := idgen.Parse(req.MessageId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid message_id"))
+	}
+	actor, ok := service.ActorFrom(ctx)
+	if !ok {
+		return nil, grpcError(apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
+	}
+	if err := s.messages.ReactToMessage(ctx, id, actor); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.ReactToMessageResponse{}, nil
+}
+
+func (s *MessageServer) UnreactMessage(ctx context.Context, req *aeropb.UnreactMessageRequest) (*aeropb.UnreactMessageResponse, error) {
+	id, err := idgen.Parse(req.MessageId)
+	if err != nil {
+		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid message_id"))
+	}
+	actor, ok := service.ActorFrom(ctx)
+	if !ok {
+		return nil, grpcError(apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
+	}
+	if err := s.messages.UnreactMessage(ctx, id, actor); err != nil {
+		return nil, grpcError(err)
+	}
+	return &aeropb.UnreactMessageResponse{}, nil
+}
+
 func msgToPB(m *domain.Message) *aeropb.Message {
 	pb := &aeropb.Message{
 		Id:        m.ID.String(),

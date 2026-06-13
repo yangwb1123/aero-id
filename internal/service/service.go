@@ -190,6 +190,10 @@ type MessageService interface {
 	Edit(ctx context.Context, id domain.ID, content string) (*domain.Message, error)
 	// Delete soft-deletes a message; only the original sender may delete. Idempotent.
 	Delete(ctx context.Context, id domain.ID) error
+	// ReactToMessage records a reaction by the authenticated actor. Idempotent.
+	ReactToMessage(ctx context.Context, messageID domain.ID, actorUID string) error
+	// UnreactMessage removes the authenticated actor's reaction. Idempotent.
+	UnreactMessage(ctx context.Context, messageID domain.ID, actorUID string) error
 }
 
 type NotificationService interface {

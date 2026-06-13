@@ -29,6 +29,8 @@ func (h *MessageHandler) RegisterRoutes(r Routes) {
 	r.Auth.PATCH("/messages/:id", h.Edit)
 	r.Auth.DELETE("/messages/:id", h.Delete)
 	r.Auth.POST("/messages/:id/read", h.MarkRead)
+	r.Auth.POST("/messages/:id/reactions", h.ReactToMessage)
+	r.Auth.DELETE("/messages/:id/reactions", h.UnreactMessage)
 	r.Auth.GET("/conversations/:uid", h.Conversation)
 	r.Auth.POST("/conversations/:uid/read", h.MarkConversationRead)
 }
@@ -165,6 +167,42 @@ func (h *MessageHandler) UnreadCount(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"unread_count": n})
+}
+
+func (h *MessageHandler) ReactToMessage(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	actor, ok := service.ActorFrom(c.Request.Context())
+	if !ok {
+		httpx.WriteError(c, apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
+		return
+	}
+	if err := h.messages.ReactToMessage(c.Request.Context(), id, actor); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
+}
+
+func (h *MessageHandler) UnreactMessage(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	actor, ok := service.ActorFrom(c.Request.Context())
+	if !ok {
+		httpx.WriteError(c, apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
+		return
+	}
+	if err := h.messages.UnreactMessage(c.Request.Context(), id, actor); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.NoContent(c)
 }
 
 func renderMessageList(c *gin.Context, list *service.MessageList) {
