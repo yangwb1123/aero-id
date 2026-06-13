@@ -40,6 +40,9 @@ type MessageRepository interface {
 	// UnreactMessage removes a reaction by uid. Idempotent: returns nil even when
 	// no reaction row existed.
 	UnreactMessage(ctx context.Context, messageID uuid.UUID, uid string) error
+	// SearchMessages returns messages visible to uid (sender or recipient) whose
+	// content matches the full-text query, ranked by relevance.
+	SearchMessages(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error)
 }
 
 type messageRepo struct {
@@ -244,4 +247,28 @@ func (r *messageRepo) UnreactMessage(ctx context.Context, messageID uuid.UUID, u
 		return fmt.Errorf("unreact message: %w", err)
 	}
 	return nil
+}
+
+// SearchMessages returns messages the uid sent or received whose content matches
+// the full-text query, ranked by relevance. Requires migration 000016.
+func (r *messageRepo) SearchMessages(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error) {
+	var rows []messageRow
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT id, from_uid, to_uid, kind, content, file_id, read_at, edited_at, meta, created_at
+		 FROM messages
+		 WHERE deleted_at IS NULL
+		   AND (from_uid = ? OR to_uid = ?)
+		   AND search_vector @@ plainto_tsquery('simple', ?)
+		 ORDER BY ts_rank(search_vector, plainto_tsquery('simple', ?)) DESC
+		 LIMIT ?`,
+		uid, uid, query, query, limit,
+	).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	out := make([]*domain.Message, len(rows))
+	for i := range rows {
+		out[i] = msgRowToDomain(&rows[i])
+	}
+	return out, nil
 }

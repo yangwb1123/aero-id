@@ -89,6 +89,12 @@ func actorUIDs(ns []*domain.Notification) []string {
 	return out
 }
 
+// NotificationPusher delivers a real-time notification event to a connected client.
+// It is satisfied by *hub.Hub via hub.Adapter; the service layer must NOT import hub.
+type NotificationPusher interface {
+	Publish(uid, eventType, data string)
+}
+
 // NotificationDispatcher is the outbox.Handler that turns domain events into
 // per-recipient notification rows. It plugs into the outbox relay in place of the
 // no-op log handler. Returning an error leaves the event unpublished so the relay
@@ -96,7 +102,8 @@ func actorUIDs(ns []*domain.Notification) []string {
 // is treated as a successful no-op so the event is not retried forever.
 type NotificationDispatcher struct {
 	notifs repository.NotificationRepository
-	blocks BlockChecker // nil => block suppression is inactive
+	blocks BlockChecker        // nil => block suppression is inactive
+	pusher NotificationPusher  // nil => no real-time push
 }
 
 // DispatcherOption configures optional NotificationDispatcher behaviour.
@@ -108,6 +115,12 @@ type DispatcherOption func(*NotificationDispatcher)
 // unset (the default), every notification is dispatched.
 func WithDispatcherBlockChecker(blocks BlockChecker) DispatcherOption {
 	return func(d *NotificationDispatcher) { d.blocks = blocks }
+}
+
+// WithDispatcherPusher wires an SSE hub so that each newly created notification
+// is also pushed in real-time to any connected client for the recipient uid.
+func WithDispatcherPusher(p NotificationPusher) DispatcherOption {
+	return func(d *NotificationDispatcher) { d.pusher = p }
 }
 
 func NewNotificationDispatcher(notifs repository.NotificationRepository, opts ...DispatcherOption) *NotificationDispatcher {
@@ -155,7 +168,14 @@ func (d *NotificationDispatcher) Handle(ctx context.Context, e *outbox.Event) er
 			return nil // recipient blocked the actor: no notification
 		}
 	}
-	return d.notifs.Create(ctx, n)
+	if err := d.notifs.Create(ctx, n); err != nil {
+		return err
+	}
+	if d.pusher != nil {
+		payload, _ := json.Marshal(n)
+		d.pusher.Publish(n.RecipientUID, n.Type, string(payload))
+	}
+	return nil
 }
 
 // notificationFor maps a single event to the notification it should produce, or

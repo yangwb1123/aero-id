@@ -38,6 +38,9 @@ type FileRepository interface {
 	// single live row. It returns ErrNotFound when no live row matches id. fields maps
 	// column name -> new value (e.g. "name", "visibility", "meta", "updated_at").
 	UpdateMetadata(ctx context.Context, id domain.ID, fields map[string]any) error
+	// SearchFiles returns files owned by ownerUID whose name matches the full-text
+	// query, ranked by relevance. Requires migration 000016.
+	SearchFiles(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error)
 }
 
 type fileRepo struct {
@@ -202,4 +205,29 @@ func (r *fileRepo) CountAnyByStorageKey(ctx context.Context, storageKey string) 
 		return 0, fmt.Errorf("count any by storage key: %w", err)
 	}
 	return n, nil
+}
+
+// SearchFiles returns live files owned by ownerUID whose name matches the full-text
+// query, ranked by relevance. Requires migration 000016.
+func (r *fileRepo) SearchFiles(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error) {
+	var rows []fileRow
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT id, owner_uid, name, size, mime_type, storage_key, storage_type,
+		        checksum, visibility, meta, created_at, updated_at
+		 FROM files
+		 WHERE deleted_at IS NULL
+		   AND owner_uid = ?
+		   AND search_vector @@ plainto_tsquery('simple', ?)
+		 ORDER BY ts_rank(search_vector, plainto_tsquery('simple', ?)) DESC
+		 LIMIT ?`,
+		ownerUID, query, query, limit,
+	).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("search files: %w", err)
+	}
+	out := make([]*domain.File, len(rows))
+	for i := range rows {
+		out[i] = fileRowToDomain(&rows[i])
+	}
+	return out, nil
 }

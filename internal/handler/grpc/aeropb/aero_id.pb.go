@@ -4389,6 +4389,179 @@ func (x *ListBlockedResponse) GetNextCursor() string {
 	return ""
 }
 
+// ---- search ----
+type SearchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Query         string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	Kinds         []string               `protobuf:"bytes,2,rep,name=kinds,proto3" json:"kinds,omitempty"` // "messages", "comments", "files"; empty = all
+	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchRequest) Reset() {
+	*x = SearchRequest{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchRequest) ProtoMessage() {}
+
+func (x *SearchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchRequest.ProtoReflect.Descriptor instead.
+func (*SearchRequest) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{86}
+}
+
+func (x *SearchRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
+}
+
+func (x *SearchRequest) GetKinds() []string {
+	if x != nil {
+		return x.Kinds
+	}
+	return nil
+}
+
+func (x *SearchRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type SearchHit struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Message       *Message               `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Comment       *Comment               `protobuf:"bytes,3,opt,name=comment,proto3" json:"comment,omitempty"`
+	File          *File                  `protobuf:"bytes,4,opt,name=file,proto3" json:"file,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchHit) Reset() {
+	*x = SearchHit{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchHit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchHit) ProtoMessage() {}
+
+func (x *SearchHit) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchHit.ProtoReflect.Descriptor instead.
+func (*SearchHit) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{87}
+}
+
+func (x *SearchHit) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *SearchHit) GetMessage() *Message {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+func (x *SearchHit) GetComment() *Comment {
+	if x != nil {
+		return x.Comment
+	}
+	return nil
+}
+
+func (x *SearchHit) GetFile() *File {
+	if x != nil {
+		return x.File
+	}
+	return nil
+}
+
+type SearchResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hits          []*SearchHit           `protobuf:"bytes,1,rep,name=hits,proto3" json:"hits,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchResponse) Reset() {
+	*x = SearchResponse{}
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchResponse) ProtoMessage() {}
+
+func (x *SearchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_aero_id_v1_aero_id_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchResponse.ProtoReflect.Descriptor instead.
+func (*SearchResponse) Descriptor() ([]byte, []int) {
+	return file_aero_id_v1_aero_id_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *SearchResponse) GetHits() []*SearchHit {
+	if x != nil {
+		return x.Hits
+	}
+	return nil
+}
+
 var File_aero_id_v1_aero_id_proto protoreflect.FileDescriptor
 
 const file_aero_id_v1_aero_id_proto_rawDesc = "" +
@@ -4713,7 +4886,18 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\x13ListBlockedResponse\x12\x12\n" +
 	"\x04uids\x18\x01 \x03(\tR\x04uids\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor2\xc1\x06\n" +
+	"nextCursor\"Q\n" +
+	"\rSearchRequest\x12\x14\n" +
+	"\x05query\x18\x01 \x01(\tR\x05query\x12\x14\n" +
+	"\x05kinds\x18\x02 \x03(\tR\x05kinds\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xa3\x01\n" +
+	"\tSearchHit\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12-\n" +
+	"\amessage\x18\x02 \x01(\v2\x13.aero_id.v1.MessageR\amessage\x12-\n" +
+	"\acomment\x18\x03 \x01(\v2\x13.aero_id.v1.CommentR\acomment\x12$\n" +
+	"\x04file\x18\x04 \x01(\v2\x10.aero_id.v1.FileR\x04file\";\n" +
+	"\x0eSearchResponse\x12)\n" +
+	"\x04hits\x18\x01 \x03(\v2\x15.aero_id.v1.SearchHitR\x04hits2\xc1\x06\n" +
 	"\vFileService\x12B\n" +
 	"\aGetFile\x12\x1a.aero_id.v1.GetFileRequest\x1a\x1b.aero_id.v1.GetFileResponse\x12H\n" +
 	"\tListFiles\x12\x1c.aero_id.v1.ListFilesRequest\x1a\x1d.aero_id.v1.ListFilesResponse\x12K\n" +
@@ -4760,7 +4944,9 @@ const file_aero_id_v1_aero_id_proto_rawDesc = "" +
 	"\fBlockService\x12<\n" +
 	"\x05Block\x12\x18.aero_id.v1.BlockRequest\x1a\x19.aero_id.v1.BlockResponse\x12B\n" +
 	"\aUnblock\x12\x1a.aero_id.v1.UnblockRequest\x1a\x1b.aero_id.v1.UnblockResponse\x12N\n" +
-	"\vListBlocked\x12\x1e.aero_id.v1.ListBlockedRequest\x1a\x1f.aero_id.v1.ListBlockedResponseB6Z4github.com/aero/aero-id/internal/handler/grpc/aeropbb\x06proto3"
+	"\vListBlocked\x12\x1e.aero_id.v1.ListBlockedRequest\x1a\x1f.aero_id.v1.ListBlockedResponse2P\n" +
+	"\rSearchService\x12?\n" +
+	"\x06Search\x12\x19.aero_id.v1.SearchRequest\x1a\x1a.aero_id.v1.SearchResponseB6Z4github.com/aero/aero-id/internal/handler/grpc/aeropbb\x06proto3"
 
 var (
 	file_aero_id_v1_aero_id_proto_rawDescOnce sync.Once
@@ -4774,7 +4960,7 @@ func file_aero_id_v1_aero_id_proto_rawDescGZIP() []byte {
 	return file_aero_id_v1_aero_id_proto_rawDescData
 }
 
-var file_aero_id_v1_aero_id_proto_msgTypes = make([]protoimpl.MessageInfo, 92)
+var file_aero_id_v1_aero_id_proto_msgTypes = make([]protoimpl.MessageInfo, 95)
 var file_aero_id_v1_aero_id_proto_goTypes = []any{
 	(*User)(nil),                             // 0: aero_id.v1.User
 	(*Page)(nil),                             // 1: aero_id.v1.Page
@@ -4862,150 +5048,159 @@ var file_aero_id_v1_aero_id_proto_goTypes = []any{
 	(*UnblockResponse)(nil),                  // 83: aero_id.v1.UnblockResponse
 	(*ListBlockedRequest)(nil),               // 84: aero_id.v1.ListBlockedRequest
 	(*ListBlockedResponse)(nil),              // 85: aero_id.v1.ListBlockedResponse
-	nil,                                      // 86: aero_id.v1.InboxResponse.UsersEntry
-	nil,                                      // 87: aero_id.v1.ConversationResponse.UsersEntry
-	nil,                                      // 88: aero_id.v1.ListCommentsResponse.UsersEntry
-	nil,                                      // 89: aero_id.v1.RepliesResponse.UsersEntry
-	nil,                                      // 90: aero_id.v1.ListReportsResponse.UsersEntry
-	nil,                                      // 91: aero_id.v1.ListNotificationsResponse.UsersEntry
-	(*timestamppb.Timestamp)(nil),            // 92: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),                  // 93: google.protobuf.Struct
+	(*SearchRequest)(nil),                    // 86: aero_id.v1.SearchRequest
+	(*SearchHit)(nil),                        // 87: aero_id.v1.SearchHit
+	(*SearchResponse)(nil),                   // 88: aero_id.v1.SearchResponse
+	nil,                                      // 89: aero_id.v1.InboxResponse.UsersEntry
+	nil,                                      // 90: aero_id.v1.ConversationResponse.UsersEntry
+	nil,                                      // 91: aero_id.v1.ListCommentsResponse.UsersEntry
+	nil,                                      // 92: aero_id.v1.RepliesResponse.UsersEntry
+	nil,                                      // 93: aero_id.v1.ListReportsResponse.UsersEntry
+	nil,                                      // 94: aero_id.v1.ListNotificationsResponse.UsersEntry
+	(*timestamppb.Timestamp)(nil),            // 95: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                  // 96: google.protobuf.Struct
 }
 var file_aero_id_v1_aero_id_proto_depIdxs = []int32{
-	92, // 0: aero_id.v1.File.created_at:type_name -> google.protobuf.Timestamp
-	92, // 1: aero_id.v1.File.updated_at:type_name -> google.protobuf.Timestamp
-	93, // 2: aero_id.v1.File.meta:type_name -> google.protobuf.Struct
+	95, // 0: aero_id.v1.File.created_at:type_name -> google.protobuf.Timestamp
+	95, // 1: aero_id.v1.File.updated_at:type_name -> google.protobuf.Timestamp
+	96, // 2: aero_id.v1.File.meta:type_name -> google.protobuf.Struct
 	2,  // 3: aero_id.v1.GetFileResponse.file:type_name -> aero_id.v1.File
 	1,  // 4: aero_id.v1.ListFilesRequest.page:type_name -> aero_id.v1.Page
 	2,  // 5: aero_id.v1.ListFilesResponse.files:type_name -> aero_id.v1.File
 	1,  // 6: aero_id.v1.ListSharedWithMeRequest.page:type_name -> aero_id.v1.Page
 	2,  // 7: aero_id.v1.CompleteUploadResponse.file:type_name -> aero_id.v1.File
-	93, // 8: aero_id.v1.UpdateFileMetadataRequest.meta:type_name -> google.protobuf.Struct
+	96, // 8: aero_id.v1.UpdateFileMetadataRequest.meta:type_name -> google.protobuf.Struct
 	2,  // 9: aero_id.v1.UpdateFileMetadataResponse.file:type_name -> aero_id.v1.File
-	92, // 10: aero_id.v1.Message.read_at:type_name -> google.protobuf.Timestamp
-	92, // 11: aero_id.v1.Message.created_at:type_name -> google.protobuf.Timestamp
-	92, // 12: aero_id.v1.Message.edited_at:type_name -> google.protobuf.Timestamp
+	95, // 10: aero_id.v1.Message.read_at:type_name -> google.protobuf.Timestamp
+	95, // 11: aero_id.v1.Message.created_at:type_name -> google.protobuf.Timestamp
+	95, // 12: aero_id.v1.Message.edited_at:type_name -> google.protobuf.Timestamp
 	22, // 13: aero_id.v1.SendMessageResponse.message:type_name -> aero_id.v1.Message
 	22, // 14: aero_id.v1.GetMessageResponse.message:type_name -> aero_id.v1.Message
 	1,  // 15: aero_id.v1.InboxRequest.page:type_name -> aero_id.v1.Page
 	22, // 16: aero_id.v1.InboxResponse.messages:type_name -> aero_id.v1.Message
-	86, // 17: aero_id.v1.InboxResponse.users:type_name -> aero_id.v1.InboxResponse.UsersEntry
+	89, // 17: aero_id.v1.InboxResponse.users:type_name -> aero_id.v1.InboxResponse.UsersEntry
 	1,  // 18: aero_id.v1.ConversationRequest.page:type_name -> aero_id.v1.Page
 	22, // 19: aero_id.v1.ConversationResponse.messages:type_name -> aero_id.v1.Message
-	87, // 20: aero_id.v1.ConversationResponse.users:type_name -> aero_id.v1.ConversationResponse.UsersEntry
+	90, // 20: aero_id.v1.ConversationResponse.users:type_name -> aero_id.v1.ConversationResponse.UsersEntry
 	22, // 21: aero_id.v1.EditMessageResponse.message:type_name -> aero_id.v1.Message
-	92, // 22: aero_id.v1.Comment.created_at:type_name -> google.protobuf.Timestamp
-	92, // 23: aero_id.v1.Comment.edited_at:type_name -> google.protobuf.Timestamp
-	92, // 24: aero_id.v1.CommentReport.created_at:type_name -> google.protobuf.Timestamp
-	92, // 25: aero_id.v1.CommentReport.resolved_at:type_name -> google.protobuf.Timestamp
+	95, // 22: aero_id.v1.Comment.created_at:type_name -> google.protobuf.Timestamp
+	95, // 23: aero_id.v1.Comment.edited_at:type_name -> google.protobuf.Timestamp
+	95, // 24: aero_id.v1.CommentReport.created_at:type_name -> google.protobuf.Timestamp
+	95, // 25: aero_id.v1.CommentReport.resolved_at:type_name -> google.protobuf.Timestamp
 	45, // 26: aero_id.v1.CreateCommentResponse.comment:type_name -> aero_id.v1.Comment
 	1,  // 27: aero_id.v1.ListCommentsRequest.page:type_name -> aero_id.v1.Page
 	45, // 28: aero_id.v1.ListCommentsResponse.comments:type_name -> aero_id.v1.Comment
-	88, // 29: aero_id.v1.ListCommentsResponse.users:type_name -> aero_id.v1.ListCommentsResponse.UsersEntry
+	91, // 29: aero_id.v1.ListCommentsResponse.users:type_name -> aero_id.v1.ListCommentsResponse.UsersEntry
 	1,  // 30: aero_id.v1.RepliesRequest.page:type_name -> aero_id.v1.Page
 	45, // 31: aero_id.v1.RepliesResponse.comments:type_name -> aero_id.v1.Comment
-	89, // 32: aero_id.v1.RepliesResponse.users:type_name -> aero_id.v1.RepliesResponse.UsersEntry
+	92, // 32: aero_id.v1.RepliesResponse.users:type_name -> aero_id.v1.RepliesResponse.UsersEntry
 	45, // 33: aero_id.v1.EditCommentResponse.comment:type_name -> aero_id.v1.Comment
 	1,  // 34: aero_id.v1.ListReportsRequest.page:type_name -> aero_id.v1.Page
 	46, // 35: aero_id.v1.ListReportsResponse.reports:type_name -> aero_id.v1.CommentReport
-	90, // 36: aero_id.v1.ListReportsResponse.users:type_name -> aero_id.v1.ListReportsResponse.UsersEntry
-	92, // 37: aero_id.v1.Notification.read_at:type_name -> google.protobuf.Timestamp
-	92, // 38: aero_id.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
+	93, // 36: aero_id.v1.ListReportsResponse.users:type_name -> aero_id.v1.ListReportsResponse.UsersEntry
+	95, // 37: aero_id.v1.Notification.read_at:type_name -> google.protobuf.Timestamp
+	95, // 38: aero_id.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
 	1,  // 39: aero_id.v1.ListNotificationsRequest.page:type_name -> aero_id.v1.Page
 	71, // 40: aero_id.v1.ListNotificationsResponse.notifications:type_name -> aero_id.v1.Notification
-	91, // 41: aero_id.v1.ListNotificationsResponse.users:type_name -> aero_id.v1.ListNotificationsResponse.UsersEntry
+	94, // 41: aero_id.v1.ListNotificationsResponse.users:type_name -> aero_id.v1.ListNotificationsResponse.UsersEntry
 	1,  // 42: aero_id.v1.ListBlockedRequest.page:type_name -> aero_id.v1.Page
-	0,  // 43: aero_id.v1.InboxResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 44: aero_id.v1.ConversationResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 45: aero_id.v1.ListCommentsResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 46: aero_id.v1.RepliesResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 47: aero_id.v1.ListReportsResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	0,  // 48: aero_id.v1.ListNotificationsResponse.UsersEntry.value:type_name -> aero_id.v1.User
-	3,  // 49: aero_id.v1.FileService.GetFile:input_type -> aero_id.v1.GetFileRequest
-	5,  // 50: aero_id.v1.FileService.ListFiles:input_type -> aero_id.v1.ListFilesRequest
-	7,  // 51: aero_id.v1.FileService.DeleteFile:input_type -> aero_id.v1.DeleteFileRequest
-	9,  // 52: aero_id.v1.FileService.GetDownloadURL:input_type -> aero_id.v1.DownloadURLRequest
-	11, // 53: aero_id.v1.FileService.ShareFile:input_type -> aero_id.v1.ShareFileRequest
-	13, // 54: aero_id.v1.FileService.UnshareFile:input_type -> aero_id.v1.UnshareFileRequest
-	15, // 55: aero_id.v1.FileService.ListSharedWithMe:input_type -> aero_id.v1.ListSharedWithMeRequest
-	16, // 56: aero_id.v1.FileService.PresignUpload:input_type -> aero_id.v1.PresignUploadRequest
-	18, // 57: aero_id.v1.FileService.CompleteUpload:input_type -> aero_id.v1.CompleteUploadRequest
-	20, // 58: aero_id.v1.FileService.UpdateFileMetadata:input_type -> aero_id.v1.UpdateFileMetadataRequest
-	23, // 59: aero_id.v1.MessageService.SendMessage:input_type -> aero_id.v1.SendMessageRequest
-	25, // 60: aero_id.v1.MessageService.GetMessage:input_type -> aero_id.v1.GetMessageRequest
-	27, // 61: aero_id.v1.MessageService.Inbox:input_type -> aero_id.v1.InboxRequest
-	29, // 62: aero_id.v1.MessageService.Conversation:input_type -> aero_id.v1.ConversationRequest
-	31, // 63: aero_id.v1.MessageService.MarkRead:input_type -> aero_id.v1.MarkReadRequest
-	33, // 64: aero_id.v1.MessageService.UnreadCount:input_type -> aero_id.v1.UnreadCountRequest
-	35, // 65: aero_id.v1.MessageService.EditMessage:input_type -> aero_id.v1.EditMessageRequest
-	37, // 66: aero_id.v1.MessageService.DeleteMessage:input_type -> aero_id.v1.DeleteMessageRequest
-	39, // 67: aero_id.v1.MessageService.MarkConversationRead:input_type -> aero_id.v1.MarkConversationReadRequest
-	41, // 68: aero_id.v1.MessageService.ReactToMessage:input_type -> aero_id.v1.ReactToMessageRequest
-	43, // 69: aero_id.v1.MessageService.UnreactMessage:input_type -> aero_id.v1.UnreactMessageRequest
-	47, // 70: aero_id.v1.CommentService.CreateComment:input_type -> aero_id.v1.CreateCommentRequest
-	49, // 71: aero_id.v1.CommentService.ListComments:input_type -> aero_id.v1.ListCommentsRequest
-	51, // 72: aero_id.v1.CommentService.Replies:input_type -> aero_id.v1.RepliesRequest
-	53, // 73: aero_id.v1.CommentService.DeleteComment:input_type -> aero_id.v1.DeleteCommentRequest
-	55, // 74: aero_id.v1.CommentService.LikeComment:input_type -> aero_id.v1.LikeCommentRequest
-	57, // 75: aero_id.v1.CommentService.UnlikeComment:input_type -> aero_id.v1.UnlikeCommentRequest
-	59, // 76: aero_id.v1.CommentService.ReportComment:input_type -> aero_id.v1.ReportCommentRequest
-	61, // 77: aero_id.v1.CommentService.HideComment:input_type -> aero_id.v1.HideCommentRequest
-	63, // 78: aero_id.v1.CommentService.UnhideComment:input_type -> aero_id.v1.UnhideCommentRequest
-	65, // 79: aero_id.v1.CommentService.EditComment:input_type -> aero_id.v1.EditCommentRequest
-	67, // 80: aero_id.v1.CommentService.ListReports:input_type -> aero_id.v1.ListReportsRequest
-	69, // 81: aero_id.v1.CommentService.ResolveReport:input_type -> aero_id.v1.ResolveReportRequest
-	72, // 82: aero_id.v1.NotificationService.ListNotifications:input_type -> aero_id.v1.ListNotificationsRequest
-	74, // 83: aero_id.v1.NotificationService.UnreadCount:input_type -> aero_id.v1.NotificationUnreadCountRequest
-	76, // 84: aero_id.v1.NotificationService.MarkRead:input_type -> aero_id.v1.MarkNotificationReadRequest
-	78, // 85: aero_id.v1.NotificationService.MarkAllRead:input_type -> aero_id.v1.MarkAllNotificationsReadRequest
-	80, // 86: aero_id.v1.BlockService.Block:input_type -> aero_id.v1.BlockRequest
-	82, // 87: aero_id.v1.BlockService.Unblock:input_type -> aero_id.v1.UnblockRequest
-	84, // 88: aero_id.v1.BlockService.ListBlocked:input_type -> aero_id.v1.ListBlockedRequest
-	4,  // 89: aero_id.v1.FileService.GetFile:output_type -> aero_id.v1.GetFileResponse
-	6,  // 90: aero_id.v1.FileService.ListFiles:output_type -> aero_id.v1.ListFilesResponse
-	8,  // 91: aero_id.v1.FileService.DeleteFile:output_type -> aero_id.v1.DeleteFileResponse
-	10, // 92: aero_id.v1.FileService.GetDownloadURL:output_type -> aero_id.v1.DownloadURLResponse
-	12, // 93: aero_id.v1.FileService.ShareFile:output_type -> aero_id.v1.ShareFileResponse
-	14, // 94: aero_id.v1.FileService.UnshareFile:output_type -> aero_id.v1.UnshareFileResponse
-	6,  // 95: aero_id.v1.FileService.ListSharedWithMe:output_type -> aero_id.v1.ListFilesResponse
-	17, // 96: aero_id.v1.FileService.PresignUpload:output_type -> aero_id.v1.PresignUploadResponse
-	19, // 97: aero_id.v1.FileService.CompleteUpload:output_type -> aero_id.v1.CompleteUploadResponse
-	21, // 98: aero_id.v1.FileService.UpdateFileMetadata:output_type -> aero_id.v1.UpdateFileMetadataResponse
-	24, // 99: aero_id.v1.MessageService.SendMessage:output_type -> aero_id.v1.SendMessageResponse
-	26, // 100: aero_id.v1.MessageService.GetMessage:output_type -> aero_id.v1.GetMessageResponse
-	28, // 101: aero_id.v1.MessageService.Inbox:output_type -> aero_id.v1.InboxResponse
-	30, // 102: aero_id.v1.MessageService.Conversation:output_type -> aero_id.v1.ConversationResponse
-	32, // 103: aero_id.v1.MessageService.MarkRead:output_type -> aero_id.v1.MarkReadResponse
-	34, // 104: aero_id.v1.MessageService.UnreadCount:output_type -> aero_id.v1.UnreadCountResponse
-	36, // 105: aero_id.v1.MessageService.EditMessage:output_type -> aero_id.v1.EditMessageResponse
-	38, // 106: aero_id.v1.MessageService.DeleteMessage:output_type -> aero_id.v1.DeleteMessageResponse
-	40, // 107: aero_id.v1.MessageService.MarkConversationRead:output_type -> aero_id.v1.MarkConversationReadResponse
-	42, // 108: aero_id.v1.MessageService.ReactToMessage:output_type -> aero_id.v1.ReactToMessageResponse
-	44, // 109: aero_id.v1.MessageService.UnreactMessage:output_type -> aero_id.v1.UnreactMessageResponse
-	48, // 110: aero_id.v1.CommentService.CreateComment:output_type -> aero_id.v1.CreateCommentResponse
-	50, // 111: aero_id.v1.CommentService.ListComments:output_type -> aero_id.v1.ListCommentsResponse
-	52, // 112: aero_id.v1.CommentService.Replies:output_type -> aero_id.v1.RepliesResponse
-	54, // 113: aero_id.v1.CommentService.DeleteComment:output_type -> aero_id.v1.DeleteCommentResponse
-	56, // 114: aero_id.v1.CommentService.LikeComment:output_type -> aero_id.v1.LikeCommentResponse
-	58, // 115: aero_id.v1.CommentService.UnlikeComment:output_type -> aero_id.v1.UnlikeCommentResponse
-	60, // 116: aero_id.v1.CommentService.ReportComment:output_type -> aero_id.v1.ReportCommentResponse
-	62, // 117: aero_id.v1.CommentService.HideComment:output_type -> aero_id.v1.HideCommentResponse
-	64, // 118: aero_id.v1.CommentService.UnhideComment:output_type -> aero_id.v1.UnhideCommentResponse
-	66, // 119: aero_id.v1.CommentService.EditComment:output_type -> aero_id.v1.EditCommentResponse
-	68, // 120: aero_id.v1.CommentService.ListReports:output_type -> aero_id.v1.ListReportsResponse
-	70, // 121: aero_id.v1.CommentService.ResolveReport:output_type -> aero_id.v1.ResolveReportResponse
-	73, // 122: aero_id.v1.NotificationService.ListNotifications:output_type -> aero_id.v1.ListNotificationsResponse
-	75, // 123: aero_id.v1.NotificationService.UnreadCount:output_type -> aero_id.v1.NotificationUnreadCountResponse
-	77, // 124: aero_id.v1.NotificationService.MarkRead:output_type -> aero_id.v1.MarkNotificationReadResponse
-	79, // 125: aero_id.v1.NotificationService.MarkAllRead:output_type -> aero_id.v1.MarkAllNotificationsReadResponse
-	81, // 126: aero_id.v1.BlockService.Block:output_type -> aero_id.v1.BlockResponse
-	83, // 127: aero_id.v1.BlockService.Unblock:output_type -> aero_id.v1.UnblockResponse
-	85, // 128: aero_id.v1.BlockService.ListBlocked:output_type -> aero_id.v1.ListBlockedResponse
-	89, // [89:129] is the sub-list for method output_type
-	49, // [49:89] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	22, // 43: aero_id.v1.SearchHit.message:type_name -> aero_id.v1.Message
+	45, // 44: aero_id.v1.SearchHit.comment:type_name -> aero_id.v1.Comment
+	2,  // 45: aero_id.v1.SearchHit.file:type_name -> aero_id.v1.File
+	87, // 46: aero_id.v1.SearchResponse.hits:type_name -> aero_id.v1.SearchHit
+	0,  // 47: aero_id.v1.InboxResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 48: aero_id.v1.ConversationResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 49: aero_id.v1.ListCommentsResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 50: aero_id.v1.RepliesResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 51: aero_id.v1.ListReportsResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	0,  // 52: aero_id.v1.ListNotificationsResponse.UsersEntry.value:type_name -> aero_id.v1.User
+	3,  // 53: aero_id.v1.FileService.GetFile:input_type -> aero_id.v1.GetFileRequest
+	5,  // 54: aero_id.v1.FileService.ListFiles:input_type -> aero_id.v1.ListFilesRequest
+	7,  // 55: aero_id.v1.FileService.DeleteFile:input_type -> aero_id.v1.DeleteFileRequest
+	9,  // 56: aero_id.v1.FileService.GetDownloadURL:input_type -> aero_id.v1.DownloadURLRequest
+	11, // 57: aero_id.v1.FileService.ShareFile:input_type -> aero_id.v1.ShareFileRequest
+	13, // 58: aero_id.v1.FileService.UnshareFile:input_type -> aero_id.v1.UnshareFileRequest
+	15, // 59: aero_id.v1.FileService.ListSharedWithMe:input_type -> aero_id.v1.ListSharedWithMeRequest
+	16, // 60: aero_id.v1.FileService.PresignUpload:input_type -> aero_id.v1.PresignUploadRequest
+	18, // 61: aero_id.v1.FileService.CompleteUpload:input_type -> aero_id.v1.CompleteUploadRequest
+	20, // 62: aero_id.v1.FileService.UpdateFileMetadata:input_type -> aero_id.v1.UpdateFileMetadataRequest
+	23, // 63: aero_id.v1.MessageService.SendMessage:input_type -> aero_id.v1.SendMessageRequest
+	25, // 64: aero_id.v1.MessageService.GetMessage:input_type -> aero_id.v1.GetMessageRequest
+	27, // 65: aero_id.v1.MessageService.Inbox:input_type -> aero_id.v1.InboxRequest
+	29, // 66: aero_id.v1.MessageService.Conversation:input_type -> aero_id.v1.ConversationRequest
+	31, // 67: aero_id.v1.MessageService.MarkRead:input_type -> aero_id.v1.MarkReadRequest
+	33, // 68: aero_id.v1.MessageService.UnreadCount:input_type -> aero_id.v1.UnreadCountRequest
+	35, // 69: aero_id.v1.MessageService.EditMessage:input_type -> aero_id.v1.EditMessageRequest
+	37, // 70: aero_id.v1.MessageService.DeleteMessage:input_type -> aero_id.v1.DeleteMessageRequest
+	39, // 71: aero_id.v1.MessageService.MarkConversationRead:input_type -> aero_id.v1.MarkConversationReadRequest
+	41, // 72: aero_id.v1.MessageService.ReactToMessage:input_type -> aero_id.v1.ReactToMessageRequest
+	43, // 73: aero_id.v1.MessageService.UnreactMessage:input_type -> aero_id.v1.UnreactMessageRequest
+	47, // 74: aero_id.v1.CommentService.CreateComment:input_type -> aero_id.v1.CreateCommentRequest
+	49, // 75: aero_id.v1.CommentService.ListComments:input_type -> aero_id.v1.ListCommentsRequest
+	51, // 76: aero_id.v1.CommentService.Replies:input_type -> aero_id.v1.RepliesRequest
+	53, // 77: aero_id.v1.CommentService.DeleteComment:input_type -> aero_id.v1.DeleteCommentRequest
+	55, // 78: aero_id.v1.CommentService.LikeComment:input_type -> aero_id.v1.LikeCommentRequest
+	57, // 79: aero_id.v1.CommentService.UnlikeComment:input_type -> aero_id.v1.UnlikeCommentRequest
+	59, // 80: aero_id.v1.CommentService.ReportComment:input_type -> aero_id.v1.ReportCommentRequest
+	61, // 81: aero_id.v1.CommentService.HideComment:input_type -> aero_id.v1.HideCommentRequest
+	63, // 82: aero_id.v1.CommentService.UnhideComment:input_type -> aero_id.v1.UnhideCommentRequest
+	65, // 83: aero_id.v1.CommentService.EditComment:input_type -> aero_id.v1.EditCommentRequest
+	67, // 84: aero_id.v1.CommentService.ListReports:input_type -> aero_id.v1.ListReportsRequest
+	69, // 85: aero_id.v1.CommentService.ResolveReport:input_type -> aero_id.v1.ResolveReportRequest
+	72, // 86: aero_id.v1.NotificationService.ListNotifications:input_type -> aero_id.v1.ListNotificationsRequest
+	74, // 87: aero_id.v1.NotificationService.UnreadCount:input_type -> aero_id.v1.NotificationUnreadCountRequest
+	76, // 88: aero_id.v1.NotificationService.MarkRead:input_type -> aero_id.v1.MarkNotificationReadRequest
+	78, // 89: aero_id.v1.NotificationService.MarkAllRead:input_type -> aero_id.v1.MarkAllNotificationsReadRequest
+	80, // 90: aero_id.v1.BlockService.Block:input_type -> aero_id.v1.BlockRequest
+	82, // 91: aero_id.v1.BlockService.Unblock:input_type -> aero_id.v1.UnblockRequest
+	84, // 92: aero_id.v1.BlockService.ListBlocked:input_type -> aero_id.v1.ListBlockedRequest
+	86, // 93: aero_id.v1.SearchService.Search:input_type -> aero_id.v1.SearchRequest
+	4,  // 94: aero_id.v1.FileService.GetFile:output_type -> aero_id.v1.GetFileResponse
+	6,  // 95: aero_id.v1.FileService.ListFiles:output_type -> aero_id.v1.ListFilesResponse
+	8,  // 96: aero_id.v1.FileService.DeleteFile:output_type -> aero_id.v1.DeleteFileResponse
+	10, // 97: aero_id.v1.FileService.GetDownloadURL:output_type -> aero_id.v1.DownloadURLResponse
+	12, // 98: aero_id.v1.FileService.ShareFile:output_type -> aero_id.v1.ShareFileResponse
+	14, // 99: aero_id.v1.FileService.UnshareFile:output_type -> aero_id.v1.UnshareFileResponse
+	6,  // 100: aero_id.v1.FileService.ListSharedWithMe:output_type -> aero_id.v1.ListFilesResponse
+	17, // 101: aero_id.v1.FileService.PresignUpload:output_type -> aero_id.v1.PresignUploadResponse
+	19, // 102: aero_id.v1.FileService.CompleteUpload:output_type -> aero_id.v1.CompleteUploadResponse
+	21, // 103: aero_id.v1.FileService.UpdateFileMetadata:output_type -> aero_id.v1.UpdateFileMetadataResponse
+	24, // 104: aero_id.v1.MessageService.SendMessage:output_type -> aero_id.v1.SendMessageResponse
+	26, // 105: aero_id.v1.MessageService.GetMessage:output_type -> aero_id.v1.GetMessageResponse
+	28, // 106: aero_id.v1.MessageService.Inbox:output_type -> aero_id.v1.InboxResponse
+	30, // 107: aero_id.v1.MessageService.Conversation:output_type -> aero_id.v1.ConversationResponse
+	32, // 108: aero_id.v1.MessageService.MarkRead:output_type -> aero_id.v1.MarkReadResponse
+	34, // 109: aero_id.v1.MessageService.UnreadCount:output_type -> aero_id.v1.UnreadCountResponse
+	36, // 110: aero_id.v1.MessageService.EditMessage:output_type -> aero_id.v1.EditMessageResponse
+	38, // 111: aero_id.v1.MessageService.DeleteMessage:output_type -> aero_id.v1.DeleteMessageResponse
+	40, // 112: aero_id.v1.MessageService.MarkConversationRead:output_type -> aero_id.v1.MarkConversationReadResponse
+	42, // 113: aero_id.v1.MessageService.ReactToMessage:output_type -> aero_id.v1.ReactToMessageResponse
+	44, // 114: aero_id.v1.MessageService.UnreactMessage:output_type -> aero_id.v1.UnreactMessageResponse
+	48, // 115: aero_id.v1.CommentService.CreateComment:output_type -> aero_id.v1.CreateCommentResponse
+	50, // 116: aero_id.v1.CommentService.ListComments:output_type -> aero_id.v1.ListCommentsResponse
+	52, // 117: aero_id.v1.CommentService.Replies:output_type -> aero_id.v1.RepliesResponse
+	54, // 118: aero_id.v1.CommentService.DeleteComment:output_type -> aero_id.v1.DeleteCommentResponse
+	56, // 119: aero_id.v1.CommentService.LikeComment:output_type -> aero_id.v1.LikeCommentResponse
+	58, // 120: aero_id.v1.CommentService.UnlikeComment:output_type -> aero_id.v1.UnlikeCommentResponse
+	60, // 121: aero_id.v1.CommentService.ReportComment:output_type -> aero_id.v1.ReportCommentResponse
+	62, // 122: aero_id.v1.CommentService.HideComment:output_type -> aero_id.v1.HideCommentResponse
+	64, // 123: aero_id.v1.CommentService.UnhideComment:output_type -> aero_id.v1.UnhideCommentResponse
+	66, // 124: aero_id.v1.CommentService.EditComment:output_type -> aero_id.v1.EditCommentResponse
+	68, // 125: aero_id.v1.CommentService.ListReports:output_type -> aero_id.v1.ListReportsResponse
+	70, // 126: aero_id.v1.CommentService.ResolveReport:output_type -> aero_id.v1.ResolveReportResponse
+	73, // 127: aero_id.v1.NotificationService.ListNotifications:output_type -> aero_id.v1.ListNotificationsResponse
+	75, // 128: aero_id.v1.NotificationService.UnreadCount:output_type -> aero_id.v1.NotificationUnreadCountResponse
+	77, // 129: aero_id.v1.NotificationService.MarkRead:output_type -> aero_id.v1.MarkNotificationReadResponse
+	79, // 130: aero_id.v1.NotificationService.MarkAllRead:output_type -> aero_id.v1.MarkAllNotificationsReadResponse
+	81, // 131: aero_id.v1.BlockService.Block:output_type -> aero_id.v1.BlockResponse
+	83, // 132: aero_id.v1.BlockService.Unblock:output_type -> aero_id.v1.UnblockResponse
+	85, // 133: aero_id.v1.BlockService.ListBlocked:output_type -> aero_id.v1.ListBlockedResponse
+	88, // 134: aero_id.v1.SearchService.Search:output_type -> aero_id.v1.SearchResponse
+	94, // [94:135] is the sub-list for method output_type
+	53, // [53:94] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_aero_id_v1_aero_id_proto_init() }
@@ -5021,9 +5216,9 @@ func file_aero_id_v1_aero_id_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_aero_id_v1_aero_id_proto_rawDesc), len(file_aero_id_v1_aero_id_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   92,
+			NumMessages:   95,
 			NumExtensions: 0,
-			NumServices:   5,
+			NumServices:   6,
 		},
 		GoTypes:           file_aero_id_v1_aero_id_proto_goTypes,
 		DependencyIndexes: file_aero_id_v1_aero_id_proto_depIdxs,

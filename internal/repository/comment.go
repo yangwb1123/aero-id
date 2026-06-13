@@ -45,6 +45,9 @@ type CommentRepository interface {
 	// ResolveReport transitions a report to a terminal status, stamping resolved_at/by.
 	// Returns ErrNotFound if no row matches.
 	ResolveReport(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
+	// SearchComments returns comments owned by ownerUID whose content matches the
+	// full-text query, ranked by relevance. Requires migration 000016.
+	SearchComments(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
 }
 
 type commentRepo struct {
@@ -356,4 +359,29 @@ func (r *commentRepo) ResolveReport(ctx context.Context, reportID domain.ID, sta
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SearchComments returns comments owned by ownerUID whose content matches the
+// full-text query, ranked by relevance. Requires migration 000016.
+func (r *commentRepo) SearchComments(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error) {
+	var rows []commentRow
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT id, owner_uid, target_type, target_id, parent_id, root_id, content,
+		        like_count, reply_count, status, created_at, updated_at, edited_at
+		 FROM comments
+		 WHERE deleted_at IS NULL
+		   AND owner_uid = ?
+		   AND search_vector @@ plainto_tsquery('simple', ?)
+		 ORDER BY ts_rank(search_vector, plainto_tsquery('simple', ?)) DESC
+		 LIMIT ?`,
+		ownerUID, query, query, limit,
+	).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("search comments: %w", err)
+	}
+	out := make([]*domain.Comment, len(rows))
+	for i := range rows {
+		out[i] = commentRowToDomain(&rows[i])
+	}
+	return out, nil
 }

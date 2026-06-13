@@ -241,3 +241,21 @@ service BlockService {
   rpc Unblock(UnblockRequest) returns (UnblockResponse);
   rpc ListBlocked(ListBlockedRequest) returns (ListBlockedResponse);
 }
+
+// ---- search ----
+message SearchRequest {
+  string query = 1;
+  repeated string kinds = 2; // "messages", "comments", "files"; empty = all
+  int32 limit = 3;
+}
+message SearchHit {
+  string kind = 1;
+  Message message = 2;
+  Comment comment = 3;
+  File file = 4;
+}
+message SearchResponse { repeated SearchHit hits = 1; }
+
+service SearchService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+}

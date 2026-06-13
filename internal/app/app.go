@@ -18,6 +18,7 @@ import (
 	"github.com/aero/aero-id/internal/config"
 	grpcsrv "github.com/aero/aero-id/internal/handler/grpc"
 	httpapi "github.com/aero/aero-id/internal/handler/http"
+	"github.com/aero/aero-id/internal/hub"
 	"github.com/aero/aero-id/internal/idempotency"
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/db"
@@ -159,11 +160,15 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	notifRepo := repository.NewNotificationRepository(gdb)
 	blockRepo := repository.NewBlockRepository(gdb)
 
+	// SSE hub: delivers real-time notification pushes to connected clients.
+	sseHub := hub.New()
+
 	// The relay drains domain events written transactionally with their rows and
 	// fans them out to per-recipient notification rows (Direction 5). Block-aware:
-	// a recipient who blocked the actor gets no notification.
+	// a recipient who blocked the actor gets no notification. SSE push after create.
 	dispatcher := service.NewNotificationDispatcher(notifRepo,
 		service.WithDispatcherBlockChecker(blockRepo),
+		service.WithDispatcherPusher(sseHub),
 	)
 	relay := outbox.NewRelay(outboxRepo, dispatcher, log, metricsReg)
 	stopRelay := relay.Start(outboxPollInterval)
@@ -202,6 +207,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	blockSvc := service.NewBlockService(blockRepo,
 		service.WithBlockAuditLogger(auditRepo),
 	)
+	searchSvc := service.NewSearchService(msgRepo, commentRepo, fileRepo)
 
 	// Edge rate limiter, shared by HTTP middleware and the gRPC interceptor. OPT-IN
 	// and disabled by default; per-instance (distributed limiting would need shared
@@ -248,6 +254,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewCommentHandler(commentSvc),
 		httpapi.NewNotificationHandler(notifSvc),
 		httpapi.NewBlockHandler(blockSvc),
+		httpapi.NewEventsHandler(sseHub),
+		httpapi.NewSearchHandler(searchSvc),
 	)
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.HTTP.Host, cfg.Server.HTTP.Port),
@@ -265,6 +273,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		grpcsrv.NewCommentServer(commentSvc),
 		grpcsrv.NewNotificationServer(notifSvc),
 		grpcsrv.NewBlockServer(blockSvc),
+		grpcsrv.NewSearchServer(searchSvc),
 	)
 	// Standard ops surface: health (reported SERVING) and, when enabled, reflection.
 	grpcHealth := grpcsrv.RegisterHealth(grpcServer)

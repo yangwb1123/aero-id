@@ -28,6 +28,7 @@ type FileRepo struct {
 	HardDeleteFn            func(ctx context.Context, ids []domain.ID) error
 	CountAnyByStorageKeyFn  func(ctx context.Context, storageKey string) (int64, error)
 	UpdateMetadataFn        func(ctx context.Context, id domain.ID, fields map[string]any) error
+	SearchFilesFn           func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error)
 }
 
 func (m *FileRepo) Create(ctx context.Context, f *domain.File) error { return m.CreateFn(ctx, f) }
@@ -86,6 +87,13 @@ func (m *FileRepo) UpdateMetadata(ctx context.Context, id domain.ID, fields map[
 		return nil
 	}
 	return m.UpdateMetadataFn(ctx, id, fields)
+}
+
+func (m *FileRepo) SearchFiles(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error) {
+	if m.SearchFilesFn == nil {
+		return nil, nil
+	}
+	return m.SearchFilesFn(ctx, ownerUID, query, limit)
 }
 
 type FileShareRepo struct {
@@ -147,6 +155,7 @@ type MessageRepo struct {
 	MarkConversationReadFn func(ctx context.Context, toUID, peer string, at time.Time) error
 	ReactToMessageFn       func(ctx context.Context, messageID uuid.UUID, uid string) error
 	UnreactMessageFn       func(ctx context.Context, messageID uuid.UUID, uid string) error
+	SearchMessagesFn       func(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error)
 }
 
 func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message, evt *outbox.Event) error {
@@ -213,6 +222,13 @@ func (m *MessageRepo) UnreactMessage(ctx context.Context, messageID uuid.UUID, u
 	return m.UnreactMessageFn(ctx, messageID, uid)
 }
 
+func (m *MessageRepo) SearchMessages(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error) {
+	if m.SearchMessagesFn == nil {
+		return nil, nil
+	}
+	return m.SearchMessagesFn(ctx, uid, query, limit)
+}
+
 type CommentRepo struct {
 	CreateFn              func(ctx context.Context, c *domain.Comment) error
 	CreateWithReplyBumpFn func(ctx context.Context, c *domain.Comment, evt *outbox.Event) error
@@ -229,6 +245,7 @@ type CommentRepo struct {
 	ListReportsFn         func(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error)
 	GetReportFn           func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
 	ResolveReportFn       func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
+	SearchCommentsFn      func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
@@ -301,6 +318,13 @@ func (m *CommentRepo) ResolveReport(ctx context.Context, reportID domain.ID, sta
 		return nil
 	}
 	return m.ResolveReportFn(ctx, reportID, status, resolverUID, at)
+}
+
+func (m *CommentRepo) SearchComments(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error) {
+	if m.SearchCommentsFn == nil {
+		return nil, nil
+	}
+	return m.SearchCommentsFn(ctx, ownerUID, query, limit)
 }
 
 type NotificationRepo struct {
