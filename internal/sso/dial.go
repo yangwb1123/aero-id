@@ -1,8 +1,10 @@
 package sso
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
@@ -17,12 +19,21 @@ import (
 // true the connection uses no credentials (dev/bufconn only). Otherwise proper TLS
 // is required: CAFile pins the server's CA (empty => system pool); CertFile+KeyFile
 // enable mTLS; ServerName overrides the verified hostname (e.g. behind a proxy).
+//
+// CertPins is an optional list of hex-encoded SHA-256 SPKI fingerprints. When
+// non-empty, the server's leaf certificate public key must match one of the pins
+// even if the CA chain is already valid. Generate a pin with:
+//
+//	openssl x509 -in server.crt -pubkey -noout \
+//	  | openssl pkey -pubin -outform DER \
+//	  | sha256sum
 type TLSConfig struct {
 	Insecure   bool
 	CAFile     string
 	CertFile   string
 	KeyFile    string
 	ServerName string
+	CertPins   []string // hex SHA-256 of SubjectPublicKeyInfo (SPKI pinning)
 }
 
 // dialCredentials selects gRPC transport credentials from a TLSConfig. It is the
@@ -62,7 +73,38 @@ func dialCredentials(cfg TLSConfig) (credentials.TransportCredentials, error) {
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
 
+	// SPKI certificate pinning: when pins are configured, the leaf certificate's
+	// public key must match one. The chain is still verified by the TLS library
+	// first; pinning adds a second gate so a rogue CA cannot substitute a cert.
+	if len(cfg.CertPins) > 0 {
+		pins := cfg.CertPins
+		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			return verifySPKIPin(rawCerts, pins)
+		}
+	}
+
 	return credentials.NewTLS(tlsCfg), nil
+}
+
+// verifySPKIPin checks that the leaf certificate's SubjectPublicKeyInfo matches
+// at least one of the supplied hex-encoded SHA-256 fingerprints. It is called
+// after the standard TLS chain verification has already succeeded.
+func verifySPKIPin(rawCerts [][]byte, pins []string) error {
+	if len(rawCerts) == 0 {
+		return fmt.Errorf("sso tls: no peer certificate presented")
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return fmt.Errorf("sso tls: parse peer certificate: %w", err)
+	}
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	got := hex.EncodeToString(sum[:])
+	for _, p := range pins {
+		if p == got {
+			return nil
+		}
+	}
+	return fmt.Errorf("sso tls: public key fingerprint %s does not match any pinned value", got)
 }
 
 // keepaliveParams returns the gRPC client keepalive policy. Time/Timeout fall back

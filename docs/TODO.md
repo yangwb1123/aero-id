@@ -25,11 +25,10 @@
 - [ ] P2-1: 全文搜索（PostgreSQL FTS 或外部引擎）— 高成本，下一迭代
 - [x] P2-2: 审计日志（audit_events 表，migration 000014，fire-and-forget）
 - [x] P2-3: 性能索引（notifications unread feed + outbox relay partial index，migration 000015）
-- [ ] P2-4: SSO 证书固定（低成本，可随时添加）
+- [x] P2-4: SSO SPKI 证书固定（hex SHA-256 of SubjectPublicKeyInfo，tls_cert_pins 配置项）
 
 ## 下一迭代候选
 
 - P1-1: WebSocket/SSE 实时推送（最高 UX 价值）
 - P2-1: 全文搜索
-- P2-4: SSO 证书固定
 - 分支合并到 main（待确认）

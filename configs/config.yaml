@@ -34,6 +34,7 @@ sso:
   tls_cert_file: ""           # client certificate for mTLS (pair with tls_key_file)
   tls_key_file: ""            # client key for mTLS (pair with tls_cert_file)
   tls_server_name: ""         # override the verified server hostname (e.g. behind a proxy)
+  tls_cert_pins: []           # hex SHA-256 SPKI pins; leaf cert key must match one (empty = disabled)
 tracing:
   enabled: false              # opt-in; when false (and endpoint empty) a no-op tracer is installed
   endpoint: ""                # OTLP/gRPC collector address, e.g. "localhost:4317" (setting it also enables tracing)

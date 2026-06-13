@@ -117,10 +117,11 @@ type SSOConfig struct {
 	KeepaliveTime     time.Duration `mapstructure:"keepalive_time"`    // gRPC keepalive ping interval
 	KeepaliveTimeout  time.Duration `mapstructure:"keepalive_timeout"` // gRPC keepalive ping ack timeout
 	// mTLS / TLS transport security (used only when insecure=false).
-	TLSCAFile     string `mapstructure:"tls_ca_file"`     // CA bundle to verify the SSO server (empty = system pool)
-	TLSCertFile   string `mapstructure:"tls_cert_file"`   // client cert for mTLS (with tls_key_file)
-	TLSKeyFile    string `mapstructure:"tls_key_file"`    // client key for mTLS (with tls_cert_file)
-	TLSServerName string `mapstructure:"tls_server_name"` // override the verified server hostname
+	TLSCAFile     string   `mapstructure:"tls_ca_file"`     // CA bundle to verify the SSO server (empty = system pool)
+	TLSCertFile   string   `mapstructure:"tls_cert_file"`   // client cert for mTLS (with tls_key_file)
+	TLSKeyFile    string   `mapstructure:"tls_key_file"`    // client key for mTLS (with tls_cert_file)
+	TLSServerName string   `mapstructure:"tls_server_name"` // override the verified server hostname
+	TLSCertPins   []string `mapstructure:"tls_cert_pins"`   // hex SHA-256 SPKI pins; leaf cert key must match one (empty = disabled)
 }
 
 type StorageConfig struct {

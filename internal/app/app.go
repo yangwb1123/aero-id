@@ -132,6 +132,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		CertFile:   cfg.SSO.TLSCertFile,
 		KeyFile:    cfg.SSO.TLSKeyFile,
 		ServerName: cfg.SSO.TLSServerName,
+		CertPins:   cfg.SSO.TLSCertPins,
 	}, sso.ClientConfig{
 		TokenCacheTTL:    cfg.SSO.TokenCacheTTL,
 		UserCacheTTL:     cfg.SSO.UserCacheTTL,
