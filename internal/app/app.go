@@ -202,7 +202,9 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithBlockChecker(blockRepo),
 		service.WithMessageAuditLogger(auditRepo),
 	)
-	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
+	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient,
+		service.WithCommentAuditLogger(auditRepo),
+	)
 	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
 	blockSvc := service.NewBlockService(blockRepo,
 		service.WithBlockAuditLogger(auditRepo),

@@ -17,6 +17,16 @@ type commentService struct {
 	files    repository.FileRepository
 	messages repository.MessageRepository
 	dir      UserDirectory
+	audit    AuditLogger // nil => audit inactive
+}
+
+// CommentOption configures optional commentService behaviour.
+type CommentOption func(*commentService)
+
+// WithCommentAuditLogger wires an AuditLogger into the comment service so that
+// moderation actions (report resolution) emit audit events.
+func WithCommentAuditLogger(a AuditLogger) CommentOption {
+	return func(s *commentService) { s.audit = a }
 }
 
 func NewCommentService(
@@ -24,8 +34,13 @@ func NewCommentService(
 	files repository.FileRepository,
 	messages repository.MessageRepository,
 	dir UserDirectory,
+	opts ...CommentOption,
 ) CommentService {
-	return &commentService{comments: comments, files: files, messages: messages, dir: dir}
+	s := &commentService{comments: comments, files: files, messages: messages, dir: dir}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // assertTargetReadable verifies the comment target exists and the actor may read
@@ -408,6 +423,22 @@ func (s *commentService) ResolveReport(ctx context.Context, reportID domain.ID, 
 			}
 			return apperr.Internal("comment.status_failed", "failed to update comment status").Wrap(err)
 		}
+	}
+	if s.audit != nil {
+		// Only resolved/dismissed reach here (validated above); map to the API's
+		// string vocabulary rather than the raw int16 enum for a readable audit trail.
+		statusLabel := "dismissed"
+		if status == domain.ReportStatusResolved {
+			statusLabel = "resolved"
+		}
+		_ = s.audit.Log(ctx, &domain.AuditEvent{
+			ActorUID:    actor,
+			Action:      domain.AuditReportResolve,
+			SubjectType: "comment_report",
+			SubjectID:   reportID.String(),
+			TargetUID:   c.OwnerUID,
+			Meta:        map[string]any{"comment_id": rep.CommentID.String(), "status": statusLabel},
+		})
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/repository"
+	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/sso"
 	"github.com/aero/aero-id/internal/storage"
 )
@@ -458,6 +459,34 @@ func (m *UserDir) GetUsers(ctx context.Context, uids []string) (map[string]sso.U
 	return m.GetUsersFn(ctx, uids)
 }
 
+// Pusher is a test double for service.NotificationPusher. Publish records every
+// call so a test can assert the dispatcher pushed the expected real-time event;
+// when PublishFn is unset it is a no-op (the pusher is "connected" but inert).
+type Pusher struct {
+	PublishFn func(uid, eventType, data string)
+}
+
+func (m *Pusher) Publish(uid, eventType, data string) {
+	if m.PublishFn == nil {
+		return
+	}
+	m.PublishFn(uid, eventType, data)
+}
+
+// Auditor is a test double for service.AuditLogger. Log delegates to LogFn so a
+// test can assert which audit events a service emitted; when LogFn is unset it
+// succeeds silently, mirroring a working-but-unobserved audit sink.
+type Auditor struct {
+	LogFn func(ctx context.Context, e *domain.AuditEvent) error
+}
+
+func (m *Auditor) Log(ctx context.Context, e *domain.AuditEvent) error {
+	if m.LogFn == nil {
+		return nil
+	}
+	return m.LogFn(ctx, e)
+}
+
 // Compile-time guarantees the doubles satisfy the real interfaces.
 var (
 	_ repository.FileRepository         = (*FileRepo)(nil)
@@ -467,4 +496,6 @@ var (
 	_ repository.NotificationRepository = (*NotificationRepo)(nil)
 	_ repository.BlockRepository        = (*BlockRepo)(nil)
 	_ storage.FileStorage               = (*Storage)(nil)
+	_ service.NotificationPusher        = (*Pusher)(nil)
+	_ service.AuditLogger               = (*Auditor)(nil)
 )

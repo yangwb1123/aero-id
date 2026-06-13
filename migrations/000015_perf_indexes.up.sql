@@ -7,11 +7,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_notifications_recipient_unread
     ON notifications(recipient_uid, created_at DESC)
     WHERE read_at IS NULL;
 
--- Partial index on unpublished outbox events covering the relay's poll query.
--- Covers: WHERE published_at IS NULL ORDER BY created_at ASC, id ASC
--- Once the queue is large, the relay's FetchUnpublished scans only the (typically small)
--- set of un-relayed rows instead of the full event history, making each poll
--- O(unpublished) rather than O(total events).
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outbox_events_unpublished
-    ON outbox_events(created_at ASC, id ASC)
-    WHERE published_at IS NULL;
+-- NOTE: the relay's poll query (WHERE published_at IS NULL ORDER BY created_at ASC, id ASC)
+-- is already served by idx_outbox_unpublished from migration 000008, which indexes the
+-- identical (created_at, id) WHERE published_at IS NULL. A second index would be a pure
+-- duplicate (extra write + storage cost, no read benefit), so it is intentionally omitted.
+-- See internal/outbox/repository.go for the query.
