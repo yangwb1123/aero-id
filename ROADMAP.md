@@ -7,6 +7,86 @@
 
 ---
 
+## Phase 0 Discovery — 2026-06-13 (Autonomous Software Factory)
+
+> Full-codebase scan after delivery of all original roadmap directions. No code written.
+> Branch `feat/roadmap` is 33 commits ahead of `main` (unmerged — prerequisite action required).
+
+### 当前状态
+
+All five original ROADMAP directions and the post-ROADMAP production hardening wave are complete:
+- 38 gRPC RPCs across 5 services (full HTTP↔gRPC parity)
+- 12 migrations, reversible, tested up/down
+- Unit tests: 27 packages / 0 failures; Integration tests (testcontainers): 21 packages / 0 failures
+- Rate limiting, OTel tracing, outbox relay, storage GC, circuit breaker, migration CLI — all shipped
+
+Schema↔API gap: **none remaining.** Every DB column that was designed-but-unexposed now has an endpoint.
+
+**Prerequisite:** merge/PR `feat/roadmap` → `main` before starting new iteration.
+
+---
+
+### 推荐方向
+
+#### P0 — 生产就绪补全
+
+| # | 项目 | 描述 | 估算 |
+|---|------|------|------|
+| P0-1 | **HTTP handler timeouts** | `ReadTimeout`/`WriteTimeout` 设在 server 级别，但 handler 内无 `context` deadline。大文件上传 / 慢查询可能占满整个窗口。加 per-route `http.TimeoutHandler` 或中间件传 ctx deadline。 | 低 |
+| P0-2 | **Middleware 单元测试** | `auth.go`、`ratelimit.go`、`metrics.go`、`recovery.go`、`cors.go`、`request_id.go` 完全无测试。这些是所有请求必经的横切关注点，当前只靠集成测试兜底。 | 低-中 |
+| P0-3 | **gRPC handler 单元测试** | `comment.go`、`message.go`、`file.go`、`notification.go` gRPC handler 无独立测试；`parity_test.go` 仅做高层覆盖，序列化 / 错误码映射未验证。 | 中 |
+| P0-4 | **Outbox relay 优雅关闭** | relay 使用 ticker 轮询，shutdown 时不主动 drain 队列。快速重启可能留下未发布事件直到下次轮询。需在 stop func 触发时做最后一次 drain。 | 低 |
+
+#### P1 — 高价值功能扩展
+
+| # | 项目 | 描述 | 估算 |
+|---|------|------|------|
+| P1-1 | **WebSocket / SSE 实时推送** | 通知和消息当前依赖轮询。加 WebSocket 或 SSE 端点，在 outbox relay 分发事件时同步推送给在线连接。这是 UX 最大提升点。 | 高 |
+| P1-2 | **统一 gRPC 请求校验器** | 每个 handler 独立调用 `idgen.Parse`，错误码映射散落各处。引入中间件级别 validator，统一 ID/enum 校验 → 减少重复，保证一致的 `InvalidArgument` 响应。 | 低-中 |
+| P1-3 | **消息已读回执通知** | `messages.read_at` 列已存在并在消息被读取时设置，但发送方不会收到通知。通过 outbox 在 `mark_read` 时发送 `message.read` 事件 → 通知发送方。 | 低 |
+| P1-4 | **消息 Reactions** | `comment_likes` 完整实现了点赞。`messages` 没有对应机制。增加 `message_reactions` 表 + 服务层 + HTTP/gRPC 端点。 | 中 |
+
+#### P2 — 长期演进
+
+| # | 项目 | 描述 | 估算 |
+|---|------|------|------|
+| P2-1 | **全文搜索** | 消息/文件/评论无搜索端点。可用 PostgreSQL `tsvector` + `GIN` 索引实现，或集成外部搜索引擎。 | 高 |
+| P2-2 | **审计日志** | 文件共享授权/撤销、评论举报处理等敏感操作无审计记录。增加 `audit_events` 表 + 写入钩子。 | 中 |
+| P2-3 | **负载测试套件** | 无 k6 / wrk 脚本。需要在上线前验证吞吐量和 P99 延迟。 | 中 |
+| P2-4 | **SSO 证书固定** | TLS/mTLS 路径已实现，但无 cert-pinning 选项。生产强化需要。 | 低 |
+
+---
+
+### 技术债
+
+| 级别 | 项目 |
+|------|------|
+| High | 43% 的 internal/ 源文件无单元测试（domain、middleware、gRPC handler 层） |
+| High | outbox relay 无优雅 drain（P0-4） |
+| Medium | Background context 在 sweeper/SSO/relay 中使用，限制 trace 传播 |
+| Medium | gRPC handler 错误码映射无统一层（P1-2） |
+| Low | 无负载测试脚本（P2-3） |
+| Low | 无审计日志（P2-2） |
+
+---
+
+### Edge Cases
+
+- 并发点赞：`comment_likes` 有唯一约束，幂等。`message_reactions` 如需实现同理。
+- 快速重启期间 outbox 事件丢失（当前已知缺陷，P0-4 修复）
+- 大文件上传 + 慢网络 → handler timeout 失控（P0-1 修复）
+- block 创建无限速 → 用户可刷大量 block 记录（rate limit 已全局启用，但 block API 无专属限额）
+
+---
+
+### 性能优化机会
+
+- notification 列表查询：当前按 `created_at DESC` cursor 扫描；加 `(recipient_uid, read_at IS NULL, created_at DESC)` 复合索引可加速未读过滤
+- outbox `FetchUnpublished`：当前全表扫描未发布事件；`(published_at IS NULL, created_at ASC)` 部分索引可降低轮询成本
+- SSO cache 冷启动：无预热机制，第一批请求全部穿透到 SSO；可在 app 启动后异步预热常用 token
+
+---
+
 ## ✅ Delivery status (updated 2026-05-29)
 
 All five directions below have since been **implemented, tested (unit + testcontainers integration), and verified green** on branch `feat/roadmap`. gRPC transport parity was also completed for every endpoint that had been added HTTP-first.
