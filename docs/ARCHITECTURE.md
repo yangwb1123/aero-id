@@ -76,10 +76,11 @@ OutboxRelay (ticker 5s)
 
 ## 迁移管理
 
-- 文件: `migrations/000001_*.sql` → `000012_*.sql`（up/down 对，手动应用）
+- 文件: `migrations/000001_*.sql` → `000016_*.sql`（up/down 对，手动应用）
 - CLI: `cmd/migrate up|down [N]|version`
 - 启动自动: `database.auto_migrate: true`（dev/CI）
 - 生产: 始终手动 (`cmd/migrate up`)
+- **约束**: 迁移在单个事务内执行（`internal/pkg/migrate.applyTx`），故 **禁止 `CREATE INDEX CONCURRENTLY`**（事务内非法，SQLSTATE 25001）。索引一律用普通 `CREATE INDEX`。`-tags=integration` 套件含 `TestMigratorUpAndDown`，会真实应用全部迁移把关。
 
 ## SSO 客户端状态机
 
@@ -101,10 +102,13 @@ Half-Open ──[probe failure]────────────────�
 
 GC Sweeper（opt-in）: 清理超出 retention 的软删除行 + 孤儿 blob
 
-## gRPC 服务目录（38 RPCs）
+## gRPC 服务目录（41 RPCs）
 
-- **FileService** (9): UploadFile, GetFile, ListFiles, DeleteFile, ShareFile, UnshareFile, ListSharedWithMe, PresignUpload, CompleteUpload, UpdateFileMetadata
-- **MessageService** (7): SendMessage, GetMessage, ListMessages, MarkRead, UnreadCount, EditMessage, DeleteMessage, MarkConversationRead
-- **CommentService** (11): CreateComment, GetComment, ListComments, DeleteComment, LikeComment, UnlikeComment, ReportComment, HideComment, UnhideComment, EditComment, ListReports, ResolveReport
+- **FileService** (10): GetFile, ListFiles, DeleteFile, GetDownloadURL, ShareFile, UnshareFile, ListSharedWithMe, PresignUpload, CompleteUpload, UpdateFileMetadata
+- **MessageService** (11): SendMessage, GetMessage, Inbox, Conversation, MarkRead, UnreadCount, EditMessage, DeleteMessage, MarkConversationRead, ReactToMessage, UnreactMessage
+- **CommentService** (12): CreateComment, ListComments, Replies, DeleteComment, LikeComment, UnlikeComment, ReportComment, HideComment, UnhideComment, EditComment, ListReports, ResolveReport
 - **NotificationService** (4): ListNotifications, UnreadCount, MarkRead, MarkAllRead
 - **BlockService** (3): Block, Unblock, ListBlocked
+- **SearchService** (1): Search（全文搜索，PostgreSQL tsvector，按调用者 uid 隔离）
+
+仅 HTTP 的端点（无 gRPC 对应）: `GET /v1/events`（SSE 实时通知推送）、multipart 上传、`/files/dl`（HMAC 签名下载）、`/healthz` `/readyz` `/metrics`。审计事件（`audit_events`）为 fire-and-forget 旁路，无对外 RPC。
