@@ -17,10 +17,23 @@ type BlockChecker interface {
 
 type blockService struct {
 	blocks repository.BlockRepository
+	audit  AuditLogger // nil => audit inactive
 }
 
-func NewBlockService(blocks repository.BlockRepository) BlockService {
-	return &blockService{blocks: blocks}
+// BlockOption configures optional blockService behaviour.
+type BlockOption func(*blockService)
+
+// WithBlockAuditLogger wires an AuditLogger into the block service.
+func WithBlockAuditLogger(a AuditLogger) BlockOption {
+	return func(s *blockService) { s.audit = a }
+}
+
+func NewBlockService(blocks repository.BlockRepository, opts ...BlockOption) BlockService {
+	s := &blockService{blocks: blocks}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *blockService) Block(ctx context.Context, uid string) error {
@@ -37,6 +50,15 @@ func (s *blockService) Block(ctx context.Context, uid string) error {
 	if err := s.blocks.Block(ctx, actor, uid); err != nil {
 		return apperr.Internal("block.block_failed", "failed to block user").Wrap(err)
 	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, &domain.AuditEvent{
+			ActorUID:    actor,
+			Action:      domain.AuditUserBlock,
+			SubjectType: "user",
+			SubjectID:   uid,
+			TargetUID:   uid,
+		})
+	}
 	return nil
 }
 
@@ -50,6 +72,15 @@ func (s *blockService) Unblock(ctx context.Context, uid string) error {
 	}
 	if err := s.blocks.Unblock(ctx, actor, uid); err != nil {
 		return apperr.Internal("block.unblock_failed", "failed to unblock user").Wrap(err)
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, &domain.AuditEvent{
+			ActorUID:    actor,
+			Action:      domain.AuditUserUnblock,
+			SubjectType: "user",
+			SubjectID:   uid,
+			TargetUID:   uid,
+		})
 	}
 	return nil
 }

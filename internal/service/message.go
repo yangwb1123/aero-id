@@ -18,10 +18,16 @@ type messageService struct {
 	files    repository.FileRepository // used only to validate file attachments
 	dir      UserDirectory
 	blocks   BlockChecker // nil => block guard is inactive
+	audit    AuditLogger  // nil => audit inactive
 }
 
 // MessageOption configures optional messageService policy.
 type MessageOption func(*messageService)
+
+// WithMessageAuditLogger wires an AuditLogger into the message service.
+func WithMessageAuditLogger(a AuditLogger) MessageOption {
+	return func(s *messageService) { s.audit = a }
+}
 
 // WithBlockChecker enables the block guard on Send: a message is rejected when the
 // recipient has blocked the sender. When unset (the default), Send is unaffected.
@@ -293,6 +299,15 @@ func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
 	}
 	if err := s.messages.SoftDelete(ctx, id); err != nil {
 		return apperr.Internal("message.delete_failed", "failed to delete message").Wrap(err)
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, &domain.AuditEvent{
+			ActorUID:    actor,
+			Action:      domain.AuditMessageDelete,
+			SubjectType: "message",
+			SubjectID:   id.String(),
+			TargetUID:   m.ToUID,
+		})
 	}
 	return nil
 }

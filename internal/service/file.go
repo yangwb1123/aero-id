@@ -25,6 +25,7 @@ type fileService struct {
 	storageType string // "local" | "s3", recorded on each row for later routing
 	maxBytes    int64  // 0 = unlimited
 	allowedMime map[string]bool
+	audit       AuditLogger // nil => audit is inactive
 }
 
 // FileOption configures optional fileService policy (upload limits, type allow-list).
@@ -50,6 +51,11 @@ func WithAllowedMimeTypes(types []string) FileOption {
 		}
 		s.allowedMime = m
 	}
+}
+
+// WithFileAuditLogger wires an AuditLogger into the file service.
+func WithFileAuditLogger(a AuditLogger) FileOption {
+	return func(s *fileService) { s.audit = a }
 }
 
 // WithFileShareRepo enables explicit per-user file sharing. When unset (the default),
@@ -417,6 +423,17 @@ func (s *fileService) ShareFile(ctx context.Context, id domain.ID, granteeUIDs [
 	if err := s.shares.Grant(ctx, id, f.OwnerUID, grantees); err != nil {
 		return apperr.Internal("file.share_failed", "failed to share file").Wrap(err)
 	}
+	if s.audit != nil {
+		for _, g := range grantees {
+			_ = s.audit.Log(ctx, &domain.AuditEvent{
+				ActorUID:    actor,
+				Action:      domain.AuditFileShareGrant,
+				SubjectType: "file",
+				SubjectID:   id.String(),
+				TargetUID:   g,
+			})
+		}
+	}
 	return nil
 }
 
@@ -438,6 +455,15 @@ func (s *fileService) UnshareFile(ctx context.Context, id domain.ID, granteeUID 
 	}
 	if err := s.shares.Revoke(ctx, id, granteeUID); err != nil {
 		return apperr.Internal("file.unshare_failed", "failed to unshare file").Wrap(err)
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, &domain.AuditEvent{
+			ActorUID:    actor,
+			Action:      domain.AuditFileShareRevoke,
+			SubjectType: "file",
+			SubjectID:   id.String(),
+			TargetUID:   granteeUID,
+		})
 	}
 	return nil
 }

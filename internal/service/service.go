@@ -32,6 +32,12 @@ func ActorFrom(ctx context.Context) (string, bool) {
 	return uid, uid != ""
 }
 
+// AuditLogger records a single audit event. Implementations must be non-blocking
+// from the caller's perspective; a failed log must not fail the primary operation.
+type AuditLogger interface {
+	Log(ctx context.Context, e *domain.AuditEvent) error
+}
+
 // UserDirectory is the subset of the SSO client the service uses to enrich list
 // responses with author/sender display info. *sso.Client satisfies it.
 type UserDirectory interface {

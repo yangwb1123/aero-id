@@ -151,6 +151,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	fileRepo := repository.NewFileRepository(gdb)
 	fileShareRepo := repository.NewFileShareRepository(gdb)
+	auditRepo := repository.NewAuditRepository(gdb)
 	outboxRepo := outbox.NewGormRepository(gdb)
 	msgRepo := repository.NewMessageRepository(gdb, outboxRepo)
 	commentRepo := repository.NewCommentRepository(gdb, outboxRepo)
@@ -189,13 +190,17 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithMaxUploadBytes(cfg.Storage.MaxUploadBytes),
 		service.WithAllowedMimeTypes(cfg.Storage.AllowedMimeTypes),
 		service.WithFileShareRepo(fileShareRepo),
+		service.WithFileAuditLogger(auditRepo),
 	)
 	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient,
 		service.WithBlockChecker(blockRepo),
+		service.WithMessageAuditLogger(auditRepo),
 	)
 	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient)
 	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
-	blockSvc := service.NewBlockService(blockRepo)
+	blockSvc := service.NewBlockService(blockRepo,
+		service.WithBlockAuditLogger(auditRepo),
+	)
 
 	// Edge rate limiter, shared by HTTP middleware and the gRPC interceptor. OPT-IN
 	// and disabled by default; per-instance (distributed limiting would need shared

@@ -235,6 +235,33 @@ type messageReactionRow struct {
 
 func (messageReactionRow) TableName() string { return "message_reactions" }
 
+// auditEventRow maps the audit_events table.
+type auditEventRow struct {
+	ID          uuid.UUID         `gorm:"column:id;primaryKey"`
+	ActorUID    string            `gorm:"column:actor_uid"`
+	Action      string            `gorm:"column:action"`
+	SubjectType string            `gorm:"column:subject_type"`
+	SubjectID   string            `gorm:"column:subject_id"`
+	TargetUID   string            `gorm:"column:target_uid"`
+	Meta        datatypes.JSONMap `gorm:"column:meta"`
+	CreatedAt   time.Time         `gorm:"column:created_at"`
+}
+
+func (auditEventRow) TableName() string { return "audit_events" }
+
+func auditEventDomainToRow(e *domain.AuditEvent) *auditEventRow {
+	return &auditEventRow{
+		ID:          e.ID,
+		ActorUID:    e.ActorUID,
+		Action:      e.Action,
+		SubjectType: e.SubjectType,
+		SubjectID:   e.SubjectID,
+		TargetUID:   e.TargetUID,
+		Meta:        datatypes.JSONMap(e.Meta),
+		CreatedAt:   e.CreatedAt,
+	}
+}
+
 // notificationRow maps the notifications table: one row per recipient per event.
 type notificationRow struct {
 	ID           uuid.UUID  `gorm:"column:id;primaryKey"`
