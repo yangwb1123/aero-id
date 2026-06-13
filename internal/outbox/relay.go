@@ -118,6 +118,7 @@ func (r *Relay) Start(interval time.Duration) (stop func()) {
 				r.drain(ctx)
 			case <-done:
 				t.Stop()
+				r.drain(context.Background())
 				return
 			}
 		}

@@ -233,6 +233,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 			Idempotency:    idemStore,
 			IdempotencyTTL: cfg.Server.HTTP.IdempotencyTTL,
 			RateLimiter:    limiter,
+			RequestTimeout: cfg.Server.HTTP.RequestTimeout,
 		},
 		ssoClient,
 		health,

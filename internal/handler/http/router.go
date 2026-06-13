@@ -32,6 +32,7 @@ type RouterConfig struct {
 	Idempotency    idempotency.Store // when set, makes keyed POSTs under /v1 safe to retry
 	IdempotencyTTL time.Duration
 	RateLimiter    *ratelimit.Limiter // when set & enabled, throttles per actor uid (IP for anon)
+	RequestTimeout time.Duration      // when > 0, sets a context deadline on every request
 }
 
 // NewRouter assembles the gin engine: global middleware, health probes, and the
@@ -53,6 +54,7 @@ func NewRouter(
 	}
 	e.Use(middleware.AccessLog(log))
 	e.Use(middleware.CORS(cfg.CORSOrigins))
+	e.Use(middleware.Timeout(cfg.RequestTimeout))
 
 	e.GET("/healthz", health.Live)
 	e.GET("/readyz", health.Ready)

@@ -205,3 +205,43 @@ func TestRelay_NilMetricsSinkIsSafe(t *testing.T) {
 		t.Fatalf("empty drain published %d, want 0", n)
 	}
 }
+
+func TestRelay_DrainOnStop(t *testing.T) {
+	e1 := &Event{ID: uuid.New(), EventType: "message.sent"}
+	e2 := &Event{ID: uuid.New(), EventType: "message.sent"}
+	e3 := &Event{ID: uuid.New(), EventType: "comment.replied"}
+	repo := newFakeRepo(e1, e2, e3)
+
+	var mu sync.Mutex
+	var handled []uuid.UUID
+	relay := NewRelay(repo, HandlerFunc(func(_ context.Context, e *Event) error {
+		mu.Lock()
+		handled = append(handled, e.ID)
+		mu.Unlock()
+		return nil
+	}), nil)
+
+	stop := relay.Start(24 * time.Hour)
+	stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(handled)
+		mu.Unlock()
+		if n == 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	got := len(handled)
+	mu.Unlock()
+	if got != 3 {
+		t.Fatalf("handler called %d times after stop, want 3 (all pending events drained)", got)
+	}
+	if !repo.isPublished(e1.ID) || !repo.isPublished(e2.ID) || !repo.isPublished(e3.ID) {
+		t.Fatal("all events must be marked published after Stop")
+	}
+}

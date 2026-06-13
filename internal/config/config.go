@@ -63,6 +63,7 @@ type HTTPConfig struct {
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
 	IdempotencyTTL  time.Duration `mapstructure:"idempotency_ttl"` // how long a stored idempotent response is replayable
+	RequestTimeout  time.Duration `mapstructure:"request_timeout"` // per-request context deadline (0 = disabled)
 }
 
 type GRPCConfig struct {

@@ -1,6 +1,6 @@
 app:    { name: aero-id, env: dev, version: 0.1.0 }
 server:
-  http: { host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s, idempotency_ttl: 24h }
+  http: { host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s, idempotency_ttl: 24h, request_timeout: 30s }
   grpc: { host: 0.0.0.0, port: 9090, reflection_enabled: false }  # reflection exposes the full RPC surface; opt-in
 database:
   host: 127.0.0.1
