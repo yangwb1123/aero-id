@@ -536,6 +536,55 @@ func TestCommentService_ResolveReportInvalidStatusIsBadRequest(t *testing.T) {
 	assertAppCode(t, err, 400)
 }
 
+func TestCommentService_ResolveReportEmitsAuditEvent(t *testing.T) {
+	reportID := idgen.NewID()
+	commentID := idgen.NewID()
+	var logged *domain.AuditEvent
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		calls++
+		return nil
+	}}
+	comments := &mocks.CommentRepo{
+		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
+			return &domain.CommentReport{ID: reportID, CommentID: commentID, Status: domain.ReportStatusOpen}, nil
+		},
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
+		},
+		ResolveReportFn: func(_ context.Context, _ domain.ID, _ domain.ReportStatus, _ string, _ time.Time) error { return nil },
+		SetStatusFn:     func(_ context.Context, _ domain.ID, _ domain.CommentStatus) error { return nil },
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{}, service.WithCommentAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "author")
+	if err := svc.ResolveReport(ctx, reportID, domain.ReportStatusResolved); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("audit Log called %d times, want exactly 1", calls)
+	}
+	if logged.Action != domain.AuditReportResolve {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditReportResolve)
+	}
+	if logged.ActorUID != "author" {
+		t.Fatalf("actor = %q, want author (resolver)", logged.ActorUID)
+	}
+	if logged.SubjectID != reportID.String() {
+		t.Fatalf("subject id = %q, want report id %s", logged.SubjectID, reportID.String())
+	}
+	if logged.SubjectType != "comment_report" {
+		t.Fatalf("subject type = %q, want comment_report", logged.SubjectType)
+	}
+	// Meta carries the comment id and the resolved status label.
+	if logged.Meta["comment_id"] != commentID.String() {
+		t.Fatalf("meta comment_id = %v, want %s", logged.Meta["comment_id"], commentID.String())
+	}
+	if logged.Meta["status"] != "resolved" {
+		t.Fatalf("meta status = %v, want resolved", logged.Meta["status"])
+	}
+}
+
 func TestCommentService_LikeForbiddenForPrivateTarget(t *testing.T) {
 	target := idgen.NewID()
 	comments := &mocks.CommentRepo{GetFn: func(_ context.Context, id domain.ID) (*domain.Comment, error) {

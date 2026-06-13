@@ -26,6 +26,8 @@ type fakeMessageService struct {
 	editFn                 func(context.Context, domain.ID, string) (*domain.Message, error)
 	deleteFn               func(context.Context, domain.ID) error
 	unreadCountFn          func(context.Context) (int64, error)
+	reactFn                func(context.Context, domain.ID, string) error
+	unreactFn              func(context.Context, domain.ID, string) error
 }
 
 func (f *fakeMessageService) Send(ctx context.Context, in service.SendMessageInput) (*domain.Message, error) {
@@ -58,10 +60,16 @@ func (f *fakeMessageService) Delete(ctx context.Context, id domain.ID) error {
 func (f *fakeMessageService) UnreadCount(ctx context.Context) (int64, error) {
 	return f.unreadCountFn(ctx)
 }
-func (f *fakeMessageService) ReactToMessage(_ context.Context, _ domain.ID, _ string) error {
+func (f *fakeMessageService) ReactToMessage(ctx context.Context, id domain.ID, actor string) error {
+	if f.reactFn != nil {
+		return f.reactFn(ctx, id, actor)
+	}
 	return nil
 }
-func (f *fakeMessageService) UnreactMessage(_ context.Context, _ domain.ID, _ string) error {
+func (f *fakeMessageService) UnreactMessage(ctx context.Context, id domain.ID, actor string) error {
+	if f.unreactFn != nil {
+		return f.unreactFn(ctx, id, actor)
+	}
 	return nil
 }
 
@@ -260,5 +268,106 @@ func TestMessageHandler_Conversation(t *testing.T) {
 	}
 	if resp.Data.Users["peer-uid"]["nickname"] != "Peer" {
 		t.Fatalf("unexpected user: %v", resp.Data.Users["peer-uid"])
+	}
+}
+
+func TestMessageHandler_ReactToMessage204(t *testing.T) {
+	id := idgen.NewID()
+	var (
+		gotID    domain.ID
+		gotActor string
+		called   bool
+	)
+	svc := &fakeMessageService{reactFn: func(_ context.Context, mid domain.ID, actor string) error {
+		called = true
+		gotID = mid
+		gotActor = actor
+		return nil
+	}}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "reactor")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/messages/"+id.String()+"/reactions", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+	if !called {
+		t.Fatal("ReactToMessage was not called")
+	}
+	if gotID != id {
+		t.Errorf("react id = %v, want %v", gotID, id)
+	}
+	if gotActor != "reactor" {
+		t.Errorf("react actor = %q, want reactor", gotActor)
+	}
+}
+
+func TestMessageHandler_ReactToMessageNotFoundMapsTo404(t *testing.T) {
+	svc := &fakeMessageService{reactFn: func(context.Context, domain.ID, string) error {
+		return apperr.NotFound("message.not_found", "nope")
+	}}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "reactor")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/messages/"+idgen.NewID().String()+"/reactions", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestMessageHandler_ReactToMessageInvalidIDMapsTo400(t *testing.T) {
+	called := false
+	svc := &fakeMessageService{reactFn: func(context.Context, domain.ID, string) error {
+		called = true
+		return nil
+	}}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "reactor")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/messages/not-an-id/reactions", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("service should not be called for an invalid id")
+	}
+}
+
+func TestMessageHandler_UnreactMessage204(t *testing.T) {
+	id := idgen.NewID()
+	var (
+		gotID    domain.ID
+		gotActor string
+		called   bool
+	)
+	svc := &fakeMessageService{unreactFn: func(_ context.Context, mid domain.ID, actor string) error {
+		called = true
+		gotID = mid
+		gotActor = actor
+		return nil
+	}}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "reactor")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/v1/messages/"+id.String()+"/reactions", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+	if !called {
+		t.Fatal("UnreactMessage was not called")
+	}
+	if gotID != id {
+		t.Errorf("unreact id = %v, want %v", gotID, id)
+	}
+	if gotActor != "reactor" {
+		t.Errorf("unreact actor = %q, want reactor", gotActor)
+	}
+}
+
+func TestMessageHandler_UnreactMessageForbiddenMapsTo403(t *testing.T) {
+	svc := &fakeMessageService{unreactFn: func(context.Context, domain.ID, string) error {
+		return apperr.Forbidden("message.forbidden", "nope")
+	}}
+	e := serveWithActor(httpapi.NewMessageHandler(svc), "reactor")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/v1/messages/"+idgen.NewID().String()+"/reactions", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
 	}
 }

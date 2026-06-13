@@ -70,6 +70,59 @@ func TestHub_PublishNoSubscriber(t *testing.T) {
 	h.Publish("nobody", "evt", "data")
 }
 
+// bufSize is the per-subscriber channel buffer used by Subscribe (see hub.go).
+const bufSize = 16
+
+func TestHub_PublishSlowConsumerDrops(t *testing.T) {
+	h := hub.New()
+	ch, unsub := h.Subscribe("eve")
+	defer unsub()
+
+	// Publish far more events than the channel buffer without draining. A slow
+	// consumer must never block Publish: the hub drops excess events instead.
+	const total = bufSize * 3
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < total; i++ {
+			// Must not panic and must not block even though nobody is reading.
+			h.Publish("eve", "flood", "data")
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All publishes returned promptly without blocking.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Publish blocked on a full slow-consumer channel")
+	}
+
+	// Drain the channel. We must be able to read at most the buffer's capacity
+	// of retained events, and the excess must have been silently dropped (i.e.
+	// we do NOT receive all `total` events).
+	var got int
+drain:
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				break drain
+			}
+			got++
+		default:
+			break drain
+		}
+	}
+
+	if got != bufSize {
+		t.Fatalf("expected exactly %d retained events (buffer capacity), got %d", bufSize, got)
+	}
+	if got >= total {
+		t.Fatalf("expected excess events to be dropped, but received all %d", got)
+	}
+}
+
 func TestHub_Close(t *testing.T) {
 	h := hub.New()
 

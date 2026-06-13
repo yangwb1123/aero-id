@@ -62,6 +62,62 @@ func TestBlockService_UnblockHappyPath(t *testing.T) {
 	}
 }
 
+func TestBlockService_BlockEmitsAuditEvent(t *testing.T) {
+	var logged *domain.AuditEvent
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		calls++
+		return nil
+	}}
+	repo := &mocks.BlockRepo{BlockFn: func(context.Context, string, string) error { return nil }}
+	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Block(ctx, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("audit Log called %d times, want 1", calls)
+	}
+	if logged.Action != domain.AuditUserBlock {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditUserBlock)
+	}
+	if logged.ActorUID != "a" {
+		t.Fatalf("actor = %q, want a", logged.ActorUID)
+	}
+	if logged.SubjectType != "user" || logged.SubjectID != "b" || logged.TargetUID != "b" {
+		t.Fatalf("subject/target wrong: type=%q id=%q target=%q", logged.SubjectType, logged.SubjectID, logged.TargetUID)
+	}
+}
+
+func TestBlockService_UnblockEmitsAuditEvent(t *testing.T) {
+	var logged *domain.AuditEvent
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		calls++
+		return nil
+	}}
+	repo := &mocks.BlockRepo{UnblockFn: func(context.Context, string, string) error { return nil }}
+	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Unblock(ctx, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("audit Log called %d times, want 1", calls)
+	}
+	if logged.Action != domain.AuditUserUnblock {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditUserUnblock)
+	}
+	if logged.ActorUID != "a" {
+		t.Fatalf("actor = %q, want a", logged.ActorUID)
+	}
+	if logged.SubjectType != "user" || logged.SubjectID != "b" || logged.TargetUID != "b" {
+		t.Fatalf("subject/target wrong: type=%q id=%q target=%q", logged.SubjectType, logged.SubjectID, logged.TargetUID)
+	}
+}
+
 func TestBlockService_ListBlockedHappyPath(t *testing.T) {
 	repo := &mocks.BlockRepo{ListBlockedFn: func(_ context.Context, blocker string, _ domain.Page) ([]string, string, error) {
 		if blocker != "a" {

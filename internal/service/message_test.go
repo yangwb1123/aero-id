@@ -461,3 +461,147 @@ func TestMessageService_InboxDedupesAndEnrichesSenders(t *testing.T) {
 		t.Fatalf("missing enrichment for a: %+v", list.Users)
 	}
 }
+
+func TestMessageService_ReactByParticipantCallsRepo(t *testing.T) {
+	id := idgen.NewID()
+	var gotID domain.ID
+	var gotUID string
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+		ReactToMessageFn: func(_ context.Context, messageID domain.ID, uid string) error {
+			gotID = messageID
+			gotUID = uid
+			return nil
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	// "b" is the recipient — a participant — so the reaction is allowed.
+	if err := svc.ReactToMessage(context.Background(), id, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if gotID != id || gotUID != "b" {
+		t.Fatalf("repo react args = (id=%v, uid=%q), want (%v, b)", gotID, gotUID, id)
+	}
+}
+
+func TestMessageService_UnreactByParticipantCallsRepo(t *testing.T) {
+	id := idgen.NewID()
+	var gotID domain.ID
+	var gotUID string
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+		UnreactMessageFn: func(_ context.Context, messageID domain.ID, uid string) error {
+			gotID = messageID
+			gotUID = uid
+			return nil
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	// "a" is the sender — also a participant.
+	if err := svc.UnreactMessage(context.Background(), id, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if gotID != id || gotUID != "a" {
+		t.Fatalf("repo unreact args = (id=%v, uid=%q), want (%v, a)", gotID, gotUID, id)
+	}
+}
+
+func TestMessageService_ReactByNonParticipantForbidden(t *testing.T) {
+	reacted := false
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+		ReactToMessageFn: func(_ context.Context, _ domain.ID, _ string) error { reacted = true; return nil },
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	err := svc.ReactToMessage(context.Background(), idgen.NewID(), "c") // not a participant
+	assertAppCode(t, err, 403)
+	if reacted {
+		t.Fatal("a non-participant reaction must not reach the repo")
+	}
+}
+
+func TestMessageService_UnreactByNonParticipantForbidden(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+		return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	err := svc.UnreactMessage(context.Background(), idgen.NewID(), "c") // not a participant
+	assertAppCode(t, err, 403)
+}
+
+func TestMessageService_ReactToMissingMessageNotFound(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+		return nil, repository.ErrNotFound
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	err := svc.ReactToMessage(context.Background(), idgen.NewID(), "a")
+	assertAppCode(t, err, 404)
+}
+
+func TestMessageService_UnreactToMissingMessageNotFound(t *testing.T) {
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+		return nil, repository.ErrNotFound
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	err := svc.UnreactMessage(context.Background(), idgen.NewID(), "a")
+	assertAppCode(t, err, 404)
+}
+
+func TestMessageService_DeleteEmitsAuditEvent(t *testing.T) {
+	id := idgen.NewID()
+	var logged *domain.AuditEvent
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		calls++
+		return nil
+	}}
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+		SoftDeleteFn: func(_ context.Context, _ domain.ID) error { return nil },
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Delete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("audit Log called %d times, want 1", calls)
+	}
+	if logged.Action != domain.AuditMessageDelete {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditMessageDelete)
+	}
+	if logged.ActorUID != "a" {
+		t.Fatalf("actor = %q, want a", logged.ActorUID)
+	}
+	if logged.SubjectType != "message" || logged.SubjectID != id.String() {
+		t.Fatalf("subject = (%q,%q), want (message,%s)", logged.SubjectType, logged.SubjectID, id.String())
+	}
+	if logged.TargetUID != "b" {
+		t.Fatalf("target = %q, want b (recipient)", logged.TargetUID)
+	}
+}
+
+func TestMessageService_DeleteMissingDoesNotAudit(t *testing.T) {
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, _ *domain.AuditEvent) error { calls++; return nil }}
+	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+		return nil, repository.ErrNotFound
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("audit must not fire for an idempotent no-op delete, called %d times", calls)
+	}
+}

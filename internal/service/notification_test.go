@@ -224,6 +224,78 @@ func TestNotificationDispatcher_NotifiesNonBlockedRecipient(t *testing.T) {
 	}
 }
 
+func TestNotificationDispatcher_PusherReceivesNotification(t *testing.T) {
+	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error { return nil }}
+	var gotUID, gotType, gotData string
+	pushes := 0
+	pusher := &mocks.Pusher{PublishFn: func(uid, eventType, data string) {
+		gotUID, gotType, gotData = uid, eventType, data
+		pushes++
+	}}
+	d := service.NewNotificationDispatcher(repo, service.WithDispatcherPusher(pusher))
+	e := event(t, "message.sent", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "b"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if pushes != 1 {
+		t.Fatalf("Publish called %d times, want 1", pushes)
+	}
+	// Recipient uid is the push target; the notification type is the SSE event type.
+	if gotUID != "b" {
+		t.Fatalf("push uid = %q, want b (recipient)", gotUID)
+	}
+	if gotType != "message.received" {
+		t.Fatalf("push event type = %q, want message.received", gotType)
+	}
+	if gotData == "" {
+		t.Fatal("push payload must be non-empty")
+	}
+	// The payload is the JSON-encoded notification; it must round-trip.
+	var n domain.Notification
+	if err := json.Unmarshal([]byte(gotData), &n); err != nil {
+		t.Fatalf("push payload not valid notification JSON: %v", err)
+	}
+	if n.RecipientUID != "b" {
+		t.Fatalf("payload recipient = %q, want b", n.RecipientUID)
+	}
+}
+
+func TestNotificationDispatcher_NoPusherStillSucceeds(t *testing.T) {
+	created := false
+	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error {
+		created = true
+		return nil
+	}}
+	// No WithDispatcherPusher: Handle must not panic and must still create the row.
+	d := service.NewNotificationDispatcher(repo)
+	e := event(t, "message.sent", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "b"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("notification must still be created without a pusher")
+	}
+}
+
+func TestNotificationDispatcher_BlockedRecipientNotPushed(t *testing.T) {
+	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error { return nil }}
+	pushed := false
+	pusher := &mocks.Pusher{PublishFn: func(string, string, string) { pushed = true }}
+	// Recipient "b" has blocked actor "a": the notification is suppressed entirely,
+	// so the pusher must not fire either.
+	blocks := &mocks.BlockRepo{IsBlockedFn: func(_ context.Context, blocker, blocked string) (bool, error) {
+		return blocker == "b" && blocked == "a", nil
+	}}
+	d := service.NewNotificationDispatcher(repo, service.WithDispatcherBlockChecker(blocks), service.WithDispatcherPusher(pusher))
+	e := event(t, "message.sent", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "b"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		t.Fatal("a suppressed (blocked) notification must not be pushed")
+	}
+}
+
 func TestNotificationService_RequiresActor(t *testing.T) {
 	svc := service.NewNotificationService(&mocks.NotificationRepo{}, &mocks.UserDir{})
 	if _, err := svc.List(context.Background(), domain.Page{}); err == nil {
