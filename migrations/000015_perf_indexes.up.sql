@@ -3,7 +3,11 @@
 -- The existing idx_notifications_unread indexes only (recipient_uid) with no ordering
 -- columns, forcing a sort step after filtering. This index eliminates that sort for the
 -- common "fetch my unread notifications" path.
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_notifications_recipient_unread
+-- NOTE: no CONCURRENTLY — the migrator (internal/pkg/migrate) runs each migration
+-- inside a single transaction (see applyTx), and CREATE INDEX CONCURRENTLY is illegal
+-- inside a transaction block. A plain CREATE INDEX is consistent with every other
+-- index in this schema and only briefly blocks writes during creation.
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_unread
     ON notifications(recipient_uid, created_at DESC)
     WHERE read_at IS NULL;
 
