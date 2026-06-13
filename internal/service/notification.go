@@ -118,12 +118,18 @@ func NewNotificationDispatcher(notifs repository.NotificationRepository, opts ..
 	return d
 }
 
-// messageSentPayload / commentRepliedPayload mirror the JSON emitted by the
-// message and comment services into the outbox.
+// messageSentPayload / messageReadPayload / commentRepliedPayload mirror the JSON
+// emitted by the message and comment services into the outbox.
 type messageSentPayload struct {
 	MessageID string `json:"message_id"`
 	FromUID   string `json:"from_uid"`
 	ToUID     string `json:"to_uid"`
+}
+
+type messageReadPayload struct {
+	MessageID string `json:"message_id"`
+	FromUID   string `json:"from_uid"` // original sender — receives the read-receipt
+	ToUID     string `json:"to_uid"`   // reader / actor
 }
 
 type commentRepliedPayload struct {
@@ -169,6 +175,23 @@ func (d *NotificationDispatcher) notificationFor(e *outbox.Event) *domain.Notifi
 			RecipientUID: p.ToUID,
 			Type:         "message.received",
 			ActorUID:     p.FromUID,
+			SubjectType:  "message",
+			SubjectID:    p.MessageID,
+			CreatedAt:    time.Now().UTC(),
+		}
+	case "message.read":
+		var p messageReadPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return nil
+		}
+		if p.FromUID == "" || p.FromUID == p.ToUID {
+			return nil // missing sender or self-read: nothing to notify
+		}
+		return &domain.Notification{
+			ID:           idgen.NewID(),
+			RecipientUID: p.FromUID, // notify the original sender
+			Type:         "message.read_receipt",
+			ActorUID:     p.ToUID, // the reader
 			SubjectType:  "message",
 			SubjectID:    p.MessageID,
 			CreatedAt:    time.Now().UTC(),

@@ -225,7 +225,16 @@ func (s *messageService) MarkRead(ctx context.Context, id domain.ID) error {
 	if m.ReadAt != nil {
 		return nil // already read — idempotent no-op
 	}
-	if err := s.messages.MarkRead(ctx, id, time.Now().UTC()); err != nil {
+	readAt := time.Now().UTC()
+	// Emit a "message.read" domain event in the same transaction as the read_at
+	// stamp so the sender receives a reliable read-receipt notification.
+	evt := newEvent("message", m.ID.String(), "message.read", map[string]any{
+		"message_id": m.ID.String(),
+		"from_uid":   m.FromUID,
+		"to_uid":     actor,
+		"read_at":    readAt.Format(time.RFC3339),
+	})
+	if err := s.messages.MarkReadWithEvent(ctx, id, readAt, evt); err != nil {
 		return apperr.Internal("message.mark_read_failed", "failed to mark message read").Wrap(err)
 	}
 	return nil
@@ -327,4 +336,44 @@ func senderUIDs(msgs []*domain.Message) []string {
 		out = append(out, m.FromUID)
 	}
 	return out
+}
+
+// ReactToMessage records a reaction by actorUID on a message. Only participants
+// (sender or recipient) may react. Idempotent.
+func (s *messageService) ReactToMessage(ctx context.Context, messageID domain.ID, actorUID string) error {
+	m, err := s.messages.Get(ctx, messageID)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("message.not_found", "message not found")
+	}
+	if err != nil {
+		return apperr.Internal("message.get_failed", "failed to load message").Wrap(err)
+	}
+	if !canReadMessage(actorUID, m) {
+		return apperr.Forbidden("message.forbidden", "not a participant in this message")
+	}
+	if err := s.messages.ReactToMessage(ctx, messageID, actorUID); err != nil {
+		if stderrors.Is(err, repository.ErrNotFound) {
+			return apperr.NotFound("message.not_found", "message not found")
+		}
+		return apperr.Internal("message.react_failed", "failed to react to message").Wrap(err)
+	}
+	return nil
+}
+
+// UnreactMessage removes actorUID's reaction from a message. Idempotent.
+func (s *messageService) UnreactMessage(ctx context.Context, messageID domain.ID, actorUID string) error {
+	m, err := s.messages.Get(ctx, messageID)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("message.not_found", "message not found")
+	}
+	if err != nil {
+		return apperr.Internal("message.get_failed", "failed to load message").Wrap(err)
+	}
+	if !canReadMessage(actorUID, m) {
+		return apperr.Forbidden("message.forbidden", "not a participant in this message")
+	}
+	if err := s.messages.UnreactMessage(ctx, messageID, actorUID); err != nil {
+		return apperr.Internal("message.unreact_failed", "failed to remove reaction").Wrap(err)
+	}
+	return nil
 }

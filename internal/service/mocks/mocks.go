@@ -8,6 +8,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/repository"
@@ -133,16 +135,18 @@ func (m *FileShareRepo) IsSharedWith(ctx context.Context, fileID domain.ID, uid 
 }
 
 type MessageRepo struct {
-	CreateFn           func(ctx context.Context, m *domain.Message, evt *outbox.Event) error
-	GetFn              func(ctx context.Context, id domain.ID) (*domain.Message, error)
-	ListInboxFn        func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
-	ListConversationFn func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
-	MarkReadFn         func(ctx context.Context, id domain.ID, at time.Time) error
-	CountUnreadFn      func(ctx context.Context, toUID string) (int64, error)
-
+	CreateFn               func(ctx context.Context, m *domain.Message, evt *outbox.Event) error
+	GetFn                  func(ctx context.Context, id domain.ID) (*domain.Message, error)
+	ListInboxFn            func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
+	ListConversationFn     func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
+	MarkReadFn             func(ctx context.Context, id domain.ID, at time.Time) error
+	MarkReadWithEventFn    func(ctx context.Context, id domain.ID, at time.Time, evt *outbox.Event) error
+	CountUnreadFn          func(ctx context.Context, toUID string) (int64, error)
 	UpdateContentFn        func(ctx context.Context, id domain.ID, content string, at time.Time) error
 	SoftDeleteFn           func(ctx context.Context, id domain.ID) error
 	MarkConversationReadFn func(ctx context.Context, toUID, peer string, at time.Time) error
+	ReactToMessageFn       func(ctx context.Context, messageID uuid.UUID, uid string) error
+	UnreactMessageFn       func(ctx context.Context, messageID uuid.UUID, uid string) error
 }
 
 func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message, evt *outbox.Event) error {
@@ -162,6 +166,15 @@ func (m *MessageRepo) ListConversation(ctx context.Context, uidA, uidB string, p
 }
 func (m *MessageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) error {
 	return m.MarkReadFn(ctx, id, at)
+}
+
+// MarkReadWithEvent defaults to a successful no-op when its Fn is unset, so tests
+// that don't exercise the outbox path need not wire it.
+func (m *MessageRepo) MarkReadWithEvent(ctx context.Context, id domain.ID, at time.Time, evt *outbox.Event) error {
+	if m.MarkReadWithEventFn == nil {
+		return nil
+	}
+	return m.MarkReadWithEventFn(ctx, id, at, evt)
 }
 func (m *MessageRepo) CountUnread(ctx context.Context, toUID string) (int64, error) {
 	return m.CountUnreadFn(ctx, toUID)
@@ -186,6 +199,18 @@ func (m *MessageRepo) MarkConversationRead(ctx context.Context, toUID, peer stri
 		return nil
 	}
 	return m.MarkConversationReadFn(ctx, toUID, peer, at)
+}
+func (m *MessageRepo) ReactToMessage(ctx context.Context, messageID uuid.UUID, uid string) error {
+	if m.ReactToMessageFn == nil {
+		return nil
+	}
+	return m.ReactToMessageFn(ctx, messageID, uid)
+}
+func (m *MessageRepo) UnreactMessage(ctx context.Context, messageID uuid.UUID, uid string) error {
+	if m.UnreactMessageFn == nil {
+		return nil
+	}
+	return m.UnreactMessageFn(ctx, messageID, uid)
 }
 
 type CommentRepo struct {

@@ -60,6 +60,73 @@ func TestNotificationDispatcher_SelfMessageCreatesNone(t *testing.T) {
 	}
 }
 
+func TestNotificationDispatcher_MessageReadNotifiesSender(t *testing.T) {
+	var created *domain.Notification
+	repo := &mocks.NotificationRepo{CreateFn: func(_ context.Context, n *domain.Notification) error {
+		created = n
+		return nil
+	}}
+	d := service.NewNotificationDispatcher(repo)
+	e := event(t, "message.read", map[string]any{"message_id": "m1", "from_uid": "sender", "to_uid": "reader"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if created == nil {
+		t.Fatal("expected a read-receipt notification to be created")
+	}
+	if created.RecipientUID != "sender" {
+		t.Fatalf("recipient = %q, want sender", created.RecipientUID)
+	}
+	if created.ActorUID != "reader" {
+		t.Fatalf("actor = %q, want reader", created.ActorUID)
+	}
+	if created.Type != "message.read_receipt" {
+		t.Fatalf("type = %q, want message.read_receipt", created.Type)
+	}
+	if created.SubjectType != "message" || created.SubjectID != "m1" {
+		t.Fatalf("unexpected subject: type=%q id=%q", created.SubjectType, created.SubjectID)
+	}
+}
+
+func TestNotificationDispatcher_MessageReadSelfReadSkipped(t *testing.T) {
+	called := false
+	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error {
+		called = true
+		return nil
+	}}
+	d := service.NewNotificationDispatcher(repo)
+	// from_uid == to_uid: self-read (e.g. sender reads their own sent message)
+	e := event(t, "message.read", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "a"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("self-read must not create a notification")
+	}
+}
+
+func TestNotificationDispatcher_MessageReadBlockedSenderSkipped(t *testing.T) {
+	called := false
+	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error {
+		called = true
+		return nil
+	}}
+	// sender "a" has blocked reader "b": IsBlocked(blocker=a, blocked=b) == true.
+	// The sender (recipient of the read-receipt) has blocked the actor (reader),
+	// so no notification is delivered.
+	blocks := &mocks.BlockRepo{IsBlockedFn: func(_ context.Context, blocker, blocked string) (bool, error) {
+		return blocker == "a" && blocked == "b", nil
+	}}
+	d := service.NewNotificationDispatcher(repo, service.WithDispatcherBlockChecker(blocks))
+	e := event(t, "message.read", map[string]any{"message_id": "m1", "from_uid": "a", "to_uid": "b"})
+	if err := d.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("blocked sender must not get a read-receipt notification")
+	}
+}
+
 func TestNotificationDispatcher_CommentRepliedNotifiesParentAuthor(t *testing.T) {
 	var created *domain.Notification
 	repo := &mocks.NotificationRepo{CreateFn: func(_ context.Context, n *domain.Notification) error {

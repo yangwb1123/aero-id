@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -206,6 +207,45 @@ func TestMessageService_MarkReadOnlyRecipient(t *testing.T) {
 	ctx := service.WithActor(context.Background(), "a") // sender, not recipient
 	err := svc.MarkRead(ctx, idgen.NewID())
 	assertAppCode(t, err, 403)
+}
+
+func TestMessageService_MarkReadEmitsOutboxEvent(t *testing.T) {
+	id := idgen.NewID()
+	var capturedEvt *outbox.Event
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "sender", ToUID: "reader"}, nil
+		},
+		MarkReadWithEventFn: func(_ context.Context, _ domain.ID, _ time.Time, evt *outbox.Event) error {
+			capturedEvt = evt
+			return nil
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
+	ctx := service.WithActor(context.Background(), "reader")
+	if err := svc.MarkRead(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if capturedEvt == nil {
+		t.Fatal("MarkReadWithEvent was not called")
+	}
+	if capturedEvt.EventType != "message.read" {
+		t.Fatalf("event type = %q, want message.read", capturedEvt.EventType)
+	}
+	if capturedEvt.AggregateType != "message" {
+		t.Fatalf("aggregate type = %q, want message", capturedEvt.AggregateType)
+	}
+	// Payload must carry from_uid (sender) and to_uid (reader).
+	var payload map[string]any
+	if err := json.Unmarshal(capturedEvt.Payload, &payload); err != nil {
+		t.Fatalf("payload not valid JSON: %v", err)
+	}
+	if payload["from_uid"] != "sender" {
+		t.Fatalf("from_uid = %v, want sender", payload["from_uid"])
+	}
+	if payload["to_uid"] != "reader" {
+		t.Fatalf("to_uid = %v, want reader", payload["to_uid"])
+	}
 }
 
 func TestMessageService_MarkReadIdempotent(t *testing.T) {

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/outbox"
@@ -21,6 +23,9 @@ type MessageRepository interface {
 	ListInbox(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversation(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkRead(ctx context.Context, id domain.ID, at time.Time) error
+	// MarkReadWithEvent stamps read_at and, when evt is non-nil, appends it to the
+	// outbox in the SAME transaction so the read and its domain event commit together.
+	MarkReadWithEvent(ctx context.Context, id domain.ID, at time.Time, evt *outbox.Event) error
 	CountUnread(ctx context.Context, toUID string) (int64, error)
 	// UpdateContent rewrites a (non-deleted) message's content and stamps edited_at.
 	UpdateContent(ctx context.Context, id domain.ID, content string, at time.Time) error
@@ -29,6 +34,12 @@ type MessageRepository interface {
 	// MarkConversationRead marks every undeleted, unread message from peer to toUID
 	// as read at the given time, in a single statement.
 	MarkConversationRead(ctx context.Context, toUID, peer string, at time.Time) error
+	// ReactToMessage records a reaction by uid. Idempotent (ON CONFLICT DO NOTHING).
+	// Returns ErrNotFound when the message does not exist.
+	ReactToMessage(ctx context.Context, messageID uuid.UUID, uid string) error
+	// UnreactMessage removes a reaction by uid. Idempotent: returns nil even when
+	// no reaction row existed.
+	UnreactMessage(ctx context.Context, messageID uuid.UUID, uid string) error
 }
 
 type messageRepo struct {
@@ -136,6 +147,30 @@ func (r *messageRepo) MarkRead(ctx context.Context, id domain.ID, at time.Time) 
 	return nil
 }
 
+// MarkReadWithEvent stamps read_at and, when evt is non-nil and an outbox
+// repository is configured, appends evt within the same transaction so the
+// read and the event commit atomically.
+func (r *messageRepo) MarkReadWithEvent(ctx context.Context, id domain.ID, at time.Time, evt *outbox.Event) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&messageRow{}).
+			Where("id = ? AND read_at IS NULL", id).
+			Update("read_at", at)
+		if res.Error != nil {
+			return res.Error
+		}
+		if evt != nil && r.outbox != nil {
+			if err := r.outbox.Append(ctx, tx, evt); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("mark read with event: %w", err)
+	}
+	return nil
+}
+
 // UpdateContent rewrites the message's content and stamps edited_at. GORM's default
 // soft-delete scope restricts the update to rows with deleted_at IS NULL, so a
 // soft-deleted message is never touched here.
@@ -180,4 +215,33 @@ func (r *messageRepo) CountUnread(ctx context.Context, toUID string) (int64, err
 		return 0, fmt.Errorf("count unread: %w", err)
 	}
 	return n, nil
+}
+
+// ReactToMessage inserts a (messageID, uid) reaction row with ON CONFLICT DO NOTHING
+// so a repeated reaction is a no-op. Returns ErrNotFound when the message is missing.
+func (r *messageRepo) ReactToMessage(ctx context.Context, messageID uuid.UUID, uid string) error {
+	var row messageRow
+	err := r.db.WithContext(ctx).First(&row, "id = ?", messageID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("react to message: %w", err)
+	}
+	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&messageReactionRow{MessageID: messageID, UID: uid, CreatedAt: time.Now().UTC()})
+	if res.Error != nil {
+		return fmt.Errorf("react to message: %w", res.Error)
+	}
+	return nil
+}
+
+// UnreactMessage deletes the (messageID, uid) reaction row. Returns nil if no row existed.
+func (r *messageRepo) UnreactMessage(ctx context.Context, messageID uuid.UUID, uid string) error {
+	if err := r.db.WithContext(ctx).
+		Where("message_id = ? AND uid = ?", messageID, uid).
+		Delete(&messageReactionRow{}).Error; err != nil {
+		return fmt.Errorf("unreact message: %w", err)
+	}
+	return nil
 }
