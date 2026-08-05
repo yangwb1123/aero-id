@@ -1,0 +1,541 @@
+openapi: 3.1.0
+info:
+  title: aero-id Account Aggregation API
+  version: 1.0.0
+  description: |
+    Account control-plane API for the independent aero-account-console. Snaplink
+    remains the authentication and authorization authority; source data is
+    exposed only through the allow-listed aggregation datasets. Aero ID locally
+    verifies the exact JWT issuer and audience plus expiry, subject, and tenant;
+    no request body, query, or forwarding header can select a tenant.
+servers:
+  - url: /v1
+security:
+  - snaplinkBearer: []
+paths:
+  /account-datasets:
+    get:
+      operationId: listAccountDatasets
+      security: [{snaplinkBearer: []}]
+      responses:
+        '200':
+          $ref: '#/components/responses/DatasetList'
+        '401': {$ref: '#/components/responses/Error'}
+  /me:
+    get:
+      operationId: getMyAccount
+      responses:
+        '200': {$ref: '#/components/responses/AccountView'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /me/sources:
+    get:
+      operationId: listMySources
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Source account references with per-source status and freshness.
+          content: {application/json: {schema: {$ref: '#/components/schemas/SourceListEnvelope'}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /me/memberships:
+    get:
+      operationId: listMyMemberships
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Memberships keyed by source and scope; never collapsed into one tenant.
+          content: {application/json: {schema: {$ref: '#/components/schemas/MembershipListEnvelope'}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /me/activity:
+    get:
+      operationId: listMyActivity
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Recent account activity from local projections.
+          content: {application/json: {schema: {$ref: '#/components/schemas/ActivityEnvelope'}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /me/erase:
+    post:
+      operationId: eraseMyAccount
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '202': {description: Erase saga accepted; track via /sync/jobs.}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /me/profile:
+    get:
+      operationId: getMyProfile
+      responses:
+        '200': {$ref: '#/components/responses/Profile'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateMyProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfilePatch'}
+      responses:
+        '200': {$ref: '#/components/responses/Profile'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /me/data:
+    get:
+      operationId: getMyAggregatedData
+      parameters:
+        - {$ref: '#/components/parameters/Dataset'}
+        - {$ref: '#/components/parameters/Consistency'}
+        - {$ref: '#/components/parameters/MaxAge'}
+      responses:
+        '200': {$ref: '#/components/responses/Aggregate'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /me/overview:
+    get:
+      operationId: getMyOverview
+      parameters:
+        - {$ref: '#/components/parameters/Dataset'}
+        - {$ref: '#/components/parameters/Consistency'}
+        - {$ref: '#/components/parameters/MaxAge'}
+      responses:
+        '200': {$ref: '#/components/responses/Aggregate'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /me/sync:
+    post:
+      operationId: createMySyncJob
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/SyncJob'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /me/export:
+    post:
+      operationId: createMyExportJob
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/SyncJob'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /sync/jobs:
+    get:
+      operationId: listSyncJobs
+      parameters: [{$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {$ref: '#/components/responses/SyncJobList'}
+  /sync/jobs/{id}:
+    get:
+      operationId: getSyncJob
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '200': {$ref: '#/components/responses/SyncJob'}
+        '404': {$ref: '#/components/responses/Error'}
+  /sync/jobs/{id}/reconcile:
+    post:
+      operationId: reconcileSyncJob
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/WorkerID'}
+      responses:
+        '200': {$ref: '#/components/responses/SyncJob'}
+        '409': {$ref: '#/components/responses/Error'}
+  /sync/jobs/{id}/export/download:
+    get:
+      operationId: downloadExport
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '200':
+          description: Encrypted export is decrypted only after authorization and expiry checks.
+          content: {application/json: {schema: {type: object}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /operations:
+    post:
+      operationId: createOperation
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OperationRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/Error'}
+    get:
+      operationId: listOperations
+      parameters: [{$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {$ref: '#/components/responses/OperationList'}
+  /operations/{id}:
+    get:
+      operationId: getOperation
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '404': {$ref: '#/components/responses/Error'}
+  /operations/{id}/run:
+    post:
+      operationId: runOperation
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/WorkerID'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '409': {$ref: '#/components/responses/Error'}
+  /operations/{id}/reconcile:
+    post:
+      operationId: reconcileOperation
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/WorkerID'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '409': {$ref: '#/components/responses/Error'}
+  /audit/events:
+    get:
+      operationId: listAuditEvents
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: operation_id, in: query, schema: {type: string, format: uuid}}
+        - {name: request_id, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+      responses:
+        '200':
+          description: Append-only, redacted audit facts.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuditList'}
+        '403': {$ref: '#/components/responses/Error'}
+  /audit/operations/{id}:
+    get:
+      operationId: getOperationTimeline
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      responses:
+        '200':
+          description: Operation steps, attempts and compensation timeline.
+          content: {application/json: {schema: {$ref: '#/components/schemas/OperationEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /audit/replays:
+    post:
+      operationId: createAuditReplay
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReplayRequest'}
+      responses:
+        '202': {description: Replay accepted (forensic/dry-run/controlled).}
+        '403': {$ref: '#/components/responses/Error'}
+  /audit/replays/projection:
+    post:
+      operationId: replayProjection
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id, source]
+              properties:
+                account_id: {type: string, format: uuid}
+                source: {type: string}
+                limit: {type: integer, minimum: 1, maximum: 10000}
+      responses:
+        '200':
+          description: Shadow projection rebuilt from the event store, compared with live.
+          content: {application/json: {schema: {$ref: '#/components/schemas/ProjectionReplayEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/regions/promote:
+    post:
+      operationId: promoteHomeRegion
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id, target_region]
+              properties:
+                account_id: {type: string, format: uuid}
+                target_region: {type: string}
+                expected_epoch: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Fencing-epoch CAS promotion result.
+          content: {application/json: {schema: {$ref: '#/components/schemas/PromoteResultEnvelope'}}}
+        '409': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/regions/directory/{account_id}:
+    get:
+      operationId: getRegionDirectory
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      responses:
+        '200':
+          description: Durable home-region directory entry with fencing epoch.
+          content: {application/json: {schema: {$ref: '#/components/schemas/DirectoryEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    snaplinkBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Snaplink access token. Aero ID never issues or stores tokens and locally
+        validates signature, exact issuer/audience, expiration, subject, and a
+        non-empty tenant claim before creating request context.
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    Dataset: {name: dataset, in: query, style: form, explode: true, schema: {type: array, items: {type: string}}}
+    Consistency: {name: consistency, in: query, schema: {type: string, enum: [eventual, bounded, strong], default: eventual}}
+    MaxAge: {name: max_age, in: query, schema: {type: string, example: 5m}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, schema: {type: string, maxLength: 200}}
+    WorkerID: {name: X-Worker-ID, in: header, schema: {type: string, maxLength: 128}}
+  responses:
+    Error:
+      description: Stable application error.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
+    DatasetList:
+      description: Allow-listed datasets.
+      content: {application/json: {schema: {$ref: '#/components/schemas/DatasetList'}}}
+    AccountView:
+      description: Canonical account and aero-id-owned profile.
+      content: {application/json: {schema: {$ref: '#/components/schemas/AccountView'}}}
+    Profile:
+      description: Aero-id-owned presentation fields only.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ProfileEnvelope'}}}
+    Aggregate:
+      description: Eventual or bounded-stale aggregate with per-source freshness.
+      content: {application/json: {schema: {$ref: '#/components/schemas/AggregateEnvelope'}}}
+    SyncJob:
+      description: Durable asynchronous job.
+      content: {application/json: {schema: {$ref: '#/components/schemas/SyncJobEnvelope'}}}
+    SyncJobList:
+      description: Keyset-paginated asynchronous jobs.
+      content: {application/json: {schema: {$ref: '#/components/schemas/SyncJobListEnvelope'}}}
+    Operation:
+      description: Durable cross-source operation.
+      content: {application/json: {schema: {$ref: '#/components/schemas/OperationEnvelope'}}}
+    OperationList:
+      description: Keyset-paginated operation list.
+      content: {application/json: {schema: {$ref: '#/components/schemas/OperationListEnvelope'}}}
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            request_id: {type: string}
+    DatasetList:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            datasets:
+              type: array
+              items:
+                type: object
+                required: [name, source, pii]
+                properties: {name: {type: string}, source: {type: string}, pii: {type: boolean}}
+    ProfilePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name: {type: string}
+        avatar_url: {type: string}
+        locale: {type: string}
+        timezone: {type: string}
+        preferences: {type: object}
+    ProfileEnvelope:
+      type: object
+      properties: {data: {$ref: '#/components/schemas/Profile'}}
+    Profile:
+      type: object
+      properties:
+        account_id: {type: string, format: uuid}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        locale: {type: string}
+        timezone: {type: string}
+        preferences: {type: object}
+    AccountView:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            account: {type: object}
+            profile: {$ref: '#/components/schemas/Profile'}
+            sources: {type: array, items: {type: object}}
+            memberships: {type: array, items: {type: object}}
+    AggregateEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            account: {type: object}
+            profile: {$ref: '#/components/schemas/Profile'}
+            snapshots: {type: array, items: {type: object}}
+            consistency: {type: string}
+            partial: {type: boolean}
+            source_errors: {type: object, additionalProperties: {type: string}}
+            stale_datasets: {type: array, items: {type: string}}
+    JobRequest:
+      type: object
+      properties:
+        datasets: {type: array, items: {type: string}}
+        idempotency_key: {type: string, maxLength: 200}
+    SyncJobEnvelope:
+      type: object
+      properties: {data: {type: object}}
+    SyncJobListEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            jobs: {type: array, items: {type: object}}
+            next_cursor: {type: string}
+    OperationRequest:
+      type: object
+      required: [operation_type, steps]
+      properties:
+        account_id: {type: string, format: uuid}
+        operation_type: {type: string}
+        idempotency_key: {type: string, maxLength: 200}
+        request_payload: {type: object}
+        steps: {type: array, minItems: 1, maxItems: 32, items: {type: object}}
+    OperationEnvelope:
+      type: object
+      properties: {data: {type: object}}
+    OperationListEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            operations: {type: array, items: {type: object}}
+            next_cursor: {type: string}
+    SourceListEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            sources: {type: array, items: {type: object}}
+            next_cursor: {type: string}
+    MembershipListEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            memberships: {type: array, items: {type: object}}
+            next_cursor: {type: string}
+    ActivityEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            events: {type: array, items: {type: object}}
+            next_cursor: {type: string}
+    ReplayRequest:
+      type: object
+      properties:
+        mode: {type: string, enum: [forensic, dry-run, controlled]}
+        account_id: {type: string, format: uuid}
+        operation_id: {type: string, format: uuid}
+        from: {type: string, format: date-time}
+        to: {type: string, format: date-time}
+        limit: {type: integer, minimum: 1, maximum: 10000}
+        idempotency_key: {type: string, maxLength: 200}
+        confirmed: {type: boolean}
+        commands: {type: array, items: {type: object}}
+    ProjectionReplayEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            account_id: {type: string, format: uuid}
+            source: {type: string}
+            replayed_events: {type: integer}
+            completed: {type: boolean}
+            next_cursor: {type: string}
+            matched: {type: array, items: {type: object}}
+            divergent: {type: array, items: {type: object}}
+            shadow_only: {type: array, items: {type: object}}
+            live_only: {type: array, items: {type: object}}
+    PromoteResultEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            account_id: {type: string, format: uuid}
+            target_region: {type: string}
+            fenced_epoch: {type: integer}
+    DirectoryEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            account_id: {type: string, format: uuid}
+            home_region: {type: string}
+            resolver_version: {type: string}
+            fenced_epoch: {type: integer}
+            promoted_at: {type: string, format: date-time}
+    AuditList:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            events: {type: array, items: {type: object}}
+            next_cursor: {type: string}
