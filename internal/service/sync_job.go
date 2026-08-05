@@ -34,18 +34,20 @@ type SyncJobInput struct {
 }
 
 type syncJobService struct {
-	repo        repository.SyncJobRepository
-	accounts    AccountService
-	accountRepo repository.AccountRepository
-	snapshots   repository.SnapshotRepository
-	store       storage.FileStorage
-	connectors  map[connector.Source]connector.Connector
-	permission  PermissionChecker
-	audit       AuditLedgerService
-	exportKey   []byte
-	exportTTL   time.Duration
-	maxExport   int64
-	region      string
+	repo         repository.SyncJobRepository
+	accounts     AccountService
+	accountRepo  repository.AccountRepository
+	snapshots    repository.SnapshotRepository
+	store        storage.FileStorage
+	connectors   map[connector.Source]connector.Connector
+	permission   PermissionChecker
+	audit        AuditLedgerService
+	auditLedger  repository.AuditLedgerRepository // optional; enables audit_export jobs (P4-08)
+	exportKey    []byte
+	exportTTL    time.Duration
+	maxExport    int64
+	region       string
+	metrics      ControlPlaneMetrics
 }
 
 type SyncJobOption func(*syncJobService)
@@ -68,6 +70,20 @@ func WithSyncExportConfig(encryptionKey string, maxBytes int64, ttl time.Duratio
 			s.exportTTL = ttl
 		}
 	}
+}
+
+// WithSyncJobMetrics attaches the control-plane observability sink.
+func WithSyncJobMetrics(metrics ControlPlaneMetrics) SyncJobOption {
+	return func(s *syncJobService) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
+	}
+}
+
+// WithSyncJobAuditLedger wires the durable ledger for audit_export jobs (P4-08).
+func WithSyncJobAuditLedger(ledger repository.AuditLedgerRepository) SyncJobOption {
+	return func(s *syncJobService) { s.auditLedger = ledger }
 }
 
 func WithSyncJobRegion(region string) SyncJobOption {
@@ -272,6 +288,9 @@ func (s *syncJobService) Start(ctx context.Context, interval time.Duration) func
 func (s *syncJobService) execute(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
 	if job.JobType == domain.SyncJobExport {
 		return s.executeExport(ctx, job)
+	}
+	if job.JobType == domain.SyncJobAuditExport {
+		return s.executeAuditExport(ctx, job)
 	}
 	if job.JobType == domain.SyncJobErase {
 		return s.executeErase(ctx, job)

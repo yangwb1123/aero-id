@@ -15,11 +15,19 @@ import (
 
 type AuditLedgerHandler struct {
 	audit      service.AuditLedgerService
+	jobs       service.SyncJobService // optional; nil disables the audit export route (P4-08)
 	permission middleware.PermissionChecker
 }
 
 func NewAuditLedgerHandler(audit service.AuditLedgerService, permission middleware.PermissionChecker) *AuditLedgerHandler {
 	return &AuditLedgerHandler{audit: audit, permission: permission}
+}
+
+// NewAuditLedgerHandlerWithExport additionally wires the asynchronous audit
+// export route (P4-08), gated by audit.export.
+func NewAuditLedgerHandlerWithExport(audit service.AuditLedgerService,
+	jobs service.SyncJobService, permission middleware.PermissionChecker) *AuditLedgerHandler {
+	return &AuditLedgerHandler{audit: audit, jobs: jobs, permission: permission}
 }
 
 func (h *AuditLedgerHandler) RegisterRoutes(r Routes) {
@@ -30,6 +38,14 @@ func (h *AuditLedgerHandler) RegisterRoutes(r Routes) {
 	group.GET("/events", h.List)
 	group.GET("/operations/:id", h.OperationTimeline)
 	group.GET("/verify", h.Verify)
+	if h.jobs != nil {
+		// P4-08: async audit export with signed-style manifest, TTL download.
+		export := r.Auth.Group("/audit/export")
+		if h.permission != nil {
+			export.Use(middleware.RequirePermission(domain.PermAuditExport, h.permission))
+		}
+		export.POST("", h.CreateAuditExport)
+	}
 }
 
 func (h *AuditLedgerHandler) OperationTimeline(c *gin.Context) {
@@ -188,4 +204,31 @@ func domainID(value string) (domain.ID, error) {
 		return domain.ID{}, apperr.BadRequest("audit.invalid_id", "audit identifier is invalid")
 	}
 	return id, nil
+}
+
+type auditExportRequest struct {
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// CreateAuditExport starts an asynchronous audit-export job (P4-08). The job id
+// is returned; progress and the TTL-bound download are served by the standard
+// sync job endpoints.
+func (h *AuditLedgerHandler) CreateAuditExport(c *gin.Context) {
+	var body auditExportRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		body = auditExportRequest{}
+	}
+	key := body.IdempotencyKey
+	if key == "" {
+		key = c.GetHeader("Idempotency-Key")
+	}
+	job, err := h.jobs.Create(c.Request.Context(), service.SyncJobInput{
+		JobType:        domain.SyncJobAuditExport,
+		IdempotencyKey: key,
+	})
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.Created(c, gin.H{"job_id": job.ID.String(), "status": job.Status, "download_url": "/v1/sync/jobs/" + job.ID.String() + "/export/download"})
 }

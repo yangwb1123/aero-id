@@ -278,6 +278,17 @@ paths:
           description: Shadow projection rebuilt from the event store, compared with live.
           content: {application/json: {schema: {$ref: '#/components/schemas/ProjectionReplayEnvelope'}}}
         '403': {$ref: '#/components/responses/Error'}
+  /audit/export:
+    post:
+      operationId: createAuditExport
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '202':
+          description: Asynchronous audit export accepted; track via /sync/jobs.
+          content: {application/json: {schema: {$ref: '#/components/schemas/AuditExportEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
   /admin/regions/promote:
     post:
       operationId: promoteHomeRegion
@@ -511,6 +522,15 @@ components:
             divergent: {type: array, items: {type: object}}
             shadow_only: {type: array, items: {type: object}}
             live_only: {type: array, items: {type: object}}
+    AuditExportEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            job_id: {type: string, format: uuid}
+            status: {type: string}
+            download_url: {type: string}
     PromoteResultEnvelope:
       type: object
       properties:

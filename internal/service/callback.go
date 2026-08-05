@@ -63,6 +63,7 @@ type callbackService struct {
 	publishers   []AuditPublisher
 	bulkhead     *bulkhead.Bulkhead
 	roundTripper http.RoundTripper // test seam; nil = default transport
+	metrics      ControlPlaneMetrics
 }
 
 func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) CallbackService {
@@ -86,7 +87,7 @@ func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) 
 	}
 	sum := sha256.Sum256([]byte(cfg.MasterKey))
 	return &callbackService{repo: repo, cfg: cfg, key: sum[:], worker: "callback-" + idgen.NewID().String(),
-		bulkhead: bulkhead.New(cfg.WorkerConcurrency)}
+		bulkhead: bulkhead.New(cfg.WorkerConcurrency), metrics: noopControlPlaneMetrics{}}
 }
 
 // SetAuditLogger is called by the composition root after the callback service
@@ -94,6 +95,14 @@ func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) 
 // cycle: audit publishes through callbacks, while callback administration is
 // itself audited.
 func (s *callbackService) SetAuditLogger(audit AuditLedgerService) { s.audit = audit }
+
+// SetControlPlaneMetrics attaches the observability sink (called by the
+// composition root; safe before Start).
+func (s *callbackService) SetControlPlaneMetrics(metrics ControlPlaneMetrics) {
+	if metrics != nil {
+		s.metrics = metrics
+	}
+}
 
 func (s *callbackService) SetAuditPublicationRepository(publications repository.AuditPublicationRepository) {
 	s.publications = publications
@@ -302,6 +311,7 @@ func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.Cal
 		next = next.Add(s.retryDelay(delivery.Attempt + 1))
 	}
 	_ = s.repo.MarkDelivery(ctx, delivery.ID, s.worker, status, statusCode, response, errorCode, next)
+	s.metrics.ObserveCallbackOutcome(status)
 }
 
 func (s *callbackService) deliver(ctx context.Context, delivery *domain.CallbackDelivery) (int, string, error) {

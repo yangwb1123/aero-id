@@ -9,6 +9,7 @@ const (
 	SyncJobReconcile SyncJobType = "reconcile"
 	SyncJobExport    SyncJobType = "export"
 	SyncJobErase     SyncJobType = "erase"
+	SyncJobAuditExport SyncJobType = "audit_export"
 )
 
 type SyncJobStatus string

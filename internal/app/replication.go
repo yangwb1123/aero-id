@@ -11,13 +11,14 @@ import (
 
 	"github.com/aero/aero-id/internal/config"
 	"github.com/aero/aero-id/internal/event"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 )
 
 // buildProjectionReplication wires the optional cross-region projection
 // replication worker (P6-03). Returns a nil stop func when disabled.
-func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logger) (stop func(), err error) {
+func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logger, metricsReg *metrics.Registry) (stop func(), err error) {
 	if !cfg.Replication.Enabled {
 		return nil, nil
 	}
@@ -46,7 +47,8 @@ func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logge
 	worker := service.NewProjectionReplicationService(cfg.Account.Region,
 		repository.NewAccountSnapshotRepository(gdb),
 		repository.NewReplicationCursorRepository(gdb),
-		publisher)
+		publisher,
+		service.WithProjectionReplicationMetrics(service.NewRegistryControlPlaneMetrics(metricsReg)))
 	interval := cfg.Replication.Interval
 	if interval <= 0 {
 		interval = 5 * time.Second

@@ -7,7 +7,7 @@ import (
 
 func validSyncJobType(value domain.SyncJobType) bool {
 	switch value {
-	case domain.SyncJobSync, domain.SyncJobReconcile, domain.SyncJobExport, domain.SyncJobErase:
+	case domain.SyncJobSync, domain.SyncJobReconcile, domain.SyncJobExport, domain.SyncJobErase, domain.SyncJobAuditExport:
 		return true
 	default:
 		return false

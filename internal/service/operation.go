@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -59,6 +60,7 @@ type operationService struct {
 	audit      AuditLedgerService
 	runner     OperationRunner
 	region     string
+	metrics    ControlPlaneMetrics
 }
 
 type OperationOption func(*operationService)
@@ -83,16 +85,33 @@ func WithOperationAccountRepository(accounts repository.AccountRepository) Opera
 	return func(s *operationService) { s.accounts = accounts }
 }
 
+func WithOperationMetrics(metrics ControlPlaneMetrics) OperationOption {
+	return func(s *operationService) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
+	}
+}
+
 func WithOperationPermission(checker PermissionChecker) OperationOption {
 	return func(s *operationService) { s.permission = checker }
 }
 
 func NewOperationService(repo repository.OperationRepository, opts ...OperationOption) OperationService {
-	s := &operationService{repo: repo, region: "local"}
+	s := &operationService{repo: repo, metrics: noopControlPlaneMetrics{}}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// observeOperation records terminal outcomes and the age of open operations.
+// Kept as a helper so the audit path stays readable.
+func (s *operationService) observeOperation(operation *domain.Operation, status domain.OperationStatus) {
+	s.metrics.ObserveOperationOutcome(string(status))
+	if !operation.CreatedAt.IsZero() {
+		s.metrics.ObserveOperationAge(string(status), time.Since(operation.CreatedAt))
+	}
 }
 
 func (s *operationService) Create(ctx context.Context, input OperationInput) (*domain.Operation, error) {

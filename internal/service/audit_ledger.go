@@ -48,11 +48,19 @@ type AuditFactInput struct {
 type auditLedgerService struct {
 	repo       repository.AuditLedgerRepository
 	publishers []AuditPublisher
+	metrics    ControlPlaneMetrics
 }
 
 func NewAuditLedgerService(repo repository.AuditLedgerRepository, publishers ...AuditPublisher) AuditLedgerService {
-	s := &auditLedgerService{repo: repo, publishers: publishers}
+	s := &auditLedgerService{repo: repo, publishers: publishers, metrics: noopControlPlaneMetrics{}}
 	return s
+}
+
+// SetControlPlaneMetrics attaches the observability sink (composition root).
+func (s *auditLedgerService) SetControlPlaneMetrics(metrics ControlPlaneMetrics) {
+	if metrics != nil {
+		s.metrics = metrics
+	}
 }
 
 func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) error {
@@ -60,6 +68,9 @@ func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) e
 	if err := s.repo.Append(ctx, fact); err != nil {
 		if errors.Is(err, repository.ErrAuditDuplicate) {
 			return nil
+		}
+		if s.metrics != nil {
+			s.metrics.ObserveAuditIngestFailure(strings.TrimSpace(input.Source))
 		}
 		return err
 	}

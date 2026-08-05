@@ -38,12 +38,27 @@ type projectionReplicationService struct {
 	cursors   repository.ReplicationCursorRepository
 	publisher event.EventPublisher
 	batch     int
+	metrics   ControlPlaneMetrics
 }
 
 func NewProjectionReplicationService(region string, snapshots repository.SnapshotRepository,
-	cursors repository.ReplicationCursorRepository, publisher event.EventPublisher) ProjectionReplicationService {
-	return &projectionReplicationService{region: region, snapshots: snapshots, cursors: cursors,
-		publisher: publisher, batch: DefaultReplicationBatch}
+	cursors repository.ReplicationCursorRepository, publisher event.EventPublisher,
+	options ...func(*projectionReplicationService)) ProjectionReplicationService {
+	svc := &projectionReplicationService{region: region, snapshots: snapshots, cursors: cursors,
+		publisher: publisher, batch: DefaultReplicationBatch, metrics: noopControlPlaneMetrics{}}
+	for _, opt := range options {
+		opt(svc)
+	}
+	return svc
+}
+
+// WithProjectionReplicationMetrics attaches the observability sink.
+func WithProjectionReplicationMetrics(metrics ControlPlaneMetrics) func(*projectionReplicationService) {
+	return func(s *projectionReplicationService) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
+	}
 }
 
 func (s *projectionReplicationService) ReplicateOnce(ctx context.Context) (int, error) {
@@ -61,6 +76,9 @@ func (s *projectionReplicationService) ReplicateOnce(ctx context.Context) (int, 
 	count := 0
 	for _, item := range items {
 		envelope := replicationEnvelope(s.region, item.TenantID, item.Snapshot)
+		if s.metrics != nil {
+			s.metrics.ObserveProjectionLag(item.Snapshot.Source, string(item.Snapshot.Dataset), time.Since(item.Snapshot.UpdatedAt.UTC()))
+		}
 		if err := s.publisher.Publish(ctx, envelope); err != nil {
 			// Stop at the first failure; the cursor stays behind so the next
 			// run resumes here (at-least-once, never skip).

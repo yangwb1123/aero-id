@@ -158,3 +158,21 @@ Flutter 侧：`flutter analyze` 0 issues、`flutter test` 全过、`flutter buil
 `docs/plans/2026-08-04-distributed-account-aggregation.md` **72/72 全部勾选**。
 剩余真实发布门禁均为外部执行项（非代码缺口）：源系统契约 contract test、多区域真实部署/failover 演练、
 Snaplink OAuth client 实际注册、独立仓库部署 CI/CD。
+
+## 2026-08-05 第五轮：审计导出 + 分层健康 + 控制面指标
+
+门禁：`make test`（34 pkg）、`make lint`、`make check-file-sizes`、`make build`、
+`make check-architecture`、`make test-integration`（37 pkg）全部通过。
+
+- [x] P4-08 审计导出：新 job 类型 `audit_export`（`POST /v1/audit/export`，权限 `audit.export`）——
+      按租户分页读 durable ledger，清单含每事实 record_hash 与可验证的 manifest_digest，
+      加密 + TTL 落对象存储，复用 `/v1/sync/jobs/:id/export/download`；截断时显式标记；
+      新增权限常量 `PermAuditExport`（`sync_audit_export.go` + 3 个单元测试）
+- [x] 分层健康：`GET /health/sources` 独立上报各 connector 连通性（ok/degraded），
+      源故障不影响 `/readyz`（`handler/http/source_health.go` + 测试）
+- [x] 控制面指标：`metrics/control_plane.go` —— events applied/quarantined、audit ingest
+      failures、operation outcomes/age、callback deliveries（含 DLQ）、reconcile drift、
+      projection/consumer lag；服务层经 `ControlPlaneMetrics` 接口埋点
+      （event_ingest / operation / callback / sync / replication / audit_ledger），
+      组合根注入（`service.NewRegistryControlPlaneMetrics`）
+- [x] OpenAPI 补充 `/audit/export`（守卫测试通过）

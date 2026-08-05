@@ -24,6 +24,7 @@ type eventIngestService struct {
 	receipts       repository.EventReceiptRepository
 	audit          AuditLedgerService
 	allowedRegions map[string]bool
+	metrics        ControlPlaneMetrics
 }
 
 // EventIngestOption configures the ingest service.
@@ -48,8 +49,17 @@ func WithEventIngestAudit(audit AuditLedgerService) EventIngestOption {
 	return func(s *eventIngestService) { s.audit = audit }
 }
 
+// WithEventIngestMetrics attaches the control-plane observability sink.
+func WithEventIngestMetrics(metrics ControlPlaneMetrics) EventIngestOption {
+	return func(s *eventIngestService) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
+	}
+}
+
 func NewEventIngestService(receipts repository.EventReceiptRepository, opts ...EventIngestOption) EventIngestService {
-	service := &eventIngestService{receipts: receipts}
+	service := &eventIngestService{receipts: receipts, metrics: noopControlPlaneMetrics{}}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -64,17 +74,20 @@ func (s *eventIngestService) Ingest(ctx context.Context, envelope *event.Envelop
 		// P6-04: residency policy — a disallowed source region is quarantined,
 		// never applied to local projections (data stays in its authority region).
 		_ = s.receipts.QuarantineEvent(ctx, envelope, "event.region_not_allowed")
+		s.metrics.ObserveEventQuarantined(envelope.Source + "." + envelope.EventType)
 		return nil, apperr.Forbidden("event.region_not_allowed",
 			"event source region violates residency policy")
 	}
 	mutation, err := envelope.Snapshot()
 	if err != nil {
+		s.metrics.ObserveEventQuarantined(envelope.Source + "." + envelope.EventType)
 		return nil, s.quarantineInvalidProjection(ctx, envelope, err)
 	}
 	result, atomicAudit, err := s.applySnapshot(ctx, envelope, mutation)
 	if err != nil {
 		return nil, mapEventApplyError(err)
 	}
+	s.metrics.ObserveEventApplied(string(mutation.Dataset))
 	if result.Status == "" {
 		return nil, fmt.Errorf("event apply returned empty status")
 	}

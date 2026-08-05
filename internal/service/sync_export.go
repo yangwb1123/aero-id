@@ -215,6 +215,8 @@ func syncPermission(jobType domain.SyncJobType) string {
 		return domain.PermAccountExport
 	case domain.SyncJobErase:
 		return domain.PermAccountErase
+	case domain.SyncJobAuditExport:
+		return domain.PermAuditExport
 	default:
 		return domain.PermSourceSync
 	}

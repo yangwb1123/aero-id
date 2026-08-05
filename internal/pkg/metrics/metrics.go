@@ -44,6 +44,8 @@ type Registry struct {
 	sourceCalls    map[string]*sourceMetric
 	sourceCircuits map[string]string
 
+	control controlPlaneMetrics
+
 	// SSO dependency health, populated by the SSO client (see SSOSink).
 	ssoCacheHits   map[string]uint64     // cache ("token"|"user") -> hits
 	ssoCacheMisses map[string]uint64     // cache ("token"|"user") -> misses
@@ -214,6 +216,8 @@ func (r *Registry) Handler() http.Handler {
 func (r *Registry) WriteText(w io.Writer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.writeControlPlaneText(w)
 
 	fmt.Fprintln(w, "# HELP aeroid_requests_total Total requests handled.")
 	fmt.Fprintln(w, "# TYPE aeroid_requests_total counter")

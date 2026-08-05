@@ -118,3 +118,36 @@ func TestRegistry_UnmatchedRouteLabel(t *testing.T) {
 		t.Errorf("empty route should be labelled \"unmatched\":\n%s", b.String())
 	}
 }
+
+func TestControlPlaneMetrics_TextOutput(t *testing.T) {
+	reg := metrics.NewRegistry()
+	reg.ObserveEventApplied("aero-vault.buckets")
+	reg.ObserveEventApplied("aero-vault.buckets")
+	reg.ObserveEventQuarantined("aero-im.rooms")
+	reg.ObserveOperationOutcome("completed")
+	reg.ObserveCallbackOutcome("dead_letter")
+	reg.ObserveReconcileDrift("aero-vault")
+	reg.ObserveProjectionLag("aero-vault", "aero-vault.buckets", 5)
+	reg.ObserveConsumerLag("aero-im", 12)
+	reg.ObserveOperationAge("unknown", 90)
+	reg.ObserveAuditIngestFailure("aero-id")
+
+	var buf strings.Builder
+	reg.WriteText(&buf)
+	out := buf.String()
+	for _, want := range []string{
+		`aero_control_events_applied_total{dataset="aero-vault.buckets"} 2`,
+		`aero_control_events_quarantined_total{dataset="aero-im.rooms"} 1`,
+		`aero_control_operations_total{status="completed"} 1`,
+		`aero_control_callback_deliveries_total{status="dead_letter"} 1`,
+		`aero_control_reconcile_drift_total{source="aero-vault"} 1`,
+		`aero_control_audit_ingest_failures_total{source="aero-id"} 1`,
+		`aero_control_projection_lag_seconds`,
+		`aero_control_consumer_lag_seconds`,
+		`aero_control_operation_age_seconds`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics output missing %q", want)
+		}
+	}
+}

@@ -93,6 +93,9 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	// One metrics registry, shared by HTTP/gRPC RED metrics and SSO health gauges.
 	metricsReg := metrics.NewRegistry()
+	// Control-plane observability sink for services (projection/consumer lag,
+	// operation outcomes, audit ingest failures, callback DLQ, reconcile drift).
+	controlMetrics := service.NewRegistryControlPlaneMetrics(metricsReg)
 
 	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, sso.TLSConfig{
 		Insecure:   cfg.SSO.Insecure,
@@ -143,6 +146,9 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		return nil, err
 	}
 	auditLedger := service.NewAuditLedgerService(auditLedgerRepo)
+	if setter, ok := auditLedger.(service.ControlPlaneMetricsSetter); ok {
+		setter.SetControlPlaneMetrics(controlMetrics)
+	}
 	wireAuditServices(callbackSvc, auditLedger, auditLedgerRepo, auditPublishers...)
 	outboxRepo := outbox.NewGormRepository(gdb)
 	// Materialized unread counter: shared by message and notification repos.
@@ -239,7 +245,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	aggregationSvc := service.NewAggregationService(accountSvc, snapshotRepo, sourceConnectors...)
 	eventIngestSvc := service.NewEventIngestService(eventReceiptRepo,
 		service.WithEventAllowedRegions(cfg.EventIngest.AllowedRegions),
-		service.WithEventIngestAudit(auditLedger))
+		service.WithEventIngestAudit(auditLedger),
+		service.WithEventIngestMetrics(controlMetrics))
 
 	// P3-04: optional NATS JetStream consumer feeding the same ingest service.
 	stopEventBus, err := buildEventBusConsumer(cfg, log, eventIngestSvc)
@@ -248,13 +255,14 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	}
 
 	// P6-03: optional cross-region projection replication worker.
-	stopReplication, err := buildProjectionReplication(cfg, gdb, log)
+	stopReplication, err := buildProjectionReplication(cfg, gdb, log, metricsReg)
 	if err != nil {
 		return nil, err
 	}
 	operationRunner := service.NewConnectorOperationRunner(accountRepo, snapshotRepo, sourceConnectors...)
 	operationSvc := service.NewOperationService(operationRepo, service.WithOperationAudit(auditLedger), service.WithOperationRegion(cfg.Account.Region),
-		service.WithOperationRunner(operationRunner), service.WithOperationAccountRepository(accountRepo), service.WithOperationPermission(permissionChecker))
+		service.WithOperationRunner(operationRunner), service.WithOperationAccountRepository(accountRepo), service.WithOperationPermission(permissionChecker),
+		service.WithOperationMetrics(controlMetrics))
 	var stopOperations func()
 	if worker, ok := operationSvc.(service.OperationWorkerService); ok {
 		stopOperations = worker.Start(context.Background(), time.Second)
@@ -264,8 +272,9 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithReplayPermission(permissionChecker))
 	syncJobSvc := service.NewSyncJobServiceWithOptions(syncJobRepo, accountSvc, accountRepo, snapshotRepo, store, sourceConnectors,
 		service.WithSyncJobPermission(permissionChecker), service.WithSyncJobAudit(auditLedger),
+		service.WithSyncJobAuditLedger(repository.NewAuditLedgerRepository(gdb, repository.AuditLedgerConfig{SigningKey: cfg.AuditLedger.SigningKey})),
 		service.WithSyncExportConfig(cfg.Export.EncryptionKey, cfg.Export.MaxBytes, cfg.Export.ArtifactTTL),
-		service.WithSyncJobRegion(cfg.Account.Region))
+		service.WithSyncJobRegion(cfg.Account.Region), service.WithSyncJobMetrics(controlMetrics))
 	stopSyncJobs := syncJobSvc.Start(context.Background(), time.Second)
 	banSvc := service.NewBanService(banRepo, adminSvc,
 		service.WithBanAuditLogger(auditLedger),
@@ -387,6 +396,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		},
 		tokenValidator,
 		health,
+		httpapi.NewSourceHealthHandler(sourceConnectors),
 		httpapi.NewFileHandler(fileSvc, downloader, presignTTL),
 		httpapi.NewMessageHandler(msgSvc),
 		httpapi.NewCommentHandler(commentSvc),
@@ -405,7 +415,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewEventIngestHandler(eventIngestSvc, cfg.EventIngest.SigningKey, cfg.EventIngest.MaxBodyBytes, cfg.EventIngest.ClockSkew,
 			httpapi.WithEventSourceKeys(cfg.EventIngest.SourceKeys), httpapi.WithEventTimestampRequired(cfg.EventIngest.RequireTimestamp),
 			httpapi.WithEventSourceBindings(buildEventSourceBindings(cfg.EventIngest.Bindings)), httpapi.WithEventPermissionChecker(permissionChecker)),
-		httpapi.NewAuditLedgerHandler(auditLedger, permissionChecker),
+		httpapi.NewAuditLedgerHandlerWithExport(auditLedger, syncJobSvc, permissionChecker),
 		httpapi.NewCallbackHandler(callbackSvc, permissionChecker),
 		httpapi.NewOperationHandler(operationSvc),
 		httpapi.NewSyncJobHandler(syncJobSvc, permissionChecker),
