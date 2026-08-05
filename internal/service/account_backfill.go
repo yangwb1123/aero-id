@@ -1,0 +1,96 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/aero/aero-id/internal/repository"
+	"gorm.io/gorm"
+)
+
+// LegacyBackfillTenant is the sentinel tenant used by migration 000048 for
+// pre-tenant legacy data. Legacy tables carry no tenant_id, so shadow identities
+// for their uids are scoped to this tenant until an authoritative Snaplink
+// tenant export replaces it.
+const LegacyBackfillTenant = "legacy"
+
+// DefaultBackfillBatch caps a single backfill run so the union scan stays
+// bounded; callers loop until Completed is true.
+const DefaultBackfillBatch = 500
+
+// BackfillResult reports one backfill run (P1-07). The backfill is shadow-only:
+// it creates account identities for legacy uids and never mutates legacy rows
+// or legacy read semantics.
+type BackfillResult struct {
+	Scanned   int64  `json:"scanned"`  // uids considered in this run
+	Created   int64  `json:"created"`  // accounts+identities newly created
+	Existing  int64  `json:"existing"` // uids already mapped to an account
+	Skipped   int64  `json:"skipped"`  // uids skipped (invalid / region mismatch)
+	Total     int64  `json:"total"`    // distinct legacy uids overall (approx)
+	Tenant    string `json:"tenant"`
+	Issuer    string `json:"issuer"`
+	Completed bool   `json:"completed"` // false => more uids remain; run again
+}
+
+// AccountBackfillService performs the one-shot legacy-uid shadow backfill.
+type AccountBackfillService interface {
+	BackfillLegacyIdentities(ctx context.Context, limit int) (*BackfillResult, error)
+}
+
+// WithAccountBackfillTenant sets the tenant used for shadow identities created
+// from legacy uids. Defaults to the 000048 sentinel (LegacyBackfillTenant).
+func WithAccountBackfillTenant(tenant string) AccountOption {
+	return func(s *accountService) {
+		if strings.TrimSpace(tenant) != "" {
+			s.backfillTenant = strings.TrimSpace(tenant)
+		}
+	}
+}
+
+func (s *accountService) BackfillLegacyIdentities(ctx context.Context, limit int) (*BackfillResult, error) {
+	backfill, ok := s.repo.(repository.LegacyBackfillRepository)
+	if !ok {
+		return nil, mapAccountError(errors.New("repository does not support legacy backfill"),
+			"backfill.unavailable", "legacy backfill is not available")
+	}
+	if limit <= 0 {
+		limit = DefaultBackfillBatch
+	}
+	total, err := backfill.CountLegacyUIDs(ctx)
+	if err != nil {
+		return nil, mapAccountError(err, "backfill.count_failed", "failed to count legacy uids")
+	}
+	uids, err := backfill.ListLegacyUIDs(ctx, s.backfillTenant, s.issuer, limit)
+	if err != nil {
+		return nil, mapAccountError(err, "backfill.scan_failed", "failed to scan legacy uids")
+	}
+	result := &BackfillResult{Total: total, Tenant: s.backfillTenant, Issuer: s.issuer}
+	for _, uid := range uids {
+		result.Scanned++
+		if strings.TrimSpace(uid) == "" {
+			result.Skipped++
+			continue
+		}
+		existing, findErr := s.repo.FindByIdentity(ctx, s.backfillTenant, s.issuer, uid)
+		if findErr == nil && existing != nil {
+			result.Existing++
+			continue
+		}
+		if findErr != nil && !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			result.Skipped++
+			continue
+		}
+		homeRegion := s.region
+		if s.home != nil {
+			homeRegion = s.home.Resolve(s.issuer, uid)
+		}
+		if _, err := s.repo.EnsureByIdentity(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion); err != nil {
+			result.Skipped++
+			continue
+		}
+		result.Created++
+	}
+	result.Completed = int64(len(uids)) < int64(limit)
+	return result, nil
+}
