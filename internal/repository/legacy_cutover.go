@@ -1,0 +1,203 @@
+package repository
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"gorm.io/gorm"
+	"strconv"
+	"gorm.io/gorm/clause"
+)
+
+// LegacyCutoverStatus is the per-tenant cutover state machine (P8-04).
+type LegacyCutoverStatus string
+
+const (
+	LegacyCutoverStatusLegacy     LegacyCutoverStatus = "legacy"     // default: compatibility surface live
+	LegacyCutoverStatusShadow     LegacyCutoverStatus = "shadow"     // dual-read in progress; legacy still serves
+	LegacyCutoverStatusCutOver    LegacyCutoverStatus = "cut_over"   // facade answers "moved" for this tenant
+	LegacyCutoverStatusRolledBack LegacyCutoverStatus = "rolled_back" // explicit rollback; legacy serves again
+)
+
+// ValidCutoverTransition reports whether from -> to is allowed.
+func ValidCutoverTransition(from, to LegacyCutoverStatus) bool {
+	switch to {
+	case LegacyCutoverStatusShadow:
+		return from == LegacyCutoverStatusLegacy || from == LegacyCutoverStatusRolledBack
+	case LegacyCutoverStatusCutOver:
+		return from == LegacyCutoverStatusShadow || from == LegacyCutoverStatusCutOver
+	case LegacyCutoverStatusRolledBack:
+		return from == LegacyCutoverStatusCutOver
+	case LegacyCutoverStatusLegacy:
+		return from == LegacyCutoverStatusLegacy || from == LegacyCutoverStatusRolledBack
+	default:
+		return false
+	}
+}
+
+// LegacyCutover is one tenant's cutover decision.
+type LegacyCutover struct {
+	TenantID  string
+	Status    LegacyCutoverStatus
+	DecidedAt time.Time
+	DecidedBy string
+	Note      string
+	UpdatedAt time.Time
+}
+
+// ErrInvalidCutoverTransition rejects illegal state moves.
+var ErrInvalidCutoverTransition = errors.New("invalid legacy cutover transition")
+
+// LegacyCutoverRepository persists the per-tenant cutover registry.
+type LegacyCutoverRepository interface {
+	GetCutover(ctx context.Context, tenantID string) (*LegacyCutover, error)
+	SetCutover(ctx context.Context, cutover *LegacyCutover) error
+}
+
+// CleanupReadinessItem is one checklist item of the P8-05 cleanup guard.
+type CleanupReadinessItem struct {
+	Check   string `gorm:"column:check_name"`
+	Ready   bool   `gorm:"column:ready"`
+	Details string `gorm:"column:details"`
+}
+
+type legacyCutoverRow struct {
+	TenantID  string    `gorm:"column:tenant_id;primaryKey"`
+	Status    string    `gorm:"column:status"`
+	DecidedAt time.Time `gorm:"column:decided_at"`
+	DecidedBy string    `gorm:"column:decided_by"`
+	Note      string    `gorm:"column:note"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+}
+
+func (legacyCutoverRow) TableName() string { return "legacy_cutover" }
+
+type legacyCutoverRepo struct {
+	db *gorm.DB
+}
+
+func NewLegacyCutoverRepository(db *gorm.DB) LegacyCutoverRepository {
+	return &legacyCutoverRepo{db: db}
+}
+
+func (r *legacyCutoverRepo) GetCutover(ctx context.Context, tenantID string) (*LegacyCutover, error) {
+	var row legacyCutoverRow
+	err := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return legacyCutoverRowToDomain(&row), nil
+}
+
+func (r *legacyCutoverRepo) SetCutover(ctx context.Context, cutover *LegacyCutover) error {
+	now := time.Now().UTC()
+	row := &legacyCutoverRow{TenantID: cutover.TenantID, Status: string(cutover.Status),
+		DecidedAt: now, DecidedBy: cutover.DecidedBy, Note: cutover.Note, UpdatedAt: now}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tenant_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"status", "decided_at", "decided_by", "note", "updated_at"}),
+	}).Create(row).Error
+}
+
+func legacyCutoverRowToDomain(row *legacyCutoverRow) *LegacyCutover {
+	return &LegacyCutover{TenantID: row.TenantID, Status: LegacyCutoverStatus(row.Status),
+		DecidedAt: row.DecidedAt, DecidedBy: row.DecidedBy, Note: row.Note, UpdatedAt: row.UpdatedAt}
+}
+
+// LegacyCleanupRepository answers the P8-05 cleanup-readiness checklist for a
+// tenant: remaining legacy rows, in-flight jobs, and audit evidence. The check
+// itself never deletes anything.
+type LegacyCleanupRepository interface {
+	CleanupReadiness(ctx context.Context, tenantID string) ([]CleanupReadinessItem, error)
+}
+
+type legacyCleanupRepo struct {
+	db *gorm.DB
+}
+
+func NewLegacyCleanupRepository(db *gorm.DB) LegacyCleanupRepository {
+	return &legacyCleanupRepo{db: db}
+}
+
+// CleanupReadiness evaluates the "remove legacy write path" preconditions
+// (P8-05): references gone, exports/jobs drained, audit retained, rollback
+// window elapsed, deletion proofs present. Each item reports ready + details.
+func (r *legacyCleanupRepo) CleanupReadiness(ctx context.Context, tenantID string) ([]CleanupReadinessItem, error) {
+	var items []CleanupReadinessItem
+
+	// 1. Remaining legacy rows owned by the tenant's accounts.
+	var remaining int64
+	if err := r.db.WithContext(ctx).Raw(`
+		SELECT count(*) FROM (
+			SELECT f.id FROM files f JOIN accounts a ON a.canonical_uid = f.owner_uid AND a.tenant_id = ? WHERE f.deleted_at IS NULL
+			UNION ALL
+			SELECT m.id FROM messages m JOIN accounts a ON (a.canonical_uid = m.from_uid OR a.canonical_uid = m.to_uid) AND a.tenant_id = ? WHERE m.deleted_at IS NULL
+			UNION ALL
+			SELECT c.id FROM comments c JOIN accounts a ON a.canonical_uid = c.owner_uid AND a.tenant_id = ? WHERE c.deleted_at IS NULL
+		) legacy_rows`, tenantID, tenantID, tenantID).Scan(&remaining).Error; err != nil {
+		return nil, err
+	}
+	items = append(items, CleanupReadinessItem{
+		Check: "legacy_rows_drained", Ready: remaining == 0,
+		Details: itoa(remaining) + " legacy rows still reference tenant accounts",
+	})
+
+	// 2. In-flight sync/export jobs for the tenant.
+	var activeJobs int64
+	if err := r.db.WithContext(ctx).Model(&syncJobRow{}).
+		Where("tenant_id = ? AND status IN ?", tenantID, []string{"pending", "running", "unknown"}).
+		Count(&activeJobs).Error; err != nil {
+		return nil, err
+	}
+	items = append(items, CleanupReadinessItem{
+		Check: "jobs_drained", Ready: activeJobs == 0,
+		Details: itoa(activeJobs) + " active sync/export jobs",
+	})
+
+	// 3. Audit evidence retained for the tenant (durable ledger facts).
+	var auditFacts int64
+	if err := r.db.WithContext(ctx).Raw(
+		"SELECT count(*) FROM audit_ledger WHERE tenant_id = ?", tenantID).Scan(&auditFacts).Error; err != nil {
+		return nil, err
+	}
+	items = append(items, CleanupReadinessItem{
+		Check: "audit_retained", Ready: auditFacts > 0,
+		Details: itoa(auditFacts) + " durable audit facts",
+	})
+
+	// 4. Rollback window: the cutover decision age; the service evaluates the
+	// window itself so the repository stays policy-free.
+	var decision struct {
+		Status    string     `gorm:"column:status"`
+		DecidedAt *time.Time `gorm:"column:decided_at"`
+	}
+	decisionErr := r.db.WithContext(ctx).Raw(
+		"SELECT status, decided_at FROM legacy_cutover WHERE tenant_id = ?", tenantID).Scan(&decision).Error
+	if errors.Is(decisionErr, gorm.ErrRecordNotFound) {
+		items = append(items, CleanupReadinessItem{
+			Check: "rollback_window_elapsed", Ready: false,
+			Details: "no cutover decision recorded for tenant",
+		})
+	} else if decisionErr != nil {
+		return nil, decisionErr
+	} else {
+		age := "never"
+		if decision.DecidedAt != nil {
+			age = time.Since(*decision.DecidedAt).Round(time.Second).String()
+		}
+		items = append(items, CleanupReadinessItem{
+			Check: "rollback_window_elapsed", Ready: false,
+			Details: "decision " + decision.Status + " made " + age + " ago (window evaluated by service)",
+		})
+	}
+
+	return items, nil
+}
+
+func itoa(value int64) string {
+	return strconv.FormatInt(value, 10)
+}
