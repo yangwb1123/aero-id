@@ -1,6 +1,7 @@
 package http
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,12 +11,15 @@ import (
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/pkg/idgen"
+	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 )
 
 type AuditLedgerHandler struct {
 	audit      service.AuditLedgerService
-	jobs       service.SyncJobService // optional; nil disables the audit export route (P4-08)
+	holds      service.AuditHoldService  // optional; nil disables legal-hold routes (P4-07)
+	anchor     service.AuditAnchorService // optional; nil disables anchor routes (P4-03)
+	jobs       service.SyncJobService     // optional; nil disables the audit export route (P4-08)
 	permission middleware.PermissionChecker
 }
 
@@ -23,11 +27,12 @@ func NewAuditLedgerHandler(audit service.AuditLedgerService, permission middlewa
 	return &AuditLedgerHandler{audit: audit, permission: permission}
 }
 
-// NewAuditLedgerHandlerWithExport additionally wires the asynchronous audit
-// export route (P4-08), gated by audit.export.
-func NewAuditLedgerHandlerWithExport(audit service.AuditLedgerService,
-	jobs service.SyncJobService, permission middleware.PermissionChecker) *AuditLedgerHandler {
-	return &AuditLedgerHandler{audit: audit, jobs: jobs, permission: permission}
+// NewAuditLedgerHandlerWithExtensions wires the audit export (P4-08),
+// legal-hold administration (P4-07) and WORM anchoring (P4-03).
+func NewAuditLedgerHandlerWithExtensions(audit service.AuditLedgerService,
+	holds service.AuditHoldService, anchor service.AuditAnchorService, jobs service.SyncJobService,
+	permission middleware.PermissionChecker) *AuditLedgerHandler {
+	return &AuditLedgerHandler{audit: audit, holds: holds, anchor: anchor, jobs: jobs, permission: permission}
 }
 
 func (h *AuditLedgerHandler) RegisterRoutes(r Routes) {
@@ -45,6 +50,25 @@ func (h *AuditLedgerHandler) RegisterRoutes(r Routes) {
 			export.Use(middleware.RequirePermission(domain.PermAuditExport, h.permission))
 		}
 		export.POST("", h.CreateAuditExport)
+	}
+	if h.anchor != nil {
+		// P4-03: tamper-evidence anchoring.
+		anchor := r.Auth.Group("/admin/audit/anchor")
+		if h.permission != nil {
+			anchor.Use(middleware.RequirePermission(domain.PermAuditRead, h.permission))
+		}
+		anchor.POST("", h.AnchorChains)
+		anchor.GET("/manifest/:source/:partition", h.AnchorManifest)
+	}
+	if h.holds != nil {
+		// P4-07: legal-hold administration.
+		holds := r.Auth.Group("/admin/audit/holds")
+		if h.permission != nil {
+			holds.Use(middleware.RequirePermission(domain.PermAuditRead, h.permission))
+		}
+		holds.GET("", h.ListHolds)
+		holds.POST("", h.PutHold)
+		holds.DELETE("/:scope_type/:scope_id", h.RemoveHold)
 	}
 }
 
@@ -231,4 +255,80 @@ func (h *AuditLedgerHandler) CreateAuditExport(c *gin.Context) {
 		return
 	}
 	httpx.Created(c, gin.H{"job_id": job.ID.String(), "status": job.Status, "download_url": "/v1/sync/jobs/" + job.ID.String() + "/export/download"})
+}
+
+type holdRequest struct {
+	ScopeType string `json:"scope_type" binding:"required"` // tenant | account | actor
+	ScopeID   string `json:"scope_id" binding:"required"`
+	Reason    string `json:"reason"`
+	ExpiresAt string `json:"expires_at"` // RFC3339; empty = indefinite
+}
+
+func (h *AuditLedgerHandler) ListHolds(c *gin.Context) {
+	tenantID := service.TenantFrom(c.Request.Context())
+	holds, err := h.holds.List(c.Request.Context(), tenantID)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	out := make([]gin.H, 0, len(holds))
+	for _, hold := range holds {
+		out = append(out, gin.H{"scope_type": hold.ScopeType, "scope_id": hold.ScopeID,
+			"reason": hold.Reason, "created_by": hold.CreatedBy, "created_at": hold.CreatedAt, "expires_at": hold.ExpiresAt})
+	}
+	httpx.OK(c, gin.H{"holds": out})
+}
+
+func (h *AuditLedgerHandler) PutHold(c *gin.Context) {
+	var body holdRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.WriteError(c, apperr.BadRequest("audit_hold.invalid_request", "scope_type and scope_id are required"))
+		return
+	}
+	var expiresAt *time.Time
+	if strings.TrimSpace(body.ExpiresAt) != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, body.ExpiresAt)
+		if err != nil {
+			httpx.WriteError(c, apperr.BadRequest("audit_hold.invalid_expiry", "expires_at must be RFC3339"))
+			return
+		}
+		expiresAt = &parsed
+	}
+	tenantID := service.TenantFrom(c.Request.Context())
+	hold, err := h.holds.Put(c.Request.Context(), tenantID, repository.AuditHoldScope(body.ScopeType), body.ScopeID, body.Reason, expiresAt)
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.Created(c, gin.H{"scope_type": hold.ScopeType, "scope_id": hold.ScopeID, "created_at": hold.CreatedAt})
+}
+
+func (h *AuditLedgerHandler) RemoveHold(c *gin.Context) {
+	tenantID := service.TenantFrom(c.Request.Context())
+	if err := h.holds.Remove(c.Request.Context(), tenantID,
+		repository.AuditHoldScope(c.Param("scope_type")), c.Param("scope_id")); err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"removed": true})
+}
+
+// AnchorChains runs one WORM anchoring pass over all audit chains (P4-03).
+func (h *AuditLedgerHandler) AnchorChains(c *gin.Context) {
+	result, err := h.anchor.AnchorOnce(c.Request.Context())
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, result)
+}
+
+// AnchorManifest returns the newest stored anchor for one chain.
+func (h *AuditLedgerHandler) AnchorManifest(c *gin.Context) {
+	manifest, err := h.anchor.AnchorManifest(c.Request.Context(), c.Param("source"), c.Param("partition"))
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
+	httpx.OK(c, manifest)
 }

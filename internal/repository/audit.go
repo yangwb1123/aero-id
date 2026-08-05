@@ -103,6 +103,12 @@ const purgeInterval = 100 * time.Millisecond
 // with a 100ms pause in between to limit DB IO impact. Returns the total number
 // of rows deleted.
 func (r *auditRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return r.PurgeOlderThanExcluding(ctx, cutoff, batchSize, nil)
+}
+
+// PurgeOlderThanExcluding purges legacy audit rows before cutoff, exempting the
+// given actor uids (legal hold, P4-07). Pass a non-empty set to honor holds.
+func (r *auditRepo) PurgeOlderThanExcluding(ctx context.Context, cutoff time.Time, batchSize int, exemptActors []string) (int64, error) {
 	if batchSize <= 0 {
 		batchSize = batchPurgeSize
 	}
@@ -113,8 +119,11 @@ func (r *auditRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time, batchS
 		sub := r.db.WithContext(ctx).Model(&auditEventRow{}).
 			Where("created_at < ?", cutoff).
 			Order("created_at ASC, id ASC").
-			Select("id").
-			Limit(batchSize)
+			Select("id")
+		if len(exemptActors) > 0 {
+			sub = sub.Where("actor_uid NOT IN ?", exemptActors)
+		}
+		sub = sub.Limit(batchSize)
 		res := r.db.WithContext(ctx).
 			Where("id IN (?)", sub).
 			Delete(&auditEventRow{})
@@ -135,6 +144,14 @@ func (r *auditRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time, batchS
 // event rows older than retention (e.g. 90d) on a fixed interval. Returns a stop
 // function. A non-positive interval disables the cleaner (returns no-op stop).
 func RunAuditCleaner(repo AuditRepository, log *zap.Logger, retention time.Duration, interval time.Duration) func() {
+	return RunAuditCleanerWithHolds(repo, nil, log, retention, interval)
+}
+
+// RunAuditCleanerWithHolds additionally consults a legal-hold registry so
+// actors under hold are exempt from the retention purge (P4-07). A nil hold
+// repository behaves like the plain cleaner.
+func RunAuditCleanerWithHolds(repo AuditRepository, holds AuditHoldRepository, log *zap.Logger,
+	retention time.Duration, interval time.Duration) func() {
 	if interval <= 0 {
 		return func() {}
 	}
@@ -146,7 +163,11 @@ func RunAuditCleaner(repo AuditRepository, log *zap.Logger, retention time.Durat
 			select {
 			case <-t.C:
 				cutoff := time.Now().UTC().Add(-retention)
-				deleted, err := repo.PurgeOlderThan(ctx, cutoff, 0)
+				var exempt []string
+				if holds != nil {
+					exempt, _ = holds.HoldScopeIDs(ctx, AuditHoldScopeActor)
+				}
+				deleted, err := purgeAuditWithExempt(repo, ctx, cutoff, exempt)
 				if err != nil {
 					log.Warn("audit purge failed", zap.Error(err))
 				} else if deleted > 0 {
@@ -161,4 +182,14 @@ func RunAuditCleaner(repo AuditRepository, log *zap.Logger, retention time.Durat
 		}
 	}()
 	return func() { close(done) }
+}
+
+// purgeAuditWithExempt routes to the exclusion-aware purge when holds exist.
+func purgeAuditWithExempt(repo AuditRepository, ctx context.Context, cutoff time.Time, exempt []string) (int64, error) {
+	if excluding, ok := repo.(interface {
+		PurgeOlderThanExcluding(context.Context, time.Time, int, []string) (int64, error)
+	}); ok {
+		return excluding.PurgeOlderThanExcluding(ctx, cutoff, 0, exempt)
+	}
+	return repo.PurgeOlderThan(ctx, cutoff, 0)
 }

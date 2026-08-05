@@ -23,6 +23,16 @@ type AuditLedgerRepository interface {
 	Append(context.Context, *domain.AuditFact) error
 	List(context.Context, domain.AuditFactFilter) ([]*domain.AuditFact, string, error)
 	VerifyChain(context.Context, string, string) error
+	// ChainPartitions enumerates the (source, partition) chains (P4-03).
+	ChainPartitions(ctx context.Context) ([]ChainPartition, error)
+	// ChainHead returns the newest fact of one chain (anchor input).
+	ChainHead(ctx context.Context, source, partition string) (*domain.AuditFact, error)
+}
+
+// ChainPartition identifies one hash chain.
+type ChainPartition struct {
+	Source    string
+	Partition string
 }
 
 type AuditLedgerTransactionalRepository interface {
@@ -144,8 +154,13 @@ func (r *auditLedgerRepo) appendInTx(tx *gorm.DB, fact *domain.AuditFact, payloa
 	if fact.ID == (domain.ID{}) {
 		fact.ID = idgen.NewID()
 	}
+	// PostgreSQL timestamptz stores microsecond precision; truncate before the
+	// record hash is computed so chain verification round-trips (P4-03).
+	fact.OccurredAt = fact.OccurredAt.Truncate(time.Microsecond)
 	if fact.CreatedAt.IsZero() {
-		fact.CreatedAt = now
+		fact.CreatedAt = now.Truncate(time.Microsecond)
+	} else {
+		fact.CreatedAt = fact.CreatedAt.Truncate(time.Microsecond)
 	}
 	return r.createAuditRows(tx, fact, payload, now)
 }
@@ -370,7 +385,7 @@ func auditRecordHash(fact *domain.AuditFact) string {
 			Action, ResourceType, ResourceID, Actor string
 			Occurred                                time.Time
 		}{fact.ChainSequence, fact.Source, fact.PartitionKey, fact.PreviousHash, fact.PayloadHash,
-			fact.Action, fact.ResourceType, fact.ResourceID, fact.ActorUID, fact.OccurredAt})
+			fact.Action, fact.ResourceType, fact.ResourceID, fact.ActorUID, fact.OccurredAt.UTC()})
 		return digest(value)
 	}
 	if fact.HashVersion == 1 {
@@ -397,7 +412,7 @@ func auditRecordHash(fact *domain.AuditFact) string {
 	}{fact.HashVersion, fact.ID.String(), fact.Source, fact.SourceRegion, fact.PartitionKey, fact.PreviousHash, fact.PayloadHash,
 		fact.EventID.String(), fact.OperationID.String(), fact.CorrelationID.String(), fact.CausationID.String(), fact.ActorUID,
 		fact.RequestID, fact.AccountID.String(), fact.TenantID, fact.Action, fact.ResourceType, fact.ResourceID, fact.ChainSequence,
-		fact.OccurredAt, fact.CreatedAt})
+		fact.OccurredAt.UTC(), fact.CreatedAt.UTC()})
 	return digest(value)
 }
 
@@ -425,4 +440,33 @@ func idFromPtr(value *uuid.UUID) domain.ID {
 		return domain.ID{}
 	}
 	return *value
+}
+
+func (r *auditLedgerRepo) ChainPartitions(ctx context.Context) ([]ChainPartition, error) {
+	var rows []struct {
+		Source    string `gorm:"column:source"`
+		Partition string `gorm:"column:partition_key"`
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&auditLedgerRow{}).
+		Select("DISTINCT source, partition_key").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]ChainPartition, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ChainPartition{Source: row.Source, Partition: row.Partition})
+	}
+	return out, nil
+}
+
+func (r *auditLedgerRepo) ChainHead(ctx context.Context, source, partition string) (*domain.AuditFact, error) {
+	var row auditLedgerRow
+	if err := r.db.WithContext(ctx).
+		Where("source = ? AND partition_key = ?", source, partition).
+		Order("chain_sequence DESC, id DESC").
+		First(&row).Error; err != nil {
+		return nil, err
+	}
+	return auditLedgerRowToFact(&row), nil
 }

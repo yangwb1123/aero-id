@@ -91,10 +91,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		return nil, fmt.Errorf("tracing init: %w", err)
 	}
 
-	// One metrics registry, shared by HTTP/gRPC RED metrics and SSO health gauges.
+	// One metrics registry (HTTP/gRPC RED + control-plane sink).
 	metricsReg := metrics.NewRegistry()
-	// Control-plane observability sink for services (projection/consumer lag,
-	// operation outcomes, audit ingest failures, callback DLQ, reconcile drift).
 	controlMetrics := service.NewRegistryControlPlaneMetrics(metricsReg)
 
 	ssoClient, err := sso.NewClient(ctx, cfg.SSO.Endpoint, sso.TLSConfig{
@@ -378,6 +376,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	stopDegradation := degradationState.StartProbing(context.Background(), 30*time.Second, 3, 2)
 
 	health := buildHealthHandler(cfg, sqlDB, ssoClient, billingRuntime.probe)
+	holdSvc, anchorSvc := buildAuditComplianceServices(gdb, auditLedger, auditLedgerRepo, store)
+	auditHandler := buildAuditLedgerHandler(auditLedger, holdSvc, anchorSvc, syncJobSvc, permissionChecker)
 	router := httpapi.NewRouter(
 		log,
 		httpapi.RouterConfig{
@@ -415,7 +415,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewEventIngestHandler(eventIngestSvc, cfg.EventIngest.SigningKey, cfg.EventIngest.MaxBodyBytes, cfg.EventIngest.ClockSkew,
 			httpapi.WithEventSourceKeys(cfg.EventIngest.SourceKeys), httpapi.WithEventTimestampRequired(cfg.EventIngest.RequireTimestamp),
 			httpapi.WithEventSourceBindings(buildEventSourceBindings(cfg.EventIngest.Bindings)), httpapi.WithEventPermissionChecker(permissionChecker)),
-		httpapi.NewAuditLedgerHandlerWithExport(auditLedger, syncJobSvc, permissionChecker),
+		auditHandler,
 		httpapi.NewCallbackHandler(callbackSvc, permissionChecker),
 		httpapi.NewOperationHandler(operationSvc),
 		httpapi.NewSyncJobHandler(syncJobSvc, permissionChecker),

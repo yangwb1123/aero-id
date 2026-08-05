@@ -190,3 +190,20 @@ Snaplink OAuth client 实际注册、独立仓库部署 CI/CD。
       (GET/POST)、`/admin/callback-subscriptions/{id}` (DELETE)、
       `/admin/callback-deliveries/{id}/replay` (POST)、`/audit/replays/{id}` (GET) +
       CallbackCreateRequest/CallbackListEnvelope schemas；契约守卫测试同步（30 paths）
+
+## 2026-08-05 第七轮：legal hold + WORM 锚定（P4-03/P4-07）
+
+门禁：`make test`（34 pkg）、`make lint`、`make check-file-sizes`、`make build`、
+`make check-architecture`、`make test-integration`（37 pkg）全部通过。
+
+- [x] P4-07 legal hold：迁移 000057 `audit_holds`（scope: tenant/account/actor，支持过期）；
+      `PUT/GET/DELETE /v1/admin/audit/holds`（upsert 幂等 + 审计记录）；
+      actor 级 hold **豁免 legacy 审计清理**（`PurgeOlderThanExcluding` + cleaner 注入）；
+      单元 + 真实 PG 集成测试
+- [x] P4-03 WORM 锚定：`ChainPartitions/ChainHead` 读取链头；`POST /v1/admin/audit/anchor`
+      逐链先 VerifyChain（损坏链拒绝锚定，fail-closed）再写锚定对象（chain_sequence/record_hash/
+      signature/previous_anchor_hash/anchor_hash，可验证）；`GET .../anchor/manifest/...` 按内容枚举；
+      单元 + 集成测试
+- [x] **修复既有缺陷**：审计链 hash 含 time.Time，DB timestamptz 往返（微秒截断 + 本地时区）
+      导致 `VerifyChain` 失败——append 时截断微秒、record hash 内 `.UTC()` 规范化；
+      迁移索引谓词不能用 `now()`（非 IMMUTABLE）

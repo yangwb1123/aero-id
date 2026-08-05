@@ -35,6 +35,12 @@ func (f *fakeAuditLedgerRepo) List(ctx context.Context, filter domain.AuditFactF
 	}
 	return out, "", nil
 }
+func (f *fakeAuditLedgerRepo) ChainPartitions(ctx context.Context) ([]repository.ChainPartition, error) {
+	return nil, nil
+}
+func (f *fakeAuditLedgerRepo) ChainHead(ctx context.Context, source, partition string) (*domain.AuditFact, error) {
+	return nil, repository.ErrNotFound
+}
 
 // memoryStore is a minimal FileStorage for artifact verification.
 type memoryStore struct {
@@ -43,7 +49,7 @@ type memoryStore struct {
 
 func (m *memoryStore) Put(ctx context.Context, owner, name string, reader io.Reader) (string, int64, error) {
 	data, _ := io.ReadAll(reader)
-	key := owner + "/" + name
+	key := name
 	m.objects[key] = data
 	return key, int64(len(data)), nil
 }
@@ -69,6 +75,19 @@ func (m *memoryStore) Stat(ctx context.Context, key string) (*storage.ObjectInfo
 	return &storage.ObjectInfo{Size: int64(len(data))}, nil
 }
 func (m *memoryStore) NewKey(ownerUID string) string { return ownerUID + "/key-" + time.Now().String() }
+func (m *memoryStore) List(ctx context.Context, fn func(storage.ObjectInfo) (bool, error)) error {
+	for key := range m.objects {
+		info := storage.ObjectInfo{Key: key, Modified: time.Now()}
+		ok, err := fn(info)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+	}
+	return nil
+}
 func (m *memoryStore) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	return key, nil
 }

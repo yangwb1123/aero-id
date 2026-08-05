@@ -339,6 +339,56 @@ paths:
           description: Replay operation timeline (forensic/dry-run/controlled).
           content: {application/json: {schema: {$ref: '#/components/schemas/OperationEnvelope'}}}
         '403': {$ref: '#/components/responses/Error'}
+  /admin/audit/holds:
+    get:
+      operationId: listLegalHolds
+      security: [{snaplinkBearer: []}]
+      responses:
+        '200':
+          description: Active legal holds of the tenant (P4-07).
+          content: {application/json: {schema: {$ref: '#/components/schemas/HoldListEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: putLegalHold
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HoldRequest'}
+      responses:
+        '201': {description: Legal hold recorded.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/audit/holds/{scope_type}/{scope_id}:
+    delete:
+      operationId: removeLegalHold
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {name: scope_type, in: path, required: true, schema: {type: string, enum: [tenant, account, actor]}}
+        - {name: scope_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Legal hold lifted.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/audit/anchor:
+    post:
+      operationId: anchorAuditChains
+      security: [{snaplinkBearer: []}]
+      responses:
+        '200':
+          description: WORM anchor pass over all audit chains (P4-03).
+          content: {application/json: {schema: {$ref: '#/components/schemas/AnchorRunEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/audit/anchor/manifest/{source}/{partition}:
+    get:
+      operationId: getAuditAnchor
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {name: source, in: path, required: true, schema: {type: string}}
+        - {name: partition, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Newest stored anchor for the chain.
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
   /admin/regions/promote:
     post:
       operationId: promoteHomeRegion
@@ -572,6 +622,29 @@ components:
             divergent: {type: array, items: {type: object}}
             shadow_only: {type: array, items: {type: object}}
             live_only: {type: array, items: {type: object}}
+    HoldRequest:
+      type: object
+      required: [scope_type, scope_id]
+      properties:
+        scope_type: {type: string, enum: [tenant, account, actor]}
+        scope_id: {type: string}
+        reason: {type: string}
+        expires_at: {type: string, format: date-time}
+    HoldListEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            holds: {type: array, items: {type: object}}
+    AnchorRunEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            anchored: {type: integer}
+            chains: {type: array, items: {type: object}}
     CallbackCreateRequest:
       type: object
       required: [endpoint, event_types]

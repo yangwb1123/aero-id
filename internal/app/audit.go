@@ -7,8 +7,11 @@ import (
 
 	"github.com/aero/aero-id/internal/config"
 	"github.com/aero/aero-id/internal/connector/auditgovernance"
+	httpapi "github.com/aero/aero-id/internal/handler/http"
+	"github.com/aero/aero-id/internal/middleware"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
+	"github.com/aero/aero-id/internal/storage"
 )
 
 func wireAuditServices(callbackSvc service.CallbackService, auditLedger service.AuditLedgerService,
@@ -98,4 +101,20 @@ func validateAuditBindingCoverage(db *gorm.DB, bindings map[string]config.AuditG
 		}
 	}
 	return nil
+}
+
+// buildAuditComplianceServices constructs the legal-hold and WORM-anchor
+// services (P4-03/P4-07) sharing the ledger, database and export storage.
+func buildAuditComplianceServices(gdb *gorm.DB, auditLedger service.AuditLedgerService,
+	ledgerRepo repository.AuditLedgerRepository, store storage.FileStorage) (service.AuditHoldService, service.AuditAnchorService) {
+	return service.NewAuditHoldService(repository.NewAuditHoldRepository(gdb), auditLedger),
+		service.NewAuditAnchorService(ledgerRepo, store)
+}
+
+// buildAuditLedgerHandler assembles the audit surface: ledger query, legal
+// holds, WORM anchoring and async export.
+func buildAuditLedgerHandler(auditLedger service.AuditLedgerService, holdSvc service.AuditHoldService,
+	anchorSvc service.AuditAnchorService, syncJobSvc service.SyncJobService,
+	permissionChecker middleware.PermissionChecker) *httpapi.AuditLedgerHandler {
+	return httpapi.NewAuditLedgerHandlerWithExtensions(auditLedger, holdSvc, anchorSvc, syncJobSvc, permissionChecker)
 }
