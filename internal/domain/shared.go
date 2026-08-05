@@ -68,10 +68,12 @@ const (
 	TargetTypeMessage TargetType = "message"
 )
 
-// Page is the standard pagination request.
+// Page is the standard pagination request. Optional filter fields (e.g. Category)
+// are zero-valued when absent and MUST be interpreted as "no filter".
 type Page struct {
-	Limit  int    // default 20, max 100
-	Cursor string // opaque, repository-defined
+	Limit    int          // default 20, max 100
+	Cursor   string       // opaque, repository-defined
+	Category FileCategory // optional file category filter; empty = no filter
 }
 
 const (

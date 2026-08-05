@@ -2,9 +2,6 @@ package storage
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -114,37 +111,13 @@ func (l *Local) PresignPut(ctx context.Context, key string, ttl time.Duration) (
 }
 
 func (l *Local) sign(key string, expires int64) string {
-	mac := hmac.New(sha256.New, []byte(l.cfg.SigningKey))
-	fmt.Fprintf(mac, "%s|%d", key, expires)
-	return hex.EncodeToString(mac.Sum(nil))
+	return presignHMAC(key, expires, l.cfg.SigningKey)
 }
 
 // VerifyPresignedURL is used by the download handler to authenticate a presigned URL.
 // It validates the signature and rejects expired URLs based on `now`.
 func (l *Local) VerifyPresignedURL(rawURL string, now time.Time) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parse url: %w", err)
-	}
-	q := u.Query()
-	key := q.Get("key")
-	expStr := q.Get("exp")
-	gotSig := q.Get("sig")
-	if key == "" || expStr == "" || gotSig == "" {
-		return errors.New("presign: missing params")
-	}
-	exp, err := strconv.ParseInt(expStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("presign: bad exp: %w", err)
-	}
-	if now.Unix() > exp {
-		return errors.New("presign: expired")
-	}
-	wantSig := l.sign(key, exp)
-	if !hmac.Equal([]byte(gotSig), []byte(wantSig)) {
-		return errors.New("presign: bad signature")
-	}
-	return nil
+	return verifyPresignedURL(rawURL, now, l.cfg.SigningKey)
 }
 
 // List walks the storage root and reports every regular file as an object, with its
@@ -153,50 +126,51 @@ func (l *Local) VerifyPresignedURL(rawURL string, now time.Time) error {
 func (l *Local) List(ctx context.Context, fn func(ObjectInfo) (bool, error)) error {
 	root := l.cfg.Root
 	stop := false
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil // root not created yet: nothing to sweep
-			}
-			return err
-		}
-		if stop {
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		rel, rerr := filepath.Rel(root, path)
-		if rerr != nil {
-			return rerr
-		}
-		key := filepath.ToSlash(rel)
-		info, ierr := d.Info()
-		if ierr != nil {
-			if errors.Is(ierr, os.ErrNotExist) {
-				return nil // raced with a delete; skip
-			}
-			return ierr
-		}
-		cont, ferr := fn(ObjectInfo{
-			Key:      key,
-			Size:     info.Size(),
-			Modified: info.ModTime().UTC(),
-		})
-		if ferr != nil {
-			return ferr
-		}
-		if !cont {
-			stop = true
-			return filepath.SkipAll
-		}
-		return nil
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		return l.walkEntry(ctx, root, &stop, path, d, walkErr, fn)
 	})
 	if err != nil {
 		return fmt.Errorf("list local objects: %w", err)
+	}
+	return nil
+}
+
+//nolint:cyclop // filepath traversal handles filesystem, cancellation, and callback stop states.
+func (l *Local) walkEntry(ctx context.Context, root string, stop *bool, path string, d os.DirEntry,
+	walkErr error, fn func(ObjectInfo) (bool, error)) error {
+	if walkErr != nil {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil
+		}
+		return walkErr
+	}
+	if *stop {
+		return filepath.SkipAll
+	}
+	if d.IsDir() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := d.Info()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	cont, err := fn(ObjectInfo{Key: filepath.ToSlash(rel), Size: info.Size(), Modified: info.ModTime().UTC()})
+	if err != nil {
+		return err
+	}
+	if !cont {
+		*stop = true
+		return filepath.SkipAll
 	}
 	return nil
 }

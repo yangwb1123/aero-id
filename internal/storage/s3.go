@@ -187,20 +187,7 @@ func (s *S3) List(ctx context.Context, fn func(ObjectInfo) (bool, error)) error 
 			return fmt.Errorf("list objects: %w", err)
 		}
 		for _, obj := range page.Contents {
-			info := ObjectInfo{}
-			if obj.Key != nil {
-				info.Key = *obj.Key
-			}
-			if obj.Size != nil {
-				info.Size = *obj.Size
-			}
-			if obj.ETag != nil {
-				info.ETag = *obj.ETag
-			}
-			if obj.LastModified != nil {
-				info.Modified = obj.LastModified.UTC()
-			}
-			cont, ferr := fn(info)
+			cont, ferr := fn(s3ObjectInfo(obj))
 			if ferr != nil {
 				return ferr
 			}
@@ -210,6 +197,23 @@ func (s *S3) List(ctx context.Context, fn func(ObjectInfo) (bool, error)) error 
 		}
 	}
 	return nil
+}
+
+func s3ObjectInfo(obj s3types.Object) ObjectInfo {
+	info := ObjectInfo{}
+	if obj.Key != nil {
+		info.Key = *obj.Key
+	}
+	if obj.Size != nil {
+		info.Size = *obj.Size
+	}
+	if obj.ETag != nil {
+		info.ETag = *obj.ETag
+	}
+	if obj.LastModified != nil {
+		info.Modified = obj.LastModified.UTC()
+	}
+	return info
 }
 
 var (

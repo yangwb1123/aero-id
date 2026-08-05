@@ -1,0 +1,1 @@
+ALTER TABLE sync_jobs DROP COLUMN IF EXISTS tenant_id;

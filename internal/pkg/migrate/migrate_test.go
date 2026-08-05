@@ -82,7 +82,7 @@ func TestDiscover(t *testing.T) {
 		"notes.txt",       // ignored
 	}
 	for _, f := range files {
-		if err := os.WriteFile(filepath.Join(dir, f), []byte("SELECT 1;"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("SELECT 1;"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

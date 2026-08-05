@@ -12,7 +12,7 @@ func TestHub_PubSub(t *testing.T) {
 	ch, unsub := h.Subscribe("alice")
 	defer unsub()
 
-	h.Publish("alice", "msg", "hello")
+	h.Publish("alice", "msg", "hello", 0)
 
 	select {
 	case evt := <-ch:
@@ -31,7 +31,7 @@ func TestHub_MultipleSubscribers(t *testing.T) {
 	ch2, unsub2 := h.Subscribe("bob")
 	defer unsub2()
 
-	h.Publish("bob", "ping", "data1")
+	h.Publish("bob", "ping", "data1", 0)
 
 	recv := func(ch <-chan hub.SSEEvent, name string) {
 		select {
@@ -67,7 +67,7 @@ func TestHub_Unsubscribe(t *testing.T) {
 func TestHub_PublishNoSubscriber(t *testing.T) {
 	h := hub.New()
 	// Must not panic.
-	h.Publish("nobody", "evt", "data")
+	h.Publish("nobody", "evt", "data", 0)
 }
 
 // bufSize is the per-subscriber channel buffer used by Subscribe (see hub.go).
@@ -86,7 +86,7 @@ func TestHub_PublishSlowConsumerDrops(t *testing.T) {
 	go func() {
 		for i := 0; i < total; i++ {
 			// Must not panic and must not block even though nobody is reading.
-			h.Publish("eve", "flood", "data")
+			h.Publish("eve", "flood", "data", 0)
 		}
 		close(done)
 	}()

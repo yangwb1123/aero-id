@@ -48,9 +48,9 @@ func TestSearchRepo_FullText(t *testing.T) {
 			t.Fatalf("seed message %s->%s: %v", from, to, err)
 		}
 	}
-	mk("alice", "bob", "the peregrine falcon dives fast")   // alice is a participant
-	mk("bob", "alice", "another peregrine sighting today")  // alice is a participant
-	mk("carol", "dave", "peregrine nesting on the cliff")   // alice is NOT a participant
+	mk("alice", "bob", "the peregrine falcon dives fast")  // alice is a participant
+	mk("bob", "alice", "another peregrine sighting today") // alice is a participant
+	mk("carol", "dave", "peregrine nesting on the cliff")  // alice is NOT a participant
 
 	t.Run("messages match and are participant-scoped", func(t *testing.T) {
 		hits, err := msgRepo.SearchMessages(ctx, "alice", "peregrine", 10)

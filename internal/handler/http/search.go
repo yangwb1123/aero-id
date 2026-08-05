@@ -72,12 +72,16 @@ type searchHitResponse struct {
 	Message *messageResponse `json:"message,omitempty"`
 	Comment *commentResponse `json:"comment,omitempty"`
 	File    *fileResponse    `json:"file,omitempty"`
+	Snippet string           `json:"snippet,omitempty"`
 }
 
 func toSearchHitResponses(hits []domain.SearchHit) []searchHitResponse {
 	out := make([]searchHitResponse, 0, len(hits))
 	for _, h := range hits {
-		resp := searchHitResponse{Kind: string(h.Kind)}
+		resp := searchHitResponse{
+			Kind:    string(h.Kind),
+			Snippet: h.Snippet,
+		}
 		switch h.Kind {
 		case domain.SearchKindMessages:
 			mr := toMessageResponse(h.Message)

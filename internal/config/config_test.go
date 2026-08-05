@@ -84,3 +84,31 @@ func TestDatabaseDSN(t *testing.T) {
 		t.Errorf("\n got %s\nwant %s", dsn, want)
 	}
 }
+
+func TestValidateEventIngestRejectsNonCanonicalBindings(t *testing.T) {
+	tests := map[string]EventIngestConfig{
+		"client id": {
+			Bindings: map[string]EventSourceBindingConfig{
+				"client":  {Source: "snaplink", SourceRegion: "us-east-1"},
+				" client": {Source: "snaplink", SourceRegion: "us-east-1"},
+			},
+		},
+		"tenant id": {
+			Bindings: map[string]EventSourceBindingConfig{
+				"client": {TenantID: " tenant", Source: "snaplink", SourceRegion: "us-east-1"},
+			},
+		},
+		"source region": {
+			Bindings: map[string]EventSourceBindingConfig{
+				"client": {Source: "snaplink", SourceRegion: "us-east-1 "},
+			},
+		},
+	}
+	for name, cfg := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateEventIngest(cfg); err == nil {
+				t.Fatal("expected non-canonical binding to be rejected")
+			}
+		})
+	}
+}

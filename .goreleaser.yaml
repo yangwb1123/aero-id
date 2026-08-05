@@ -1,0 +1,109 @@
+# GoReleaser configuration for aero-id.
+# Builds, Docker images, SBOMs, and signatures.
+# https://goreleaser.com
+version: 2
+
+project_name: aero-id
+
+before:
+  hooks:
+    - go mod download
+    - go mod tidy
+
+builds:
+  - id: aero-id
+    main: ./cmd/server
+    binary: aero-id
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/aero/aero-id/internal/config.version={{ .Version }}
+      - -X github.com/aero/aero-id/internal/config.commit={{ .Commit }}
+      - -X github.com/aero/aero-id/internal/config.date={{ .Date }}
+
+  - id: migrate
+    main: ./cmd/migrate
+    binary: migrate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+dockers:
+  - id: aero-id-docker
+    goos: linux
+    goarch: amd64
+    use: buildx
+    dockerfile: deployments/Dockerfile
+    image_templates:
+      - "ghcr.io/aero/aero-id:{{ .Version }}"
+      - "ghcr.io/aero/aero-id:latest"
+      - "ghcr.io/aero/aero-id:{{ .ShortCommit }}"
+    extra_files:
+      - configs/config.yaml
+      - deployments/Dockerfile
+      - migrations/
+    build_flag_templates:
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title=aero-id"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/aero/aero-id"
+    # Use a multi-stage build via the existing Dockerfile, which already
+    # handles the build and produces a distroless image.
+
+archives:
+  - id: binary
+    format: tar.gz
+    files:
+      - none*
+    format_overrides:
+      - goos: darwin
+        format: zip
+
+sboms:
+  - id: aero-id-sbom
+    documents:
+      - "{{ .ProjectName }}_{{ .Version }}.sbom"
+    cmd: syft
+    args:
+      - "dir:."
+      - "--output"
+      - "cyclonedx-json"
+    artifacts: source
+
+signs:
+  - id: sbom-sign
+    cmd: cosign
+    args:
+      - "sign-blob"
+      - "--key=env://COSIGN_PRIVATE_KEY"
+      - "--output-signature={{ .Signature }}"
+      - "{{ .ArtifactPath }}"
+    artifacts: sbom
+    signature: "${artifact}.sig"
+
+changelog:
+  use: github
+
+release:
+  github:
+    owner: aero
+    name: aero-id
+  header: |
+    ## aero-id {{ .Version }} — {{ .Date }}
+  footer: |
+    **Full Changelog:** https://github.com/aero/aero-id/compare/{{ .PreviousTag }}...{{ .Tag }}

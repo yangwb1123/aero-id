@@ -48,27 +48,19 @@ func dialCredentials(cfg TLSConfig) (credentials.TransportCredentials, error) {
 		tlsCfg.ServerName = cfg.ServerName
 	}
 
-	// Verify the server against a custom CA when provided, else the system pool.
 	if cfg.CAFile != "" {
-		pem, err := os.ReadFile(cfg.CAFile)
+		pool, err := ssoCertPool(cfg.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("read sso ca file: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("sso ca file %q: no certificates parsed", cfg.CAFile)
+			return nil, err
 		}
 		tlsCfg.RootCAs = pool
 	}
 
 	// Present a client certificate for mTLS when both halves are configured.
 	if cfg.CertFile != "" || cfg.KeyFile != "" {
-		if cfg.CertFile == "" || cfg.KeyFile == "" {
-			return nil, fmt.Errorf("sso mTLS requires both cert and key files")
-		}
-		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		cert, err := ssoClientCertificate(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("load sso client cert/key: %w", err)
+			return nil, err
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
@@ -84,6 +76,29 @@ func dialCredentials(cfg TLSConfig) (credentials.TransportCredentials, error) {
 	}
 
 	return credentials.NewTLS(tlsCfg), nil
+}
+
+func ssoCertPool(path string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read sso ca file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("sso ca file %q: no certificates parsed", path)
+	}
+	return pool, nil
+}
+
+func ssoClientCertificate(certFile, keyFile string) (tls.Certificate, error) {
+	if certFile == "" || keyFile == "" {
+		return tls.Certificate{}, fmt.Errorf("sso mTLS requires both cert and key files")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("load sso client cert/key: %w", err)
+	}
+	return cert, nil
 }
 
 // verifySPKIPin checks that the leaf certificate's SubjectPublicKeyInfo matches

@@ -59,6 +59,15 @@ func newFakeRepo(events ...*Event) *fakeRepo {
 
 func (r *fakeRepo) Append(context.Context, *gorm.DB, *Event) error { return nil }
 
+func (r *fakeRepo) MarkFailed(_ context.Context, id uuid.UUID, _, _ int, _ time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// In a fake repo the backoff/dead-letter state is not preserved across
+	// drain ticks; the relay test only verifies the event stays unpublished
+	// and that MarkFailed is called. The relay re-fetches and retries.
+	return nil
+}
+
 func (r *fakeRepo) FetchUnpublished(_ context.Context, limit int) ([]*Event, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -84,6 +93,10 @@ func (r *fakeRepo) MarkPublished(_ context.Context, ids []uuid.UUID) error {
 	return nil
 }
 
+func (r *fakeRepo) PurgeDeadLetters(_ context.Context, _, _ time.Time, _ int) (int64, error) {
+	return 0, nil
+}
+
 func (r *fakeRepo) isPublished(id uuid.UUID) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,7 +115,7 @@ func TestRelay_DrainPublishesEvents(t *testing.T) {
 		handled = append(handled, e.ID)
 		mu.Unlock()
 		return nil
-	}), nil)
+	}), 0, nil)
 
 	if n := relay.drain(context.Background()); n != 2 {
 		t.Fatalf("drain handled %d, want 2", n)
@@ -130,7 +143,7 @@ func TestRelay_HandlerErrorLeavesEventUnpublished(t *testing.T) {
 			return stderrors.New("boom")
 		}
 		return nil
-	}), nil)
+	}), 0, nil)
 
 	// First tick: the failing event stays unpublished; the good one publishes.
 	if n := relay.drain(context.Background()); n != 1 {
@@ -168,7 +181,7 @@ func TestRelay_MetricsSinkRecordsPublishedFailedAndLag(t *testing.T) {
 			return stderrors.New("boom")
 		}
 		return nil
-	}), nil, sink)
+	}), 0, nil, sink)
 
 	if n := relay.drain(context.Background()); n != 2 {
 		t.Fatalf("drain published %d, want 2", n)
@@ -196,7 +209,7 @@ func TestRelay_NilMetricsSinkIsSafe(t *testing.T) {
 	e := &Event{ID: uuid.New(), EventType: "message.sent", CreatedAt: time.Now()}
 	repo := newFakeRepo(e)
 	// No sink passed: drain must not panic and must still publish.
-	relay := NewRelay(repo, HandlerFunc(func(context.Context, *Event) error { return nil }), nil)
+	relay := NewRelay(repo, HandlerFunc(func(context.Context, *Event) error { return nil }), 0, nil)
 	if n := relay.drain(context.Background()); n != 1 {
 		t.Fatalf("drain published %d, want 1", n)
 	}
@@ -219,7 +232,7 @@ func TestRelay_DrainOnStop(t *testing.T) {
 		handled = append(handled, e.ID)
 		mu.Unlock()
 		return nil
-	}), nil)
+	}), 0, nil)
 
 	stop := relay.Start(24 * time.Hour)
 	stop()

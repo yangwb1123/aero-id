@@ -6,11 +6,13 @@ package metrics
 import (
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,11 +27,22 @@ type histogram struct {
 
 // Registry accumulates request counters and latency histograms in memory and renders
 // them in Prometheus text exposition format. It is safe for concurrent use.
+//
+// Locking strategy:
+//   - mu protects requests + latency (HTTP/gRPC RED metrics) and SSO metrics.
+//   - outboxMu protects outbox-specific metrics (published, failed, drain histogram).
+//   - outboxPending and outboxLagSecs are atomic gauges (last-write) so they can be
+//     read/written without any lock, reducing contention on the outbox drain path
+//     which runs every 5s and would otherwise block HTTP/gRPC metrics.
 type Registry struct {
 	buckets  []float64
 	mu       sync.Mutex
 	requests map[string]uint64     // "transport|method|route|status" -> count
 	latency  map[string]*histogram // "transport|route" -> histogram
+
+	sourceMu       sync.Mutex
+	sourceCalls    map[string]*sourceMetric
+	sourceCircuits map[string]string
 
 	// SSO dependency health, populated by the SSO client (see SSOSink).
 	ssoCacheHits   map[string]uint64     // cache ("token"|"user") -> hits
@@ -37,13 +50,18 @@ type Registry struct {
 	ssoErrors      map[string]uint64     // op ("validate"|"get_users") -> errors
 	ssoLatency     map[string]*histogram // op ("validate"|"get_users") -> upstream latency
 
-	// Transactional-outbox relay observability, populated by the relay (see
-	// outbox.MetricsSink).
+	// Transactional-outbox relay observability. outboxMu isolates these fields so
+	// outbox drain operations (every 5s) never block HTTP/gRPC or SSO metrics.
+	outboxMu        sync.Mutex
 	outboxPublished map[string]uint64 // event_type -> events successfully published
 	outboxFailed    map[string]uint64 // event_type -> handler failures (left for retry)
-	outboxPending   float64           // unpublished events seen on the last drain pass
-	outboxLagSecs   float64           // age (now - oldest CreatedAt) of the oldest unpublished event
 	outboxDrain     *histogram        // per-pass drain duration in seconds
+
+	// outboxPending and outboxLagSecs are last-write gauges stored as atomic
+	// uint64 bits (math.Float64bits). The relay writes them every 5s without any
+	// lock; /metrics reads them under the main mu (via WriteText).
+	outboxPending atomic.Uint64
+	outboxLagSecs atomic.Uint64
 }
 
 func NewRegistry() *Registry {
@@ -51,6 +69,8 @@ func NewRegistry() *Registry {
 		buckets:        defaultBuckets,
 		requests:       make(map[string]uint64),
 		latency:        make(map[string]*histogram),
+		sourceCalls:    make(map[string]*sourceMetric),
+		sourceCircuits: make(map[string]string),
 		ssoCacheHits:   make(map[string]uint64),
 		ssoCacheMisses: make(map[string]uint64),
 		ssoErrors:      make(map[string]uint64),
@@ -140,9 +160,9 @@ func (r *Registry) ObserveOutboxPublished(eventType string) {
 	if eventType == "" {
 		eventType = "unknown"
 	}
-	r.mu.Lock()
+	r.outboxMu.Lock()
 	r.outboxPublished[eventType]++
-	r.mu.Unlock()
+	r.outboxMu.Unlock()
 }
 
 // ObserveOutboxFailed records one outbox event whose handler errored (the event
@@ -151,21 +171,24 @@ func (r *Registry) ObserveOutboxFailed(eventType string) {
 	if eventType == "" {
 		eventType = "unknown"
 	}
-	r.mu.Lock()
+	r.outboxMu.Lock()
 	r.outboxFailed[eventType]++
-	r.mu.Unlock()
+	r.outboxMu.Unlock()
 }
 
 // ObserveOutboxDrain records one drain pass: pending is the number of unpublished
 // events the pass observed, oldestAge is the age of the oldest such event (0 when
-// the outbox was empty), and dur is the pass duration. pending and oldestAge are
-// last-write gauges so /metrics always reflects the most recent pass.
+// the outbox was empty), and dur is the pass duration.
+//
+// pending and oldestAge are last-write gauges stored as atomics so they never
+// block HTTP/gRPC or SSO metrics. The drain histogram is stored under outboxMu.
 func (r *Registry) ObserveOutboxDrain(pending int, oldestAge, dur time.Duration) {
+	// Write gauge values atomically — no lock needed.
+	r.outboxPending.Store(math.Float64bits(float64(pending)))
+	r.outboxLagSecs.Store(math.Float64bits(oldestAge.Seconds()))
+
 	secs := dur.Seconds()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.outboxPending = float64(pending)
-	r.outboxLagSecs = oldestAge.Seconds()
+	r.outboxMu.Lock()
 	if r.outboxDrain == nil {
 		r.outboxDrain = &histogram{bucketCounts: make([]uint64, len(r.buckets))}
 	}
@@ -176,6 +199,7 @@ func (r *Registry) ObserveOutboxDrain(pending int, oldestAge, dur time.Duration)
 	}
 	r.outboxDrain.sum += secs
 	r.outboxDrain.count++
+	r.outboxMu.Unlock()
 }
 
 // Handler serves the current metrics in Prometheus text format.
@@ -219,39 +243,53 @@ func (r *Registry) WriteText(w io.Writer) {
 	}
 
 	r.writeSSOText(w)
+	r.writeSourceText(w)
 	r.writeOutboxText(w)
 }
 
 // writeOutboxText renders the transactional-outbox relay series. Caller holds r.mu.
 func (r *Registry) writeOutboxText(w io.Writer) {
-	if len(r.outboxPublished) > 0 {
+	// Read atomic gauges — safe without outboxMu because float64 atomic reads and
+	// writes are independent; the gauge values are last-write and slightly stale is
+	// acceptable for Prometheus exposition.
+	pending := math.Float64frombits(r.outboxPending.Load())
+	lagSecs := math.Float64frombits(r.outboxLagSecs.Load())
+
+	// outboxPublished and outboxFailed are counters protected by outboxMu.
+	r.outboxMu.Lock()
+	pub := r.outboxPublished
+	fail := r.outboxFailed
+	drain := r.outboxDrain
+	r.outboxMu.Unlock()
+
+	if len(pub) > 0 {
 		fmt.Fprintln(w, "# HELP aeroid_outbox_published_total Outbox events successfully published by event_type.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_published_total counter")
-		for _, k := range sortedKeys(r.outboxPublished) {
-			fmt.Fprintf(w, "aeroid_outbox_published_total{event_type=%q} %d\n", k, r.outboxPublished[k])
+		for _, k := range sortedKeys(pub) {
+			fmt.Fprintf(w, "aeroid_outbox_published_total{event_type=%q} %d\n", k, pub[k])
 		}
 	}
 
-	if len(r.outboxFailed) > 0 {
+	if len(fail) > 0 {
 		fmt.Fprintln(w, "# HELP aeroid_outbox_failed_total Outbox events whose handler errored (retried) by event_type.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_failed_total counter")
-		for _, k := range sortedKeys(r.outboxFailed) {
-			fmt.Fprintf(w, "aeroid_outbox_failed_total{event_type=%q} %d\n", k, r.outboxFailed[k])
+		for _, k := range sortedKeys(fail) {
+			fmt.Fprintf(w, "aeroid_outbox_failed_total{event_type=%q} %d\n", k, fail[k])
 		}
 	}
 
-	if r.outboxDrain != nil {
+	if drain != nil {
 		fmt.Fprintln(w, "# HELP aeroid_outbox_pending Unpublished outbox events seen on the last drain pass.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_pending gauge")
-		fmt.Fprintf(w, "aeroid_outbox_pending %g\n", r.outboxPending)
+		fmt.Fprintf(w, "aeroid_outbox_pending %g\n", pending)
 
 		fmt.Fprintln(w, "# HELP aeroid_outbox_oldest_age_seconds Age of the oldest unpublished outbox event in seconds.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_oldest_age_seconds gauge")
-		fmt.Fprintf(w, "aeroid_outbox_oldest_age_seconds %g\n", r.outboxLagSecs)
+		fmt.Fprintf(w, "aeroid_outbox_oldest_age_seconds %g\n", lagSecs)
 
 		fmt.Fprintln(w, "# HELP aeroid_outbox_drain_duration_seconds Outbox relay drain-pass duration in seconds.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_drain_duration_seconds histogram")
-		h := r.outboxDrain
+		h := drain
 		for i, b := range r.buckets {
 			fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=%q} %d\n",
 				strconv.FormatFloat(b, 'g', -1, 64), h.bucketCounts[i])
@@ -263,6 +301,8 @@ func (r *Registry) writeOutboxText(w io.Writer) {
 }
 
 // writeSSOText renders the SSO dependency-health series. Caller holds r.mu.
+//
+//nolint:cyclop // the text exposition format has independent cache, error, and latency sections.
 func (r *Registry) writeSSOText(w io.Writer) {
 	if len(r.ssoCacheHits) > 0 || len(r.ssoCacheMisses) > 0 {
 		fmt.Fprintln(w, "# HELP aeroid_sso_cache_hits_total SSO cache hits by cache.")

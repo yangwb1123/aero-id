@@ -13,6 +13,8 @@
 //	up            apply all pending migrations
 //	down [N]      roll back the most recent migration (or the most recent N)
 //	version       print the current schema version
+//
+//nolint:cyclop // the migration CLI intentionally dispatches all supported commands in one process.
 package main
 
 import (
@@ -41,6 +43,7 @@ commands:
   version       print the current schema version`
 }
 
+//nolint:cyclop,funlen // the migration CLI intentionally validates flags, opens the DB, and dispatches commands here.
 func run(args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	cfgPath := fs.String("config", "configs/config.yaml", "path to config file")

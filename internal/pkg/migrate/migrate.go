@@ -128,6 +128,8 @@ func (m *Migrator) Up() ([]uint64, error) {
 
 // Down rolls back the n most-recently-applied migrations (highest versions
 // first). It returns the versions it rolled back.
+//
+//nolint:cyclop // rollback validates and applies each migration in reverse order atomically.
 func (m *Migrator) Down(n int) ([]uint64, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("down count must be >= 1, got %d", n)

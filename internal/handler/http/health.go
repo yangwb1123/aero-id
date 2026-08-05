@@ -52,7 +52,10 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 			continue
 		}
 		if err := chk.Probe(ctx); err != nil {
-			results[chk.Name] = "unavailable: " + err.Error()
+			// Readiness is an operational signal, not a dependency error dump.
+			// Keep topology, SQL and upstream response details out of the public
+			// probe; operators can use logs and metrics for the cause.
+			results[chk.Name] = "unavailable"
 			if chk.Critical {
 				code = http.StatusServiceUnavailable
 			} else {

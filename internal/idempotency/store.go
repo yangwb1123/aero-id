@@ -118,3 +118,34 @@ func (s *GormStore) Release(ctx context.Context, uid, endpoint, key string) erro
 	}
 	return nil
 }
+
+// RunCleaner starts a background goroutine that periodically purges expired
+// idempotency key rows (whose expires_at is in the past). It returns a stop
+// func that terminates the goroutine. A non-positive interval disables the
+// cleaner and returns a no-op stop.
+func (s *GormStore) RunCleaner(interval time.Duration) (stop func()) {
+	if interval <= 0 {
+		return func() {}
+	}
+	t := time.NewTicker(interval)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-t.C:
+				s.purgeExpired()
+			case <-done:
+				t.Stop()
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// purgeExpired deletes all idempotency key rows whose expires_at is in the
+// past. It runs in a best-effort fashion — errors are silently dropped because
+// a missed tick is no worse than having the cleanup be slightly delayed.
+func (s *GormStore) purgeExpired() {
+	_ = s.db.Where("expires_at < ?", time.Now().UTC()).Delete(&idempotencyRow{}).Error
+}

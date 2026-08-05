@@ -100,7 +100,7 @@ func (s *CommentServer) LikeComment(ctx context.Context, req *aeropb.LikeComment
 	if err != nil {
 		return nil, grpcError(err)
 	}
-	return &aeropb.LikeCommentResponse{LikeCount: int32(res.LikeCount)}, nil
+	return &aeropb.LikeCommentResponse{LikeCount: protoCount(res.LikeCount)}, nil
 }
 
 func (s *CommentServer) UnlikeComment(ctx context.Context, req *aeropb.UnlikeCommentRequest) (*aeropb.UnlikeCommentResponse, error) {
@@ -112,7 +112,7 @@ func (s *CommentServer) UnlikeComment(ctx context.Context, req *aeropb.UnlikeCom
 	if err != nil {
 		return nil, grpcError(err)
 	}
-	return &aeropb.UnlikeCommentResponse{LikeCount: int32(res.LikeCount)}, nil
+	return &aeropb.UnlikeCommentResponse{LikeCount: protoCount(res.LikeCount)}, nil
 }
 
 func (s *CommentServer) ReportComment(ctx context.Context, req *aeropb.ReportCommentRequest) (*aeropb.ReportCommentResponse, error) {
@@ -226,8 +226,8 @@ func commentToPB(c *domain.Comment) *aeropb.Comment {
 		TargetId:   c.TargetID.String(),
 		RootId:     c.RootID.String(),
 		Content:    c.Content,
-		ReplyCount: int32(c.ReplyCount),
-		LikeCount:  int32(c.LikeCount),
+		ReplyCount: protoCount(c.ReplyCount),
+		LikeCount:  protoCount(c.LikeCount),
 		Status:     int32(c.Status),
 		CreatedAt:  timestamppb.New(c.CreatedAt),
 	}

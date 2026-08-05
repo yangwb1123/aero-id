@@ -125,7 +125,7 @@ func TestRun_PurgesOldRowAndDeletesUnreferencedBlob(t *testing.T) {
 		refs:        map[string]int64{"owner/blob-a": 1}, // only this (soon-purged) row references it
 	}
 	store := &fakeStore{}
-	sw := New(repo, store, Config{Retention: time.Hour}, nil)
+	sw := New(repo, nil, store, Config{Retention: time.Hour}, nil)
 
 	stats, err := sw.Run(context.Background())
 	if err != nil {
@@ -155,7 +155,7 @@ func TestRun_PurgesRowButKeepsBlobSharedByLiveRow(t *testing.T) {
 		refs:        map[string]int64{shared: 2}, // the soft-deleted row + one live row
 	}
 	store := &fakeStore{}
-	sw := New(repo, store, Config{Retention: time.Hour}, nil)
+	sw := New(repo, nil, store, Config{Retention: time.Hour}, nil)
 
 	stats, err := sw.Run(context.Background())
 	if err != nil {
@@ -182,7 +182,7 @@ func TestRun_OrphanYoungerThanMinAgeIsNotSwept(t *testing.T) {
 		},
 	}
 	store := &listableStore{fakeStore: base}
-	sw := New(repo, store, Config{
+	sw := New(repo, nil, store, Config{
 		Retention:    time.Hour,
 		MinOrphanAge: time.Hour,
 		SweepOrphans: true,
@@ -209,7 +209,7 @@ func TestRun_OrphanYoungerThanMinAgeIsNotSwept(t *testing.T) {
 func TestRun_OrphanSweepSkippedWhenBackendCannotList(t *testing.T) {
 	repo := &fakeRepo{refs: map[string]int64{}}
 	store := &fakeStore{} // does NOT implement Lister
-	sw := New(repo, store, Config{Retention: time.Hour, SweepOrphans: true}, nil)
+	sw := New(repo, nil, store, Config{Retention: time.Hour, SweepOrphans: true}, nil)
 
 	stats, err := sw.Run(context.Background())
 	if err != nil {
@@ -227,7 +227,7 @@ func TestRun_ReferencedObjectNotSwept(t *testing.T) {
 		objects: []storage.ObjectInfo{{Key: "owner/live", Modified: now.Add(-2 * time.Hour)}},
 	}
 	store := &listableStore{fakeStore: base}
-	sw := New(repo, store, Config{Retention: time.Hour, MinOrphanAge: time.Hour, SweepOrphans: true}, nil).
+	sw := New(repo, nil, store, Config{Retention: time.Hour, MinOrphanAge: time.Hour, SweepOrphans: true}, nil).
 		WithClock(fixedClock(now))
 
 	if _, err := sw.Run(context.Background()); err != nil {

@@ -25,6 +25,8 @@ type fileRow struct {
 	Name        string            `gorm:"column:name"`
 	Size        int64             `gorm:"column:size"`
 	MimeType    string            `gorm:"column:mime_type"`
+	Category    string            `gorm:"column:category;default:other"`
+	Status      int16             `gorm:"column:status;default:1"`
 	StorageKey  string            `gorm:"column:storage_key"`
 	StorageType string            `gorm:"column:storage_type"`
 	Checksum    *string           `gorm:"column:checksum"`
@@ -44,6 +46,8 @@ func fileRowToDomain(r *fileRow) *domain.File {
 		Name:        r.Name,
 		Size:        r.Size,
 		MimeType:    r.MimeType,
+		Category:    domain.FileCategory(r.Category),
+		Status:      domain.FileStatus(r.Status),
 		StorageKey:  r.StorageKey,
 		StorageType: r.StorageType,
 		Visibility:  domain.Visibility(r.Visibility),
@@ -64,6 +68,8 @@ func fileDomainToRow(f *domain.File) *fileRow {
 		Name:        f.Name,
 		Size:        f.Size,
 		MimeType:    f.MimeType,
+		Category:    string(f.Category),
+		Status:      int16(f.Status),
 		StorageKey:  f.StorageKey,
 		StorageType: f.StorageType,
 		Visibility:  int16(f.Visibility),
@@ -226,6 +232,20 @@ func commentReportRowToDomain(r *commentReportRow) *domain.CommentReport {
 	}
 }
 
+// MessageSearchResult is returned by SearchMessages: the matched message plus
+// a highlighted snippet (ts_headline) of the content that matched the query.
+type MessageSearchResult struct {
+	Message *domain.Message
+	Snippet string
+}
+
+// CommentSearchResult is returned by SearchComments: the matched comment plus
+// a highlighted snippet (ts_headline) of the content that matched the query.
+type CommentSearchResult struct {
+	Comment *domain.Comment
+	Snippet string
+}
+
 // messageReactionRow maps the message_reactions join table: one row per (message, user) reaction.
 type messageReactionRow struct {
 	MessageID uuid.UUID `gorm:"column:message_id;primaryKey"`
@@ -262,42 +282,58 @@ func auditEventDomainToRow(e *domain.AuditEvent) *auditEventRow {
 	}
 }
 
+func auditEventRowToDomain(r *auditEventRow) *domain.AuditEvent {
+	return &domain.AuditEvent{
+		ID:          r.ID,
+		ActorUID:    r.ActorUID,
+		Action:      r.Action,
+		SubjectType: r.SubjectType,
+		SubjectID:   r.SubjectID,
+		TargetUID:   r.TargetUID,
+		Meta:        map[string]any(r.Meta),
+		CreatedAt:   r.CreatedAt,
+	}
+}
+
 // notificationRow maps the notifications table: one row per recipient per event.
 type notificationRow struct {
-	ID           uuid.UUID  `gorm:"column:id;primaryKey"`
-	RecipientUID string     `gorm:"column:recipient_uid"`
-	Type         string     `gorm:"column:type"`
-	ActorUID     string     `gorm:"column:actor_uid"`
-	SubjectType  string     `gorm:"column:subject_type"`
-	SubjectID    string     `gorm:"column:subject_id"`
-	ReadAt       *time.Time `gorm:"column:read_at"`
-	CreatedAt    time.Time  `gorm:"column:created_at"`
+	ID             uuid.UUID  `gorm:"column:id;primaryKey"`
+	RecipientUID   string     `gorm:"column:recipient_uid"`
+	Type           string     `gorm:"column:type"`
+	ActorUID       string     `gorm:"column:actor_uid"`
+	SubjectType    string     `gorm:"column:subject_type"`
+	SubjectID      string     `gorm:"column:subject_id"`
+	ReadAt         *time.Time `gorm:"column:read_at"`
+	CollapsedCount int        `gorm:"column:collapsed_count"`
+	CreatedAt      time.Time  `gorm:"column:created_at"`
 }
 
 func (notificationRow) TableName() string { return "notifications" }
 
 func notificationRowToDomain(r *notificationRow) *domain.Notification {
 	return &domain.Notification{
-		ID:           r.ID,
-		RecipientUID: r.RecipientUID,
-		Type:         r.Type,
-		ActorUID:     r.ActorUID,
-		SubjectType:  r.SubjectType,
-		SubjectID:    r.SubjectID,
-		ReadAt:       r.ReadAt,
-		CreatedAt:    r.CreatedAt,
+		ID:             r.ID,
+		RecipientUID:   r.RecipientUID,
+		Type:           r.Type,
+		ActorUID:       r.ActorUID,
+		SubjectType:    r.SubjectType,
+		SubjectID:      r.SubjectID,
+		ReadAt:         r.ReadAt,
+		CollapsedCount: r.CollapsedCount,
+		CreatedAt:      r.CreatedAt,
 	}
 }
 
 func notificationDomainToRow(n *domain.Notification) *notificationRow {
 	return &notificationRow{
-		ID:           n.ID,
-		RecipientUID: n.RecipientUID,
-		Type:         n.Type,
-		ActorUID:     n.ActorUID,
-		SubjectType:  n.SubjectType,
-		SubjectID:    n.SubjectID,
-		ReadAt:       n.ReadAt,
-		CreatedAt:    n.CreatedAt,
+		ID:             n.ID,
+		RecipientUID:   n.RecipientUID,
+		Type:           n.Type,
+		ActorUID:       n.ActorUID,
+		SubjectType:    n.SubjectType,
+		SubjectID:      n.SubjectID,
+		ReadAt:         n.ReadAt,
+		CollapsedCount: n.CollapsedCount,
+		CreatedAt:      n.CreatedAt,
 	}
 }

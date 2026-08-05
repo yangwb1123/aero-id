@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aero/aero-id/internal/pkg/idgen"
+	"github.com/aero/aero-id/internal/service"
 )
 
 // RequestIDHeader is the canonical header carrying the per-request correlation id.
@@ -25,7 +26,9 @@ func RequestID() gin.HandlerFunc {
 		}
 		c.Writer.Header().Set(RequestIDHeader, rid)
 		c.Set("request_id", rid)
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), requestIDKey, rid))
+		ctx := context.WithValue(c.Request.Context(), requestIDKey, rid)
+		ctx = service.WithRequestID(ctx, rid)
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }

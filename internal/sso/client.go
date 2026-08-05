@@ -13,6 +13,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 
+	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/sso/auditpb"
+	"github.com/aero/aero-id/internal/sso/authzpb"
 	"github.com/aero/aero-id/internal/sso/ssopb"
 )
 
@@ -30,6 +33,7 @@ type MetricsSink interface {
 }
 
 type ClientConfig struct {
+	AuthZClientID string
 	TokenCacheTTL time.Duration
 	UserCacheTTL  time.Duration
 	StaleTTL      time.Duration // serve a last-known uid this long past expiry when SSO is down
@@ -55,14 +59,17 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	conn       *grpc.ClientConn
-	rpc        ssopb.SSOClient
-	tokenCache *TokenCache
-	userCache  *UserCache
-	sf         singleflight.Group // collapses concurrent validations of the same token
-	breaker    *breaker           // trips on sustained SSO outage so new tokens fast-fail
-	stopFn     func()
-	timeout    time.Duration
+	conn          *grpc.ClientConn
+	rpc           ssopb.SSOClient
+	authz         authzpb.AuthorizerClient
+	audit         auditpb.AuditWriterClient
+	authzClientID string
+	tokenCache    *TokenCache
+	userCache     *UserCache
+	sf            singleflight.Group // collapses concurrent validations of the same token
+	breaker       *breaker           // trips on sustained SSO outage so new tokens fast-fail
+	stopFn        func()
+	timeout       time.Duration
 
 	maxAttempts  int
 	retryBackoff time.Duration
@@ -103,15 +110,18 @@ func NewClient(ctx context.Context, endpoint string, tlsCfg TLSConfig, cfg Clien
 // NewClientFromConn lets tests inject a bufconn-backed *grpc.ClientConn.
 func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	c := &Client{
-		conn:         conn,
-		rpc:          ssopb.NewSSOClient(conn),
-		tokenCache:   NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
-		breaker:      newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown),
-		timeout:      cfg.Timeout,
-		maxAttempts:  cfg.MaxAttempts,
-		retryBackoff: cfg.RetryBackoff,
-		metrics:      cfg.Metrics,
-		tracer:       otel.Tracer(ssoTracerName),
+		conn:          conn,
+		rpc:           ssopb.NewSSOClient(conn),
+		authz:         authzpb.NewAuthorizerClient(conn),
+		audit:         auditpb.NewAuditWriterClient(conn),
+		authzClientID: cfg.AuthZClientID,
+		tokenCache:    NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
+		breaker:       newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown),
+		timeout:       cfg.Timeout,
+		maxAttempts:   cfg.MaxAttempts,
+		retryBackoff:  cfg.RetryBackoff,
+		metrics:       cfg.Metrics,
+		tracer:        otel.Tracer(ssoTracerName),
 	}
 	if c.maxAttempts < 1 {
 		c.maxAttempts = 1
@@ -181,6 +191,73 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (string, error
 		}
 		return res.Val.(string), nil
 	}
+}
+
+func (c *Client) ValidateIdentity(ctx context.Context, token string) (*domain.TokenIdentity, error) {
+	uid, err := c.ValidateToken(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	return &domain.TokenIdentity{UID: uid, Subject: uid}, nil
+}
+
+// HasPermission delegates global authorization to Snaplink's stable
+// Authorizer.Check RPC. The subject is the verified Snaplink subject; this
+// method never accepts or stores a user credential.
+func (c *Client) HasPermission(ctx context.Context, uid, permission string) (bool, error) {
+	if c.authz == nil {
+		return false, errors.New("snaplink authorizer is not configured")
+	}
+	requestCtx := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	response, err := c.authz.Check(requestCtx, &authzpb.CheckRequest{SubjectId: uid, ClientId: c.authzClientID, Permission: permission})
+	if err != nil {
+		return false, fmt.Errorf("snaplink authorization check: %w", err)
+	}
+	return response.GetAllowed(), nil
+}
+
+// Publish adapts Snaplink-scoped durable facts to Snaplink's stable AuditWriter
+// contract. It deliberately forwards only metadata and never the redacted local
+// payload. Facts from IM/Vault remain in aero-id's ledger and are not sent to
+// Snaplink's authority by this adapter.
+func (c *Client) Publish(ctx context.Context, fact *domain.AuditFact) error {
+	if c.audit == nil || fact == nil || fact.Source != "snaplink" {
+		return nil
+	}
+	requestCtx := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	eventID := ""
+	if fact.EventID != (domain.ID{}) {
+		eventID = fact.EventID.String()
+	}
+	metadata := map[string]string{"source_region": fact.SourceRegion, "operation_id": optionalAuditID(fact.OperationID),
+		"tenant_id": fact.TenantID, "resource_type": fact.ResourceType, "resource_id": fact.ResourceID}
+	if fact.AccountID != (domain.ID{}) {
+		metadata["account_id"] = fact.AccountID.String()
+	}
+	_, err := c.audit.Record(requestCtx, &auditpb.Event{Id: eventID, Type: fact.Action, Outcome: "success",
+		TimestampUnix: fact.OccurredAt.Unix(), RequestId: optionalAuditID(fact.CorrelationID), TraceId: fact.TraceID,
+		ActorId: fact.ActorUID, ClientId: c.authzClientID, Metadata: metadata})
+	if err != nil {
+		return fmt.Errorf("snaplink audit writer: %w", err)
+	}
+	return nil
+}
+
+func optionalAuditID(value domain.ID) string {
+	if value == (domain.ID{}) {
+		return ""
+	}
+	return value.String()
 }
 
 // callWithRetry runs fn up to maxAttempts times, retrying ONLY on availability

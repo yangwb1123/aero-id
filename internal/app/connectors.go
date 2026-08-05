@@ -1,0 +1,46 @@
+package app
+
+import (
+	"fmt"
+
+	"github.com/aero/aero-id/internal/config"
+	"github.com/aero/aero-id/internal/connector"
+	"github.com/aero/aero-id/internal/connector/aeroim"
+	"github.com/aero/aero-id/internal/connector/aerovault"
+	"github.com/aero/aero-id/internal/connector/snaplink"
+	"github.com/aero/aero-id/internal/pkg/metrics"
+)
+
+func buildSourceConnectors(cfg *config.Config, metricsReg *metrics.Registry) ([]connector.Connector, error) {
+	result := make([]connector.Connector, 0, 3)
+	if cfg.Sources.Snaplink.Endpoint != "" {
+		item, err := snaplink.New(sourceHTTPConfig(cfg.Sources.Snaplink, metricsReg))
+		if err != nil {
+			return nil, fmt.Errorf("snaplink connector: %w", err)
+		}
+		result = append(result, item)
+	}
+	if cfg.Sources.AeroIM.Endpoint != "" {
+		item, err := aeroim.New(sourceHTTPConfig(cfg.Sources.AeroIM, metricsReg))
+		if err != nil {
+			return nil, fmt.Errorf("aero-im connector: %w", err)
+		}
+		result = append(result, item)
+	}
+	if cfg.Sources.AeroVault.Endpoint != "" {
+		item, err := aerovault.New(sourceHTTPConfig(cfg.Sources.AeroVault, metricsReg))
+		if err != nil {
+			return nil, fmt.Errorf("aero-vault connector: %w", err)
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func sourceHTTPConfig(value config.SourceEndpointConfig, metricsReg *metrics.Registry) connector.HTTPConfig {
+	return connector.HTTPConfig{Endpoint: value.Endpoint, SummaryPath: value.SummaryPath, ErasePath: value.ErasePath, Region: value.Region,
+		OperationStatusPath: value.StatusPath,
+		BearerToken:         value.BearerToken, Timeout: value.Timeout, MaxBodyBytes: value.MaxBodyBytes, MaxConcurrency: value.MaxConcurrency,
+		MaxAttempts: value.MaxAttempts, RetryBackoff: value.RetryBackoff, TLSCAFile: value.TLSCAFile, TLSCertFile: value.TLSCertFile,
+		TLSKeyFile: value.TLSKeyFile, TLSServerName: value.TLSServerName, Metrics: metricsReg}
+}

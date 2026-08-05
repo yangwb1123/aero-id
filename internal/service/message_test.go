@@ -328,7 +328,7 @@ func TestMessageService_DeleteBySender(t *testing.T) {
 		GetFn: func(_ context.Context, id domain.ID) (*domain.Message, error) {
 			return &domain.Message{ID: id, FromUID: "a", ToUID: "b"}, nil
 		},
-		SoftDeleteFn: func(_ context.Context, _ domain.ID) error { called = true; return nil },
+		SoftDeleteWithEventFn: func(_ context.Context, _ domain.ID, _ *outbox.Event) error { called = true; return nil },
 	}
 	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "a")
@@ -336,7 +336,7 @@ func TestMessageService_DeleteBySender(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !called {
-		t.Fatal("SoftDelete was not called")
+		t.Fatal("SoftDeleteWithEvent was not called")
 	}
 }
 

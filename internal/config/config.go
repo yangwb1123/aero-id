@@ -9,29 +9,124 @@ import (
 )
 
 type Config struct {
-	App        AppConfig       `mapstructure:"app"`
-	Server     ServerConfig    `mapstructure:"server"`
-	Database   DatabaseConfig  `mapstructure:"database"`
-	SSO        SSOConfig       `mapstructure:"sso"`
-	Storage    StorageConfig   `mapstructure:"storage"`
-	Tracing    TracingConfig   `mapstructure:"tracing"`
-	RateLimit  RateLimitConfig `mapstructure:"rate_limit"`
-	SigningKey string          `mapstructure:"signing_key"`
-	Log        LogConfig       `mapstructure:"log"`
+	App             AppConfig             `mapstructure:"app"`
+	Account         AccountConfig         `mapstructure:"account"`
+	Sources         SourcesConfig         `mapstructure:"sources"`
+	Server          ServerConfig          `mapstructure:"server"`
+	Database        DatabaseConfig        `mapstructure:"database"`
+	Redis           RedisConfig           `mapstructure:"redis"`
+	SSO             SSOConfig             `mapstructure:"sso"`
+	Storage         StorageConfig         `mapstructure:"storage"`
+	Tracing         TracingConfig         `mapstructure:"tracing"`
+	RateLimit       RateLimitConfig       `mapstructure:"rate_limit"`
+	Outbox          OutboxConfig          `mapstructure:"outbox"`
+	EventIngest     EventIngestConfig     `mapstructure:"event_ingest"`
+	EventBus        EventBusConfig        `mapstructure:"event_bus"`
+	Replication     ReplicationConfig     `mapstructure:"replication"`
+	AuditLedger     AuditLedgerConfig     `mapstructure:"audit_ledger"`
+	AuditGovernance AuditGovernanceConfig `mapstructure:"audit_governance"`
+	Billing         BillingConfig         `mapstructure:"billing"`
+	Callback        CallbackConfig        `mapstructure:"callback"`
+	Export          ExportConfig          `mapstructure:"export"`
+	SigningKey      string                `mapstructure:"signing_key"`
+	Log             LogConfig             `mapstructure:"log"`
+	DataRetention   DataRetentionConfig   `mapstructure:"data_retention"`
 }
 
-// RateLimitConfig configures the in-memory per-actor rate limiter applied on both
-// transports. It is OPT-IN: disabled by default so it never surprises dev/CI.
-// When enabled, each request consumes one token from a bucket keyed by the
-// authenticated actor uid (client IP for anonymous/public traffic), refilled at
-// RPS up to Burst. Limiting is PER-INSTANCE; distributed limiting would need
-// shared state (e.g. Redis) and is out of scope.
+// RateLimitConfig configures the per-actor limiter applied on both transports.
+// It is OPT-IN: disabled by default so it never surprises dev/CI. With Redis
+// configured the same budget is enforced across instances; otherwise the local
+// token bucket is used as a bounded fallback.
 type RateLimitConfig struct {
 	Enabled      bool          `mapstructure:"enabled"`       // master switch; false = limiter never installed
 	RPS          float64       `mapstructure:"rps"`           // sustained requests/second per key
 	Burst        int           `mapstructure:"burst"`         // bucket capacity (max instantaneous burst)
 	IdleTTL      time.Duration `mapstructure:"idle_ttl"`      // evict buckets untouched this long (bounds memory)
 	CleanupEvery time.Duration `mapstructure:"cleanup_every"` // how often the idle-bucket sweep runs
+}
+
+// OutboxConfig configures the transactional outbox relay and its downstream handlers.
+type OutboxConfig struct {
+	PollInterval time.Duration `mapstructure:"poll_interval"` // how often the relay drains (0 => default 5s)
+	MaxRetries   int           `mapstructure:"max_retries"`   // per-event retry ceiling before dead-lettering (0 => DefaultMaxRetries)
+	Webhook      WebhookConfig `mapstructure:"webhook"`       // optional webhook delivery; empty URL => disabled
+}
+
+// WebhookConfig configures delivery of outbox events to an external HTTP endpoint.
+type WebhookConfig struct {
+	URL        string            `mapstructure:"url"`         // target endpoint (empty => disabled)
+	SigningKey string            `mapstructure:"signing_key"` // HMAC-SHA256 key for X-Event-Signature
+	Timeout    string            `mapstructure:"timeout"`     // e.g. "5s"; 0 => default 10s
+	EventTypes []string          `mapstructure:"event_types"` // empty => deliver all; non-empty => filter
+	Headers    map[string]string `mapstructure:"headers"`     // additional HTTP headers per request
+}
+
+// EventIngestConfig protects source event ingestion with per-source HMAC keys
+// for HTTP and verified Snaplink client bindings for gRPC.
+type EventIngestConfig struct {
+	SigningKey       string                              `mapstructure:"signing_key"`       // compatibility shared HMAC key
+	SourceKeys       map[string]string                   `mapstructure:"source_keys"`       // source -> HMAC key
+	RequireTimestamp bool                                `mapstructure:"require_timestamp"` // bind HTTP signature to timestamp
+	MaxBodyBytes     int64                               `mapstructure:"max_body_bytes"`
+	ClockSkew        time.Duration                       `mapstructure:"clock_skew"`
+	AllowedRegions   []string                            `mapstructure:"allowed_regions"` // residency allow-list (P6-04); empty = accept any source region
+	Bindings         map[string]EventSourceBindingConfig `mapstructure:"bindings"` // Snaplink client_id -> source binding
+}
+
+type EventSourceBindingConfig struct {
+	TenantID     string `mapstructure:"tenant_id"`
+	Source       string `mapstructure:"source"`
+	SourceRegion string `mapstructure:"source_region"`
+}
+
+// EventBusConfig configures the canonical-event consumer transport (P3-04).
+// NATS JetStream is the initial adapter; the EventBus port allows others.
+type EventBusConfig struct {
+	NATS NATSBusConfig `mapstructure:"nats"`
+}
+
+type NATSBusConfig struct {
+	Enabled          bool          `mapstructure:"enabled"`
+	URL              string        `mapstructure:"url"`
+	Stream           string        `mapstructure:"stream"`
+	Subject          string        `mapstructure:"subject"`
+	Durable          string        `mapstructure:"durable"`
+	MaxRedeliveries  int           `mapstructure:"max_redeliveries"`
+	AckWait          time.Duration `mapstructure:"ack_wait"`
+}
+
+// ReplicationConfig configures cross-region projection replication (P6-03).
+// Transport is one of "nats" (subject) or "http" (remote ingest endpoint with
+// the same HMAC scheme the ingest handler verifies).
+type ReplicationConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`
+	Interval     time.Duration `mapstructure:"interval"`
+	BatchSize    int           `mapstructure:"batch_size"`
+	Transport    string        `mapstructure:"transport"`   // nats | http
+	NATSSubject  string        `mapstructure:"nats_subject"` // transport=nats
+	HTTPEndpoint string        `mapstructure:"http_endpoint"` // transport=http
+	HTTPKey      string        `mapstructure:"http_key"`     // transport=http; HMAC key for the remote ingest
+}
+
+type AuditLedgerConfig struct {
+	SigningKey string `mapstructure:"signing_key"`
+}
+
+type CallbackConfig struct {
+	MasterKey          string        `mapstructure:"master_key"`
+	RequestTimeout     time.Duration `mapstructure:"request_timeout"`
+	MaxResponseBytes   int64         `mapstructure:"max_response_bytes"`
+	MaxAttempts        int           `mapstructure:"max_attempts"`
+	RetryBase          time.Duration `mapstructure:"retry_base"`
+	AllowPrivateTarget bool          `mapstructure:"allow_private_target"`
+	WorkerInterval     time.Duration `mapstructure:"worker_interval"`
+	WorkerConcurrency  int           `mapstructure:"worker_concurrency"` // in-flight deliveries/publications (P6-06); 0 = serial
+}
+
+type ExportConfig struct {
+	EncryptionKey string        `mapstructure:"encryption_key"`
+	MaxBytes      int64         `mapstructure:"max_bytes"`
+	ArtifactTTL   time.Duration `mapstructure:"artifact_ttl"`
 }
 
 // TracingConfig configures OpenTelemetry tracing. Tracing is opt-in: unless Enabled
@@ -51,21 +146,58 @@ type AppConfig struct {
 	Version string `mapstructure:"version"`
 }
 
+// AccountConfig identifies the local control-plane cell and the external
+// identity namespace used when mapping Snaplink subjects to aero-id accounts.
+type AccountConfig struct {
+	Issuer            string   `mapstructure:"issuer"`
+	Region            string   `mapstructure:"region"`
+	HomeRegionVersion string   `mapstructure:"home_region_version"`
+	Regions           []string `mapstructure:"regions"`
+}
+
+type SourcesConfig struct {
+	Snaplink  SourceEndpointConfig `mapstructure:"snaplink"`
+	AeroIM    SourceEndpointConfig `mapstructure:"aero_im"`
+	AeroVault SourceEndpointConfig `mapstructure:"aero_vault"`
+}
+
+type SourceEndpointConfig struct {
+	Endpoint       string        `mapstructure:"endpoint"`
+	SummaryPath    string        `mapstructure:"summary_path"`
+	ErasePath      string        `mapstructure:"erase_path"`
+	StatusPath     string        `mapstructure:"status_path"`
+	Region         string        `mapstructure:"region"`
+	BearerToken    string        `mapstructure:"bearer_token"`
+	Timeout        time.Duration `mapstructure:"timeout"`
+	MaxBodyBytes   int64         `mapstructure:"max_body_bytes"`
+	MaxConcurrency int           `mapstructure:"max_concurrency"`
+	MaxAttempts    int           `mapstructure:"max_attempts"`
+	RetryBackoff   time.Duration `mapstructure:"retry_backoff"`
+	TLSCAFile      string        `mapstructure:"tls_ca_file"`
+	TLSCertFile    string        `mapstructure:"tls_cert_file"`
+	TLSKeyFile     string        `mapstructure:"tls_key_file"`
+	TLSServerName  string        `mapstructure:"tls_server_name"`
+}
+
 type ServerConfig struct {
 	HTTP HTTPConfig `mapstructure:"http"`
 	GRPC GRPCConfig `mapstructure:"grpc"`
 }
 
 type HTTPConfig struct {
-	Host            string        `mapstructure:"host"`
-	Port            int           `mapstructure:"port"`
-	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
-	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
-	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
-	IdempotencyTTL  time.Duration `mapstructure:"idempotency_ttl"` // how long a stored idempotent response is replayable
-	RequestTimeout  time.Duration `mapstructure:"request_timeout"` // per-request context deadline (0 = disabled)
+	Host              string        `mapstructure:"host"`
+	Port              int           `mapstructure:"port"`
+	ReadTimeout       time.Duration `mapstructure:"read_timeout"`
+	ReadHeaderTimeout time.Duration `mapstructure:"read_header_timeout"` // prevents Slowloris; >= 1s
+	WriteTimeout      time.Duration `mapstructure:"write_timeout"`
+	ShutdownTimeout   time.Duration `mapstructure:"shutdown_timeout"`
+	IdempotencyTTL    time.Duration `mapstructure:"idempotency_ttl"` // how long a stored idempotent response is replayable
+	RequestTimeout    time.Duration `mapstructure:"request_timeout"` // per-request context deadline (0 = disabled)
+	LegacySunset      string        `mapstructure:"legacy_sunset"`   // RFC 8594 Sunset date for legacy compat routes (ADR-011); empty = headers only
 }
 
+// GRPCConfig configures the gRPC server. Zero-valued optional fields use the
+// gRPC defaults documented on grpc.ServerOption constants.
 type GRPCConfig struct {
 	Host string `mapstructure:"host"`
 	Port int    `mapstructure:"port"`
@@ -73,6 +205,23 @@ type GRPCConfig struct {
 	// default: reflection exposes the full RPC surface, which is handy for
 	// internal ops (grpcurl) but should be opt-in on an untrusted edge.
 	ReflectionEnabled bool `mapstructure:"reflection_enabled"`
+	// KeepaliveMinPingInterval is the minimum permitted client ping interval.
+	// Clients that ping more frequently receive a GOAWAY. 0 => default (10s).
+	KeepaliveMinPingInterval time.Duration `mapstructure:"keepalive_min_ping_interval"`
+	// MaxConcurrentStreams limits concurrent streams per connection.
+	// 0 (or negative) means unlimited — the gRPC default.
+	MaxConcurrentStreams uint32 `mapstructure:"max_concurrent_streams"`
+	// MaxRecvMsgSize is the max message size in bytes the server can receive.
+	// 0 => grpc.DefaultMaxRecvMsgSize (4 MiB).
+	MaxRecvMsgSize int `mapstructure:"max_recv_msg_size"`
+	// MaxSendMsgSize is the max message size in bytes the server can send.
+	// 0 => grpc.DefaultMaxSendMsgSize (math.MaxInt32, effectively unlimited).
+	MaxSendMsgSize int `mapstructure:"max_send_msg_size"`
+	// InitialWindowSize sets the stream-level flow-control window. 0 => default (64 KiB).
+	InitialWindowSize int32 `mapstructure:"initial_window_size"`
+	// InitialConnWindowSize sets the connection-level flow-control window.
+	// 0 => default (64 KiB).
+	InitialConnWindowSize int32 `mapstructure:"initial_conn_window_size"`
 }
 
 type DatabaseConfig struct {
@@ -103,19 +252,27 @@ func (d DatabaseConfig) DSN() string {
 }
 
 type SSOConfig struct {
-	Endpoint          string        `mapstructure:"endpoint"`
-	Timeout           time.Duration `mapstructure:"timeout"`
-	Insecure          bool          `mapstructure:"insecure"`
-	ReadinessCritical bool          `mapstructure:"readiness_critical"`
-	TokenCacheTTL     time.Duration `mapstructure:"token_cache_ttl"`
-	StaleTTL          time.Duration `mapstructure:"stale_ttl"` // serve last-known identity past expiry when SSO is down
-	UserCacheTTL      time.Duration `mapstructure:"user_cache_ttl"`
-	BreakerThreshold  int           `mapstructure:"breaker_threshold"` // consecutive availability failures that trip the breaker (0 = off)
-	BreakerCooldown   time.Duration `mapstructure:"breaker_cooldown"`  // how long the breaker fast-fails before probing SSO again
-	MaxAttempts       int           `mapstructure:"max_attempts"`      // upstream tries per call within the timeout budget (1 = no retry)
-	RetryBackoff      time.Duration `mapstructure:"retry_backoff"`     // base exponential backoff between availability-error retries
-	KeepaliveTime     time.Duration `mapstructure:"keepalive_time"`    // gRPC keepalive ping interval
-	KeepaliveTimeout  time.Duration `mapstructure:"keepalive_timeout"` // gRPC keepalive ping ack timeout
+	Endpoint            string        `mapstructure:"endpoint"`
+	JWKSURL             string        `mapstructure:"jwks_url"`
+	Issuer              string        `mapstructure:"issuer"`
+	Audience            string        `mapstructure:"audience"`
+	AuthZClientID       string        `mapstructure:"authz_client_id"`
+	AuthZRequired       bool          `mapstructure:"authz_required"`
+	AuthZLegacyFallback bool          `mapstructure:"authz_legacy_fallback"`
+	JWKSCacheTTL        time.Duration `mapstructure:"jwks_cache_ttl"`
+	JWKSMaxBodyBytes    int64         `mapstructure:"jwks_max_body_bytes"`
+	Timeout             time.Duration `mapstructure:"timeout"`
+	Insecure            bool          `mapstructure:"insecure"`
+	ReadinessCritical   bool          `mapstructure:"readiness_critical"`
+	TokenCacheTTL       time.Duration `mapstructure:"token_cache_ttl"`
+	StaleTTL            time.Duration `mapstructure:"stale_ttl"` // serve last-known identity past expiry when SSO is down
+	UserCacheTTL        time.Duration `mapstructure:"user_cache_ttl"`
+	BreakerThreshold    int           `mapstructure:"breaker_threshold"` // consecutive availability failures that trip the breaker (0 = off)
+	BreakerCooldown     time.Duration `mapstructure:"breaker_cooldown"`  // how long the breaker fast-fails before probing SSO again
+	MaxAttempts         int           `mapstructure:"max_attempts"`      // upstream tries per call within the timeout budget (1 = no retry)
+	RetryBackoff        time.Duration `mapstructure:"retry_backoff"`     // base exponential backoff between availability-error retries
+	KeepaliveTime       time.Duration `mapstructure:"keepalive_time"`    // gRPC keepalive ping interval
+	KeepaliveTimeout    time.Duration `mapstructure:"keepalive_timeout"` // gRPC keepalive ping ack timeout
 	// mTLS / TLS transport security (used only when insecure=false).
 	TLSCAFile     string   `mapstructure:"tls_ca_file"`     // CA bundle to verify the SSO server (empty = system pool)
 	TLSCertFile   string   `mapstructure:"tls_cert_file"`   // client cert for mTLS (with tls_key_file)
@@ -162,8 +319,56 @@ type S3StorageConfig struct {
 }
 
 type LogConfig struct {
-	Level    string `mapstructure:"level"`
-	Encoding string `mapstructure:"encoding"`
+	Level       string  `mapstructure:"level"`
+	Encoding    string  `mapstructure:"encoding"`
+	SampleRatio float64 `mapstructure:"sample_ratio"` // 0..1 probability for info-level access log sampling; <=0 disables sampling
+}
+
+// RedisConfig configures a rueidis-powered Redis client for shared state
+// (idempotency store, SSO cache, outbox leader election, rate limiter, etc.).
+// All subsystems share one connection pool. When endpoint is empty every Redis
+// feature falls back to its GORM / in-memory alternative.
+//
+// Zero-valued optional fields use rueidis defaults (see rueidis.ClientOption).
+type RedisConfig struct {
+	Endpoint            string        `mapstructure:"endpoint"`               // e.g. "127.0.0.1:6379"; empty = disabled
+	Password            string        `mapstructure:"password"`               // AUTH password (env: AERO_ID_REDIS_PASSWORD)
+	DB                  int           `mapstructure:"db"`                     // SELECT database number
+	BlockingPoolSize    int           `mapstructure:"blocking_pool_size"`     // blocking connection pool size (0=default)
+	BlockingPoolMinSize int           `mapstructure:"blocking_pool_min_size"` // min idle connections (0=default)
+	BlockingPoolCleanup time.Duration `mapstructure:"blocking_pool_cleanup"`  // idle cleanup interval (0=disabled)
+	ConnWriteTimeout    time.Duration `mapstructure:"conn_write_timeout"`     // per-connection deadline
+	ConnLifetime        time.Duration `mapstructure:"conn_lifetime"`          // max connection lifetime
+	DialTimeout         time.Duration `mapstructure:"dial_timeout"`           // TCP dial timeout (0 => 5s)
+	KeepAlive           time.Duration `mapstructure:"keepalive"`              // TCP keepalive interval (0 => 1s)
+}
+
+// Enabled reports whether a Redis endpoint is configured.
+func (r RedisConfig) Enabled() bool { return r.Endpoint != "" }
+
+// DataRetentionConfig controls TTL-based cleanup of unbounded table growth.
+// Each sub-config has its own retention period and cleanup interval; setting
+// interval to 0 disables that particular cleaner.
+type DataRetentionConfig struct {
+	AuditRetention     time.Duration `mapstructure:"audit_retention"`      // how long audit events are kept before purge (e.g. 90d)
+	AuditCleanInterval time.Duration `mapstructure:"audit_clean_interval"` // how often the audit cleaner runs (0 = disabled)
+	// NotificationRetention controls cleanup of read notifications. Notifications
+	// that have been read longer than this are purged. E.g. 30d.
+	NotificationRetention time.Duration `mapstructure:"notification_retention"`
+	// NotificationUnreadRetention controls cleanup of unread notifications that
+	// are extremely old (user likely inactive). E.g. 90d.
+	NotificationUnreadRetention time.Duration `mapstructure:"notification_unread_retention"`
+	// NotificationCleanInterval is how often the notification cleaner runs.
+	// 0 = disabled.
+	NotificationCleanInterval time.Duration `mapstructure:"notification_clean_interval"`
+	// OutboxDeadLetterRetention controls cleanup of dead-lettered outbox events.
+	// E.g. 7d.
+	OutboxDeadLetterRetention time.Duration `mapstructure:"outbox_dead_letter_retention"`
+	// OutboxPublishedRetention controls cleanup of successfully published outbox
+	// events. E.g. 30d.
+	OutboxPublishedRetention time.Duration `mapstructure:"outbox_published_retention"`
+	// OutboxCleanInterval is how often the outbox cleaner runs. 0 = disabled.
+	OutboxCleanInterval time.Duration `mapstructure:"outbox_clean_interval"`
 }
 
 func Load(path string) (*Config, error) {
@@ -185,38 +390,4 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
-}
-
-func (c *Config) validate() error {
-	if c.SigningKey == "" {
-		return fmt.Errorf("signing_key is required")
-	}
-	if c.Database.DBName == "" {
-		return fmt.Errorf("database.dbname is required")
-	}
-	if c.SSO.Endpoint == "" {
-		return fmt.Errorf("sso.endpoint is required")
-	}
-	switch c.Storage.Type {
-	case "local", "s3":
-	default:
-		return fmt.Errorf("storage.type must be 'local' or 's3'")
-	}
-	if c.RateLimit.Enabled {
-		if c.RateLimit.RPS <= 0 {
-			return fmt.Errorf("rate_limit.rps must be > 0 when rate_limit.enabled")
-		}
-		if c.RateLimit.Burst <= 0 {
-			return fmt.Errorf("rate_limit.burst must be > 0 when rate_limit.enabled")
-		}
-	}
-	if c.Storage.GC.Enabled {
-		if c.Storage.GC.Interval <= 0 {
-			return fmt.Errorf("storage.gc.interval must be > 0 when storage.gc.enabled")
-		}
-		if c.Storage.GC.Retention <= 0 {
-			return fmt.Errorf("storage.gc.retention must be > 0 when storage.gc.enabled")
-		}
-	}
-	return nil
 }

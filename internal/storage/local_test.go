@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestLocal_PutGetStatDelete(t *testing.T) {
 	if err := s.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(ctx, key); err != storage.ErrNotFound {
+	if _, err := s.Get(ctx, key); !errors.Is(err, storage.ErrNotFound) {
 		t.Errorf("after delete, Get returned %v", err)
 	}
 }

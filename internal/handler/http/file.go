@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/middleware"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/pkg/idgen"
@@ -90,6 +91,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 // PresignUpload allocates a file id + storage key and returns a presigned URL the
 // client PUTs the object to directly (S3 only). The local backend yields a BadRequest.
 func (h *FileHandler) PresignUpload(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB, middleware.DepStorage), false) {
+		return
+	}
 	var body struct {
 		Name       string         `json:"name"`
 		MimeType   string         `json:"mime_type"`
@@ -183,6 +187,9 @@ func (h *FileHandler) Get(c *gin.Context) {
 // the keys present in the JSON body are treated as set (field-mask style); absent keys
 // are left unchanged. Responds 200 with the updated file.
 func (h *FileHandler) UpdateMetadata(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB), false) {
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)
@@ -225,6 +232,9 @@ func (h *FileHandler) DownloadURL(c *gin.Context) {
 }
 
 func (h *FileHandler) Delete(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB, middleware.DepStorage), false) {
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)
@@ -239,6 +249,9 @@ func (h *FileHandler) Delete(c *gin.Context) {
 
 // Share grants read access on a file the caller owns to the uids in the body.
 func (h *FileHandler) Share(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB), false) {
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)

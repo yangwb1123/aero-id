@@ -6,6 +6,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/service"
 )
@@ -19,6 +20,31 @@ func parseID(raw, fieldName string) (idgen.ID, error) {
 		return idgen.ID{}, status.Errorf(codes.InvalidArgument, "invalid %s: %s", fieldName, err.Error())
 	}
 	return id, nil
+}
+
+func protoCount(value int) int32 {
+	const max = int64(1<<31 - 1)
+	if int64(value) > max {
+		return int32(max)
+	}
+	if int64(value) < -max-1 {
+		return int32(-max - 1)
+	}
+	return int32(value) //nolint:gosec // range is checked above
+}
+
+func visibilityFromProto(value int32) (domain.Visibility, error) {
+	if value < int32(domain.VisibilityPrivate) || value > int32(domain.VisibilityPublic) {
+		return 0, status.Error(codes.InvalidArgument, "invalid visibility")
+	}
+	return domain.Visibility(value), nil //nolint:gosec // enum range is checked above
+}
+
+func messageKindFromProto(value int32) domain.MessageKind {
+	if value < -1<<15 || value > 1<<15-1 {
+		return 0
+	}
+	return domain.MessageKind(value) //nolint:gosec // int16 bounds are checked above
 }
 
 // requireNonEmpty returns an InvalidArgument error when s is the empty string.

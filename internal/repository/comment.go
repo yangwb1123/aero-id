@@ -19,6 +19,11 @@ type CommentRepository interface {
 	// increments the parent's reply_count in the same transaction. When evt is
 	// non-nil it is also appended to the outbox within that same transaction.
 	CreateWithReplyBump(ctx context.Context, c *domain.Comment, evt *outbox.Event) error
+	// AppendEvent appends an outbox event in its own transaction. This is used for
+	// side-effect events (e.g. comment likes) that do not need to be atomic with
+	// a repository write. The event is best-effort: a failure to append does not
+	// fail the caller.
+	AppendEvent(ctx context.Context, evt *outbox.Event) error
 	Get(ctx context.Context, id domain.ID) (*domain.Comment, error)
 	ListByTarget(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	ListReplies(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
@@ -48,6 +53,12 @@ type CommentRepository interface {
 	// SearchComments returns comments owned by ownerUID whose content matches the
 	// full-text query, ranked by relevance. Requires migration 000016.
 	SearchComments(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
+	// SearchCommentsWithSnippet is like SearchComments but also returns a
+	// highlighted content snippet (via PostgreSQL ts_headline containing
+	// <mark>...</mark> tags) for each hit.
+	SearchCommentsWithSnippet(ctx context.Context, ownerUID, query string, limit int) ([]CommentSearchResult, error)
+	// SearchCommentsLike is a LIKE-based fallback for FTS-unsupported queries (e.g. CJK).
+	SearchCommentsLike(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
 }
 
 type commentRepo struct {
@@ -97,6 +108,17 @@ func (r *commentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment
 		return fmt.Errorf("create comment with reply bump: %w", err)
 	}
 	return nil
+}
+
+// AppendEvent appends an outbox event in its own transaction. When no outbox
+// repository is configured this is a no-op (best-effort).
+func (r *commentRepo) AppendEvent(ctx context.Context, evt *outbox.Event) error {
+	if r.outbox == nil || evt == nil {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return r.outbox.Append(ctx, tx, evt)
+	})
 }
 
 func (r *commentRepo) Get(ctx context.Context, id domain.ID) (*domain.Comment, error) {
@@ -301,7 +323,8 @@ func (r *commentRepo) SetStatus(ctx context.Context, commentID domain.ID, status
 
 // ListReports returns reports against commentID newest-first, using the standard
 // id-cursor pagination. An optional status filter narrows to one triage state.
-func (r *commentRepo) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error) {
+func (r *commentRepo) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus,
+	page domain.Page) ([]*domain.CommentReport, string, error) {
 	page.Normalize()
 	q := r.db.WithContext(ctx).Model(&commentReportRow{}).
 		Where("comment_id = ?", commentID).
@@ -378,6 +401,60 @@ func (r *commentRepo) SearchComments(ctx context.Context, ownerUID, query string
 	).Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("search comments: %w", err)
+	}
+	out := make([]*domain.Comment, len(rows))
+	for i := range rows {
+		out[i] = commentRowToDomain(&rows[i])
+	}
+	return out, nil
+}
+
+// SearchCommentsWithSnippet is like SearchComments but also returns a
+// highlighted content snippet (via PostgreSQL ts_headline containing
+// <mark>...</mark> tags) for each hit.
+func (r *commentRepo) SearchCommentsWithSnippet(ctx context.Context, ownerUID, query string, limit int) ([]CommentSearchResult, error) {
+	type cSnippetRow struct {
+		commentRow
+		Snippet string `gorm:"column:snippet"`
+	}
+	var rows []cSnippetRow
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT id, owner_uid, target_type, target_id, parent_id, root_id, content,
+		        like_count, reply_count, status, created_at, updated_at, edited_at,
+		        ts_headline('simple', content, plainto_tsquery('simple', ?),
+		            'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=20, ShortWord=3') AS snippet
+		 FROM comments
+		 WHERE deleted_at IS NULL
+		   AND owner_uid = ?
+		   AND search_vector @@ plainto_tsquery('simple', ?)
+		 ORDER BY ts_rank(search_vector, plainto_tsquery('simple', ?)) DESC
+		 LIMIT ?`,
+		query, ownerUID, query, query, limit,
+	).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("search comments with snippet: %w", err)
+	}
+	out := make([]CommentSearchResult, len(rows))
+	for i := range rows {
+		out[i] = CommentSearchResult{
+			Comment: commentRowToDomain(&rows[i].commentRow),
+			Snippet: rows[i].Snippet,
+		}
+	}
+	return out, nil
+}
+
+// SearchCommentsLike is a LIKE-based fallback for FTS-unsupported queries. It does
+// ILIKE on the content column, scoped to the caller's own comments.
+func (r *commentRepo) SearchCommentsLike(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error) {
+	var rows []commentRow
+	pattern := "%" + query + "%"
+	if err := r.db.WithContext(ctx).
+		Where("deleted_at IS NULL AND owner_uid = ? AND content ILIKE ?", ownerUID, pattern).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("search comments like: %w", err)
 	}
 	out := make([]*domain.Comment, len(rows))
 	for i := range rows {

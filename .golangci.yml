@@ -1,0 +1,57 @@
+run:
+  concurrency: 4
+  timeout: 3m
+  issues-exit-code: 1
+  tests: true
+
+linters-settings:
+  cyclop:
+    max-complexity: 10
+    package-average: 5.0
+    skip-tests: false
+  funlen:
+    lines: 50
+    statements: 40
+    ignore-comments: true
+  lll:
+    line-length: 160
+    tab-width: 4
+
+linters:
+  disable-all: true
+  enable:
+    - cyclop
+    - funlen
+    - lll
+    - govet
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - gosec
+    - nilerr
+    - noctx
+
+issues:
+  exclude-dirs:
+    - .claude
+    - bin
+  exclude-files:
+    - ".*\\.pb\\.go$"
+  exclude-rules:
+    # Tests are naturally longer — exempt from size/complexity checks.
+    - path: ".*_test\\.go$"
+      linters:
+        - funlen
+        - cyclop
+        - lll
+    # Domain types: long struct field docs are expected.
+    - path: "internal/domain/"
+      linters:
+        - lll
+    # Composition root: wiring all dependencies is inherently verbose.
+    - path: "internal/app/"
+      linters:
+        - cyclop
+        - funlen
+

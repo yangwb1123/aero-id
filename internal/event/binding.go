@@ -1,0 +1,62 @@
+package event
+
+import (
+	"errors"
+	"strings"
+
+	"github.com/aero/aero-id/internal/domain"
+)
+
+var ErrSourceUnauthorized = errors.New("event source is not authorized")
+
+// SourceBinding is server configuration keyed by the signed Snaplink
+// client_id. TenantID may further pin a client to one tenant; Source and region
+// always replace matching compatibility fields in the event wire payload.
+type SourceBinding struct {
+	TenantID     string
+	Source       string
+	SourceRegion string
+}
+
+type SourceBindings map[string]SourceBinding
+
+func (bindings SourceBindings) Resolve(identity *domain.TokenIdentity) (SourceBinding, error) {
+	if identity == nil || strings.TrimSpace(identity.ClientID) == "" || strings.TrimSpace(identity.TenantID) == "" {
+		return SourceBinding{}, ErrSourceUnauthorized
+	}
+	binding, ok := bindings[identity.ClientID]
+	if !ok || strings.TrimSpace(binding.Source) == "" || strings.TrimSpace(binding.SourceRegion) == "" {
+		return SourceBinding{}, ErrSourceUnauthorized
+	}
+	if binding.TenantID != "" && binding.TenantID != identity.TenantID {
+		return SourceBinding{}, ErrSourceUnauthorized
+	}
+	binding.TenantID = identity.TenantID
+	return binding, nil
+}
+
+func (binding SourceBinding) Apply(envelope *Envelope) error {
+	if !binding.valid() || envelope == nil {
+		return ErrSourceUnauthorized
+	}
+	if !binding.matches(envelope) {
+		return ErrSourceUnauthorized
+	}
+	envelope.TenantID = binding.TenantID
+	envelope.Source = binding.Source
+	envelope.SourceRegion = binding.SourceRegion
+	return nil
+}
+
+func (binding SourceBinding) matches(envelope *Envelope) bool {
+	return matchesOrEmpty(envelope.TenantID, binding.TenantID) &&
+		matchesOrEmpty(envelope.Source, binding.Source) &&
+		matchesOrEmpty(envelope.SourceRegion, binding.SourceRegion)
+}
+
+func (binding SourceBinding) valid() bool {
+	return strings.TrimSpace(binding.TenantID) != "" && strings.TrimSpace(binding.Source) != "" &&
+		strings.TrimSpace(binding.SourceRegion) != ""
+}
+
+func matchesOrEmpty(value, expected string) bool { return value == "" || value == expected }

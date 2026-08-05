@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/middleware"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/pkg/idgen"
@@ -44,6 +45,9 @@ type sendMessageRequest struct {
 }
 
 func (h *MessageHandler) Send(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB), false) {
+		return
+	}
 	var req sendMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpx.WriteError(c, apperr.BadRequest("message.invalid", "invalid request body"))
@@ -90,6 +94,9 @@ type editMessageRequest struct {
 }
 
 func (h *MessageHandler) Edit(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB), false) {
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)
@@ -109,6 +116,9 @@ func (h *MessageHandler) Edit(c *gin.Context) {
 }
 
 func (h *MessageHandler) Delete(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB), false) {
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)
@@ -170,6 +180,9 @@ func (h *MessageHandler) UnreadCount(c *gin.Context) {
 }
 
 func (h *MessageHandler) ReactToMessage(c *gin.Context) {
+	if middleware.AbortIfDegraded(c, middleware.DepsForOp(middleware.DepDB), false) {
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)

@@ -1,10 +1,17 @@
 package domain
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// AuditLogger records a single audit event. Implementations must be non-blocking
+// from the caller's perspective; a failed log must not fail the primary operation.
+type AuditLogger interface {
+	Log(ctx context.Context, e *AuditEvent) error
+}
 
 // Audit action constants for sensitive operations.
 const (
@@ -14,6 +21,10 @@ const (
 	AuditUserBlock       = "user.block"
 	AuditUserUnblock     = "user.unblock"
 	AuditMessageDelete   = "message.delete"
+	AuditAdminGrantRole  = "admin.role.grant"
+	AuditAdminRevokeRole = "admin.role.revoke"
+	AuditUserBan         = "user.ban"
+	AuditUserUnban       = "user.unban"
 )
 
 // AuditEvent records who did what to which resource and when.

@@ -41,6 +41,10 @@ type FileRepository interface {
 	// SearchFiles returns files owned by ownerUID whose name matches the full-text
 	// query, ranked by relevance. Requires migration 000016.
 	SearchFiles(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error)
+	// SearchFilesLike is a LIKE-based fallback for FTS-unsupported queries (e.g. CJK
+	// text on a `simple` dictionary). It performs ILIKE '%query%' on the name column,
+	// ordered by name. Only intended as fallback when SearchFiles returns no results.
+	SearchFilesLike(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error)
 }
 
 type fileRepo struct {
@@ -79,6 +83,9 @@ func (r *fileRepo) ListByOwner(ctx context.Context, ownerUID string, page domain
 		Limit(page.Limit + 1) // fetch one extra to detect "has more"
 	if page.Cursor != "" {
 		q = q.Where("id < ?", page.Cursor) // simple id-based cursor; works because UUID v7 is time-ordered
+	}
+	if page.Category != "" {
+		q = q.Where("category = ?", string(page.Category))
 	}
 	var rows []fileRow
 	if err := q.Find(&rows).Error; err != nil {
@@ -212,7 +219,7 @@ func (r *fileRepo) CountAnyByStorageKey(ctx context.Context, storageKey string) 
 func (r *fileRepo) SearchFiles(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error) {
 	var rows []fileRow
 	err := r.db.WithContext(ctx).Raw(
-		`SELECT id, owner_uid, name, size, mime_type, storage_key, storage_type,
+		`SELECT id, owner_uid, name, size, mime_type, category, status, storage_key, storage_type,
 		        checksum, visibility, meta, created_at, updated_at
 		 FROM files
 		 WHERE deleted_at IS NULL
@@ -224,6 +231,25 @@ func (r *fileRepo) SearchFiles(ctx context.Context, ownerUID, query string, limi
 	).Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("search files: %w", err)
+	}
+	out := make([]*domain.File, len(rows))
+	for i := range rows {
+		out[i] = fileRowToDomain(&rows[i])
+	}
+	return out, nil
+}
+
+// SearchFilesLike is a LIKE-based fallback for FTS-unsupported queries. It does
+// ILIKE on the name column. No tsvector or ts_rank, so ordering is alphabetical.
+func (r *fileRepo) SearchFilesLike(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error) {
+	var rows []fileRow
+	pattern := "%" + query + "%"
+	if err := r.db.WithContext(ctx).
+		Where("deleted_at IS NULL AND owner_uid = ? AND name ILIKE ?", ownerUID, pattern).
+		Order("name ASC").
+		Limit(limit).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("search files like: %w", err)
 	}
 	out := make([]*domain.File, len(rows))
 	for i := range rows {

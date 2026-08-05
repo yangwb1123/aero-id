@@ -28,7 +28,7 @@ func (s *MessageServer) Register(srv *grpc.Server) { aeropb.RegisterMessageServi
 func (s *MessageServer) SendMessage(ctx context.Context, req *aeropb.SendMessageRequest) (*aeropb.SendMessageResponse, error) {
 	in := service.SendMessageInput{
 		ToUID:   req.ToUid,
-		Kind:    domain.MessageKind(req.Kind),
+		Kind:    messageKindFromProto(req.Kind),
 		Content: req.Content,
 	}
 	if req.FileId != "" {

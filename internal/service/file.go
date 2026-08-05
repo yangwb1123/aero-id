@@ -20,7 +20,8 @@ import (
 
 type fileService struct {
 	files       repository.FileRepository
-	shares      repository.FileShareRepository // nil => explicit sharing is inactive
+	shares      repository.FileShareRepository  // nil => explicit sharing is inactive
+	refs        repository.StorageRefRepository // nil => ref-counting is inactive
 	store       storage.FileStorage
 	storageType string // "local" | "s3", recorded on each row for later routing
 	maxBytes    int64  // 0 = unlimited
@@ -64,6 +65,16 @@ func WithFileShareRepo(shares repository.FileShareRepository) FileOption {
 	return func(s *fileService) { s.shares = shares }
 }
 
+// WithStorageRefs wires a StorageRefRepository for atomic reference counting on
+// storage keys. When active, each file Create increments the ref count and each
+// Delete decrements it; the physical blob is only removed when the count reaches
+// zero, preventing the GC sweeper from reclaiming a blob concurrently reused by
+// a content-dedup upload. Nil (the default) disables ref tracking — the service
+// falls back to the legacy CountByStorageKey heuristic.
+func WithStorageRefs(refs repository.StorageRefRepository) FileOption {
+	return func(s *fileService) { s.refs = refs }
+}
+
 func NewFileService(files repository.FileRepository, store storage.FileStorage, storageType string, opts ...FileOption) FileService {
 	s := &fileService{files: files, store: store, storageType: storageType}
 	for _, opt := range opts {
@@ -72,6 +83,7 @@ func NewFileService(files repository.FileRepository, store storage.FileStorage, 
 	return s
 }
 
+//nolint:cyclop,funlen // legacy file behavior remains compatibility-bound until Vault migration.
 func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.File, error) {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -130,6 +142,7 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 		Name:        in.Name,
 		Size:        size,
 		MimeType:    in.MimeType,
+		Category:    domain.ClassifyFile(in.MimeType),
 		StorageKey:  key,
 		StorageType: s.storageType,
 		Checksum:    checksum,
@@ -143,6 +156,12 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 			_ = s.store.Delete(ctx, key) // only clean up a blob we exclusively own
 		}
 		return nil, apperr.Internal("file.create_failed", "failed to persist file").Wrap(err)
+	}
+	// Increment the storage reference count so concurrent deletes and the GC
+	// know this blob is still live. Best-effort: a missed increment is no
+	// worse than the legacy CountByStorageKey heuristic.
+	if s.refs != nil {
+		_, _ = s.refs.Increment(ctx, f.StorageKey)
 	}
 	return f, nil
 }
@@ -204,6 +223,7 @@ func (s *fileService) List(ctx context.Context, ownerUID string, page domain.Pag
 	return &FileList{Files: files, NextCursor: next}, nil
 }
 
+//nolint:cyclop // legacy deletion preserves deployed storage reference and outbox semantics.
 func (s *fileService) Delete(ctx context.Context, id domain.ID) error {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -223,281 +243,25 @@ func (s *fileService) Delete(ctx context.Context, id domain.ID) error {
 	if err := s.files.Delete(ctx, id); err != nil {
 		return apperr.Internal("file.delete_failed", "failed to delete file").Wrap(err)
 	}
-	// Blob removal is dedup-safe and best-effort: drop the physical object only once no
-	// other live file references the same storage key, and never fail the request over
-	// it (the row is already gone; any orphan is left for a future GC sweep).
-	if n, cerr := s.files.CountByStorageKey(ctx, f.StorageKey); cerr == nil && n == 0 {
+	// Decrement the storage ref count. When the ref-counting path is active, we
+	// only delete the blob when the count reaches zero (no other file references
+	// the same storage key via content dedup). When ref-counting is inactive we
+	// fall back to the legacy CountByStorageKey check.
+	var shouldDelete bool
+	if s.refs != nil {
+		n, decErr := s.refs.Decrement(ctx, f.StorageKey)
+		if decErr == nil && n == 0 {
+			shouldDelete = true
+		}
+	} else {
+		if n, cerr := s.files.CountByStorageKey(ctx, f.StorageKey); cerr == nil && n == 0 {
+			shouldDelete = true
+		}
+	}
+	if shouldDelete {
 		_ = s.store.Delete(ctx, f.StorageKey)
 	}
 	return nil
-}
-
-func (s *fileService) DownloadURL(ctx context.Context, id domain.ID, ttl time.Duration) (string, error) {
-	f, err := s.Get(ctx, id) // reuses the read ACL above
-	if err != nil {
-		return "", err
-	}
-	url, err := s.store.PresignGet(ctx, f.StorageKey, ttl)
-	if err != nil {
-		return "", apperr.Internal("file.presign_failed", "failed to presign download URL").Wrap(err)
-	}
-	return url, nil
-}
-
-// PresignUpload allocates a file id + owner-scoped storage key and returns a presigned
-// PUT URL the client uploads to directly, bypassing this process. No row is written
-// yet — the row is created on CompleteUpload, so an abandoned presign leaves no
-// dangling state (at worst an orphan object the backend lifecycle can reap). Backends
-// that cannot presign (local) surface as a BadRequest.
-func (s *fileService) PresignUpload(ctx context.Context, in PresignUploadInput, ttl time.Duration) (*PresignUploadResult, error) {
-	actor, err := mustActor(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if in.Name == "" {
-		return nil, apperr.BadRequest("file.invalid", "name is required")
-	}
-	if !s.mimeAllowed(in.MimeType) {
-		return nil, apperr.BadRequest("file.unsupported_type", "file content type is not allowed")
-	}
-	key := s.store.NewKey(actor)
-	url, err := s.store.PresignPut(ctx, key, ttl)
-	if stderrors.Is(err, storage.ErrNotSupported) {
-		return nil, apperr.BadRequest("file.presign_unsupported", "direct upload is not supported by this storage backend")
-	}
-	if err != nil {
-		return nil, apperr.Internal("file.presign_failed", "failed to presign upload URL").Wrap(err)
-	}
-	return &PresignUploadResult{FileID: idgen.NewID(), UploadURL: url, StorageKey: key}, nil
-}
-
-// CompleteUpload finalizes a presigned direct upload. The actor must own the storage
-// key (its owner prefix matches the actor), the object must exist, and it must respect
-// the size limit. Content-checksum dedup is intentionally SKIPPED for direct uploads:
-// the bytes never pass through this process, so we cannot hash them without an extra
-// download. The row is persisted with an empty checksum.
-func (s *fileService) CompleteUpload(ctx context.Context, in CompleteUploadInput) (*domain.File, error) {
-	actor, err := mustActor(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if in.FileID == (domain.ID{}) {
-		return nil, apperr.BadRequest("file.invalid", "file id is required")
-	}
-	if in.Name == "" {
-		return nil, apperr.BadRequest("file.invalid", "name is required")
-	}
-	if !s.mimeAllowed(in.MimeType) {
-		return nil, apperr.BadRequest("file.unsupported_type", "file content type is not allowed")
-	}
-	// The key is owner-scoped (built by NewKey as "<owner>/..."); refuse to finalize a
-	// key that isn't prefixed with the actor's uid so a client can't claim another
-	// owner's object.
-	if !strings.HasPrefix(in.StorageKey, actor+"/") {
-		return nil, apperr.Forbidden("file.forbidden", "not allowed to finalize this upload")
-	}
-	info, err := s.store.Stat(ctx, in.StorageKey)
-	if stderrors.Is(err, storage.ErrNotFound) {
-		return nil, apperr.BadRequest("file.not_uploaded", "no object found at the upload key")
-	}
-	if err != nil {
-		return nil, apperr.Internal("file.stat_failed", "failed to stat uploaded object").Wrap(err)
-	}
-	if s.maxBytes > 0 && info.Size > s.maxBytes {
-		_ = s.store.Delete(ctx, in.StorageKey) // reject + clean up the oversized object
-		return nil, apperr.BadRequest("file.too_large", fmt.Sprintf("file exceeds the %d-byte limit", s.maxBytes))
-	}
-
-	now := time.Now().UTC()
-	f := &domain.File{
-		ID:          in.FileID,
-		OwnerUID:    actor,
-		Name:        in.Name,
-		Size:        info.Size,
-		MimeType:    in.MimeType,
-		StorageKey:  in.StorageKey,
-		StorageType: s.storageType,
-		Visibility:  in.Visibility,
-		Meta:        in.Meta,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	if err := s.files.Create(ctx, f); err != nil {
-		_ = s.store.Delete(ctx, in.StorageKey) // direct uploads aren't deduped, so this blob is exclusively ours
-		return nil, apperr.Internal("file.create_failed", "failed to persist file").Wrap(err)
-	}
-	return f, nil
-}
-
-// UpdateMetadata lets the file's owner change mutable metadata without re-uploading.
-// Only the provided (non-nil) fields are applied; a provided meta map is merged into
-// the existing meta. Validation: a provided name must be non-blank (BadRequest); a
-// provided visibility must be a known value (BadRequest); a soft-deleted/missing file
-// is NotFound; non-owners get Forbidden. updated_at is bumped on every change.
-func (s *fileService) UpdateMetadata(ctx context.Context, id domain.ID, in UpdateFileMetadataInput) (*domain.File, error) {
-	actor, err := mustActor(ctx)
-	if err != nil {
-		return nil, err
-	}
-	f, err := s.ownedFile(ctx, id, actor)
-	if err != nil {
-		return nil, err
-	}
-
-	fields := map[string]any{}
-	if in.Name != nil {
-		name := strings.TrimSpace(*in.Name)
-		if name == "" {
-			return nil, apperr.BadRequest("file.invalid", "name must not be blank")
-		}
-		fields["name"] = name
-		f.Name = name
-	}
-	if in.Visibility != nil {
-		v := *in.Visibility
-		if v != domain.VisibilityPrivate && v != domain.VisibilityPublic {
-			return nil, apperr.BadRequest("file.invalid_visibility", "visibility must be 0 (private) or 1 (public)")
-		}
-		fields["visibility"] = int16(v)
-		f.Visibility = v
-	}
-	if in.Meta != nil {
-		merged := make(map[string]any, len(f.Meta)+len(in.Meta))
-		for k, v := range f.Meta {
-			merged[k] = v
-		}
-		for k, v := range in.Meta {
-			merged[k] = v
-		}
-		fields["meta"] = merged
-		f.Meta = merged
-	}
-	if len(fields) == 0 {
-		return f, nil // nothing requested; return the current state unchanged
-	}
-
-	now := time.Now().UTC()
-	fields["updated_at"] = now
-	if err := s.files.UpdateMetadata(ctx, id, fields); err != nil {
-		if stderrors.Is(err, repository.ErrNotFound) {
-			return nil, apperr.NotFound("file.not_found", "file not found")
-		}
-		return nil, apperr.Internal("file.update_failed", "failed to update file").Wrap(err)
-	}
-	f.UpdatedAt = now
-	return f, nil
-}
-
-// ShareFile grants read access on a file the caller owns to each grantee uid. It is
-// idempotent and rejects blank uids and self-grants (the owner already has access).
-func (s *fileService) ShareFile(ctx context.Context, id domain.ID, granteeUIDs []string) error {
-	actor, err := mustActor(ctx)
-	if err != nil {
-		return err
-	}
-	if s.shares == nil {
-		return apperr.Internal("file.sharing_unavailable", "file sharing is not enabled")
-	}
-	f, err := s.ownedFile(ctx, id, actor)
-	if err != nil {
-		return err
-	}
-	// Validate and de-duplicate the grantee set: reject blank uids; silently drop a
-	// self-grant since the owner already has access.
-	seen := make(map[string]bool, len(granteeUIDs))
-	grantees := make([]string, 0, len(granteeUIDs))
-	for _, g := range granteeUIDs {
-		g = strings.TrimSpace(g)
-		if g == "" {
-			return apperr.BadRequest("file.invalid_grantee", "grantee uid must not be blank")
-		}
-		if g == f.OwnerUID || seen[g] {
-			continue
-		}
-		seen[g] = true
-		grantees = append(grantees, g)
-	}
-	if len(grantees) == 0 {
-		return nil
-	}
-	if err := s.shares.Grant(ctx, id, f.OwnerUID, grantees); err != nil {
-		return apperr.Internal("file.share_failed", "failed to share file").Wrap(err)
-	}
-	if s.audit != nil {
-		for _, g := range grantees {
-			_ = s.audit.Log(ctx, &domain.AuditEvent{
-				ActorUID:    actor,
-				Action:      domain.AuditFileShareGrant,
-				SubjectType: "file",
-				SubjectID:   id.String(),
-				TargetUID:   g,
-			})
-		}
-	}
-	return nil
-}
-
-// UnshareFile revokes a single grantee's access to a file the caller owns. Revoking a
-// grant that does not exist is a no-op.
-func (s *fileService) UnshareFile(ctx context.Context, id domain.ID, granteeUID string) error {
-	actor, err := mustActor(ctx)
-	if err != nil {
-		return err
-	}
-	if s.shares == nil {
-		return apperr.Internal("file.sharing_unavailable", "file sharing is not enabled")
-	}
-	if strings.TrimSpace(granteeUID) == "" {
-		return apperr.BadRequest("file.invalid_grantee", "grantee uid must not be blank")
-	}
-	if _, err := s.ownedFile(ctx, id, actor); err != nil {
-		return err
-	}
-	if err := s.shares.Revoke(ctx, id, granteeUID); err != nil {
-		return apperr.Internal("file.unshare_failed", "failed to unshare file").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditFileShareRevoke,
-			SubjectType: "file",
-			SubjectID:   id.String(),
-			TargetUID:   granteeUID,
-		})
-	}
-	return nil
-}
-
-// ListSharedWithMe lists files other owners have shared with the caller.
-func (s *fileService) ListSharedWithMe(ctx context.Context, page domain.Page) (*FileList, error) {
-	actor, err := mustActor(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if s.shares == nil {
-		return &FileList{Files: []*domain.File{}}, nil
-	}
-	files, next, err := s.shares.ListFilesSharedWith(ctx, actor, page)
-	if err != nil {
-		return nil, apperr.Internal("file.list_failed", "failed to list shared files").Wrap(err)
-	}
-	return &FileList{Files: files, NextCursor: next}, nil
-}
-
-// ownedFile loads a file and asserts the actor is its owner, translating raw errors
-// to the same NotFound/Forbidden AppErrors the other owner-only operations return.
-func (s *fileService) ownedFile(ctx context.Context, id domain.ID, actor string) (*domain.File, error) {
-	f, err := s.files.Get(ctx, id)
-	if stderrors.Is(err, repository.ErrNotFound) {
-		return nil, apperr.NotFound("file.not_found", "file not found")
-	}
-	if err != nil {
-		return nil, apperr.Internal("file.get_failed", "failed to load file").Wrap(err)
-	}
-	if f.OwnerUID != actor {
-		return nil, apperr.Forbidden("file.forbidden", "only the owner can share this file")
-	}
-	return f, nil
 }
 
 // mimeAllowed reports whether the content type passes the configured allow-list.

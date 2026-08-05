@@ -13,7 +13,7 @@ import (
 // fakeClock is a manually-advanced clock for deterministic breaker timing tests.
 type fakeClock struct{ t time.Time }
 
-func (c *fakeClock) now() time.Time      { return c.t }
+func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestBreaker(threshold int, cooldown time.Duration) (*breaker, *fakeClock) {

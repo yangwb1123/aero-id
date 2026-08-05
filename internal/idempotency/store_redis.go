@@ -1,0 +1,145 @@
+package idempotency
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/redis/rueidis"
+)
+
+// redisReservationTTL is how long an in-progress reservation lives before Redis
+// auto-expires it (matching the GormStore reservationTTL). A crashed leader's
+// reservation is reclaimed after this TTL, rather than needing a manual reaper.
+const redisReservationTTL = 2 * time.Minute
+
+// redisRecord is the JSON-serialised form of a Record stored in Redis.
+type redisRecord struct {
+	Status      int    `json:"s"`
+	ContentType string `json:"ct,omitempty"`
+	Body        []byte `json:"b,omitempty"`
+	Completed   bool   `json:"c"`
+	// CreatedAt is set on Reserve and used by the stale-reclamation check.
+	// Stored as UnixNano int64 for compact JSON.
+	CreatedAt int64 `json:"t,omitempty"`
+}
+
+// RedisStore implements Store backed by Redis. Key format:
+//
+//	idempot:{uid}:{endpoint}:{key}
+//
+// The first Reserve creates the key with a short TTL (redisReservationTTL).
+// Complete persists the full response and extends the TTL to the caller-provided
+// value so subsequent idempotent retries can replay the cached response.
+// Stale reservations (crashed leaders) are auto-reclaimed by Redis TTL expiry.
+type RedisStore struct {
+	client rueidis.Client
+}
+
+// NewRedisStore wraps a rueidis.Client into an idempotency Store.
+// The client is NOT owned by the store; the caller manages its lifecycle.
+// Returns nil when client is nil (so callers can fall back gracefully).
+func NewRedisStore(client rueidis.Client) *RedisStore {
+	return &RedisStore{client: client}
+}
+
+// redisKey builds the Redis key for an idempotency entry.
+func redisKey(uid, endpoint, key string) string {
+	return "idempot:" + uid + ":" + endpoint + ":" + key
+}
+
+// recordTTL is the TTL applied to a successfully completed record so callers
+// can replay the cached response. 24h matches the GormStore default.
+const recordTTL = 24 * time.Hour
+
+// Reserve implements Store.Reserve. It atomically creates a reservation key in
+// Redis (SET NX). On success it returns (nil, true, nil) — the caller must
+// run the handler and call Complete or Release. On conflict it returns the
+// existing Record so the middleware can replay a completed response or signal
+// an in-flight conflict.
+func (s *RedisStore) Reserve(ctx context.Context, uid, endpoint, key string) (*Record, bool, error) {
+	k := redisKey(uid, endpoint, key)
+	now := time.Now().UTC()
+
+	inProgress := &redisRecord{
+		Status:    0,
+		Completed: false,
+		CreatedAt: now.UnixNano(),
+	}
+	payload, err := json.Marshal(inProgress)
+	if err != nil {
+		return nil, false, fmt.Errorf("redis reserve marshal: %w", err)
+	}
+
+	// SET NX EX — only succeeds when the key does not exist.
+	cmd := s.client.B().Set().Key(k).Value(string(payload)).Nx().Ex(redisReservationTTL).Build()
+	if err := s.client.Do(ctx, cmd).Error(); err != nil {
+		// NX returned nil (key already exists). Fetch existing record.
+		return s.getExisting(ctx, k)
+	}
+	// Successfully reserved.
+	return nil, true, nil
+}
+
+// getExisting retrieves the existing record for a key. Returns (rec, false, nil)
+// when the record is found, or (nil, false, nil) when the key has expired between
+// the NX check and the GET (race is harmless — retry will re-reserve).
+func (s *RedisStore) getExisting(ctx context.Context, key string) (*Record, bool, error) {
+	resp, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).AsBytes()
+	if err != nil {
+		if rueidis.IsRedisNil(err) {
+			// Key expired between NX and GET — rare race; caller can retry.
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("redis get existing: %w", err)
+	}
+	var rr redisRecord
+	if err := json.Unmarshal(resp, &rr); err != nil {
+		return nil, false, fmt.Errorf("redis unmarshal existing: %w", err)
+	}
+	rec := &Record{
+		Status:      rr.Status,
+		ContentType: rr.ContentType,
+		Body:        rr.Body,
+		Completed:   rr.Completed,
+	}
+	return rec, false, nil
+}
+
+// Complete implements Store.Complete. It stores the completed response with the
+// given TTL so retries can replay it. The key must exist (from Reserve); if it
+// was deleted or expired the store silently creates a new key — this is safe
+// because the caller still has the reservation and will only call Complete
+// once per key.
+func (s *RedisStore) Complete(ctx context.Context, uid, endpoint, key string, rec Record, ttl time.Duration) error {
+	k := redisKey(uid, endpoint, key)
+	if ttl <= 0 {
+		ttl = recordTTL
+	}
+	rr := &redisRecord{
+		Status:      rec.Status,
+		ContentType: rec.ContentType,
+		Body:        rec.Body,
+		Completed:   true,
+		CreatedAt:   time.Now().UTC().UnixNano(),
+	}
+	payload, err := json.Marshal(rr)
+	if err != nil {
+		return fmt.Errorf("redis complete marshal: %w", err)
+	}
+	cmd := s.client.B().Set().Key(k).Value(string(payload)).Ex(ttl).Build()
+	if err := s.client.Do(ctx, cmd).Error(); err != nil {
+		return fmt.Errorf("redis complete: %w", err)
+	}
+	return nil
+}
+
+// Release implements Store.Release. It deletes the idempotency key so a
+// subsequent retry starts fresh. Errors are silently dropped because a
+// best-effort delete is safe: the key will expire via TTL regardless.
+func (s *RedisStore) Release(ctx context.Context, uid, endpoint, key string) error {
+	k := redisKey(uid, endpoint, key)
+	_ = s.client.Do(ctx, s.client.B().Del().Key(k).Build()).Error()
+	return nil
+}

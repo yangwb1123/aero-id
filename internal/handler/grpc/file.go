@@ -105,10 +105,14 @@ func (s *FileServer) ListSharedWithMe(ctx context.Context, req *aeropb.ListShare
 }
 
 func (s *FileServer) PresignUpload(ctx context.Context, req *aeropb.PresignUploadRequest) (*aeropb.PresignUploadResponse, error) {
+	visibility, err := visibilityFromProto(req.Visibility)
+	if err != nil {
+		return nil, err
+	}
 	res, err := s.files.PresignUpload(ctx, service.PresignUploadInput{
 		Name:       req.Name,
 		MimeType:   req.MimeType,
-		Visibility: domain.Visibility(req.Visibility),
+		Visibility: visibility,
 	}, defaultDownloadTTL)
 	if err != nil {
 		return nil, grpcError(err)
@@ -125,12 +129,16 @@ func (s *FileServer) CompleteUpload(ctx context.Context, req *aeropb.CompleteUpl
 	if err != nil {
 		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
 	}
+	visibility, err := visibilityFromProto(req.Visibility)
+	if err != nil {
+		return nil, err
+	}
 	f, err := s.files.CompleteUpload(ctx, service.CompleteUploadInput{
 		FileID:     fileID,
 		StorageKey: req.StorageKey,
 		Name:       req.Name,
 		MimeType:   req.MimeType,
-		Visibility: domain.Visibility(req.Visibility),
+		Visibility: visibility,
 	})
 	if err != nil {
 		return nil, grpcError(err)
@@ -148,7 +156,10 @@ func (s *FileServer) UpdateFileMetadata(ctx context.Context, req *aeropb.UpdateF
 	}
 	in := service.UpdateFileMetadataInput{Name: req.Name}
 	if req.Visibility != nil {
-		v := domain.Visibility(*req.Visibility)
+		v, err := visibilityFromProto(*req.Visibility)
+		if err != nil {
+			return nil, err
+		}
 		in.Visibility = &v
 	}
 	if req.Meta != nil {

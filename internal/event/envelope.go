@@ -1,0 +1,173 @@
+// Package event defines the transport-neutral canonical event contract.
+package event
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/pkg/idgen"
+)
+
+type Envelope struct {
+	EventID          domain.ID      `json:"event_id"`
+	Source           string         `json:"source"`
+	SourceRegion     string         `json:"source_region"`
+	EventType        string         `json:"event_type"`
+	SchemaVersion    int            `json:"schema_version"`
+	AggregateType    string         `json:"aggregate_type"`
+	AggregateID      string         `json:"aggregate_id"`
+	AggregateVersion int64          `json:"aggregate_version"`
+	ActorUID         string         `json:"actor_uid,omitempty"`
+	TenantID         string         `json:"tenant_id,omitempty"`
+	OperationID      domain.ID      `json:"operation_id"`
+	CorrelationID    domain.ID      `json:"correlation_id"`
+	CausationID      domain.ID      `json:"causation_id"`
+	TraceID          string         `json:"trace_id,omitempty"`
+	OccurredAt       time.Time      `json:"occurred_at"`
+	Payload          map[string]any `json:"payload"`
+}
+
+type SnapshotMutation struct {
+	AccountID    domain.ID
+	Dataset      domain.AccountDataset
+	Source       string
+	SourceRegion string
+	Status       domain.SnapshotStatus
+	Version      int64
+	Data         map[string]any
+}
+
+func (e *Envelope) Validate() error {
+	if e == nil {
+		return fmt.Errorf("event is nil")
+	}
+	if e.EventID == (domain.ID{}) {
+		return fmt.Errorf("event_id is required")
+	}
+	checks := []func() error{e.validateSource, e.validateType, e.validateAggregate, e.validatePayload}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Envelope) validateSource() error {
+	if strings.TrimSpace(e.Source) == "" || strings.TrimSpace(e.SourceRegion) == "" {
+		return fmt.Errorf("source and source_region are required")
+	}
+	// aero-id is the control plane: it relays approved projections across
+	// regions (P6-03) and reports its own control-plane facts.
+	if e.Source != "snaplink" && e.Source != "aero-im" && e.Source != "aero-vault" && e.Source != "aero-id" {
+		return fmt.Errorf("source is not allow-listed")
+	}
+	return nil
+}
+
+func (e *Envelope) validateType() error {
+	if strings.TrimSpace(e.EventType) == "" || e.SchemaVersion <= 0 {
+		return fmt.Errorf("event_type and schema_version are required")
+	}
+	return nil
+}
+
+func (e *Envelope) validateAggregate() error {
+	if strings.TrimSpace(e.AggregateType) == "" || strings.TrimSpace(e.AggregateID) == "" {
+		return fmt.Errorf("aggregate identity is required")
+	}
+	if e.AggregateVersion <= 0 || e.OccurredAt.IsZero() {
+		return fmt.Errorf("aggregate_version or occurred_at is invalid")
+	}
+	return nil
+}
+
+func (e *Envelope) validatePayload() error {
+	if e.Payload == nil {
+		return fmt.Errorf("payload is required")
+	}
+	return nil
+}
+
+func (e *Envelope) Snapshot() (*SnapshotMutation, error) {
+	if err := e.Validate(); err != nil {
+		return nil, err
+	}
+	accountID, err := snapshotAccountID(e.Payload)
+	if err != nil {
+		return nil, err
+	}
+	dataset, err := snapshotDataset(e.Payload, e.Source)
+	if err != nil {
+		return nil, err
+	}
+	data, err := snapshotData(e.Payload)
+	if err != nil {
+		return nil, err
+	}
+	status, err := snapshotStatus(e.Payload)
+	if err != nil {
+		return nil, err
+	}
+	version := snapshotVersion(e.Payload, e.AggregateVersion)
+	return &SnapshotMutation{
+		AccountID: accountID, Dataset: dataset, Source: e.Source, SourceRegion: e.SourceRegion,
+		Status: status, Version: version, Data: boundedProjectionData(redactProjectionData(data, 0)),
+	}, nil
+}
+
+func snapshotAccountID(payload map[string]any) (domain.ID, error) {
+	value, ok := payload["account_id"].(string)
+	if !ok {
+		return domain.ID{}, fmt.Errorf("payload.account_id is required")
+	}
+	accountID, err := idgen.Parse(value)
+	if err != nil {
+		return domain.ID{}, fmt.Errorf("payload.account_id is invalid")
+	}
+	return accountID, nil
+}
+
+func snapshotDataset(payload map[string]any, source string) (domain.AccountDataset, error) {
+	value, ok := payload["dataset"].(string)
+	if !ok {
+		return "", fmt.Errorf("payload.dataset is required")
+	}
+	dataset := domain.AccountDataset(value)
+	descriptor, ok := domain.DatasetDescriptorOf(dataset)
+	// The control plane (aero-id) relays approved projections of every source
+	// during cross-region replication (P6-03); all other sources may only write
+	// their own datasets.
+	if !ok || (descriptor.Source != source && source != "aero-id") {
+		return "", fmt.Errorf("payload.dataset is not valid for source")
+	}
+	return dataset, nil
+}
+
+func snapshotData(payload map[string]any) (map[string]any, error) {
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("payload.data is required")
+	}
+	return data, nil
+}
+
+func snapshotStatus(payload map[string]any) (domain.SnapshotStatus, error) {
+	status := domain.SnapshotFresh
+	if value, ok := payload["status"].(string); ok && value != "" {
+		status = domain.SnapshotStatus(value)
+	}
+	if !status.Valid() {
+		return "", fmt.Errorf("payload.status is invalid")
+	}
+	return status, nil
+}
+
+func snapshotVersion(payload map[string]any, fallback int64) int64 {
+	if value, ok := payload["version"].(float64); ok && value > 0 {
+		return int64(value)
+	}
+	return fallback
+}

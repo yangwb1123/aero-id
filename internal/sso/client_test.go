@@ -28,7 +28,7 @@ type fakeSSOServer struct {
 func (f *fakeSSOServer) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
 	f.validateCalls++
 	if req.Token == "bad" {
-		return nil, grpc.Errorf(7, "invalid")
+		return nil, status.Error(codes.PermissionDenied, "invalid")
 	}
 	return &ssopb.ValidateTokenResponse{Uid: "uid-of-" + req.Token, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()}, nil
 }
@@ -517,7 +517,7 @@ func TestClient_RetryRecoversWithinTimeout(t *testing.T) {
 }
 
 func TestClient_RetriesGiveUpRecordOneBreakerFailure(t *testing.T) {
-	const threshold = 1 // one recorded sequence-failure must trip the breaker
+	const threshold = 1                                    // one recorded sequence-failure must trip the breaker
 	c, server := startToggleSSO(t, true, sso.ClientConfig{ // always down
 		TokenCacheTTL:    time.Minute,
 		UserCacheTTL:     time.Minute,

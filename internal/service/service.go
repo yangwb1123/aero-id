@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -17,6 +18,12 @@ import (
 type ctxKey int
 
 const actorKey ctxKey = iota
+
+const identityKey ctxKey = iota + 1
+
+const requestIDKey ctxKey = iota + 2
+
+const traceIDKey ctxKey = iota + 3
 
 // WithActor returns a child context carrying the authenticated uid. The HTTP auth
 // middleware and the gRPC auth interceptor call this after validating the token
@@ -30,6 +37,58 @@ func WithActor(ctx context.Context, uid string) context.Context {
 func ActorFrom(ctx context.Context) (string, bool) {
 	uid, _ := ctx.Value(actorKey).(string)
 	return uid, uid != ""
+}
+
+func actorFromContext(ctx context.Context) string {
+	actor, _ := ActorFrom(ctx)
+	return actor
+}
+
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDKey, requestID)
+}
+
+func RequestIDFrom(ctx context.Context) string {
+	value, _ := ctx.Value(requestIDKey).(string)
+	return value
+}
+
+func WithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDKey, traceID)
+}
+
+func TraceIDFrom(ctx context.Context) string {
+	value, _ := ctx.Value(traceIDKey).(string)
+	return value
+}
+
+func WithIdentity(ctx context.Context, identity *domain.TokenIdentity) context.Context {
+	if identity == nil {
+		return ctx
+	}
+	ctx = context.WithValue(ctx, identityKey, identity)
+	return WithActor(ctx, identity.UID)
+}
+
+func IdentityFrom(ctx context.Context) (*domain.TokenIdentity, bool) {
+	identity, ok := ctx.Value(identityKey).(*domain.TokenIdentity)
+	return identity, ok && identity != nil && identity.UID != ""
+}
+
+func TenantFrom(ctx context.Context) string {
+	identity, _ := IdentityFrom(ctx)
+	if identity == nil {
+		return ""
+	}
+	return identity.TenantID
+}
+
+func mustTenant(ctx context.Context) (string, error) {
+	tenantID := strings.TrimSpace(TenantFrom(ctx))
+	if tenantID == "" {
+		return "", apperr.Forbidden("tenant.required", "verified tenant identity is required")
+	}
+	return tenantID, nil
 }
 
 // AuditLogger records a single audit event. Implementations must be non-blocking
@@ -153,7 +212,17 @@ type ReactionResult struct {
 	LikeCount int
 }
 
-// ---- Service interfaces (implemented in file.go / message.go / comment.go) ----
+// ---- Service interfaces (implemented in file.go / message.go / comment.go / admin.go) ----
+
+// AdminService provides role-based access control and admin operations.
+type AdminService interface {
+	HasPermission(ctx context.Context, uid, perm string) (bool, error)
+	ListAudit(ctx context.Context, action string, page domain.Page) ([]*domain.AuditEvent, string, error)
+	GrantRole(ctx context.Context, uid, roleCode string) error
+	RevokeRole(ctx context.Context, uid, roleCode string) error
+	ListRoles(ctx context.Context) ([]*domain.Role, error)
+	ListUserRoles(ctx context.Context, uid string) ([]*domain.UserRole, error)
+}
 
 type FileService interface {
 	Create(ctx context.Context, in CreateFileInput) (*domain.File, error)

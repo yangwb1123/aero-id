@@ -35,6 +35,13 @@ type FileRepo interface {
 	CountAnyByStorageKey(ctx context.Context, storageKey string) (int64, error)
 }
 
+// RefCounter is the subset of StorageRefRepository used by the sweeper.
+// When wired, the sweeper checks this instead of the legacy CountAnyByStorageKey
+// so that concurrent content-dedup uploads do not race with blob deletion.
+type RefCounter interface {
+	GetCount(ctx context.Context, storageKey string) (int, error)
+}
+
 // Config tunes a Sweeper. The zero value is effectively "do nothing safely": with a zero
 // retention every just-deleted row would be eligible, so callers must set sensible
 // values — the app supplies these from config and refuses to start a disabled sweep.
@@ -57,6 +64,7 @@ const defaultPurgeBatch = 500
 // single pass or Start for periodic passes.
 type Sweeper struct {
 	repo  FileRepo
+	refs  RefCounter // nil => uses legacy CountAnyByStorageKey
 	store storage.FileStorage
 	now   func() time.Time
 	log   *zap.Logger
@@ -65,14 +73,14 @@ type Sweeper struct {
 
 // New builds a Sweeper. log may be nil. The clock defaults to time.Now and can be
 // overridden in tests via WithClock.
-func New(repo FileRepo, store storage.FileStorage, cfg Config, log *zap.Logger) *Sweeper {
+func New(repo FileRepo, refs RefCounter, store storage.FileStorage, cfg Config, log *zap.Logger) *Sweeper {
 	if log == nil {
 		log = zap.NewNop()
 	}
 	if cfg.PurgeBatch <= 0 {
 		cfg.PurgeBatch = defaultPurgeBatch
 	}
-	return &Sweeper{repo: repo, store: store, now: time.Now, log: log, cfg: cfg}
+	return &Sweeper{repo: repo, refs: refs, store: store, now: time.Now, log: log, cfg: cfg}
 }
 
 // WithClock overrides the time source (tests).
@@ -129,8 +137,12 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 
 // purgeSoftDeleted hard-deletes soft-deleted rows older than the retention window and
 // removes each blob that no remaining row references (refcount-safe, mirroring the
-// service Delete path). The row is hard-deleted first so CountAnyByStorageKey no longer
-// counts it, letting a blob shared only by purged rows be reclaimed.
+// service Delete path). The row is hard-deleted first so the sweeper no longer counts
+// it, letting a blob shared only by purged rows be reclaimed. When a RefCounter is
+// wired the sweeper uses GetCount instead of CountAnyByStorageKey, eliminating the
+// race window between a concurrent content-dedup Create and this purge pass.
+//
+//nolint:cyclop // row purge and refcount-safe blob reclamation form one reconciliation phase.
 func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged int, err error) {
 	before := s.now().Add(-s.cfg.Retention)
 	rows, lerr := s.repo.ListSoftDeletedBefore(ctx, before, s.cfg.PurgeBatch)
@@ -162,7 +174,7 @@ func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged
 			continue
 		}
 		seen[f.StorageKey] = struct{}{}
-		n, cerr := s.repo.CountAnyByStorageKey(ctx, f.StorageKey)
+		n, cerr := s.countLive(ctx, f.StorageKey)
 		if cerr != nil {
 			s.log.Warn("gc: count by storage key failed; leaving blob",
 				zap.String("storage_key", f.StorageKey), zap.Error(cerr))
@@ -179,6 +191,17 @@ func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged
 		blobsPurged++
 	}
 	return rowsPurged, blobsPurged, nil
+}
+
+// countLive returns how many live references exist for a storage key. When a
+// RefCounter is wired (the new atomic ref-count path) it uses GetCount; otherwise
+// it falls back to CountAnyByStorageKey (the legacy live+soft-deleted scan).
+func (s *Sweeper) countLive(ctx context.Context, storageKey string) (int, error) {
+	if s.refs != nil {
+		return s.refs.GetCount(ctx, storageKey)
+	}
+	n, err := s.repo.CountAnyByStorageKey(ctx, storageKey)
+	return int(n), err
 }
 
 // sweepOrphans enumerates stored objects (best-effort) and deletes those with no
@@ -201,7 +224,7 @@ func (s *Sweeper) sweepOrphans(ctx context.Context) (scanned, swept int, err err
 		if !obj.Modified.IsZero() && obj.Modified.After(cutoff) {
 			return true, nil
 		}
-		n, cerr := s.repo.CountAnyByStorageKey(ctx, obj.Key)
+		n, cerr := s.countLive(ctx, obj.Key)
 		if cerr != nil {
 			s.log.Warn("gc: count by storage key failed; leaving object",
 				zap.String("storage_key", obj.Key), zap.Error(cerr))

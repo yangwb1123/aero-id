@@ -1,0 +1,38 @@
+# git-cliff configuration for aero-id changelog generation.
+# https://git-cliff.org
+[changelog]
+header = """
+# Changelog\n
+All notable changes to aero-id are documented here.\n
+"""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+  ### {{ group | upper_first }}
+  {% for commit in commits | filter(attribute="breaking", value=false) %}
+    - {{ commit.message | upper_first }}{% if commit.scope %} ({{ commit.scope }}){% endif %}
+  {% endfor %}
+{% endfor %}\n
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^ci", group = "CI/CD" },
+  { message = "^chore", group = "Chores" },
+  { message = "^style", group = "Styling" },
+  { message = "^build", group = "Build" },
+  { body = ".*security", group = "Security" },
+  { body = ".*breaking", group = "Breaking Changes" },
+  { message = ".*", group = "Other", default = true },
+]
+filter_commits = false
+# Merge commits are noisy; skip them by default.
+skip_merge_commits = true

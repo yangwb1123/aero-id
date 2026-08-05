@@ -25,10 +25,10 @@ import (
 // notifEdgeSvc wires only the methods exercised in this file.
 type notifEdgeSvc struct {
 	service.NotificationService
-	listFn    func(context.Context, domain.Page) (*service.NotificationList, error)
+	listFn     func(context.Context, domain.Page) (*service.NotificationList, error)
 	markReadFn func(context.Context, domain.ID) error
-	markAllFn func(context.Context) error
-	countFn   func(context.Context) (int64, error)
+	markAllFn  func(context.Context) error
+	countFn    func(context.Context) (int64, error)
 }
 
 func (n notifEdgeSvc) List(ctx context.Context, p domain.Page) (*service.NotificationList, error) {

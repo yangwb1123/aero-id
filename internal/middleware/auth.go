@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/service"
@@ -15,6 +16,10 @@ import (
 // satisfies it.
 type TokenValidator interface {
 	ValidateToken(ctx context.Context, token string) (string, error)
+}
+
+type IdentityTokenValidator interface {
+	ValidateIdentity(ctx context.Context, token string) (*domain.TokenIdentity, error)
 }
 
 // Auth extracts the Bearer token, validates it via SSO, and injects the resulting
@@ -28,16 +33,32 @@ func Auth(v TokenValidator) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		uid, err := v.ValidateToken(c.Request.Context(), token)
+		identity, uid, err := validateIdentity(c.Request.Context(), v, token)
 		if err != nil || uid == "" {
 			httpx.WriteError(c, apperr.Unauthorized("auth.invalid_token", "invalid or expired token"))
 			c.Abort()
 			return
 		}
 		c.Set("actor_uid", uid)
-		c.Request = c.Request.WithContext(service.WithActor(c.Request.Context(), uid))
+		if identity != nil {
+			c.Request = c.Request.WithContext(service.WithIdentity(c.Request.Context(), identity))
+		} else {
+			c.Request = c.Request.WithContext(service.WithActor(c.Request.Context(), uid))
+		}
 		c.Next()
 	}
+}
+
+func validateIdentity(ctx context.Context, validator TokenValidator, token string) (*domain.TokenIdentity, string, error) {
+	if identityValidator, ok := validator.(IdentityTokenValidator); ok {
+		identity, err := identityValidator.ValidateIdentity(ctx, token)
+		if identity == nil {
+			return nil, "", err
+		}
+		return identity, identity.UID, err
+	}
+	uid, err := validator.ValidateToken(ctx, token)
+	return nil, uid, err
 }
 
 func bearerToken(header string) string {

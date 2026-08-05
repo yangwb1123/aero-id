@@ -1,0 +1,2 @@
+ALTER TABLE sync_jobs
+    ADD COLUMN IF NOT EXISTS tenant_id text NOT NULL DEFAULT '';

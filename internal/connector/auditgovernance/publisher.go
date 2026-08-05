@@ -1,0 +1,258 @@
+package auditgovernance
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/aero/aero-id/internal/domain"
+)
+
+const maxReceiptBytes = 64 << 10
+
+type Publisher struct {
+	endpoint           *url.URL
+	sourcePrefix       string
+	actorID            string
+	schemaID           string
+	schemaVersion      int
+	dataClassification string
+	retentionClass     string
+	tokens             TokenSource
+	client             *http.Client
+}
+
+func NewPublisher(config Config, tokens TokenSource, client *http.Client) (*Publisher, error) {
+	config = defaultConfig(config)
+	base, err := secureEndpoint(config.Endpoint, config.AllowInsecureLoopback)
+	if err != nil || tokens == nil || !validConfig(config) || base.RawQuery != "" {
+		return nil, ErrInvalidConfig
+	}
+	endpoint := base.JoinPath("api/v1/events")
+	query := endpoint.Query()
+	query.Set("wait_for", "ledgered")
+	endpoint.RawQuery = query.Encode()
+	return &Publisher{
+		endpoint: endpoint, sourcePrefix: config.SourcePrefix, actorID: config.ActorID,
+		schemaID: config.SchemaID, schemaVersion: config.SchemaVersion,
+		dataClassification: config.DataClassification, retentionClass: config.RetentionClass,
+		tokens: tokens, client: noRedirectClient(client, config.Timeout),
+	}, nil
+}
+
+func defaultConfig(config Config) Config {
+	config.Endpoint = strings.TrimSpace(config.Endpoint)
+	config.SourcePrefix = strings.TrimSpace(config.SourcePrefix)
+	config.ActorID = strings.TrimSpace(config.ActorID)
+	config.SchemaID = strings.TrimSpace(config.SchemaID)
+	config.DataClassification = strings.TrimSpace(config.DataClassification)
+	config.RetentionClass = strings.TrimSpace(config.RetentionClass)
+	if config.ActorID == "" {
+		config.ActorID = "aero-id"
+	}
+	if config.SchemaID == "" {
+		config.SchemaID = "aero.id.audit-fact"
+	}
+	if config.SchemaVersion <= 0 {
+		config.SchemaVersion = 1
+	}
+	if config.DataClassification == "" {
+		config.DataClassification = "personal"
+	}
+	if config.RetentionClass == "" {
+		config.RetentionClass = "account_7y"
+	}
+	if config.Timeout <= 0 {
+		config.Timeout = 5 * time.Second
+	}
+	return config
+}
+
+func validConfig(config Config) bool {
+	return validSourcePrefix(config.SourcePrefix) && config.ActorID != "" && config.SchemaID != "" &&
+		config.SchemaVersion > 0 && config.DataClassification != "" && config.RetentionClass != ""
+}
+
+func (p *Publisher) Publish(ctx context.Context, fact *domain.AuditFact) error {
+	source, token, err := p.authorization(ctx, fact)
+	if err != nil {
+		return err
+	}
+	request, err := p.newRequest(ctx, fact, source, token)
+	if err != nil {
+		return err
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return err
+	}
+	return validateReceipt(response, fact)
+}
+
+func (p *Publisher) CanPublishTenant(tenantID string) bool {
+	return p.tokens != nil && p.tokens.HasBinding(tenantID)
+}
+
+func (p *Publisher) authorization(ctx context.Context, fact *domain.AuditFact) (string, string, error) {
+	if !validAuditFact(fact) {
+		return "", "", ErrInvalidEvent
+	}
+	source, err := TenantSourceID(p.sourcePrefix, fact.TenantID)
+	if err != nil {
+		return "", "", ErrInvalidEvent
+	}
+	token, err := p.tokens.AccessToken(ctx, SourceBinding{TenantID: fact.TenantID, SourceSystem: source})
+	if err != nil || token == "" || strings.ContainsAny(token, "\r\n") {
+		return "", "", ErrTokenUnavailable
+	}
+	return source, token, nil
+}
+
+func validAuditFact(fact *domain.AuditFact) bool {
+	return fact != nil && fact.ID != (domain.ID{}) && strings.TrimSpace(fact.TenantID) != "" && fact.Action != ""
+}
+
+func (p *Publisher) newRequest(
+	ctx context.Context, fact *domain.AuditFact, source, token string,
+) (*http.Request, error) {
+	body, err := json.Marshal(p.event(fact, source))
+	if err != nil {
+		return nil, ErrInvalidEvent
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, ErrInvalidConfig
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	return request, nil
+}
+
+type governanceEvent struct {
+	EventID            string             `json:"event_id"`
+	SourceSystem       string             `json:"source_system"`
+	EventType          string             `json:"event_type"`
+	SchemaID           string             `json:"schema_id"`
+	SchemaVersion      int                `json:"schema_version"`
+	OccurredAt         time.Time          `json:"occurred_at"`
+	OperationID        string             `json:"operation_id,omitempty"`
+	CorrelationID      string             `json:"correlation_id,omitempty"`
+	CausationID        string             `json:"causation_id,omitempty"`
+	TraceID            string             `json:"trace_id,omitempty"`
+	Actor              governanceActor    `json:"actor"`
+	Targets            []governanceTarget `json:"targets,omitempty"`
+	AggregateType      string             `json:"aggregate_type,omitempty"`
+	AggregateID        string             `json:"aggregate_id,omitempty"`
+	Action             string             `json:"action"`
+	Outcome            string             `json:"outcome"`
+	Payload            map[string]any     `json:"payload"`
+	DataClassification string             `json:"data_classification"`
+	RetentionClass     string             `json:"retention_class"`
+	IdempotencyKey     string             `json:"idempotency_key"`
+}
+
+type governanceActor struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+type governanceTarget struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+func (p *Publisher) event(fact *domain.AuditFact, source string) governanceEvent {
+	actor := fact.ActorUID
+	if actor == "" {
+		actor = p.actorID
+	}
+	event := governanceEvent{
+		EventID: fact.ID.String(), SourceSystem: source, EventType: p.schemaID,
+		SchemaID: p.schemaID, SchemaVersion: p.schemaVersion, OccurredAt: fact.OccurredAt.UTC(),
+		OperationID: optionalID(fact.OperationID), CorrelationID: optionalID(fact.CorrelationID),
+		CausationID: optionalID(fact.CausationID), TraceID: fact.TraceID,
+		Actor: governanceActor{ID: actor, Type: "principal"}, AggregateType: fact.ResourceType,
+		AggregateID: fact.ResourceID, Action: fact.Action, Outcome: auditOutcome(fact.Payload),
+		Payload: fact.Payload, DataClassification: p.dataClassification, RetentionClass: p.retentionClass,
+		IdempotencyKey: fact.ID.String(),
+	}
+	if fact.ResourceType != "" && fact.ResourceID != "" {
+		event.Targets = []governanceTarget{{Type: fact.ResourceType, ID: fact.ResourceID}}
+	}
+	return event
+}
+
+func optionalID(value domain.ID) string {
+	if value == (domain.ID{}) {
+		return ""
+	}
+	return value.String()
+}
+
+func auditOutcome(payload map[string]any) string {
+	if value, ok := payload["outcome"].(string); ok && strings.TrimSpace(value) != "" {
+		return value
+	}
+	if value, ok := payload["status"].(string); ok && (strings.Contains(value, "fail") || strings.Contains(value, "error")) {
+		return "failure"
+	}
+	return "success"
+}
+
+type receiptEnvelope struct {
+	Receipt struct {
+		EventID    string    `json:"event_id"`
+		TenantID   string    `json:"tenant_id"`
+		Status     string    `json:"status"`
+		AcceptedAt time.Time `json:"accepted_at"`
+		Conflict   bool      `json:"conflict"`
+	} `json:"receipt"`
+}
+
+func validateReceipt(response *http.Response, fact *domain.AuditFact) error {
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxReceiptBytes))
+		return fmt.Errorf("audit governance: HTTP %d", response.StatusCode)
+	}
+	envelope, err := decodeReceipt(response)
+	if err != nil || !receiptMatches(envelope, fact) {
+		return ErrInvalidReceipt
+	}
+	switch envelope.Receipt.Status {
+	case "ledgered", "indexed", "archived":
+		return nil
+	default:
+		return ErrInvalidReceipt
+	}
+}
+
+func decodeReceipt(response *http.Response) (receiptEnvelope, error) {
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return receiptEnvelope{}, ErrInvalidReceipt
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes+1))
+	if err != nil || len(body) > maxReceiptBytes {
+		return receiptEnvelope{}, ErrInvalidReceipt
+	}
+	var envelope receiptEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return receiptEnvelope{}, ErrInvalidReceipt
+	}
+	return envelope, nil
+}
+
+func receiptMatches(envelope receiptEnvelope, fact *domain.AuditFact) bool {
+	receipt := envelope.Receipt
+	return receipt.EventID == fact.ID.String() && receipt.TenantID == fact.TenantID &&
+		!receipt.AcceptedAt.IsZero() && !receipt.Conflict
+}

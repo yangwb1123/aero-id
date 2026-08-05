@@ -18,16 +18,7 @@ type Options struct {
 }
 
 func Open(opts Options) (*gorm.DB, error) {
-	lvl := logger.Warn
-	switch opts.LogLevel {
-	case "silent":
-		lvl = logger.Silent
-	case "error":
-		lvl = logger.Error
-	case "info":
-		lvl = logger.Info
-	}
-	gormCfg := &gorm.Config{Logger: logger.Default.LogMode(lvl)}
+	gormCfg := &gorm.Config{Logger: logger.Default.LogMode(logLevel(opts.LogLevel))}
 	db, err := gorm.Open(postgres.Open(opts.DSN), gormCfg)
 	if err != nil {
 		return nil, fmt.Errorf("gorm open: %w", err)
@@ -36,16 +27,37 @@ func Open(opts Options) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get sql.DB: %w", err)
 	}
+	configurePool(sqlDB, opts)
+	return db, nil
+}
+
+func logLevel(value string) logger.LogLevel {
+	switch value {
+	case "silent":
+		return logger.Silent
+	case "error":
+		return logger.Error
+	case "info":
+		return logger.Info
+	default:
+		return logger.Warn
+	}
+}
+
+func configurePool(db interface {
+	SetMaxOpenConns(int)
+	SetMaxIdleConns(int)
+	SetConnMaxLifetime(time.Duration)
+}, opts Options) {
 	if opts.MaxOpenConns > 0 {
-		sqlDB.SetMaxOpenConns(opts.MaxOpenConns)
+		db.SetMaxOpenConns(opts.MaxOpenConns)
 	}
 	if opts.MaxIdleConns > 0 {
-		sqlDB.SetMaxIdleConns(opts.MaxIdleConns)
+		db.SetMaxIdleConns(opts.MaxIdleConns)
 	}
 	if opts.ConnMaxLifetime > 0 {
-		sqlDB.SetConnMaxLifetime(opts.ConnMaxLifetime)
+		db.SetConnMaxLifetime(opts.ConnMaxLifetime)
 	}
-	return db, nil
 }
 
 func Ping(db *gorm.DB) error {

@@ -42,7 +42,10 @@ func (s *SearchServer) Search(ctx context.Context, req *aeropb.SearchRequest) (*
 
 	pbHits := make([]*aeropb.SearchHit, 0, len(hits))
 	for _, h := range hits {
-		pbHit := &aeropb.SearchHit{Kind: string(h.Kind)}
+		pbHit := &aeropb.SearchHit{
+			Kind:    string(h.Kind),
+			Snippet: h.Snippet,
+		}
 		switch h.Kind {
 		case domain.SearchKindMessages:
 			pbHit.Message = msgToPB(h.Message)

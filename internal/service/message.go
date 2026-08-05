@@ -43,6 +43,7 @@ func NewMessageService(messages repository.MessageRepository, files repository.F
 	return s
 }
 
+//nolint:cyclop,funlen // legacy message validation, participant checks, and attachment rules are compatibility-bound.
 func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain.Message, error) {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -282,6 +283,7 @@ func (s *messageService) Edit(ctx context.Context, id domain.ID, content string)
 
 // Delete soft-deletes a message. Only the sender may delete; the call is idempotent
 // (deleting an already-deleted message, which reads back as NotFound, is a no-op success).
+// A "message.deleted" domain event is emitted to notify the recipient.
 func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -297,7 +299,14 @@ func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
 	if m.FromUID != actor {
 		return apperr.Forbidden("message.forbidden", "only the sender can delete a message")
 	}
-	if err := s.messages.SoftDelete(ctx, id); err != nil {
+	// Emit a "message.deleted" event transactionally with the soft delete so the
+	// recipient (ToUID) is notified that the message was removed.
+	evt := newEvent("message", id.String(), "message.deleted", map[string]any{
+		"message_id": id.String(),
+		"from_uid":   m.FromUID,
+		"to_uid":     m.ToUID,
+	})
+	if err := s.messages.SoftDeleteWithEvent(ctx, id, evt); err != nil {
 		return apperr.Internal("message.delete_failed", "failed to delete message").Wrap(err)
 	}
 	if s.audit != nil {
@@ -354,7 +363,8 @@ func senderUIDs(msgs []*domain.Message) []string {
 }
 
 // ReactToMessage records a reaction by actorUID on a message. Only participants
-// (sender or recipient) may react. Idempotent.
+// (sender or recipient) may react. Idempotent. A "message.reacted" domain event
+// is emitted to notify the other participant.
 func (s *messageService) ReactToMessage(ctx context.Context, messageID domain.ID, actorUID string) error {
 	m, err := s.messages.Get(ctx, messageID)
 	if stderrors.Is(err, repository.ErrNotFound) {
@@ -371,6 +381,20 @@ func (s *messageService) ReactToMessage(ctx context.Context, messageID domain.ID
 			return apperr.NotFound("message.not_found", "message not found")
 		}
 		return apperr.Internal("message.react_failed", "failed to react to message").Wrap(err)
+	}
+	// Emit a "message.reacted" domain event to notify the peer participant.
+	// Best-effort: a failed outbox write must not fail the reaction itself.
+	peerUID := m.FromUID
+	if actorUID == m.FromUID {
+		peerUID = m.ToUID
+	}
+	if peerUID != "" && peerUID != actorUID {
+		evt := newEvent("message", messageID.String(), "message.reacted", map[string]any{
+			"message_id": messageID.String(),
+			"peer_uid":   peerUID,
+			"actor_uid":  actorUID,
+		})
+		_ = s.messages.AppendEvent(ctx, evt)
 	}
 	return nil
 }

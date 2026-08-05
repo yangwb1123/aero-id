@@ -6,6 +6,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
+	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/service/mocks"
 )
@@ -29,13 +30,13 @@ func TestSearchService_RequiresActor(t *testing.T) {
 // discriminator on each.
 func TestSearchService_EmptyKindsSearchesAll(t *testing.T) {
 	var msgSearched, cmtSearched, fileSearched bool
-	msgs := &mocks.MessageRepo{SearchMessagesFn: func(_ context.Context, _, _ string, _ int) ([]*domain.Message, error) {
+	msgs := &mocks.MessageRepo{SearchMessagesWithSnippetFn: func(_ context.Context, _, _ string, _ int) ([]repository.MessageSearchResult, error) {
 		msgSearched = true
-		return []*domain.Message{{ID: idgen.NewID()}}, nil
+		return []repository.MessageSearchResult{{Message: &domain.Message{ID: idgen.NewID()}}}, nil
 	}}
-	comments := &mocks.CommentRepo{SearchCommentsFn: func(_ context.Context, _, _ string, _ int) ([]*domain.Comment, error) {
+	comments := &mocks.CommentRepo{SearchCommentsWithSnippetFn: func(_ context.Context, _, _ string, _ int) ([]repository.CommentSearchResult, error) {
 		cmtSearched = true
-		return []*domain.Comment{{ID: idgen.NewID()}}, nil
+		return []repository.CommentSearchResult{{Comment: &domain.Comment{ID: idgen.NewID()}}}, nil
 	}}
 	files := &mocks.FileRepo{SearchFilesFn: func(_ context.Context, _, _ string, _ int) ([]*domain.File, error) {
 		fileSearched = true
@@ -78,10 +79,13 @@ func TestSearchService_EmptyKindsSearchesAll(t *testing.T) {
 // hits that repo and leaves the others untouched.
 func TestSearchService_ExplicitKindsRestrict(t *testing.T) {
 	cmtSearched, fileSearched := false, false
-	msgs := &mocks.MessageRepo{SearchMessagesFn: func(_ context.Context, _, _ string, _ int) ([]*domain.Message, error) {
-		return []*domain.Message{{ID: idgen.NewID()}, {ID: idgen.NewID()}}, nil
+	msgs := &mocks.MessageRepo{SearchMessagesWithSnippetFn: func(_ context.Context, _, _ string, _ int) ([]repository.MessageSearchResult, error) {
+		return []repository.MessageSearchResult{
+			{Message: &domain.Message{ID: idgen.NewID()}},
+			{Message: &domain.Message{ID: idgen.NewID()}},
+		}, nil
 	}}
-	comments := &mocks.CommentRepo{SearchCommentsFn: func(_ context.Context, _, _ string, _ int) ([]*domain.Comment, error) {
+	comments := &mocks.CommentRepo{SearchCommentsWithSnippetFn: func(_ context.Context, _, _ string, _ int) ([]repository.CommentSearchResult, error) {
 		cmtSearched = true
 		return nil, nil
 	}}
@@ -126,7 +130,7 @@ func TestSearchService_LimitClamping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotLimit int
-			msgs := &mocks.MessageRepo{SearchMessagesFn: func(_ context.Context, _, _ string, limit int) ([]*domain.Message, error) {
+			msgs := &mocks.MessageRepo{SearchMessagesWithSnippetFn: func(_ context.Context, _, _ string, limit int) ([]repository.MessageSearchResult, error) {
 				gotLimit = limit
 				return nil, nil
 			}}
@@ -147,11 +151,11 @@ func TestSearchService_LimitClamping(t *testing.T) {
 // value.
 func TestSearchService_UIDScoping(t *testing.T) {
 	var msgUID, cmtUID, fileUID string
-	msgs := &mocks.MessageRepo{SearchMessagesFn: func(_ context.Context, uid, _ string, _ int) ([]*domain.Message, error) {
+	msgs := &mocks.MessageRepo{SearchMessagesWithSnippetFn: func(_ context.Context, uid, _ string, _ int) ([]repository.MessageSearchResult, error) {
 		msgUID = uid
 		return nil, nil
 	}}
-	comments := &mocks.CommentRepo{SearchCommentsFn: func(_ context.Context, uid, _ string, _ int) ([]*domain.Comment, error) {
+	comments := &mocks.CommentRepo{SearchCommentsWithSnippetFn: func(_ context.Context, uid, _ string, _ int) ([]repository.CommentSearchResult, error) {
 		cmtUID = uid
 		return nil, nil
 	}}
@@ -171,7 +175,7 @@ func TestSearchService_UIDScoping(t *testing.T) {
 
 func TestSearchService_QueryPassedThrough(t *testing.T) {
 	var gotQuery string
-	msgs := &mocks.MessageRepo{SearchMessagesFn: func(_ context.Context, _, query string, _ int) ([]*domain.Message, error) {
+	msgs := &mocks.MessageRepo{SearchMessagesWithSnippetFn: func(_ context.Context, _, query string, _ int) ([]repository.MessageSearchResult, error) {
 		gotQuery = query
 		return nil, nil
 	}}
@@ -183,4 +187,16 @@ func TestSearchService_QueryPassedThrough(t *testing.T) {
 	if gotQuery != "needle" {
 		t.Fatalf("query passed to repo = %q, want needle", gotQuery)
 	}
+}
+
+func TestSearchService_QueryTooLong(t *testing.T) {
+	svc := service.NewSearchService(&mocks.MessageRepo{}, &mocks.CommentRepo{}, &mocks.FileRepo{})
+	ctx := service.WithActor(context.Background(), "a")
+	// Build a query string that exceeds searchMaxQueryLen (200 chars).
+	long := make([]byte, 201)
+	for i := range long {
+		long[i] = 'a'
+	}
+	_, err := svc.Search(ctx, string(long), nil, 10)
+	assertAppCode(t, err, 400)
 }

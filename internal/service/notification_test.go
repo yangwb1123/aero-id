@@ -228,7 +228,7 @@ func TestNotificationDispatcher_PusherReceivesNotification(t *testing.T) {
 	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error { return nil }}
 	var gotUID, gotType, gotData string
 	pushes := 0
-	pusher := &mocks.Pusher{PublishFn: func(uid, eventType, data string) {
+	pusher := &mocks.Pusher{PublishFn: func(uid, eventType, data string, _ int64) {
 		gotUID, gotType, gotData = uid, eventType, data
 		pushes++
 	}}
@@ -280,7 +280,7 @@ func TestNotificationDispatcher_NoPusherStillSucceeds(t *testing.T) {
 func TestNotificationDispatcher_BlockedRecipientNotPushed(t *testing.T) {
 	repo := &mocks.NotificationRepo{CreateFn: func(context.Context, *domain.Notification) error { return nil }}
 	pushed := false
-	pusher := &mocks.Pusher{PublishFn: func(string, string, string) { pushed = true }}
+	pusher := &mocks.Pusher{PublishFn: func(string, string, string, int64) { pushed = true }}
 	// Recipient "b" has blocked actor "a": the notification is suppressed entirely,
 	// so the pusher must not fire either.
 	blocks := &mocks.BlockRepo{IsBlockedFn: func(_ context.Context, blocker, blocked string) (bool, error) {
@@ -326,5 +326,50 @@ func TestNotificationService_ListEnrichesActors(t *testing.T) {
 	}
 	if len(asked) != 1 || asked[0] != "a" || list.Users["a"].Nickname != "Ann" {
 		t.Fatalf("expected actor a enriched, asked=%v users=%v", asked, list.Users)
+	}
+}
+
+func TestNotificationRateLimiter_AllowsUpToRate(t *testing.T) {
+	rl := service.NewNotifRateLimiterForTest(3) // max 3 per minute
+	uid, ntype := "bob", "message.received"
+
+	for i := 0; i < 3; i++ {
+		if !rl.Allow(uid, ntype) {
+			t.Fatalf("call %d should be allowed", i+1)
+		}
+	}
+	if rl.Allow(uid, ntype) {
+		t.Fatal("4th call should be denied (rate exceeded)")
+	}
+}
+
+func TestNotificationRateLimiter_DifferentTypesSeparate(t *testing.T) {
+	rl := service.NewNotifRateLimiterForTest(2)
+	uid := "bob"
+
+	if !rl.Allow(uid, "message.received") {
+		t.Fatal("message.received should be allowed")
+	}
+	if !rl.Allow(uid, "comment.reply") {
+		t.Fatal("comment.reply should be allowed (separate counter)")
+	}
+	if !rl.Allow(uid, "message.received") {
+		t.Fatal("message.received 2nd should be allowed (rate=2)")
+	}
+	if rl.Allow(uid, "message.received") {
+		t.Fatal("message.received 3rd should be denied")
+	}
+}
+
+func TestNotificationRateLimiter_DifferentRecipientsSeparate(t *testing.T) {
+	rl := service.NewNotifRateLimiterForTest(1)
+	if !rl.Allow("alice", "message.received") {
+		t.Fatal("alice should be allowed")
+	}
+	if !rl.Allow("bob", "message.received") {
+		t.Fatal("bob should be allowed (separate counter)")
+	}
+	if rl.Allow("alice", "message.received") {
+		t.Fatal("alice 2nd should be denied")
 	}
 }

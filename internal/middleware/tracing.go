@@ -8,6 +8,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"github.com/aero/aero-id/internal/service"
 )
 
 // tracerName identifies aero-id's HTTP instrumentation scope.
@@ -49,6 +51,7 @@ func Tracing() gin.HandlerFunc {
 		if sc := span.SpanContext(); sc.HasTraceID() {
 			c.Writer.Header().Set("X-Trace-ID", sc.TraceID().String())
 			c.Set("trace_id", sc.TraceID().String())
+			ctx = service.WithTraceID(ctx, sc.TraceID().String())
 		}
 
 		c.Request = c.Request.WithContext(ctx)

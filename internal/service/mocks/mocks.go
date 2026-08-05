@@ -30,6 +30,7 @@ type FileRepo struct {
 	CountAnyByStorageKeyFn  func(ctx context.Context, storageKey string) (int64, error)
 	UpdateMetadataFn        func(ctx context.Context, id domain.ID, fields map[string]any) error
 	SearchFilesFn           func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error)
+	SearchFilesLikeFn       func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error)
 }
 
 func (m *FileRepo) Create(ctx context.Context, f *domain.File) error { return m.CreateFn(ctx, f) }
@@ -97,6 +98,13 @@ func (m *FileRepo) SearchFiles(ctx context.Context, ownerUID, query string, limi
 	return m.SearchFilesFn(ctx, ownerUID, query, limit)
 }
 
+func (m *FileRepo) SearchFilesLike(ctx context.Context, ownerUID, query string, limit int) ([]*domain.File, error) {
+	if m.SearchFilesLikeFn == nil {
+		return nil, nil
+	}
+	return m.SearchFilesLikeFn(ctx, ownerUID, query, limit)
+}
+
 type FileShareRepo struct {
 	GrantFn               func(ctx context.Context, fileID domain.ID, ownerUID string, granteeUIDs []string) error
 	RevokeFn              func(ctx context.Context, fileID domain.ID, granteeUID string) error
@@ -144,19 +152,23 @@ func (m *FileShareRepo) IsSharedWith(ctx context.Context, fileID domain.ID, uid 
 }
 
 type MessageRepo struct {
-	CreateFn               func(ctx context.Context, m *domain.Message, evt *outbox.Event) error
-	GetFn                  func(ctx context.Context, id domain.ID) (*domain.Message, error)
-	ListInboxFn            func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
-	ListConversationFn     func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
-	MarkReadFn             func(ctx context.Context, id domain.ID, at time.Time) error
-	MarkReadWithEventFn    func(ctx context.Context, id domain.ID, at time.Time, evt *outbox.Event) error
-	CountUnreadFn          func(ctx context.Context, toUID string) (int64, error)
-	UpdateContentFn        func(ctx context.Context, id domain.ID, content string, at time.Time) error
-	SoftDeleteFn           func(ctx context.Context, id domain.ID) error
-	MarkConversationReadFn func(ctx context.Context, toUID, peer string, at time.Time) error
-	ReactToMessageFn       func(ctx context.Context, messageID uuid.UUID, uid string) error
-	UnreactMessageFn       func(ctx context.Context, messageID uuid.UUID, uid string) error
-	SearchMessagesFn       func(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error)
+	CreateFn                    func(ctx context.Context, m *domain.Message, evt *outbox.Event) error
+	GetFn                       func(ctx context.Context, id domain.ID) (*domain.Message, error)
+	ListInboxFn                 func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
+	ListConversationFn          func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
+	MarkReadFn                  func(ctx context.Context, id domain.ID, at time.Time) error
+	MarkReadWithEventFn         func(ctx context.Context, id domain.ID, at time.Time, evt *outbox.Event) error
+	CountUnreadFn               func(ctx context.Context, toUID string) (int64, error)
+	UpdateContentFn             func(ctx context.Context, id domain.ID, content string, at time.Time) error
+	SoftDeleteFn                func(ctx context.Context, id domain.ID) error
+	SoftDeleteWithEventFn       func(ctx context.Context, id domain.ID, evt *outbox.Event) error
+	AppendEventFn               func(ctx context.Context, evt *outbox.Event) error
+	MarkConversationReadFn      func(ctx context.Context, toUID, peer string, at time.Time) error
+	ReactToMessageFn            func(ctx context.Context, messageID uuid.UUID, uid string) error
+	UnreactMessageFn            func(ctx context.Context, messageID uuid.UUID, uid string) error
+	SearchMessagesFn            func(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error)
+	SearchMessagesLikeFn        func(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error)
+	SearchMessagesWithSnippetFn func(ctx context.Context, uid, query string, limit int) ([]repository.MessageSearchResult, error)
 }
 
 func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message, evt *outbox.Event) error {
@@ -204,6 +216,18 @@ func (m *MessageRepo) SoftDelete(ctx context.Context, id domain.ID) error {
 	}
 	return m.SoftDeleteFn(ctx, id)
 }
+func (m *MessageRepo) SoftDeleteWithEvent(ctx context.Context, id domain.ID, evt *outbox.Event) error {
+	if m.SoftDeleteWithEventFn == nil {
+		return nil
+	}
+	return m.SoftDeleteWithEventFn(ctx, id, evt)
+}
+func (m *MessageRepo) AppendEvent(ctx context.Context, evt *outbox.Event) error {
+	if m.AppendEventFn == nil {
+		return nil
+	}
+	return m.AppendEventFn(ctx, evt)
+}
 func (m *MessageRepo) MarkConversationRead(ctx context.Context, toUID, peer string, at time.Time) error {
 	if m.MarkConversationReadFn == nil {
 		return nil
@@ -230,9 +254,24 @@ func (m *MessageRepo) SearchMessages(ctx context.Context, uid, query string, lim
 	return m.SearchMessagesFn(ctx, uid, query, limit)
 }
 
+func (m *MessageRepo) SearchMessagesLike(ctx context.Context, uid, query string, limit int) ([]*domain.Message, error) {
+	if m.SearchMessagesLikeFn == nil {
+		return nil, nil
+	}
+	return m.SearchMessagesLikeFn(ctx, uid, query, limit)
+}
+
+func (m *MessageRepo) SearchMessagesWithSnippet(ctx context.Context, uid, query string, limit int) ([]repository.MessageSearchResult, error) {
+	if m.SearchMessagesWithSnippetFn == nil {
+		return nil, nil
+	}
+	return m.SearchMessagesWithSnippetFn(ctx, uid, query, limit)
+}
+
 type CommentRepo struct {
 	CreateFn              func(ctx context.Context, c *domain.Comment) error
 	CreateWithReplyBumpFn func(ctx context.Context, c *domain.Comment, evt *outbox.Event) error
+	AppendEventFn         func(ctx context.Context, evt *outbox.Event) error
 	GetFn                 func(ctx context.Context, id domain.ID) (*domain.Comment, error)
 	ListByTargetFn        func(ctx context.Context, t domain.TargetType, target domain.ID, page domain.Page) ([]*domain.Comment, string, error)
 	ListRepliesFn         func(ctx context.Context, rootID domain.ID, page domain.Page) ([]*domain.Comment, string, error)
@@ -243,10 +282,13 @@ type CommentRepo struct {
 	UnlikeFn              func(ctx context.Context, commentID domain.ID, uid string) (int, error)
 	CreateReportFn        func(ctx context.Context, r *domain.CommentReport) error
 	SetStatusFn           func(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
-	ListReportsFn         func(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error)
-	GetReportFn           func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
-	ResolveReportFn       func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
-	SearchCommentsFn      func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
+	ListReportsFn         func(ctx context.Context, commentID domain.ID, status *domain.ReportStatus,
+		page domain.Page) ([]*domain.CommentReport, string, error)
+	GetReportFn                 func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
+	ResolveReportFn             func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
+	SearchCommentsFn            func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
+	SearchCommentsLikeFn        func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
+	SearchCommentsWithSnippetFn func(ctx context.Context, ownerUID, query string, limit int) ([]repository.CommentSearchResult, error)
 }
 
 func (m *CommentRepo) Create(ctx context.Context, c *domain.Comment) error { return m.CreateFn(ctx, c) }
@@ -255,6 +297,12 @@ func (m *CommentRepo) CreateWithReplyBump(ctx context.Context, c *domain.Comment
 		return nil
 	}
 	return m.CreateWithReplyBumpFn(ctx, c, evt)
+}
+func (m *CommentRepo) AppendEvent(ctx context.Context, evt *outbox.Event) error {
+	if m.AppendEventFn == nil {
+		return nil
+	}
+	return m.AppendEventFn(ctx, evt)
 }
 func (m *CommentRepo) Get(ctx context.Context, id domain.ID) (*domain.Comment, error) {
 	return m.GetFn(ctx, id)
@@ -302,7 +350,8 @@ func (m *CommentRepo) SetStatus(ctx context.Context, commentID domain.ID, status
 // ListReports, GetReport, and ResolveReport default to "empty queue / not found / no-op"
 // when their Fn is unset, so tests that don't exercise the moderation queue need not
 // wire them.
-func (m *CommentRepo) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus, page domain.Page) ([]*domain.CommentReport, string, error) {
+func (m *CommentRepo) ListReports(ctx context.Context, commentID domain.ID, status *domain.ReportStatus,
+	page domain.Page) ([]*domain.CommentReport, string, error) {
 	if m.ListReportsFn == nil {
 		return nil, "", nil
 	}
@@ -328,12 +377,31 @@ func (m *CommentRepo) SearchComments(ctx context.Context, ownerUID, query string
 	return m.SearchCommentsFn(ctx, ownerUID, query, limit)
 }
 
+func (m *CommentRepo) SearchCommentsLike(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error) {
+	if m.SearchCommentsLikeFn == nil {
+		return nil, nil
+	}
+	return m.SearchCommentsLikeFn(ctx, ownerUID, query, limit)
+}
+
+func (m *CommentRepo) SearchCommentsWithSnippet(ctx context.Context, ownerUID, query string, limit int) ([]repository.CommentSearchResult, error) {
+	if m.SearchCommentsWithSnippetFn == nil {
+		return nil, nil
+	}
+	return m.SearchCommentsWithSnippetFn(ctx, ownerUID, query, limit)
+}
+
 type NotificationRepo struct {
-	CreateFn          func(ctx context.Context, n *domain.Notification) error
-	ListByRecipientFn func(ctx context.Context, recipientUID string, page domain.Page) ([]*domain.Notification, string, error)
-	MarkReadFn        func(ctx context.Context, id domain.ID, at time.Time) error
-	MarkAllReadFn     func(ctx context.Context, recipientUID string, at time.Time) error
-	CountUnreadFn     func(ctx context.Context, recipientUID string) (int64, error)
+	CreateFn               func(ctx context.Context, n *domain.Notification) error
+	ListByRecipientFn      func(ctx context.Context, recipientUID string, page domain.Page) ([]*domain.Notification, string, error)
+	ListSinceFn            func(ctx context.Context, recipientUID string, since time.Time, limit int) ([]*domain.Notification, error)
+	FindRecentByTypeFn     func(ctx context.Context, recipientUID, notifType, actorUID string, window time.Duration) (*domain.Notification, error)
+	IncrementCollapsedFn   func(ctx context.Context, id domain.ID) error
+	IncrementUnreadCountFn func(ctx context.Context, uid string, delta int64) error
+	MarkReadFn             func(ctx context.Context, id domain.ID, at time.Time) error
+	MarkAllReadFn          func(ctx context.Context, recipientUID string, at time.Time) error
+	CountUnreadFn          func(ctx context.Context, recipientUID string) (int64, error)
+	PurgeReadOlderThanFn   func(ctx context.Context, readCutoff, unreadCutoff time.Time, batchSize int) (int64, error)
 }
 
 // Defaults model an empty feed: Create/MarkRead/MarkAllRead succeed, lists are
@@ -371,6 +439,42 @@ func (m *NotificationRepo) CountUnread(ctx context.Context, recipientUID string)
 		return 0, nil
 	}
 	return m.CountUnreadFn(ctx, recipientUID)
+}
+
+func (m *NotificationRepo) ListSince(ctx context.Context, recipientUID string, since time.Time, limit int) ([]*domain.Notification, error) {
+	if m.ListSinceFn == nil {
+		return nil, nil
+	}
+	return m.ListSinceFn(ctx, recipientUID, since, limit)
+}
+
+func (m *NotificationRepo) FindRecentByTypeAndActor(ctx context.Context, recipientUID, notifType, actorUID string,
+	window time.Duration) (*domain.Notification, error) {
+	if m.FindRecentByTypeFn == nil {
+		return nil, nil
+	}
+	return m.FindRecentByTypeFn(ctx, recipientUID, notifType, actorUID, window)
+}
+
+func (m *NotificationRepo) IncrementCollapsedCount(ctx context.Context, id domain.ID) error {
+	if m.IncrementCollapsedFn == nil {
+		return nil
+	}
+	return m.IncrementCollapsedFn(ctx, id)
+}
+
+func (m *NotificationRepo) IncrementUnreadCount(ctx context.Context, uid string, delta int64) error {
+	if m.IncrementUnreadCountFn == nil {
+		return nil
+	}
+	return m.IncrementUnreadCountFn(ctx, uid, delta)
+}
+
+func (m *NotificationRepo) PurgeReadOlderThan(ctx context.Context, readCutoff, unreadCutoff time.Time, batchSize int) (int64, error) {
+	if m.PurgeReadOlderThanFn == nil {
+		return 0, nil
+	}
+	return m.PurgeReadOlderThanFn(ctx, readCutoff, unreadCutoff, batchSize)
 }
 
 type BlockRepo struct {
@@ -463,14 +567,14 @@ func (m *UserDir) GetUsers(ctx context.Context, uids []string) (map[string]sso.U
 // call so a test can assert the dispatcher pushed the expected real-time event;
 // when PublishFn is unset it is a no-op (the pusher is "connected" but inert).
 type Pusher struct {
-	PublishFn func(uid, eventType, data string)
+	PublishFn func(uid, eventType, data string, eventID int64)
 }
 
-func (m *Pusher) Publish(uid, eventType, data string) {
+func (m *Pusher) Publish(uid, eventType, data string, eventID int64) {
 	if m.PublishFn == nil {
 		return
 	}
-	m.PublishFn(uid, eventType, data)
+	m.PublishFn(uid, eventType, data, eventID)
 }
 
 // Auditor is a test double for service.AuditLogger. Log delegates to LogFn so a
@@ -487,6 +591,42 @@ func (m *Auditor) Log(ctx context.Context, e *domain.AuditEvent) error {
 	return m.LogFn(ctx, e)
 }
 
+// PreferenceRepo is a test double for repository.PreferenceRepository.
+type PreferenceRepo struct {
+	GetFn       func(ctx context.Context, uid, notificationType string) (*domain.NotificationPreference, error)
+	GetScopedFn func(ctx context.Context, uid, notificationType, scopeType, scopeID string) (*domain.NotificationPreference, error)
+	ListAllFn   func(ctx context.Context, uid string) ([]*domain.NotificationPreference, error)
+	UpsertFn    func(ctx context.Context, prefs []*domain.NotificationPreference) error
+}
+
+func (m *PreferenceRepo) Get(ctx context.Context, uid, notificationType string) (*domain.NotificationPreference, error) {
+	if m.GetFn == nil {
+		return nil, nil
+	}
+	return m.GetFn(ctx, uid, notificationType)
+}
+
+func (m *PreferenceRepo) GetScoped(ctx context.Context, uid, notificationType, scopeType, scopeID string) (*domain.NotificationPreference, error) {
+	if m.GetScopedFn == nil {
+		return m.Get(ctx, uid, notificationType)
+	}
+	return m.GetScopedFn(ctx, uid, notificationType, scopeType, scopeID)
+}
+
+func (m *PreferenceRepo) ListAll(ctx context.Context, uid string) ([]*domain.NotificationPreference, error) {
+	if m.ListAllFn == nil {
+		return nil, nil
+	}
+	return m.ListAllFn(ctx, uid)
+}
+
+func (m *PreferenceRepo) Upsert(ctx context.Context, prefs []*domain.NotificationPreference) error {
+	if m.UpsertFn == nil {
+		return nil
+	}
+	return m.UpsertFn(ctx, prefs)
+}
+
 // Compile-time guarantees the doubles satisfy the real interfaces.
 var (
 	_ repository.FileRepository         = (*FileRepo)(nil)
@@ -495,6 +635,7 @@ var (
 	_ repository.CommentRepository      = (*CommentRepo)(nil)
 	_ repository.NotificationRepository = (*NotificationRepo)(nil)
 	_ repository.BlockRepository        = (*BlockRepo)(nil)
+	_ repository.PreferenceRepository   = (*PreferenceRepo)(nil)
 	_ storage.FileStorage               = (*Storage)(nil)
 	_ service.NotificationPusher        = (*Pusher)(nil)
 	_ service.AuditLogger               = (*Auditor)(nil)
