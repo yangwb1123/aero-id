@@ -326,7 +326,8 @@ func (r *syncJobRepo) ListExpiredExports(ctx context.Context, now time.Time, lim
 func (r *syncJobRepo) ClearExportArtifact(ctx context.Context, id domain.ID, storageKey string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row syncJobRow
-		if err := tx.Where("id = ? AND job_type = ?", id, string(domain.SyncJobExport)).First(&row).Error; err != nil {
+		if err := tx.Where("id = ? AND job_type IN ?", id,
+			[]string{string(domain.SyncJobExport), string(domain.SyncJobAuditExport)}).First(&row).Error; err != nil {
 			return err
 		}
 		result, err := syncJobFromRow(&row)

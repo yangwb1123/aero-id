@@ -176,3 +176,17 @@ Snaplink OAuth client 实际注册、独立仓库部署 CI/CD。
       （event_ingest / operation / callback / sync / replication / audit_ledger），
       组合根注入（`service.NewRegistryControlPlaneMetrics`）
 - [x] OpenAPI 补充 `/audit/export`（守卫测试通过）
+
+## 2026-08-05 第六轮：一次性敏感结果 + callback/replay 管理契约
+
+门禁：`make test`（34 pkg）、`make lint`、`make check-file-sizes`、`make build`、
+`make check-architecture`、`make test-integration`（37 pkg）全部通过。
+
+- [x] P7-06 服务端支撑——一次性敏感结果：`GET /v1/sync/jobs/:id/export/download?one_time=true`
+      下载成功后即焚 artifact（store.Delete + ClearExportArtifact 移除 _storage_key），
+      二次下载 404；`ClearExportArtifact` 放宽支持 audit_export 类型
+      （`sync_export.go burnExportArtifact` + 2 个单元测试）
+- [x] P7-04 管理契约——OpenAPI 补全 callback/replay 管理面：`/admin/callback-subscriptions`
+      (GET/POST)、`/admin/callback-subscriptions/{id}` (DELETE)、
+      `/admin/callback-deliveries/{id}/replay` (POST)、`/audit/replays/{id}` (GET) +
+      CallbackCreateRequest/CallbackListEnvelope schemas；契约守卫测试同步（30 paths）

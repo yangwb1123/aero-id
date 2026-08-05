@@ -103,8 +103,23 @@ func (m *minimalSyncJobRepo) Finish(ctx context.Context, id domain.ID, worker st
 	if m.finished == nil {
 		m.finished = map[domain.ID]*domain.SyncJob{}
 	}
+	if current, ok := m.finished[id]; ok {
+		current.Status = status
+		current.ErrorCode = code
+		current.ErrorMessage = message
+		current.Result = result
+		return nil
+	}
 	m.finished[id] = &domain.SyncJob{ID: id, Status: status, ErrorCode: code, ErrorMessage: message, Result: result}
 	return nil
+}
+
+// SeedJob makes a job visible to the ownership checks in service.Get.
+func (m *minimalSyncJobRepo) SeedJob(job *domain.SyncJob) {
+	if m.finished == nil {
+		m.finished = map[domain.ID]*domain.SyncJob{}
+	}
+	m.finished[job.ID] = job
 }
 func (m *minimalSyncJobRepo) Create(ctx context.Context, job *domain.SyncJob) error { return nil }
 func (m *minimalSyncJobRepo) FindByIdempotency(ctx context.Context, actor, tenant, key string) (*domain.SyncJob, error) {
@@ -227,4 +242,65 @@ func TestAuditExportDigest_StableAcrossMarshalling(t *testing.T) {
 		t.Fatal("digest must be deterministic")
 	}
 	_ = idgen.NewID
+}
+
+// TestAuditExport_OneTimeDownloadBurnsArtifact (P7-06): a one-time download
+// succeeds once; the artifact and storage key are removed, so a second
+// download fails with not_found.
+func auditExportContext() context.Context {
+	return WithIdentity(context.Background(), &domain.TokenIdentity{TenantID: "tenant-a", Subject: "admin-1", UID: "admin-1"})
+}
+
+func TestAuditExport_OneTimeDownloadBurnsArtifact(t *testing.T) {
+	facts := []*domain.AuditFact{auditExportFact("tenant-a")}
+	store := &memoryStore{objects: map[string][]byte{}}
+	svc := newAuditExportService(facts, store)
+	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", AccountID: idgen.NewID(),
+		ActorUID: "admin-1", JobType: domain.SyncJobAuditExport}
+
+	result, err := svc.executeAuditExport(context.Background(), job)
+	if err != nil || result.Status != domain.SyncJobCompleted {
+		t.Fatalf("execute: %v %s", err, result.Status)
+	}
+	key, _ := result.Result["_storage_key"].(string)
+	if key == "" {
+		t.Fatal("storage key missing")
+	}
+	completed := &domain.SyncJob{ID: job.ID, TenantID: "tenant-a", ActorUID: "admin-1",
+		JobType: domain.SyncJobAuditExport, Status: result.Status, Result: result.Result}
+	svc.repo.(*minimalSyncJobRepo).SeedJob(completed)
+
+	first, err := svc.DownloadExport(auditExportContext(), job.ID, true)
+	if err != nil || len(first) == 0 {
+		t.Fatalf("first download: %v", err)
+	}
+	if _, ok := store.objects[key]; ok {
+		t.Error("artifact must be deleted after a one-time download")
+	}
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, true); err == nil {
+		t.Fatal("second one-time download must fail")
+	}
+}
+
+// TestAuditExport_RepeatedDownloadAllowedWithoutOneTime: the default download
+// is repeatable until TTL expiry.
+func TestAuditExport_RepeatedDownloadAllowedWithoutOneTime(t *testing.T) {
+	facts := []*domain.AuditFact{auditExportFact("tenant-a")}
+	store := &memoryStore{objects: map[string][]byte{}}
+	svc := newAuditExportService(facts, store)
+	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", AccountID: idgen.NewID(),
+		ActorUID: "admin-1", JobType: domain.SyncJobAuditExport}
+	result, err := svc.executeAuditExport(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := &domain.SyncJob{ID: job.ID, TenantID: "tenant-a", ActorUID: "admin-1",
+		JobType: domain.SyncJobAuditExport, Status: result.Status, Result: result.Result}
+	svc.repo.(*minimalSyncJobRepo).SeedJob(completed)
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, false); err != nil {
+		t.Fatalf("first download: %v", err)
+	}
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, false); err != nil {
+		t.Fatalf("second download: %v", err)
+	}
 }

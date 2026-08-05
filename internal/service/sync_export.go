@@ -131,7 +131,7 @@ func (s *syncJobService) executeExport(ctx context.Context, job *domain.SyncJob)
 }
 
 //nolint:cyclop // export download enforces ownership, expiry, decryption, and artifact validation.
-func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID) ([]byte, error) {
+func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID, oneTime bool) ([]byte, error) {
 	job, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -169,7 +169,25 @@ func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID) ([]by
 	if err := json.Unmarshal(plain, &manifest); err != nil {
 		return nil, apperr.Internal("export.invalid_artifact", "export artifact is invalid").Wrap(err)
 	}
+	if oneTime {
+		// P7-06: one-time sensitive result — the artifact is burned after the
+		// first successful read; a second download fails with not_found.
+		if err := s.burnExportArtifact(ctx, job, key); err != nil {
+			return nil, apperr.Internal("export.burn_failed", "failed to finalize one-time export").Wrap(err)
+		}
+	}
 	return bytes.TrimSpace(plain), nil
+}
+
+// burnExportArtifact removes the artifact and its storage key from the job so
+// a one-time download cannot be repeated.
+func (s *syncJobService) burnExportArtifact(ctx context.Context, job *domain.SyncJob, key string) error {
+	if s.store != nil {
+		if err := s.store.Delete(ctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return err
+		}
+	}
+	return s.repo.ClearExportArtifact(ctx, job.ID, key)
 }
 
 func (s *syncJobService) deleteExpiredExport(ctx context.Context, job *domain.SyncJob) {

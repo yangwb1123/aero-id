@@ -22,7 +22,7 @@ type SyncJobService interface {
 	List(context.Context, domain.Page) ([]*domain.SyncJob, string, error)
 	Run(context.Context, domain.ID, string) (*domain.SyncJob, error)
 	Reconcile(context.Context, domain.ID, string) (*domain.SyncJob, error)
-	DownloadExport(context.Context, domain.ID) ([]byte, error)
+	DownloadExport(context.Context, domain.ID, bool) ([]byte, error) // oneTime=true burns the artifact after one successful read (P7-06)
 	Start(context.Context, time.Duration) func()
 }
 

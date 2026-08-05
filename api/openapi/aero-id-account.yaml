@@ -289,6 +289,56 @@ paths:
           description: Asynchronous audit export accepted; track via /sync/jobs.
           content: {application/json: {schema: {$ref: '#/components/schemas/AuditExportEnvelope'}}}
         '403': {$ref: '#/components/responses/Error'}
+  /admin/callback-subscriptions:
+    get:
+      operationId: listCallbackSubscriptions
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Callback subscriptions for this tenant.
+          content: {application/json: {schema: {$ref: '#/components/schemas/CallbackListEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createCallbackSubscription
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CallbackCreateRequest'}
+      responses:
+        '201': {description: Subscription created; challenge verified.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/callback-subscriptions/{id}:
+    delete:
+      operationId: deleteCallbackSubscription
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      responses:
+        '200': {description: Subscription deleted.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/callback-deliveries/{id}/replay:
+    post:
+      operationId: replayCallbackDelivery
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      responses:
+        '202': {description: Delivery reset for manual replay.}
+        '403': {$ref: '#/components/responses/Error'}
+  /audit/replays/{id}:
+    get:
+      operationId: getAuditReplay
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      responses:
+        '200':
+          description: Replay operation timeline (forensic/dry-run/controlled).
+          content: {application/json: {schema: {$ref: '#/components/schemas/OperationEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
   /admin/regions/promote:
     post:
       operationId: promoteHomeRegion
@@ -522,6 +572,21 @@ components:
             divergent: {type: array, items: {type: object}}
             shadow_only: {type: array, items: {type: object}}
             live_only: {type: array, items: {type: object}}
+    CallbackCreateRequest:
+      type: object
+      required: [endpoint, event_types]
+      properties:
+        endpoint: {type: string, format: uri}
+        event_types: {type: array, items: {type: string}}
+        tenant_id: {type: string}
+    CallbackListEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            subscriptions: {type: array, items: {type: object}}
+            next_cursor: {type: string}
     AuditExportEnvelope:
       type: object
       properties:

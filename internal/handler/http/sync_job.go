@@ -145,7 +145,8 @@ func (h *SyncJobHandler) DownloadExport(c *gin.Context) {
 		httpx.WriteError(c, err)
 		return
 	}
-	data, err := h.jobs.DownloadExport(c.Request.Context(), id)
+	oneTime := c.Query("one_time") == "true"
+	data, err := h.jobs.DownloadExport(c.Request.Context(), id, oneTime)
 	if err != nil {
 		httpx.WriteError(c, err)
 		return

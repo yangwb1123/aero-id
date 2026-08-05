@@ -80,6 +80,11 @@ var requiredClientPaths = [][2]string{
 	{"/audit/operations/{id}", "GET"},
 	{"/audit/replays", "POST"},
 	{"/audit/replays/projection", "POST"},
+	{"/audit/replays/{id}", "GET"},
+	{"/admin/callback-subscriptions", "GET"},
+	{"/admin/callback-subscriptions", "POST"},
+	{"/admin/callback-subscriptions/{id}", "DELETE"},
+	{"/admin/callback-deliveries/{id}/replay", "POST"},
 	{"/admin/regions/promote", "POST"},
 	{"/admin/regions/directory/{account_id}", "GET"},
 }
