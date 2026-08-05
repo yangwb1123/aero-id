@@ -1,0 +1,42 @@
+# ghz gRPC load scenario for the aero-id control plane.
+#
+# Usage:
+#   ghz --insecure --proto api/proto/aero_id/v1/aero_id.proto \
+#       --call aeropb.AccountService.GetMe \
+#       -d '{}' --metadata 'authorization=Bearer <token>' \
+#       --concurrency 100 --duration 3m --rps 500 \
+#       --out scripts/load/results/ghz-account.json --format json \
+#       localhost:9090
+#
+# The scenarios below mirror the HTTP k6 plan (control plane heavy, legacy light).
+
+scenarios:
+  - name: account-getme
+    call: aeropb.AccountService.GetMe
+    data: '{}'
+    concurrency: 100
+    duration: 3m
+
+  - name: aggregation-overview
+    call: aeropb.AggregationService.GetMeOverview
+    data: '{}'
+    concurrency: 50
+    duration: 3m
+
+  - name: account-list-sources
+    call: aeropb.AccountService.ListSources
+    data: '{"page":{"limit":50}}'
+    concurrency: 50
+    duration: 3m
+
+  - name: legacy-file-list
+    call: aeropb.FileService.ListFiles
+    data: '{"page":{"limit":20}}'
+    concurrency: 20
+    duration: 3m
+
+  - name: audit-list-events
+    call: aeropb.AuditLedgerService.ListEvents
+    data: '{"page":{"limit":20}}'
+    concurrency: 10
+    duration: 3m

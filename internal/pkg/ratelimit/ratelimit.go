@@ -9,9 +9,31 @@
 package ratelimit
 
 import (
+	"context"
 	"sync"
 	"time"
 )
+
+// DistributedLimiter is the shared-state counterpart to Limiter. Implementations
+// must make one decision atomically for a key; transport middleware falls back
+// to the local limiter when the shared dependency is unavailable.
+type DistributedLimiter interface {
+	Allow(context.Context, string) (bool, time.Duration, error)
+}
+
+// DenyAllLimiter is a deterministic DistributedLimiter that always denies with
+// a fixed retry hint. Useful for tests and for policy that must never admit a
+// request when the shared limiter is intentionally disabled.
+type DenyAllLimiter struct {
+	Retry time.Duration
+}
+
+func (d DenyAllLimiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
+	if d.Retry <= 0 {
+		d.Retry = time.Second
+	}
+	return false, d.Retry, nil
+}
 
 // bucket is a single token bucket. Tokens refill continuously at rate per
 // second up to burst. Access is guarded by the parent Limiter's mutex, so the

@@ -1,9 +1,11 @@
 package errors
 
 import (
+	stdErrors "errors"
 	"net/http"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // AppError is the unified error shape for service/handler boundaries.
@@ -22,6 +24,10 @@ func (e *AppError) Error() string {
 	}
 	return e.Code + ": " + e.Message
 }
+
+// HTTPStatus exposes the mapped HTTP status for transient-vs-deterministic
+// classification (e.g. broker redelivery policy).
+func (e *AppError) HTTPStatus() int { return e.HTTP }
 
 func (e *AppError) Unwrap() error { return e.Cause }
 
@@ -48,4 +54,20 @@ func Conflict(code, msg string) *AppError {
 }
 func Internal(code, msg string) *AppError {
 	return &AppError{Code: code, Message: msg, HTTP: http.StatusInternalServerError, GRPC: codes.Internal}
+}
+func Unavailable(code, msg string) *AppError {
+	return &AppError{Code: code, Message: msg, HTTP: http.StatusServiceUnavailable, GRPC: codes.Unavailable}
+}
+
+// GRPCError converts a service error to a gRPC status error. *AppError carries its
+// own code; anything else becomes Internal so internals are not leaked.
+func GRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ae *AppError
+	if stdErrors.As(err, &ae) {
+		return status.Error(ae.GRPC, ae.Message)
+	}
+	return status.Error(codes.Internal, "internal server error")
 }

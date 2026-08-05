@@ -1,7 +1,87 @@
 app:    { name: aero-id, env: dev, version: 0.1.0 }
+account: { issuer: snaplink, region: local, home_region_version: v1, regions: [local] }
+sources:
+  snaplink:
+    endpoint: ""               # published summary/control endpoint; empty disables the connector
+    summary_path: /internal/account-summary
+    erase_path: ""              # opt-in idempotent source deletion command
+    status_path: ""              # optional command outcome endpoint
+    region: local
+    bearer_token: ""            # secret provider/env only
+    timeout: 2s
+    max_body_bytes: 1048576
+    max_concurrency: 32
+    max_attempts: 3
+    retry_backoff: 50ms
+    tls_ca_file: ""
+    tls_cert_file: ""
+    tls_key_file: ""
+    tls_server_name: ""
+  aero_im:
+    endpoint: ""
+    summary_path: /internal/account-summary
+    erase_path: ""
+    status_path: ""
+    region: local
+    bearer_token: ""
+    timeout: 2s
+    max_body_bytes: 1048576
+    max_concurrency: 32
+    max_attempts: 3
+    retry_backoff: 50ms
+    tls_ca_file: ""
+    tls_cert_file: ""
+    tls_key_file: ""
+    tls_server_name: ""
+  aero_vault:
+    endpoint: ""
+    summary_path: /internal/account-summary
+    erase_path: ""
+    status_path: ""
+    region: local
+    bearer_token: ""
+    timeout: 2s
+    max_body_bytes: 1048576
+    max_concurrency: 32
+    max_attempts: 3
+    retry_backoff: 50ms
+    tls_ca_file: ""
+    tls_cert_file: ""
+    tls_key_file: ""
+    tls_server_name: ""
 server:
-  http: { host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s, idempotency_ttl: 24h, request_timeout: 30s }
-  grpc: { host: 0.0.0.0, port: 9090, reflection_enabled: false }  # reflection exposes the full RPC surface; opt-in
+  http:
+    host: 0.0.0.0
+    port: 8080
+    read_timeout: 15s
+    read_header_timeout: 10s  # prevents Slowloris attacks
+    write_timeout: 15s
+    shutdown_timeout: 10s
+    idempotency_ttl: 24h
+    request_timeout: 30s
+    legacy_sunset: "2027-06-30"           # RFC 8594 Sunset for legacy compat routes (ADR-011)
+  grpc:
+    host: 0.0.0.0
+    port: 9090
+    reflection_enabled: false                     # opt-in; exposes full RPC surface
+    keepalive_min_ping_interval: 10s              # min client ping interval; < 1s rejected
+    max_concurrent_streams: 100                   # 0 = unlimited (gRPC default)
+    max_recv_msg_size: 4194304                    # 4 MiB (0 => grpc default 4 MiB)
+    max_send_msg_size: 4194304                    # 4 MiB (0 => grpc default unlimited)
+    initial_window_size: 65536                    # 64 KiB (0 => gRPC default 64 KiB)
+    initial_conn_window_size: 262144              # 256 KiB (0 => gRPC default 64 KiB)
+redis:
+  endpoint: ""                      # empty = Redis disabled; all subsystems fall back to GORM/in-memory
+  password: ""                       # AUTH password (env: AERO_ID_REDIS_PASSWORD)
+  db: 0                               # SELECT database number
+  blocking_pool_size: 100            # blocking connection pool size (0=rueidis default ~1000)
+  blocking_pool_min_size: 10         # min idle blocking connections
+  blocking_pool_cleanup: 0           # idle cleanup interval (0 = disabled)
+  conn_write_timeout: 3s             # per-connection read/write timeout
+  conn_lifetime: 0                   # max connection lifetime (0 = unlimited)
+  dial_timeout: 5s                   # TCP dial timeout
+  keepalive: 1s                      # TCP keepalive interval
+
 database:
   host: 127.0.0.1
   port: 5432
@@ -17,6 +97,14 @@ database:
   migrations_dir: migrations   # directory of SQL migration files used by auto_migrate
 sso:
   endpoint: 127.0.0.1:9000
+  jwks_url: ""             # e.g. https://snaplink/.well-known/jwks.json; empty keeps gRPC validation
+  issuer: ""               # exact JWT iss required when jwks_url is configured
+  audience: ""             # exact aud (or comma-separated audiences) when configured
+  authz_client_id: aero-id
+  authz_required: false     # production should enable Snaplink Authorizer.Check
+  authz_legacy_fallback: true # compatibility only; disable when Snaplink AuthZ is authoritative
+  jwks_cache_ttl: 5m
+  jwks_max_body_bytes: 1048576
   timeout: 5s
   insecure: true
   readiness_critical: false   # when true, /readyz returns 503 if SSO is unreachable
@@ -41,12 +129,85 @@ tracing:
   insecure: true              # dial the collector without TLS (dev)
   timeout: 5s                 # exporter timeout
   sample_ratio: 0             # 0 or >=1 => always sample; otherwise parent-based ratio sampler
-rate_limit:                     # in-memory per-actor (uid) / per-IP edge limiter; OPT-IN, per-instance
+rate_limit:                     # per-actor (uid) / per-IP edge limiter; Redis-backed when Redis is enabled
   enabled: false                # master switch — when false the limiter is never installed
   rps: 20                       # sustained requests/second per key (required > 0 when enabled)
   burst: 40                     # bucket capacity / max instantaneous burst (required > 0 when enabled)
   idle_ttl: 10m                 # evict buckets untouched this long to bound memory (0 => default 10m)
   cleanup_every: 1m             # how often the idle-bucket sweep runs (0 => default 1m)
+outbox:                         # transactional outbox relay; OPT-IN for webhook delivery
+  poll_interval: 5s             # how often the relay drains unpublished events (0 => default 5s)
+  max_retries: 20               # per-event retry ceiling before dead-lettering (0 => default 20)
+  webhook:                      # external webhook delivery; empty url => disabled
+    url: ""                     # target endpoint (e.g. "https://hooks.example.com/aero-events")
+    signing_key: ""             # HMAC-SHA256 key for X-Event-Signature header
+    timeout: 5s                 # HTTP request timeout
+    event_types: []             # empty => deliver all; non-empty => filter to listed types
+    headers: {}                 # additional HTTP headers sent with every request
+event_ingest:
+  signing_key: ""               # secret for X-Aero-Event-Signature; empty disables ingestion
+  source_keys: {}                # verified source -> HMAC key; takes precedence over signing_key
+  require_timestamp: true        # reject signatures without X-Aero-Event-Timestamp
+  max_body_bytes: 1048576
+  clock_skew: 5m
+  bindings: {}                   # verified Snaplink client_id -> {tenant_id, source, source_region}
+  allowed_regions: []            # residency allow-list (P6-04); empty = accept any source region
+event_bus:                       # optional canonical-event consumer transport (P3-04)
+  nats:
+    enabled: false
+    url: ""                       # e.g. nats://nats:4222
+    stream: aero_events
+    subject: aero.events.canonical
+    durable: aero-id-ingest
+    max_redeliveries: 5
+    ack_wait: 30s
+replication:                      # optional cross-region projection replication (P6-03)
+  enabled: false
+  interval: 5s
+  batch_size: 500
+  transport: nats                # nats | http
+  nats_subject: aero.events.canonical
+  http_endpoint: ""               # transport=http: remote region ingest URL
+  http_key: ""                    # transport=http: HMAC key matching remote event_ingest
+audit_ledger:
+  signing_key: ""               # HMAC key for hash-chain records; use a secret provider in production
+audit_governance:                # durable relay from audit_publications; disabled until all source bindings exist
+  enabled: false
+  endpoint: ""                   # e.g. https://audit-governance.internal
+  source_prefix: aero-id         # source_system = prefix + base64url(sha256(verified tenant_id))
+  actor_id: aero-id
+  schema_id: aero.id.audit-fact
+  schema_version: 1
+  data_classification: personal
+  retention_class: account_7y
+  timeout: 5s
+  refresh_skew: 30s
+  allow_insecure_loopback: false # local development only; non-loopback HTTP is always rejected
+  bindings: {}                   # tenant_id -> {token_url, client_id, client_secret_env, scope: audit:event:write, resources: [audit-governance]}
+billing:                         # Snaplink entitlement + globally atomic quota reservations
+  enabled: false
+  endpoint: ""                   # Snaplink base URL; API paths are fixed and tenantless
+  timeout: 5s
+  max_body_bytes: 262144
+  max_projection_staleness: 15m  # cached reads only; quota mutations still fail closed if central is unavailable
+  account_feature: account       # Snaplink entitlement feature required for account provisioning
+  user_dimension: users          # hard=0 means zero capacity; unlimited must be explicit in Snaplink
+  reservation_ttl: 5m
+  allow_insecure_loopback: false
+  bindings: {}                   # tenant_id -> {token_url, client_id, client_secret_env, scope: "billing:entitlement:read metering:write", resources: [billing-api]}
+callback:
+  master_key: ""                  # encrypts per-subscription secrets; empty disables registration
+  request_timeout: 5s
+  max_response_bytes: 65536
+  max_attempts: 8
+  retry_base: 1s
+  allow_private_target: false
+  worker_interval: 1s
+  worker_concurrency: 4          # in-flight callback deliveries/publications (P6-06); 0 = serial
+export:
+  encryption_key: ""          # secret provider/env only; required to enable export artifacts
+  max_bytes: 67108864          # 64 MiB plaintext manifest limit
+  artifact_ttl: 15m
 storage:
   type: local
   max_upload_bytes: 52428800   # 50 MiB; 0 = unlimited
@@ -62,4 +223,13 @@ storage:
     purge_batch: 500             # max soft-deleted rows purged per pass (0 => default 500)
     sweep_orphans: false         # also delete orphaned blobs (best-effort; needs a listable backend)
 signing_key: change-me-please-very-long-random
-log:    { level: info, encoding: console }
+log:    { level: info, encoding: console, sample_ratio: 0 }   # 0..1; <1 samples info-level access logs
+data_retention:
+  audit_retention: 2160h                  # 90 days (0 = never purge)
+  audit_clean_interval: 1h                # how often the audit cleaner runs (0 = disabled)
+  notification_retention: 720h            # 30 days for read notifications (0 = never purge)
+  notification_unread_retention: 2160h    # 90 days for unread notifications (0 = never purge)
+  notification_clean_interval: 1h         # how often the notification cleaner runs (0 = disabled)
+  outbox_dead_letter_retention: 168h      # 7 days for dead letters (0 = never purge)
+  outbox_published_retention: 720h        # 30 days for published events (0 = never purge)
+  outbox_clean_interval: 1h               # how often the outbox cleaner runs (0 = disabled)

@@ -1,0 +1,453 @@
+# Regional cell deployment (P6-01). Each region deploys its own cell: stateless
+# API/worker workloads, regional PostgreSQL, Redis, and the event bus. Account
+# writes route to the account's home region; read replicas serve local projections.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aero-id
+  labels:
+    aero.io/cell: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aero-id-config
+  namespace: aero-id
+data:
+  config.yaml: |
+    app:
+      name: aero-id
+      env: production
+      version: "1.0.0"
+    server:
+      http:
+        host: 0.0.0.0
+        port: 8080
+        read_timeout: 15s
+        read_header_timeout: 10s
+        write_timeout: 15s
+        shutdown_timeout: 15s
+        idempotency_ttl: 24h
+        request_timeout: 30s
+        legacy_sunset: "2027-06-30"
+      grpc:
+        host: 0.0.0.0
+        port: 9090
+    account:
+      issuer: https://snaplink.example.com
+      region: "REGION_PLACEHOLDER"        # set per cell, e.g. us-east-1
+      home_region_version: "v1"
+      regions: ["us-east-1", "eu-west-1", "ap-southeast-1"]
+    database:
+      host: aero-id-postgres
+      port: 5432
+      name: aero_id
+      user: aero
+      sslmode: require
+      max_open_conns: 50
+      max_idle_conns: 10
+      conn_max_lifetime: 30m
+      auto_migrate: false                 # production applies migrations via cmd/migrate
+    redis:
+      endpoint: aero-id-redis:6379
+    event_bus:
+      nats:
+        enabled: true
+        url: nats://aero-id-nats:4222
+        stream: aero_events
+        subject: aero.events.canonical
+        durable: aero-id-ingest
+        max_redeliveries: 5
+        ack_wait: 30s
+    replication:
+      enabled: false                      # enable per cell once cross-region links exist
+      interval: 5s
+      batch_size: 500
+      transport: nats
+      nats_subject: aero.events.canonical
+    callback:
+      worker_interval: 1s
+      worker_concurrency: 4
+    storage:
+      type: s3
+      endpoint: https://minio.REGION_PLACEHOLDER.example.com
+      bucket: aero-id-files
+      region: REGION_PLACEHOLDER
+      max_upload_bytes: 52428800
+    tracing:
+      enabled: true
+      endpoint: otel-collector:4317
+      sample_ratio: 0.1
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aero-id-secrets
+  namespace: aero-id
+type: Opaque
+stringData:
+  database_password: "CHANGE_ME_DB_PASSWORD"
+  redis_password: "CHANGE_ME_REDIS_PASSWORD"
+  signing_key: "CHANGE_ME_SIGNING_KEY_32_BYTES_MINIMUM"
+  callback_master_key: "CHANGE_ME_CALLBACK_MASTER_KEY"
+  event_ingest_signing_key: "CHANGE_ME_EVENT_INGEST_KEY"
+  audit_ledger_signing_key: "CHANGE_ME_AUDIT_LEDGER_KEY"
+  sso_bearer_token: "CHANGE_ME_SSO_TOKEN"
+  export_encryption_key: "CHANGE_ME_EXPORT_KEY"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aero-id
+  namespace: aero-id
+spec:
+  selector:
+    app: aero-id
+    tier: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9090
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aero-id-api
+  namespace: aero-id
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: aero-id
+      tier: api
+  template:
+    metadata:
+      labels:
+        app: aero-id
+        tier: api
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: aero-id
+              tier: api
+      containers:
+        - name: aero-id
+          image: aero-id:latest
+          imagePullPolicy: IfNotPresent
+          args: ["-config", "/etc/aero-id/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          env:
+            - name: AERO_ID_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: database_password}
+            - name: AERO_ID_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: redis_password}
+            - name: AERO_ID_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: signing_key}
+            - name: AERO_ID_CALLBACK_MASTER_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_master_key}
+            - name: AERO_ID_EVENT_INGEST_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: event_ingest_signing_key}
+            - name: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: audit_ledger_signing_key}
+            - name: AERO_ID_SSO_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: sso_bearer_token}
+            - name: AERO_ID_EXPORT_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: export_encryption_key}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aero-id
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes:
+        - name: config
+          configMap:
+            name: aero-id-config
+---
+# P6-10: HPA driven by RPS/CPU. The api deployment is stateless, so scale-out
+# is safe; account-affecting writes still route to the account home region.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aero-id-api
+  namespace: aero-id
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aero-id-api
+  minReplicas: 3
+  maxReplicas: 20
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 65}
+    - type: Resource
+      resource:
+        name: memory
+        target: {type: Utilization, averageUtilization: 70}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aero-id-api
+  namespace: aero-id
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: aero-id
+      tier: api
+---
+# Background workers (callbacks, audit publications, operations, sync, gc).
+# Bulkheads bound in-flight outbound work; the DB leases fence concurrent
+# workers (P5-02).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aero-id-workers
+  namespace: aero-id
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aero-id
+      tier: workers
+  template:
+    metadata:
+      labels:
+        app: aero-id
+        tier: workers
+    spec:
+      containers:
+        - name: aero-id
+          image: aero-id:latest
+          imagePullPolicy: IfNotPresent
+          args: ["-config", "/etc/aero-id/config.yaml"]
+          env:
+            - name: AERO_ID_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: database_password}
+            - name: AERO_ID_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: redis_password}
+            - name: AERO_ID_CALLBACK_MASTER_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_master_key}
+            - name: AERO_ID_EVENT_INGEST_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: event_ingest_signing_key}
+            - name: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: audit_ledger_signing_key}
+            - name: AERO_ID_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: signing_key}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aero-id
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes:
+        - name: config
+          configMap:
+            name: aero-id-config
+---
+# Regional PostgreSQL (single writer). Multi-writer requires an ADR + conflict
+# model; default is home-region writes + async projection replication (P6-03).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aero-id-postgres
+  namespace: aero-id
+spec:
+  serviceName: aero-id-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aero-id-postgres
+  template:
+    metadata:
+      labels:
+        app: aero-id-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: aero_id
+            - name: POSTGRES_USER
+              value: aero
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: database_password}
+          ports:
+            - name: pg
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "2", memory: 4Gi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aero-id-postgres
+  namespace: aero-id
+spec:
+  selector:
+    app: aero-id-postgres
+  ports:
+    - port: 5432
+      targetPort: pg
+---
+# Regional Redis: cache/rate-limit/lease coordination only; correctness state
+# lives in PostgreSQL (ADR-008).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aero-id-redis
+  namespace: aero-id
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aero-id-redis
+  template:
+    metadata:
+      labels:
+        app: aero-id-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: redis_password}
+          ports:
+            - name: redis
+              containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aero-id-redis
+  namespace: aero-id
+spec:
+  selector:
+    app: aero-id-redis
+  ports:
+    - port: 6379
+      targetPort: redis
+---
+# Regional NATS JetStream: canonical event transport (P3-04/P6-03).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aero-id-nats
+  namespace: aero-id
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aero-id-nats
+  template:
+    metadata:
+      labels:
+        app: aero-id-nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.10-alpine
+          args: ["-js", "-m", "8222"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aero-id-nats
+  namespace: aero-id
+spec:
+  selector:
+    app: aero-id-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+    - name: monitor
+      port: 8222
+      targetPort: monitor
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aero-id
+  namespace: aero-id
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 64m
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.REGION_PLACEHOLDER.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aero-id
+                port:
+                  name: http
