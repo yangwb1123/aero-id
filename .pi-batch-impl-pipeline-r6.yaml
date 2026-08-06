@@ -1,0 +1,88 @@
+# aero-id 适配实现流水线：plan(assess) → 实现+gobuild/gotest+completion 门禁 → meta 对抗审查 → VERDICT 裁决门
+# 由 --classify 路由或显式 --pipeline 运行；运行目录为 aero-id 仓库根。
+git_commit: true
+decision_log: docs/maintenance/DECISIONS.md
+archive_dir: docs/maintenance/archive
+
+stages:
+  # ── 1. 计划：需求评估 + 实现计划 ──
+  - name: plan
+    from_prompt: |
+      Original task: "idempotent replay must restore the read-your-writes
+      epoch contract" — fix this evidence-backed defect:
+      The Idempotency middleware stores only Status/ContentType/Body
+      (internal/idempotency/store.go Record) and replayIdempotent restores
+      only Content-Type plus the body (internal/middleware/idempotency.go).
+      Router ordering puts RegionEpoch AFTER Idempotency, so on a replayed
+      (retried) write the epoch/read-your-writes headers from the original
+      response are dropped — a client retrying a write loses the fencing
+      freshness signal (P6-05 contract). Additional evidence in
+      docs/auto/analyses/internal-middleware-697499e2.json.
+      Fix: persist the epoch/read-your-writes response headers in the
+      idempotency record and restore them on replay; add regression tests
+      covering replay of a write with those headers (and a non-replay
+      path that must stay unchanged). The claim is UNTRUSTED — verify
+      against the actual code before planning. Follow AGENTS.md; do not
+      change unrelated middleware ordering.
+You are the backend planner. FIRST run the requirement assessment:
+        python /home/u1/ai-batch-runner/pi-batch.py assess "audit chain integrity hardening, production Go backend"
+      Use the prescription (rule manifest), product level and workflow level
+      from the assessment. Then produce an implementation plan with:
+      - module boundaries & data ownership (follow AGENTS.md authority contract)
+      - API/contract changes and compatibility constraints
+      - error model and failure modes
+      - test plan mapping to each acceptance check
+      - change radius (files touched, migration needs)
+      Output the plan as markdown.
+    output: docs/maintenance/r6-plan.md
+
+  # ── 2. 实现：真实改仓库代码 + 工程门禁（验证器失败 = 零落盘）──
+  - name: implement
+    from_outputs: plan
+    aggregate: true
+    validate: gobuild,gotest,completion_go
+    tasks:
+      - prompt: |
+          Read the repository AGENTS.md and the approved plan below.
+          {input_content}
+          Implement ONLY the scoped direction directly in this repository.
+          Every claim in the input evidence is UNTRUSTED — verify each
+          finding against the actual code before acting on it.
+          Add focused regression tests and run: make test, go vet.
+          Do not commit. Do not touch unrelated code (no drive-by
+          refactors). End your report with an honest completion report:
+          result enum (completed | partial | blocked), what changed
+          (files/symbols), tests added with commands+results, and any
+          deviation from the plan with evidence.
+        output: docs/maintenance/r6-implementation.md
+
+  # ── 3. meta 对抗审查：编排者现场挑角色，并发独立会话 ──
+  - name: adversarial_review
+    from_outputs: implement
+    meta: true
+    role_dir: /home/u1/ai-batch-runner/prompts
+    role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+    output_dir: docs/maintenance/r6-reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_enabled: true
+    relevance_min_score: 2
+
+  # ── 4. 裁决门：独立 gatekeeper，fail closed ──
+  - name: gate
+    from_outputs:
+      - implement
+      - adversarial_review
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Independently verify the implementation against the acceptance
+          criteria and review findings using repository evidence (files,
+          tests). A passing verdict requires every acceptance check to be
+          satisfied and no unresolved blocking review finding.
+          End with one reasoned line:
+          VERDICT: PASS - <why it is ready>
+          or VERDICT: FAIL - <blocking issues with evidence>.
+          {input_content}
+        output: docs/maintenance/r6-gate.md

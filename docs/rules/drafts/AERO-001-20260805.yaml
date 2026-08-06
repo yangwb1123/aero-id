@@ -1,0 +1,47 @@
+id: AERO-001
+title: Fail-open security defaults and atomic change splitting in backend plans
+category: backend
+severity: error
+scope:
+  languages:
+  - go
+  paths:
+  - configs/**
+  - internal/repository/audit*.go
+  - internal/config/**
+trigger:
+  operations: []
+rationale: 'Observed failure (2026-08-05, aero-id campaign R4): the design gate rejected
+  an audit-wiring plan with 4 blocking findings. Root causes: (1) an atomic compile-breaking
+  change was split into separate checkpoints, leaving the done-gate red at an intermediate
+  step — a plan must keep every checkpoint buildable; (2) fix recipes omitted required
+  type assertions (would not compile) — recipes must be compilable or explicitly marked
+  sketch; (3) a fail-open default (audit_ledger.signing_key: "" shipped in configs/config.yaml:173
+  made VerifyChain skip verification silently, audit_ledger.go:185/342) was dismissed
+  as out of scope without engaging the reviewer evidence, despite the tree precedent
+  validate.go:49-50/183-184 requiring signing keys >= 32 bytes. Fail-open security
+  defaults must be fixed or evidenced-rejected, never waved off as out of scope.'
+requirements:
+- Security-significant defaults must be fail-closed (empty/weak signing keys fail
+  startup validation, never silently disable verification)
+- Plan checkpoints must each leave the done gate green (buildable after every step)
+- Design recipes (code snippets) must be complete enough to compile, or marked sketch
+forbidden:
+- Splitting one atomic compile-breaking change into separate checkpoints that leave
+  the build red
+- Dismissing a fail-open default as out of scope without an evidence-based rebuttal
+exceptions:
+- condition: ''
+verification:
+  static:
+  - grep configs/config.yaml for empty signing_key defaults under audit/event sections
+  - grep VerifyChain/verify for skip-on-empty-key guards
+  tests:
+  - startup validation rejects empty/weak audit signing key
+  - chain verification runs when key set; rejects tampered chain
+examples:
+  good: []
+  bad: []
+owner: aero-id-maintenance
+version: 0.1.0
+status: draft

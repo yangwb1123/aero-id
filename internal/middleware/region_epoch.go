@@ -51,24 +51,43 @@ func (h *RegionEpochHeader) Middleware() gin.HandlerFunc {
 	}
 	return func(c *gin.Context) {
 		epoch, ok := h.currentEpoch(c.Request.Context())
-		// Read-your-writes check: a client that pinned a writer generation and
-		// is now reading from a different generation must be told it is stale.
-		if raw := c.GetHeader("X-Aero-Write-Epoch"); raw != "" && ok {
-			region, clientEpoch, err := parseWriteEpoch(raw)
-			if err == nil && (region != h.localRegion || clientEpoch != epoch) {
-				c.Header("X-Aero-Stale-Read", "true")
-			}
-		}
+		h.markStaleReads(c, epoch, ok)
 		c.Next()
-		// Tag successful writes with the writer generation.
-		if ok && isWriteMethod(c.Request.Method) && c.Writer.Status() >= 200 && c.Writer.Status() < 300 {
-			c.Header("X-Aero-Write-Epoch", writeEpochHeader(h.localRegion, epoch))
-		}
+		h.tagWrites(c, epoch, ok)
+	}
+}
+
+// markStaleReads implements the read-your-writes check: a client that pinned a
+// writer generation and is now reading from a different generation must be
+// told it is stale, so it can retry against the writer region.
+func (h *RegionEpochHeader) markStaleReads(c *gin.Context, epoch int64, ok bool) {
+	raw := c.GetHeader("X-Aero-Write-Epoch")
+	if raw == "" || !ok {
+		return
+	}
+	region, clientEpoch, err := parseWriteEpoch(raw)
+	if err == nil && (region != h.localRegion || clientEpoch != epoch) {
+		c.Header("X-Aero-Stale-Read", "true")
+	}
+}
+
+// tagWrites stamps successful account-affecting writes with the writer
+// generation (P6-05 read-your-writes token).
+func (h *RegionEpochHeader) tagWrites(c *gin.Context, epoch int64, ok bool) {
+	if !ok || !isWriteMethod(c.Request.Method) {
+		return
+	}
+	if c.Writer.Status() >= 200 && c.Writer.Status() < 300 {
+		c.Header("X-Aero-Write-Epoch", writeEpochHeader(h.localRegion, epoch))
 	}
 }
 
 // currentEpoch returns the cached region epoch, refreshing the cache after TTL.
 // A provider failure degrades to no headers (writes are still durably fenced).
+// Durable region epochs are strictly increasing (promotions bump them), so a
+// stale provider response that raced a fresher one must never downgrade the
+// cached generation: the freshest observed epoch wins, and only that response
+// extends the cache freshness.
 func (h *RegionEpochHeader) currentEpoch(ctx context.Context) (int64, bool) {
 	now := time.Now().UnixNano()
 	if h.cachedAt.Load() != 0 && now-h.cachedAt.Load() < int64(h.ttl) {
@@ -78,9 +97,18 @@ func (h *RegionEpochHeader) currentEpoch(ctx context.Context) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	h.cachedEpoch.Store(epoch)
-	h.cachedAt.Store(now)
-	return epoch, true
+	for {
+		current := h.cachedEpoch.Load()
+		if epoch < current {
+			// A stale response lost the race to a fresher one; keep the
+			// newer generation and its original freshness.
+			return current, true
+		}
+		if h.cachedEpoch.CompareAndSwap(current, epoch) {
+			h.cachedAt.Store(now)
+			return epoch, true
+		}
+	}
 }
 
 func isWriteMethod(method string) bool {

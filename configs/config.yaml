@@ -170,7 +170,7 @@ replication:                      # optional cross-region projection replication
   http_endpoint: ""               # transport=http: remote region ingest URL
   http_key: ""                    # transport=http: HMAC key matching remote event_ingest
 audit_ledger:
-  signing_key: ""               # HMAC key for hash-chain records; use a secret provider in production
+  signing_key: change-me-please-very-long-audit-key   # local-dev placeholder; override with AERO_ID_AUDIT_LEDGER_SIGNING_KEY in production
 audit_governance:                # durable relay from audit_publications; disabled until all source bindings exist
   enabled: false
   endpoint: ""                   # e.g. https://audit-governance.internal

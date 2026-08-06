@@ -126,7 +126,7 @@ func (c *Config) validateRuntimeLimits() error {
 	checks := []error{
 		validateStorage(c.Storage), validateRateLimit(c.RateLimit), validateStorageGC(c.Storage.GC),
 		validateExport(c.Export), validateWebhook(c.Outbox.Webhook), validateEventIngest(c.EventIngest),
-		validateEventBus(c.EventBus), validateReplication(c.Replication),
+		validateEventBus(c.EventBus), validateReplication(c.Replication), validateAuditLedger(c.AuditLedger),
 		c.validateCommercialIntegrations(),
 	}
 	for _, err := range checks {
@@ -188,6 +188,17 @@ func validateEventIngest(value EventIngestConfig) error {
 	}
 	if value.MaxBodyBytes < 0 || value.ClockSkew < 0 {
 		return fmt.Errorf("event_ingest max_body_bytes and clock_skew must not be negative")
+	}
+	return nil
+}
+
+func validateAuditLedger(value AuditLedgerConfig) error {
+	key := strings.TrimSpace(value.SigningKey)
+	if key == "" {
+		return fmt.Errorf("audit_ledger.signing_key is required")
+	}
+	if len(key) < 32 {
+		return fmt.Errorf("audit_ledger.signing_key must be at least 32 bytes")
 	}
 	return nil
 }

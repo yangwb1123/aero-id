@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +28,7 @@ sso: {endpoint: "sso:9000", timeout: 5s, insecure: true, token_cache_ttl: 60s, u
 storage:
   type: local
   local: {root: /tmp/files, public_base_url: "http://x"}
+audit_ledger: {signing_key: change-me-please-very-long-audit-key}
 signing_key: testkey
 log: {level: info, encoding: json}
 `
@@ -82,6 +85,32 @@ func TestDatabaseDSN(t *testing.T) {
 	want := "host=127.0.0.1 port=5432 user=aero password=aero dbname=aero_id sslmode=disable TimeZone=UTC"
 	if dsn != want {
 		t.Errorf("\n got %s\nwant %s", dsn, want)
+	}
+}
+
+func TestLoadAuditLedgerSigningKeyValidation(t *testing.T) {
+	const validLine = "audit_ledger: {signing_key: change-me-please-very-long-audit-key}"
+	if _, err := Load(writeTemp(t, sample)); err != nil {
+		t.Fatalf("sample with audit_ledger signing key rejected: %v", err)
+	}
+	tests := []struct {
+		name    string
+		key     string
+		wantErr string
+	}{
+		{"empty key", "", "audit_ledger.signing_key is required"},
+		{"whitespace key", "   \t  ", "audit_ledger.signing_key is required"},
+		{"31 byte key", strings.Repeat("a", 31), "audit_ledger.signing_key must be at least 32 bytes"},
+		{"padded short key", "  " + strings.Repeat("a", 31), "audit_ledger.signing_key must be at least 32 bytes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := strings.Replace(sample, validLine, "audit_ledger: {signing_key: "+strconv.Quote(tc.key)+"}", 1)
+			_, err := Load(writeTemp(t, content))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Load error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

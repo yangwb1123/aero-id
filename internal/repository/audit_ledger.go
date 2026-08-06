@@ -105,6 +105,9 @@ func (auditPublicationRow) TableName() string { return "audit_publications" }
 func (auditLedgerRow) TableName() string { return "audit_ledger" }
 
 func (r *auditLedgerRepo) Append(ctx context.Context, fact *domain.AuditFact) error {
+	if len(r.signingKey) == 0 {
+		return errors.New("audit ledger signing key is not configured")
+	}
 	if err := validateAuditFact(fact); err != nil {
 		return err
 	}
@@ -118,6 +121,9 @@ func (r *auditLedgerRepo) Append(ctx context.Context, fact *domain.AuditFact) er
 }
 
 func (r *auditLedgerRepo) AppendInTx(ctx context.Context, tx *gorm.DB, fact *domain.AuditFact) error {
+	if len(r.signingKey) == 0 {
+		return errors.New("audit ledger signing key is not configured")
+	}
 	if tx == nil {
 		return fmt.Errorf("audit transaction is required")
 	}
@@ -325,26 +331,47 @@ func applyAuditTimeFilters(q *gorm.DB, filter domain.AuditFactFilter) *gorm.DB {
 }
 
 func (r *auditLedgerRepo) VerifyChain(ctx context.Context, source, partition string) error {
+	if len(r.signingKey) == 0 {
+		return errors.New("audit ledger signing key is not configured")
+	}
 	var rows []auditLedgerRow
 	if err := r.db.WithContext(ctx).Where("source = ? AND partition_key = ?", source, partition).Order("chain_sequence ASC").Find(&rows).Error; err != nil {
 		return err
 	}
 	previous := ""
+	lastSignatureVersion := 0
 	for _, row := range rows {
-		fact := auditLedgerRowToFact(&row)
-		payload, err := json.Marshal(fact.Payload)
-		if err != nil || fact.PayloadHash != digest(payload) {
-			return fmt.Errorf("audit payload verification failed at %s", row.ID)
+		next, version, err := verifyAuditRow(r.signingKey, previous, lastSignatureVersion, &row)
+		if err != nil {
+			return err
 		}
-		if fact.PreviousHash != previous || fact.RecordHash != auditRecordHash(fact) {
-			return fmt.Errorf("audit chain verification failed at %s", row.ID)
-		}
-		if len(r.signingKey) > 0 && !hmac.Equal([]byte(fact.Signature), []byte(sign(r.signingKey, fact.RecordHash))) {
-			return fmt.Errorf("audit signature verification failed at %s", row.ID)
-		}
-		previous = fact.RecordHash
+		previous = next
+		lastSignatureVersion = version
 	}
 	return nil
+}
+
+// verifyAuditRow validates one chain row: payload hash, hash-chain linkage,
+// monotone signature_version (a downgrade would strip the key-bound HMAC), and
+// the HMAC itself for signed rows. Legacy unsigned rows (version 0) may precede
+// signed rows (version 1) but never follow them. It returns the row's record
+// hash and signature version for the next iteration.
+func verifyAuditRow(key []byte, previous string, lastSignatureVersion int, row *auditLedgerRow) (string, int, error) {
+	fact := auditLedgerRowToFact(row)
+	payload, err := canonicalAuditPayload(row.Payload)
+	if err != nil || fact.PayloadHash != digest(payload) {
+		return "", 0, fmt.Errorf("audit payload verification failed at %s", row.ID)
+	}
+	if fact.PreviousHash != previous || fact.RecordHash != auditRecordHash(fact) {
+		return "", 0, fmt.Errorf("audit chain verification failed at %s", row.ID)
+	}
+	if fact.SignatureVersion < lastSignatureVersion {
+		return "", 0, fmt.Errorf("audit signature version downgrade at %s", row.ID)
+	}
+	if fact.SignatureVersion >= 1 && !hmac.Equal([]byte(fact.Signature), []byte(sign(key, fact.RecordHash))) {
+		return "", 0, fmt.Errorf("audit signature verification failed at %s", row.ID)
+	}
+	return fact.RecordHash, fact.SignatureVersion, nil
 }
 
 func auditLedgerFactToRow(fact *domain.AuditFact, payload []byte) *auditLedgerRow {

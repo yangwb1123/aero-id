@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,6 +95,62 @@ func TestRegionEpochHeader_CacheRefreshes(t *testing.T) {
 	time.Sleep(30 * time.Millisecond) // let the cache TTL expire
 	if rec := runEpochRequest(t, header, http.MethodGet, "/v1/me", "us-east:1"); rec.Header().Get("X-Aero-Stale-Read") != "true" {
 		t.Error("cache must observe the promotion after TTL")
+	}
+}
+
+type atomicEpochProvider struct {
+	epoch *atomic.Int64
+}
+
+func (a *atomicEpochProvider) RegionEpoch(ctx context.Context, region string) (int64, error) {
+	return a.epoch.Load(), nil
+}
+
+// TestRegionEpochHeader_StaleResponseCannotDowngradeCache: a provider response
+// carrying an older epoch (an out-of-order read of the durable store) must
+// never replace the cached generation or extend its freshness.
+func TestRegionEpochHeader_StaleResponseCannotDowngradeCache(t *testing.T) {
+	header := NewRegionEpochHeader(&fakeEpochProvider{epoch: 2}, "us-east")
+	if epoch, ok := header.currentEpoch(context.Background()); !ok || epoch != 2 {
+		t.Fatalf("seed epoch = %d, %v; want 2", epoch, ok)
+	}
+	// Force a refresh; the provider answers with a stale, older value.
+	header.provider = &fakeEpochProvider{epoch: 1}
+	header.cachedAt.Store(0)
+	epoch, ok := header.currentEpoch(context.Background())
+	if !ok || epoch != 2 {
+		t.Fatalf("epoch after stale refresh = %d, %v; want cached 2", epoch, ok)
+	}
+	if got := header.cachedEpoch.Load(); got != 2 {
+		t.Fatalf("cached epoch downgraded to %d", got)
+	}
+}
+
+// TestRegionEpochHeader_ConcurrentRefreshStaysMonotonic: concurrent refreshes
+// after a promotion all converge on the new generation (exercises the CAS
+// path under -race).
+func TestRegionEpochHeader_ConcurrentRefreshStaysMonotonic(t *testing.T) {
+	var providerEpoch atomic.Int64
+	providerEpoch.Store(1)
+	header := NewRegionEpochHeader(&atomicEpochProvider{epoch: &providerEpoch}, "us-east")
+	if _, ok := header.currentEpoch(context.Background()); !ok {
+		t.Fatal("seed failed")
+	}
+	providerEpoch.Store(3) // promotion
+	header.cachedAt.Store(0)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if epoch, ok := header.currentEpoch(context.Background()); !ok || epoch != 3 {
+				t.Errorf("concurrent refresh saw epoch %d, %v; want 3", epoch, ok)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := header.cachedEpoch.Load(); got != 3 {
+		t.Fatalf("cached epoch = %d, want 3", got)
 	}
 }
 

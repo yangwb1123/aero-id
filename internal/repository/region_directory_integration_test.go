@@ -75,3 +75,68 @@ func TestRegionDirectoryPromotionWithFencing(t *testing.T) {
 		t.Fatalf("cross-tenant promote error = %v, want not found", err)
 	}
 }
+
+// TestRegionDirectoryRegionEpochsNeverDowngrade: region epoch rows are shared
+// by every account, so a low-epoch account's promotion (or a brand-new
+// account) must never lower a region's epoch: downgrades fence out legitimate
+// current writers and can re-admit an old fenced-out generation.
+func TestRegionDirectoryRegionEpochsNeverDowngrade(t *testing.T) {
+	db := testpg.Start(t)
+	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	accounts := repository.NewAccountRepository(db)
+	directory := repository.NewRegionDirectoryRepository(db)
+
+	first, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-first", "u-first", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := accounts.EnsureByIdentity(t.Context(), "tenant-b", "snaplink", "u-second", "u-second", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.EnsureDirectory(t.Context(), "tenant-a", first.ID, "local", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	// The first account promotes three times: us-east row reaches 3.
+	if _, err := directory.PromoteWithFencing(t.Context(), "tenant-a", first.ID, "us-east", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := directory.PromoteWithFencing(t.Context(), "tenant-a", first.ID, "local", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := directory.PromoteWithFencing(t.Context(), "tenant-a", first.ID, "us-east", 2); err != nil {
+		t.Fatal(err)
+	}
+	if epoch, err := directory.RegionEpoch(t.Context(), "us-east"); err != nil || epoch != 3 {
+		t.Fatalf("us-east epoch = %d, %v; want 3", epoch, err)
+	}
+
+	// A second, low-epoch (0) account promoting into us-east must bump the
+	// shared row (max(3, 0)+1 = 4), never lower it (old code wrote 1).
+	if err := directory.EnsureDirectory(t.Context(), "tenant-b", second.ID, "local", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	newEpoch, err := directory.PromoteWithFencing(t.Context(), "tenant-b", second.ID, "us-east", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newEpoch != 4 {
+		t.Fatalf("second promote epoch = %d, want 4 (max(3,0)+1)", newEpoch)
+	}
+	if epoch, err := directory.RegionEpoch(t.Context(), "us-east"); err != nil || epoch != 4 {
+		t.Fatalf("us-east epoch = %d, %v; want 4 (never downgraded)", epoch, err)
+	}
+
+	// Creating a brand-new account in "local" must not reset the shared row
+	// (old code overwrote it with 0).
+	third, err := accounts.EnsureByIdentity(t.Context(), "tenant-c", "snaplink", "u-third", "u-third", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.EnsureDirectory(t.Context(), "tenant-c", third.ID, "local", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if epoch, err := directory.RegionEpoch(t.Context(), "local"); err != nil || epoch != 2 {
+		t.Fatalf("local epoch after new account = %d, %v; want 2 (not reset to 0)", epoch, err)
+	}
+}

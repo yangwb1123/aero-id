@@ -1,0 +1,68 @@
+# aero-id 维护 Campaign（ai-batch-runner 项目级自动发现 → 方向 → 完整实现）
+name: aero-id-maintenance
+
+discovery:
+  roots:
+    - internal/service
+    - internal/repository
+    - internal/connector
+    - internal/handler
+    - internal/outbox
+    - internal/middleware
+    - internal/audit
+    - internal/event
+  exclude:
+    - testdata
+    - gen
+    - generated
+    - mock
+    - mocks
+    - tests
+    - docs
+    - examples
+    - prompts
+    - pipelines
+    - logs
+    - vendor
+    - node_modules
+    - target
+    - .venv
+    - .git
+    - .github
+    - .pi-batch
+    - __pycache__
+  max_depth: 1
+  fallback_top_level: false
+
+analysis:
+  jobs: 4
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze module '{module}' at {module_path} and its related interfaces in the repository
+    (a Go distributed account-aggregation control plane; read AGENTS.md first).
+    Return ONLY a JSON array with at most {candidate_limit} high-value improvement directions, sorted by value.
+    Each object must contain: title, problem, value (1-10), risk_reduction (1-10), effort (1-10),
+    confidence (1-10), evidence (existing file/symbol paths), and acceptance (testable checks).
+    Do not modify code. Claims without repository evidence must be identified as proposed, not verified.
+
+selection:
+  max_directions: 1
+  minimum_score: 0
+
+implementation:
+  pipeline: .pi-batch-campaign-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  timeout: 14400
+  worktree_root: .pi-batch/worktrees
+
+state:
+  output_dir: docs/auto
+  state_file: docs/auto/state.jsonl
+  summary_file: docs/auto/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 3
+  pipeline_minutes: 20

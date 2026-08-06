@@ -93,7 +93,7 @@ func (r *regionDirectoryRepo) EnsureDirectory(ctx context.Context, tenantID stri
 		if insert.RowsAffected == 0 {
 			return nil
 		}
-		return upsertRegionEpoch(tx, homeRegion, 0, now)
+		return ensureRegionEpochRow(tx, homeRegion, now)
 	})
 	if err != nil {
 		return err
@@ -148,7 +148,11 @@ func (r *regionDirectoryRepo) PromoteWithFencing(ctx context.Context, tenantID s
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		newEpoch = expectedEpoch + 1
+		// The region epoch row is shared by every account in the region; a
+		// promotion must never lower it (that would fence out current writers
+		// and could re-admit a fenced-out generation). Bump from the higher
+		// of the row's current value and the account's observed epoch.
+		newEpoch = max(target.Epoch, expectedEpoch) + 1
 		now := time.Now().UTC()
 		if err := upsertRegionEpoch(tx, targetRegion, newEpoch, now); err != nil {
 			return err
@@ -169,6 +173,22 @@ func (r *regionDirectoryRepo) PromoteWithFencing(ctx context.Context, tenantID s
 		return 0, err
 	}
 	return newEpoch, nil
+}
+
+// ensureRegionEpochRow creates the region's epoch row at 0 when it does not
+// exist yet. The row is shared by every account in the region, so an existing
+// row is never touched: a new account must not reset the region's fencing
+// epoch (that would fence out every current writer).
+func ensureRegionEpochRow(tx *gorm.DB, region string, now time.Time) error {
+	row := &regionEpochRow{Region: region, Epoch: 0, UpdatedAt: now}
+	insert := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "region"}},
+		DoNothing: true,
+	}).Create(row)
+	if insert.Error != nil {
+		return fmt.Errorf("ensure region epoch: %w", insert.Error)
+	}
+	return nil
 }
 
 func upsertRegionEpoch(tx *gorm.DB, region string, epoch int64, now time.Time) error {

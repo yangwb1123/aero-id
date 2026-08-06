@@ -35,11 +35,11 @@ type AnchorRunResult struct {
 }
 
 type AnchorChainResult struct {
-	Source    string `json:"source"`
-	Partition string `json:"partition"`
-	Sequence  int64  `json:"sequence"`
+	Source     string `json:"source"`
+	Partition  string `json:"partition"`
+	Sequence   int64  `json:"sequence"`
 	RecordHash string `json:"record_hash"`
-	AnchorKey string `json:"anchor_key"`
+	AnchorKey  string `json:"anchor_key"`
 }
 
 type auditAnchorService struct {
@@ -63,14 +63,10 @@ func (s *auditAnchorService) AnchorOnce(ctx context.Context) (*AnchorRunResult, 
 	}
 	result := &AnchorRunResult{}
 	for _, partition := range partitions {
-		if err := s.ledger.VerifyChain(ctx, partition.Source, partition.Partition); err != nil {
-			// A broken chain must not be anchored silently.
-			return nil, apperr.Internal("audit_anchor.chain_broken",
-				"audit chain verification failed; refusing to anchor").Wrap(err)
-		}
-		head, err := s.ledger.ChainHead(ctx, partition.Source, partition.Partition)
+		head, err := s.verifiedHead(ctx, partition.Source, partition.Partition)
 		if err != nil {
-			return nil, apperr.Internal("audit_anchor.head_failed", "failed to read the audit chain head").Wrap(err)
+			// A broken or racing chain must not be anchored silently.
+			return nil, err
 		}
 		anchor, err := s.writeAnchor(ctx, head)
 		if err != nil {
@@ -85,8 +81,40 @@ func (s *auditAnchorService) AnchorOnce(ctx context.Context) (*AnchorRunResult, 
 	return result, nil
 }
 
+// verifiedHead returns the chain head only after verifying the chain and
+// confirming the head did not advance while verification ran. Anchoring a
+// head that was appended after the verification would commit an unverified
+// record, silently defeating the fail-closed tamper-evidence guarantee; a
+// head that keeps advancing (concurrent appends) fails closed after a
+// bounded number of attempts.
+func (s *auditAnchorService) verifiedHead(ctx context.Context, source, partition string) (*domain.AuditFact, error) {
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		head, err := s.ledger.ChainHead(ctx, source, partition)
+		if err != nil {
+			return nil, apperr.Internal("audit_anchor.head_failed", "failed to read the audit chain head").Wrap(err)
+		}
+		if err := s.ledger.VerifyChain(ctx, source, partition); err != nil {
+			return nil, apperr.Internal("audit_anchor.chain_broken",
+				"audit chain verification failed; refusing to anchor").Wrap(err)
+		}
+		after, err := s.ledger.ChainHead(ctx, source, partition)
+		if err != nil {
+			return nil, apperr.Internal("audit_anchor.head_failed", "failed to read the audit chain head").Wrap(err)
+		}
+		if after.ChainSequence == head.ChainSequence && after.RecordHash == head.RecordHash {
+			return after, nil
+		}
+	}
+	return nil, apperr.Unavailable("audit_anchor.chain_busy",
+		"audit chain kept advancing during verification; refusing to anchor an unverified head")
+}
+
 func (s *auditAnchorService) writeAnchor(ctx context.Context, head *domain.AuditFact) (string, error) {
-	previous := s.latestAnchorHash(ctx, head.Source, head.PartitionKey)
+	previous, err := s.previousAnchorHash(ctx, head.Source, head.PartitionKey, head.ChainSequence)
+	if err != nil {
+		return "", err
+	}
 	now := time.Now().UTC()
 	document := map[string]any{
 		"schema_version": 1, "kind": "audit_anchor",
@@ -98,31 +126,60 @@ func (s *auditAnchorService) writeAnchor(ctx context.Context, head *domain.Audit
 	document["anchor_hash"] = anchorDigest(document)
 	raw, err := json.Marshal(document)
 	if err != nil {
-		return "", err
+		return "", apperr.Internal("audit_anchor.encode_failed", "failed to encode the audit anchor").Wrap(err)
 	}
-	name := strings.Join([]string{anchorPrefix, sanitizeSource(head.Source), sanitizePartition(head.PartitionKey),
-		head.Source + "-" + head.PartitionKey + "-" + itoa(head.ChainSequence) + ".json"}, "/")
-	name = strings.ReplaceAll(name, " ", "_")
-	key, _, err := s.store.Put(ctx, "aero-id", name, bytes.NewReader(raw))
+	key, _, err := s.store.Put(ctx, "aero-id", anchorKey(head.Source, head.PartitionKey, head.ChainSequence), bytes.NewReader(raw))
 	if err != nil {
 		return "", apperr.Internal("audit_anchor.write_failed", "failed to write audit anchor").Wrap(err)
 	}
 	return key, nil
 }
 
-// latestAnchorHash reads the previous anchor object of a chain to build the
-// anchor chain; a missing previous anchor yields an empty previous hash.
-func (s *auditAnchorService) latestAnchorHash(ctx context.Context, source, partition string) string {
-	prefix := strings.Join([]string{anchorPrefix, sanitizeSource(source), sanitizePartition(partition)}, "/")
-	// The anchor key embeds the sequence, so list-and-pick would require a
-	// lister; instead we read the previous anchor by convention: the storage
-	// key for sequence N is deterministic. We cannot enumerate without a
-	// lister, so previous hashes are resolved from the last anchored key
-	// recorded in the anchor object itself on the next run. For immutability
-	// the hash of the previous anchor object is what matters; we approximate
-	// by re-reading the anchor for the previous sequence deterministically.
-	_ = prefix
-	return ""
+// previousAnchorHash resolves the previous anchor's self-hash so anchors form
+// a chain (P4-03). Anchor objects are matched by content because storage
+// backends may assign opaque keys; the predecessor is the newest anchor of
+// this chain with a chain sequence strictly below the current head. A store
+// without a lister cannot resolve a predecessor and yields an empty previous
+// hash (single-anchor chain); a listing failure aborts the run fail-closed.
+func (s *auditAnchorService) previousAnchorHash(ctx context.Context, source, partition string, sequence int64) (string, error) {
+	lister, ok := s.store.(storage.Lister)
+	if !ok {
+		return "", nil
+	}
+	previous := ""
+	var previousSequence int64 = -1
+	err := lister.List(ctx, func(info storage.ObjectInfo) (bool, error) {
+		document, err := s.anchorObject(ctx, info.Key, source, partition)
+		if err != nil {
+			return false, err
+		}
+		if document == nil {
+			return true, nil
+		}
+		seq, ok := document["chain_sequence"].(float64)
+		if !ok || int64(seq) >= sequence {
+			return true, nil // not an anchor of this chain, or not a predecessor
+		}
+		if int64(seq) > previousSequence {
+			previousSequence = int64(seq)
+			if hash, ok := document["anchor_hash"].(string); ok {
+				previous = hash
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return "", apperr.Internal("audit_anchor.list_failed", "failed to enumerate audit anchors").Wrap(err)
+	}
+	return previous, nil
+}
+
+// anchorKey builds the storage name of a chain anchor. Source and partition
+// are sanitized in every segment so untrusted values cannot escape the anchor
+// prefix or break the key convention.
+func anchorKey(source, partition string, sequence int64) string {
+	return strings.Join([]string{anchorPrefix, sanitizeSource(source), sanitizePartition(partition),
+		sanitizeSource(source) + "-" + sanitizePartition(partition) + "-" + itoa(sequence) + ".json"}, "/")
 }
 
 func sanitizeSource(source string) string {
@@ -151,6 +208,35 @@ func anchorDigest(document map[string]any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// anchorObject reads and parses one candidate object. nil, nil means the object
+// is not an anchor for this chain or cannot be read (skip). A non-nil error
+// aborts the enumeration.
+func (s *auditAnchorService) anchorObject(ctx context.Context, key, source, partition string) (map[string]any, error) {
+	if !strings.HasPrefix(key, anchorPrefix) {
+		return nil, nil
+	}
+	reader, err := s.store.Get(ctx, key)
+	if err != nil {
+		//nolint:nilerr // unreadable archive object: skip, never fail the manifest.
+		return nil, nil
+	}
+	data, readErr := io.ReadAll(io.LimitReader(reader, 1<<20))
+	reader.Close()
+	if readErr != nil {
+		//nolint:nilerr // truncated archive object: skip, never fail the manifest.
+		return nil, nil
+	}
+	var document map[string]any
+	if json.Unmarshal(data, &document) != nil {
+		//nolint:nilerr // corrupt archive object: skip, never fail the manifest.
+		return nil, nil
+	}
+	if document["kind"] != "audit_anchor" || document["source"] != source || document["partition"] != partition {
+		return nil, nil
+	}
+	return document, nil
+}
+
 // AnchorManifest returns the newest stored anchor for a chain, resolved by
 // enumerating anchor objects and matching their content (storage backends may
 // assign opaque keys, so the manifest fields are the source of truth).
@@ -163,27 +249,19 @@ func (s *auditAnchorService) AnchorManifest(ctx context.Context, source, partiti
 		return nil, apperr.Unavailable("audit_anchor.listing_unavailable", "anchor storage cannot enumerate objects")
 	}
 	var newest map[string]any
+	var newestSequence int64 = -1
 	if err := lister.List(ctx, func(info storage.ObjectInfo) (bool, error) {
-		if !strings.HasPrefix(info.Key, anchorPrefix) {
+		// Unreadable/non-anchor objects are skipped by design: the manifest is
+		// best-effort enumeration over possibly-partial archives.
+		document, _ := s.anchorObject(ctx, info.Key, source, partition)
+		if document == nil {
 			return true, nil
 		}
-		reader, err := s.store.Get(ctx, info.Key)
-		if err != nil {
-			return true, nil // unreadable object: skip
-		}
-		data, readErr := io.ReadAll(io.LimitReader(reader, 1<<20))
-		reader.Close()
-		if readErr != nil {
-			return true, nil
-		}
-		var document map[string]any
-		if json.Unmarshal(data, &document) != nil {
-			return true, nil
-		}
-		if document["kind"] != "audit_anchor" || document["source"] != source || document["partition"] != partition {
-			return true, nil
-		}
-		if newest == nil {
+		// Listing order is backend-defined (map iteration, lexicographic
+		// keys), never chronological, so the newest anchor is the maximum
+		// chain sequence, not the first object listed.
+		if seq, ok := document["chain_sequence"].(float64); ok && int64(seq) > newestSequence {
+			newestSequence = int64(seq)
 			newest = document
 		}
 		return true, nil
