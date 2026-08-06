@@ -8,3 +8,10 @@
 vendor/
 .idea/
 .vscode/
+
+# ai-batch-runner runtime artifacts
+.pi-batch/
+logs/
+docs/archive/
+docs/auto/
+docs/requirements/runs/
