@@ -91,7 +91,7 @@ stringData:
   signing_key: "CHANGE_ME_SIGNING_KEY_32_BYTES_MINIMUM"
   callback_master_key: "CHANGE_ME_CALLBACK_MASTER_KEY"
   event_ingest_signing_key: "CHANGE_ME_EVENT_INGEST_KEY"
-  audit_ledger_signing_key: "CHANGE_ME_AUDIT_LEDGER_KEY"
+  audit_ledger_signing_key: "CHANGE_ME_AUDIT_LEDGER_KEY_32_BYTES_MINIMUM"
   sso_bearer_token: "CHANGE_ME_SSO_TOKEN"
   export_encryption_key: "CHANGE_ME_EXPORT_KEY"
 ---
