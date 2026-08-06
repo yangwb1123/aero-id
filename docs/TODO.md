@@ -237,6 +237,11 @@ Snaplink OAuth client 实际注册、独立仓库部署 CI/CD。
       `ErrAuditDuplicate` 注入回滚原子性：profile 与 step 均整体回滚、账本不双写）。
       `requireAuditLedger` 按文件大小门禁拆分至 `internal/repository/audit_wiring.go`。
 
+- [x] **Connector 契约测试补齐**（AGENTS.md 契约清单）：auth context（Bearer token 在
+      Summary/Erase/OperationStatus 三个面全部透传）、客户端 deadline（context 取消及时生效，
+      映射稳定 timeout RemoteError）、operation-status 结果映射（P5-04 对账输入）。新增
+      `internal/connector/contract_test.go` 3 用例，与既有 fault-injection 套件合并覆盖
+      超时/429/503/畸形响应/partial/重试预算/熔断/幂等/脱敏。
 ## 2026-08-05 完成复核
 
 对照 `docs/plans/2026-08-04-distributed-account-aggregation.md` 全量复核：
