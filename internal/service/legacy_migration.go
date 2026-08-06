@@ -20,21 +20,21 @@ type LegacyMigrationService interface {
 }
 
 type LegacyCompareInput struct {
-	OwnerUID string          // legacy uid (Snaplink subject)
+	OwnerUID string           // legacy uid (Snaplink subject)
 	Source   connector.Source // target authority to compare against (aero-vault | aero-im)
 	Limit    int
 }
 
 // LegacyCompareResult reports legacy digests and source counters.
 type LegacyCompareResult struct {
-	OwnerUID        string                      `json:"owner_uid"`
-	Legacy          LegacyDigestSummary         `json:"legacy"`
-	SourceCounters  map[string]int64            `json:"source_counters,omitempty"` // e.g. aero-vault.object_count
-	SourceAvailable bool                        `json:"source_available"`
-	SourceErrors    map[string]string           `json:"source_errors,omitempty"`
-	Drift           []string                    `json:"drift,omitempty"` // human-readable mismatches
-	Matched         bool                        `json:"matched"`
-	Partial         bool                        `json:"partial"` // legacy digest truncated by limit
+	OwnerUID        string              `json:"owner_uid"`
+	Legacy          LegacyDigestSummary `json:"legacy"`
+	SourceCounters  map[string]int64    `json:"source_counters,omitempty"` // e.g. aero-vault.object_count
+	SourceAvailable bool                `json:"source_available"`
+	SourceErrors    map[string]string   `json:"source_errors,omitempty"`
+	Drift           []string            `json:"drift,omitempty"` // human-readable mismatches
+	Matched         bool                `json:"matched"`
+	Partial         bool                `json:"partial"` // legacy digest truncated by limit
 }
 
 type LegacyDigestSummary struct {
@@ -44,8 +44,8 @@ type LegacyDigestSummary struct {
 }
 
 type legacyMigrationService struct {
-	legacy    repository.LegacyMigrationRepository
-	connectors map[connector.Source]connector.Connector
+	legacy       repository.LegacyMigrationRepository
+	connectors   map[connector.Source]connector.Connector
 	defaultLimit int
 }
 
@@ -57,11 +57,33 @@ func NewLegacyMigrationService(legacy repository.LegacyMigrationRepository,
 			bySource[client.Source()] = client
 		}
 	}
-	return &legacyMigrationService{legacy: legacy, connectors: bySource, defaultLimit: 1000}
+	return &legacyMigrationService{legacy: legacy, connectors: bySource, defaultLimit: defaultLegacyMigrationLimit}
 }
 
 // defaultLegacyMigrationLimit caps one compare run.
 const defaultLegacyMigrationLimit = 1000
+
+// compareWithSource fills the source counters when the connector is configured
+// and reachable. A missing connector is a partial result (no error); a source
+// failure is returned so the caller can record the detail in the result.
+func (s *legacyMigrationService) compareWithSource(ctx context.Context, input LegacyCompareInput, result *LegacyCompareResult) error {
+	client, ok := s.connectors[input.Source]
+	if !ok {
+		result.SourceAvailable = false
+		result.SourceErrors["source"] = "connector not configured for " + string(input.Source)
+		return nil
+	}
+	summary, err := client.Summary(ctx, connector.SummaryRequest{
+		CanonicalUID: input.OwnerUID, Datasets: []domain.AccountDataset{}, Region: "",
+	})
+	if err != nil {
+		return err
+	}
+	result.SourceAvailable = true
+	result.SourceCounters = sourceMigrationCounters(summary)
+	result.Drift, result.Matched = compareMigrationCounters(input.Source, result)
+	return nil
+}
 
 func (s *legacyMigrationService) Compare(ctx context.Context, input LegacyCompareInput) (*LegacyCompareResult, error) {
 	if strings.TrimSpace(input.OwnerUID) == "" {
@@ -87,23 +109,12 @@ func (s *legacyMigrationService) Compare(ctx context.Context, input LegacyCompar
 	result.Legacy = LegacyDigestSummary{Files: files, Messages: messages, Comments: comments}
 	result.Partial = files.Truncated || messages.Truncated || comments.Truncated
 
-	client, ok := s.connectors[input.Source]
-	if !ok {
-		result.SourceAvailable = false
-		result.SourceErrors["source"] = "connector not configured for " + string(input.Source)
-		return result, nil
-	}
-	summary, err := client.Summary(ctx, connector.SummaryRequest{
-		CanonicalUID: input.OwnerUID, Datasets: []domain.AccountDataset{}, Region: "",
-	})
-	if err != nil {
+	// A missing connector or a source failure is a partial result: the legacy
+	// digest is still returned with SourceAvailable=false and the detail.
+	if err := s.compareWithSource(ctx, input, result); err != nil {
 		result.SourceAvailable = false
 		result.SourceErrors["source"] = err.Error()
-		return result, nil
 	}
-	result.SourceAvailable = true
-	result.SourceCounters = sourceMigrationCounters(summary)
-	result.Drift, result.Matched = compareMigrationCounters(input.Source, result)
 	return result, nil
 }
 

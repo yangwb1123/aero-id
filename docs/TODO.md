@@ -207,3 +207,67 @@ Snaplink OAuth client 实际注册、独立仓库部署 CI/CD。
 - [x] **修复既有缺陷**：审计链 hash 含 time.Time，DB timestamptz 往返（微秒截断 + 本地时区）
       导致 `VerifyChain` 失败——append 时截断微秒、record hash 内 `.UTC()` 规范化；
       迁移索引谓词不能用 `now()`（非 IMMUTABLE）
+
+---
+
+---
+
+## 2026-08-06 第八轮：outbox claim-based dispatch + 审计 wiring fail-closed（两份 08-06 设计落地）
+
+门禁全绿：`make test` / `make lint` / `make lint-strict` / `make check-file-sizes` / `make build` /
+`make test-integration`（含新集成用例）。
+
+- [x] **outbox 多实例正确性**（`docs/plans/2026-08-06-internal-outbox-claim-based-dispatch.md`）：
+      修复真实缺陷——裸 `FOR UPDATE SKIP LOCKED` 在自动提交链上语句结束即释放，多实例可重复投递。
+      迁移 000058 增加 `claim_token`/`claimed_at`（可逆，索引不动）；`ClaimBatch` 单语句原子领取
+      （gen_random_uuid token + DB clock lease + SKIP LOCKED）；`MarkPublished`/`MarkFailed`/
+      `Release`/`RenewClaims` 均以 `(id, token)` + 未过期条件生效；`ErrClaimLost` 语义化；
+      relay Go backstop 主控退避（有界扫描）+ 长批次 token 续租。
+- [x] **实施中发现并修复设计缺口（D12 修正）**：字面实现只续租"已处理未落定"的 claim，
+      队列尾部事件（批次领取时刻起老化）在长批次中过期 → 续租集合改为 held 全量，
+      `TestTwoRelaysSlowHandlerRenewalExactlyOnce`（lease 3s + 8×400ms handler）实证复现并验证修复。
+- [x] **AC-1..AC-3 集成测试**：双 relay 恰好一次（per-event barrier 红→绿）、条件落定、
+      租约恢复（crash 后新 token 重投）、backoff 跳过即释放、10 万级 backlog 扫描有界、
+      `MarkFailed` 相对写防 lost-update、过期 claim 不改 retry、迁移可逆。
+- [x] **审计 wiring fail-closed**（`docs/plans/2026-08-06-internal-repository-audit-wiring-fail-closed.md`）：
+      静默 type-assert 降级（生产首次 mutation 才报 "not configured"）→ 编译期强制：
+      `NewAuditLedgerRepository` 返回 `FullAuditLedgerRepository`（含 `AppendInTx`），
+      四个仓库构造函数改为必选参数 + `requireAuditLedger`（nil/typed-nil 启动即 panic，C5）；
+      19 个测试调用点迁移；AC1 单元（5 panic 用例）+ AC3 集成（4 happy-path 同事务行 +
+      `ErrAuditDuplicate` 注入回滚原子性：profile 与 step 均整体回滚、账本不双写）。
+      `requireAuditLedger` 按文件大小门禁拆分至 `internal/repository/audit_wiring.go`。
+
+## 2026-08-05 完成复核
+
+对照 `docs/plans/2026-08-04-distributed-account-aggregation.md` 全量复核：
+
+- [x] 仓库内全部功能需求点已实现并有测试/wiring：账户内核（P1）、Connector 与聚合（P2）、
+      事件接入与投影（P3）、审计账本（P4）、Operation/Callback/Replay（P5）、多区域仓库内部分（P6）、
+      Legacy 收敛（P8）；客户端契约层（P7 仓库内部分：OpenAPI + 契约守卫测试）已就绪。
+- [x] 修复 `make lint-strict` 27 处违规（unused、nilerr、errorlint、cyclop、funlen、lll、SA4006）。
+- [x] 门禁全绿：`make test` / `make lint` / `make lint-strict` / `make check-file-sizes` /
+      `make build` / `make test-integration`（Postgres+MinIO+NATS testcontainers）/ `make check-architecture`。
+
+剩余外部门禁（非本仓库可实现）：
+- [ ] 源系统（Snaplink/Aero IM/Aero Vault）账户摘要/命令/脱敏事件 API 发布与 contract test（P2/P3/P5 验收依赖）
+- [ ] 多区域 PostgreSQL/事件总线/对象存储部署、真实故障切换与 fencing 演练（P6）
+- [ ] 独立客户端技术选型与立项（P7-01..P7-06，2026-08-05 已撤回 Flutter 脚手架，选型未定）
+- [ ] Snaplink OAuth client registration（P7-02）
+
+---
+
+## 2026-08-05 第二轮补齐（P6-08 / §12 运行手册）
+
+对照计划复核发现的最后三处仓库内缺口，本轮已补齐：
+
+- [x] **event/callback soak 负载脚本**（P6-08）：`scripts/load/k6/event-soak.js`（per-source HMAC 签名
+      批量事件接入 + 重复投递幂等断言，k6 crypto 签名）、`scripts/load/k6/callback-soak.js` +
+      `scripts/load/sink/main.go`（回调 challenge 验证 + 签名投递断言，可独立 `go run`）；
+      Makefile 新增 `load-test-event` / `load-test-callback`。
+- [x] **数据库分区/索引基准**（P6-08）：`scripts/load/db/partition-index-bench.sql`（EXPLAIN ANALYZE
+      覆盖审计账本时间线/操作 DAG/分区链、通知未读 feed+计数、outbox drain、callback 到期队列、
+      消息会话/文件 keyset 分页、投影新鲜度 + pg_stat_user_indexes 汇总）；Makefile 新增 `load-test-db`。
+- [x] **运行手册**（§12）：`docs/runbook.md` 覆盖源系统故障、区域隔离、event gap、审计链失败、
+      callback 风暴、Operation 卡住、导出泄露七个场景 + 通用处置原则（不双写、DLQ 优先、审计优先）。
+- [x] 门禁复核：`make test` / `make lint` / `make lint-strict`（含新 sink 的 gosec 超时要求）/
+      `make check-file-sizes` / `make build` 全绿。

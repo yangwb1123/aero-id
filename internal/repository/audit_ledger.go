@@ -54,7 +54,7 @@ type auditLedgerRepo struct {
 	signingKey []byte
 }
 
-func NewAuditLedgerRepository(db *gorm.DB, cfg AuditLedgerConfig) AuditLedgerRepository {
+func NewAuditLedgerRepository(db *gorm.DB, cfg AuditLedgerConfig) FullAuditLedgerRepository {
 	return &auditLedgerRepo{db: db, signingKey: []byte(cfg.SigningKey)}
 }
 

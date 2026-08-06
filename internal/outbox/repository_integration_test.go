@@ -47,18 +47,18 @@ func TestOutboxRepo_AppendFetchMarkPublished(t *testing.T) {
 		t.Fatalf("append in tx: %v", err)
 	}
 
-	got, err := repo.FetchUnpublished(ctx, 10)
+	got, err := repo.ClaimBatch(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != e.ID || got[0].EventType != "message.sent" {
-		t.Fatalf("fetch unpublished = %+v, want the appended event", got)
+	if len(got) != 1 || got[0].Event.ID != e.ID || got[0].Event.EventType != "message.sent" {
+		t.Fatalf("claim batch = %+v, want the appended event", got)
 	}
 
-	if err := repo.MarkPublished(ctx, []uuid.UUID{e.ID}); err != nil {
+	if err := repo.MarkPublished(ctx, []outbox.Claim{got[0].Claim}); err != nil {
 		t.Fatal(err)
 	}
-	got, err = repo.FetchUnpublished(ctx, 10)
+	got, err = repo.ClaimBatch(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestOutboxRepo_FailedTxRollsBackEvent(t *testing.T) {
 		t.Fatalf("tx err = %v, want %v", err, wantErr)
 	}
 
-	got, err := repo.FetchUnpublished(ctx, 10)
+	got, err := repo.ClaimBatch(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

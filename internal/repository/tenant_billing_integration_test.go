@@ -16,7 +16,8 @@ import (
 func TestTenantScopedAccountsAndMonotonicEntitlementProjection(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	first, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "user-1", "user-1", "local")
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +59,8 @@ func TestTenantScopedAccountsAndMonotonicEntitlementProjection(t *testing.T) {
 func TestAccountQuotaReservationPersistsAcrossCommitRetry(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	quota, ok := accounts.(repository.AccountQuotaRepository)
 	if !ok {
 		t.Fatal("account repository does not implement quota persistence")

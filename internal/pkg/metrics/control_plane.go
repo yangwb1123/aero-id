@@ -73,19 +73,15 @@ func (m *gaugeMap) snapshot() map[string]float64 {
 // ── control-plane counters/gauges on the shared Registry ──────────────────
 
 type controlPlaneMetrics struct {
-	eventsApplied   counterMap // dataset -> count of applied source events
+	eventsApplied     counterMap // dataset -> count of applied source events
 	eventsQuarantined counterMap
-	auditIngestFail counterMap // source -> audit fact write failures
-	operations      counterMap // status -> terminal operation outcomes
-	callbacks       counterMap // status -> callback delivery outcomes (success/pending/dead_letter)
-	reconcileDrift  counterMap // source -> drift repair count
-	projectionLag   gaugeMap   // source|dataset -> seconds since last_synced_at
-	consumerLag     gaugeMap   // source -> seconds behind (replication cursor)
-	operationAge    gaugeMap   // status -> age seconds of oldest open operation
-}
-
-func (r *Registry) controlPlane() *controlPlaneMetrics {
-	return &r.control
+	auditIngestFail   counterMap // source -> audit fact write failures
+	operations        counterMap // status -> terminal operation outcomes
+	callbacks         counterMap // status -> callback delivery outcomes (success/pending/dead_letter)
+	reconcileDrift    counterMap // source -> drift repair count
+	projectionLag     gaugeMap   // source|dataset -> seconds since last_synced_at
+	consumerLag       gaugeMap   // source -> seconds behind (replication cursor)
+	operationAge      gaugeMap   // status -> age seconds of oldest open operation
 }
 
 // ObserveEventApplied records one applied source event per dataset.

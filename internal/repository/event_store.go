@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"gorm.io/datatypes"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/event"
@@ -27,24 +27,24 @@ type EventStoreRepository interface {
 }
 
 type eventStoreRow struct {
-	ID               domain.ID        `gorm:"column:id;primaryKey"`
-	EventID          domain.ID        `gorm:"column:event_id"`
-	TenantID         string           `gorm:"column:tenant_id"`
-	Source           string           `gorm:"column:source"`
-	SourceRegion     string           `gorm:"column:source_region"`
-	EventType        string           `gorm:"column:event_type"`
-	SchemaVersion    int              `gorm:"column:schema_version"`
-	AggregateType    string           `gorm:"column:aggregate_type"`
-	AggregateID      string           `gorm:"column:aggregate_id"`
-	AggregateVersion int64            `gorm:"column:aggregate_version"`
-	ActorUID         string           `gorm:"column:actor_uid"`
-	OperationID      domain.ID        `gorm:"column:operation_id"`
-	CorrelationID    domain.ID        `gorm:"column:correlation_id"`
-	CausationID      domain.ID        `gorm:"column:causation_id"`
-	TraceID          string           `gorm:"column:trace_id"`
-	OccurredAt       time.Time        `gorm:"column:occurred_at"`
-	ReceivedAt       time.Time        `gorm:"column:received_at"`
-	Payload          datatypes.JSON   `gorm:"column:payload"`
+	ID               domain.ID      `gorm:"column:id;primaryKey"`
+	EventID          domain.ID      `gorm:"column:event_id"`
+	TenantID         string         `gorm:"column:tenant_id"`
+	Source           string         `gorm:"column:source"`
+	SourceRegion     string         `gorm:"column:source_region"`
+	EventType        string         `gorm:"column:event_type"`
+	SchemaVersion    int            `gorm:"column:schema_version"`
+	AggregateType    string         `gorm:"column:aggregate_type"`
+	AggregateID      string         `gorm:"column:aggregate_id"`
+	AggregateVersion int64          `gorm:"column:aggregate_version"`
+	ActorUID         string         `gorm:"column:actor_uid"`
+	OperationID      domain.ID      `gorm:"column:operation_id"`
+	CorrelationID    domain.ID      `gorm:"column:correlation_id"`
+	CausationID      domain.ID      `gorm:"column:causation_id"`
+	TraceID          string         `gorm:"column:trace_id"`
+	OccurredAt       time.Time      `gorm:"column:occurred_at"`
+	ReceivedAt       time.Time      `gorm:"column:received_at"`
+	Payload          datatypes.JSON `gorm:"column:payload"`
 }
 
 func (eventStoreRow) TableName() string { return "event_store" }
@@ -136,7 +136,8 @@ func (r *eventStoreRepo) ListByCursor(ctx context.Context, tenantID, source stri
 	return out, next, nil
 }
 
-func (r *eventStoreRepo) ListByAccount(ctx context.Context, tenantID, source, accountID string, cursor domain.ID, limit int) ([]*event.Envelope, domain.ID, error) {
+func (r *eventStoreRepo) ListByAccount(ctx context.Context, tenantID, source, accountID string,
+	cursor domain.ID, limit int) ([]*event.Envelope, domain.ID, error) {
 	if limit <= 0 || limit > 10000 {
 		limit = 1000
 	}

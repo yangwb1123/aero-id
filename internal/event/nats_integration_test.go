@@ -63,13 +63,14 @@ func TestNATSBusConsumesCanonicalEnvelopes(t *testing.T) {
 	// Real PostgreSQL for the ingest side (receipts + event store).
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	account, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-nats", "u-nats", "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := repository.NewEventStoreRepository(db)
-	receipts := repository.NewEventReceiptRepositoryWithStore(db, store)
+	receipts := repository.NewEventReceiptRepositoryWithStore(db, store, ledger)
 	ingest := newIngestService(receipts)
 
 	bus, err := event.NewNATSBus(event.NATSConfig{
@@ -215,13 +216,14 @@ func TestProjectionReplicationRoundTrip(t *testing.T) {
 
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	account, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-repl", "u-repl", "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := repository.NewEventStoreRepository(db)
-	receipts := repository.NewEventReceiptRepositoryWithStore(db, store)
+	receipts := repository.NewEventReceiptRepositoryWithStore(db, store, ledger)
 	ingest := newIngestService(receipts)
 
 	bus, err := event.NewNATSBus(event.NATSConfig{

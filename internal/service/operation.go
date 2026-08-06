@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -103,15 +102,6 @@ func NewOperationService(repo repository.OperationRepository, opts ...OperationO
 		opt(s)
 	}
 	return s
-}
-
-// observeOperation records terminal outcomes and the age of open operations.
-// Kept as a helper so the audit path stays readable.
-func (s *operationService) observeOperation(operation *domain.Operation, status domain.OperationStatus) {
-	s.metrics.ObserveOperationOutcome(string(status))
-	if !operation.CreatedAt.IsZero() {
-		s.metrics.ObserveOperationAge(string(status), time.Since(operation.CreatedAt))
-	}
 }
 
 func (s *operationService) Create(ctx context.Context, input OperationInput) (*domain.Operation, error) {

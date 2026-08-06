@@ -23,12 +23,6 @@ func (failDistributedLimiter) Allow(ctx context.Context, key string) (bool, time
 	return false, 0, errors.New("redis down")
 }
 
-// hardLocalLimiter denies everything, modeling a saturated local bucket.
-type hardLocalLimiter struct{}
-
-func (hardLocalLimiter) Allow(key string) (bool, time.Duration) { return false, time.Second }
-func (hardLocalLimiter) RetryAfter() time.Duration              { return time.Second }
-
 func runRateLimitRequest(t *testing.T, path string, distributed ratelimit.DistributedLimiter, local *ratelimit.Limiter) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.ReleaseMode)
@@ -71,7 +65,7 @@ func TestRateLimitSensitiveFailClosedOnLimiterOutage(t *testing.T) {
 // provides a decision, so sensitive paths are throttled (429), not 503.
 func TestRateLimitSensitiveUsesLocalBucketWhenRedisDown(t *testing.T) {
 	local := ratelimit.New(1, 1, time.Minute) // saturated after one request
-	_ = local.Allow("uid:u-1")               // consume the only token (middleware keys on actor uid)
+	_ = local.Allow("uid:u-1")                // consume the only token (middleware keys on actor uid)
 	if rec := runRateLimitRequest(t, "/v1/me/erase", failDistributedLimiter{}, local); rec.Code != http.StatusTooManyRequests {
 		t.Errorf("sensitive erase with local = %d, want 429", rec.Code)
 	}

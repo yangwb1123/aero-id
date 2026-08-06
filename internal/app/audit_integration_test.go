@@ -15,13 +15,14 @@ import (
 func TestAuditBindingCoverageIncludesAccountsAndDurableBacklog(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	ledgerRepo := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
 	ledger := service.NewAuditLedgerService(repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{SigningKey: "app-integration-audit-ledger-key-0123456789"}))
 	if err := ledger.Record(t.Context(), service.AuditFactInput{
 		TenantID: "tenant-publication", Action: "account.created", ActorUID: "actor-one",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	accounts := repository.NewAccountRepository(db)
+	accounts := repository.NewAccountRepository(db, ledgerRepo)
 	if _, err := accounts.EnsureByIdentity(
 		t.Context(), "tenant-account", "snaplink", "subject-one", "actor-two", "local",
 	); err != nil {

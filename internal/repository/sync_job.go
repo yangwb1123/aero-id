@@ -51,12 +51,8 @@ type syncJobRepo struct {
 var ErrSyncJobLeaseLost = errors.New("sync job lease lost")
 var ErrSyncJobUnknown = errors.New("sync job outcome is unknown")
 
-func NewSyncJobRepository(db *gorm.DB, audit ...AuditLedgerRepository) SyncJobRepository {
-	var transactional AuditLedgerTransactionalRepository
-	if len(audit) > 0 {
-		transactional, _ = audit[0].(AuditLedgerTransactionalRepository)
-	}
-	return &syncJobRepo{db: db, audit: transactional}
+func NewSyncJobRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) SyncJobRepository {
+	return &syncJobRepo{db: db, audit: requireAuditLedger("NewSyncJobRepository", audit)}
 }
 
 type syncJobRow struct {

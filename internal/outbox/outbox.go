@@ -8,6 +8,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,20 +33,68 @@ type Event struct {
 	DeadLetter    bool
 }
 
+// Claim identifies one event currently held by a relay instance. Finalization
+// (MarkPublished/MarkFailed) and Release apply only while the claim is held
+// and unexpired; Token is minted per claim and is never reusable.
+type Claim struct {
+	EventID uuid.UUID
+	Token   uuid.UUID
+}
+
+// ClaimedEvent is an Event plus the durable claim under which it was fetched.
+// The relay passes e.Event to the Handler and keeps the Claim for finalization.
+type ClaimedEvent struct {
+	Event     *Event
+	Claim     Claim
+	ClaimedAt time.Time // DB clock at claim time (observability)
+}
+
+// ErrClaimLost is returned by MarkPublished/MarkFailed when the caller no
+// longer holds an unexpired claim for an event (lost to lease expiry, a newer
+// re-claim, or never held). It is a normal at-least-once condition, not an
+// infrastructure error: the event will be re-claimed and re-delivered.
+var ErrClaimLost = errors.New("outbox: claim lost or expired")
+
 // Repository persists and drains outbox events.
 type Repository interface {
 	// Append writes an event using the caller-supplied transaction so it commits
 	// (or rolls back) together with the domain rows in the same tx.
 	Append(ctx context.Context, tx *gorm.DB, e *Event) error
-	// FetchUnpublished returns up to limit unpublished (and not dead-letter)
-	// events that are eligible for retry — either never retried (last_retry_at
-	// IS NULL) or whose backoff window has elapsed. Oldest-first.
-	FetchUnpublished(ctx context.Context, limit int) ([]*Event, error)
-	// MarkPublished stamps published_at on the given event IDs.
-	MarkPublished(ctx context.Context, ids []uuid.UUID) error
-	// MarkFailed increments retry_count, sets last_retry_at to now, and when
-	// retryCount >= maxRetries marks the event as dead_letter.
-	MarkFailed(ctx context.Context, id uuid.UUID, retryCount, maxRetries int, at time.Time) error
+
+	// ClaimBatch atomically claims up to limit unpublished, non-dead-letter
+	// events (backoff eligibility is applied by the relay after claiming),
+	// returning them oldest-first with a fresh durable claim on each row. Rows
+	// with an unexpired claim are invisible to all other ClaimBatch calls.
+	// Claims expire after the repository's lease; expired rows are re-claimable
+	// with a new token.
+	ClaimBatch(ctx context.Context, limit int) ([]*ClaimedEvent, error)
+
+	// MarkPublished stamps published_at only on claims the caller still holds
+	// (matching token, unexpired). Valid claims are applied; if any claim is
+	// missing, foreign, or expired the returned error wraps ErrClaimLost.
+	MarkPublished(ctx context.Context, claims []Claim) error
+
+	// MarkFailed increments retry_count and sets last_retry_at only while the
+	// caller holds the claim; when the new retry_count reaches maxRetries the
+	// event becomes a dead letter. Stale claims are a no-op returning
+	// ErrClaimLost. The write is relative (retry_count = retry_count + 1);
+	// retryCount is used for relay logging and must equal the current
+	// retry_count + 1 when the claim is held.
+	MarkFailed(ctx context.Context, c Claim, retryCount, maxRetries int, at time.Time) error
+
+	// Release clears the claim on rows the caller holds without changing retry
+	// state. Used for events skipped by the relay's Go backoff check (the
+	// primary backoff exclusion). Stale claims are a no-op.
+	Release(ctx context.Context, claims []Claim) error
+
+	// RenewClaims extends claimed_at to now() on claims the caller still holds
+	// and that remain unexpired, unpublished, and non-dead-letter. The
+	// conjunction is the same as finalization — (id, token) pair + lease — so
+	// renewal can never extend a superseded or expired claim. Stale claims are
+	// silently skipped (finalization reports them); DB errors propagate. The
+	// relay uses this to keep batch claims alive across long handler chains.
+	RenewClaims(ctx context.Context, claims []Claim) error
+
 	// PurgeDeadLetters deletes dead-letter events created before cutoff, and
 	// published events created before publishedCutoff, in batches. Returns the
 	// total number of deleted rows.

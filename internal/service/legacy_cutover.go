@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -28,10 +29,10 @@ type LegacyCutoverService interface {
 }
 
 type legacyCutoverService struct {
-	cutover     repository.LegacyCutoverRepository
-	cleanup     repository.LegacyCleanupRepository
-	audit       AuditLedgerService
-	actor       func(ctx context.Context) string
+	cutover        repository.LegacyCutoverRepository
+	cleanup        repository.LegacyCleanupRepository
+	audit          AuditLedgerService
+	actor          func(ctx context.Context) string
 	rollbackWindow time.Duration
 }
 
@@ -58,7 +59,7 @@ func (s *legacyCutoverService) IsCutOver(ctx context.Context, tenantID string) (
 func (s *legacyCutoverService) Get(ctx context.Context, tenantID string) (repository.LegacyCutoverStatus, error) {
 	entry, err := s.cutover.GetCutover(ctx, tenantID)
 	if err != nil {
-		if err == repository.ErrNotFound {
+		if errors.Is(err, repository.ErrNotFound) {
 			return repository.LegacyCutoverStatusLegacy, nil
 		}
 		return "", apperr.Internal("cutover.lookup_failed", "failed to read the cutover registry").Wrap(err)
@@ -99,17 +100,10 @@ func (s *legacyCutoverService) CleanupReadiness(ctx context.Context, tenantID st
 	if err != nil {
 		return nil, false, apperr.Internal("cutover.readiness_failed", "failed to evaluate cleanup readiness").Wrap(err)
 	}
-	// Evaluate the rollback-window item against the service policy. If the
-	// repository did not include the item (fakes or older deployments), append
-	// the evaluated decision so the checklist is always complete.
-	entry, getErr := s.cutover.GetCutover(ctx, tenantID)
-	windowReady := false
-	windowDetails := "no cutover decision recorded for tenant"
-	if getErr == nil && entry != nil && entry.Status == repository.LegacyCutoverStatusCutOver {
-		elapsed := time.Since(entry.DecidedAt)
-		windowReady = elapsed >= s.rollbackWindow
-		windowDetails = "cut_over " + elapsed.Round(time.Hour).String() + " ago; window " + s.rollbackWindow.String()
-	}
+	// Evaluate the rollback-window item against the service policy (P8-05). If
+	// the repository did not include the item (fakes or older deployments),
+	// append the evaluated decision so the checklist is always complete.
+	windowReady, windowDetails := s.evaluateRollbackWindow(ctx, tenantID)
 	foundWindow := false
 	ready := true
 	for i := range items {
@@ -133,4 +127,15 @@ func (s *legacyCutoverService) CleanupReadiness(ctx context.Context, tenantID st
 	return items, ready, nil
 }
 
-
+// evaluateRollbackWindow reports whether the tenant's cut-over decision is old
+// enough that the rollback window has elapsed. Tenants without a cut-over
+// decision never satisfy the window (they have nothing to roll back from).
+func (s *legacyCutoverService) evaluateRollbackWindow(ctx context.Context, tenantID string) (bool, string) {
+	entry, getErr := s.cutover.GetCutover(ctx, tenantID)
+	if getErr == nil && entry != nil && entry.Status == repository.LegacyCutoverStatusCutOver {
+		elapsed := time.Since(entry.DecidedAt)
+		return elapsed >= s.rollbackWindow,
+			"cut_over " + elapsed.Round(time.Hour).String() + " ago; window " + s.rollbackWindow.String()
+	}
+	return false, "no cutover decision recorded for tenant"
+}

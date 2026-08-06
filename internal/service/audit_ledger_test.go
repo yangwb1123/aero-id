@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/repository"
 )
 
 type auditLedgerRepoSpy struct {
@@ -22,6 +23,14 @@ func (r *auditLedgerRepoSpy) Append(_ context.Context, fact *domain.AuditFact) e
 func (r *auditLedgerRepoSpy) List(_ context.Context, filter domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
 	r.filter = filter
 	return nil, "", nil
+}
+
+func (r *auditLedgerRepoSpy) ChainPartitions(ctx context.Context) ([]repository.ChainPartition, error) {
+	return nil, nil
+}
+
+func (r *auditLedgerRepoSpy) ChainHead(ctx context.Context, source, partition string) (*domain.AuditFact, error) {
+	return nil, repository.ErrNotFound
 }
 
 func (r *auditLedgerRepoSpy) VerifyChain(_ context.Context, source, partition string) error {

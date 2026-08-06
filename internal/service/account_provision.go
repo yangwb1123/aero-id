@@ -30,21 +30,7 @@ func (s *accountService) ensureMode(ctx context.Context, write bool) (*domain.Ac
 	}
 	account, findErr := s.repo.FindByIdentity(ctx, tenantID, issuer, subject)
 	if findErr == nil {
-		account, err = validateExistingAccount(account, homeRegion, s.region, write)
-		if err != nil {
-			return nil, err
-		}
-		if write {
-			// P6-02: durable fencing guard — the local region must still hold
-			// the account's writer lease before any mutation commits.
-			if err := s.verifyAccountWriteFence(ctx, account); err != nil {
-				return nil, err
-			}
-		}
-		if err := s.completePendingAccountQuota(ctx, tenantID, account); err != nil {
-			return nil, err
-		}
-		return account, nil
+		return s.readyExistingAccount(ctx, tenantID, account, homeRegion, write)
 	}
 	if !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
 		return nil, mapAccountError(findErr, "account.lookup_failed", "failed to resolve account")
@@ -61,6 +47,28 @@ func (s *accountService) ensureMode(ctx context.Context, write bool) (*domain.Ac
 		if err := s.directory.EnsureDirectory(ctx, tenantID, account.ID, homeRegion, s.homeVersion); err != nil {
 			return nil, apperr.Internal("region.directory_write_failed", "failed to record the home-region directory").Wrap(err)
 		}
+	}
+	return account, nil
+}
+
+// readyExistingAccount validates and fences an already-provisioned account
+// before the caller may use it (P6-02): the local region must still hold the
+// writer lease for writes, and any pending quota completion is replayed.
+func (s *accountService) readyExistingAccount(ctx context.Context, tenantID string,
+	account *domain.Account, homeRegion string, write bool) (*domain.Account, error) {
+	account, err := validateExistingAccount(account, homeRegion, s.region, write)
+	if err != nil {
+		return nil, err
+	}
+	if write {
+		// P6-02: durable fencing guard — the local region must still hold
+		// the account's writer lease before any mutation commits.
+		if err := s.verifyAccountWriteFence(ctx, account); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.completePendingAccountQuota(ctx, tenantID, account); err != nil {
+		return nil, err
 	}
 	return account, nil
 }

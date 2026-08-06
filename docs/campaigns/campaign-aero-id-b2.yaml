@@ -1,0 +1,91 @@
+# aero-id B2 批次实施 campaign（in-tx 审计，G3 门禁）
+# 前置：docs/proposals/audit-contract-batch-aero-id.md（提案，含 6 项设计）
+# 批次内容（implementation-gate.md B2，commit 756b65b 实证）：
+#   1. in-tx 审计（F5）：全部写入路径移入 AppendInTx（account.go:155,184 /
+#      callback.go:160,221,247 / audit_hold.go:59,74 / legacy_cutover.go:88 /
+#      account_provision.go:168——FB-002 第 9 点）；读路径 Record + 可观测；
+#      `_ =` 禁止（make check-audit-swallow 门禁模式，FB-001）
+#   2. 单一投递路径（F6）：删 inline publisher 死路径，唯一投递 =
+#      drainPublications outbox worker
+#   3. 401 失效（F8）：TokenSource Invalidate + epoch 防单飞回填；
+#      scope-missing 分类告警
+#   4. 稳定 event_id（F4）：从 anchor 派生（§1.9 公式，FB-003 需先拉取）
+#   5. 死信重放（F9）：RequeueDead/RequeuePublication + cmd/audit-replay
+#      + purge 暂停标志
+#   6. 激活门（F-03）：空 bindings + enabled → boot 失败（已实现）补测试
+# 门禁：G3（B2-1..6：T-5、T-10.1/10.2、T-4 联合、首个事件 e2e）
+# 用法（aero-id 仓库内）：
+#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b2.yaml --dry-run
+#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b2.yaml \
+#     --jobs 4 --max-directions 2 --validate gobuild,gotest,pyquality
+
+name: aero-id-b2-in-tx-audit
+
+discovery:
+  roots:
+    - internal
+    - cmd
+    - configs
+  exclude:
+    - testdata
+    - gen
+    - generated
+    - mock
+    - tests
+    - docs
+    - examples
+    - logs
+    - vendor
+    - .git
+    - .pi-batch
+    - __pycache__
+    - ai-dev
+  max_depth: 2
+  fallback_top_level: true
+
+analysis:
+  jobs: 4
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze module '{module}' at {module_path} of aero-id (account domain,
+    Go, audit via connector/auditgovernance). An approved contract (audit
+    v2, GATE PASSED) assigns this repo batch B2 (gate G3): (1) move ALL
+    audit write paths into the same business transaction (AppendInTx /
+    XxxWithAudit pattern; audit_publications outbox worker drainPublications
+    is the only delivery path — remove the dead inline publisher loop),
+    (2) forbid swallowed audit calls (no '_ =' — a make check-audit-swallow
+    gate pattern), (3) TokenSource Invalidate on 401 with epoch
+    single-flight backfill + scope-missing alerting, (4) stable event_id
+    derived from an anchor (deterministic, dedup-friendly), (5) dead-letter
+    replay (RequeueDead/RequeuePublication + cmd/audit-replay tool + purge
+    pause flag), (6) activation gate: empty bindings + enabled → boot
+    failure (already implemented — add locking tests + first-event e2e).
+    Return ONLY a JSON array with at most {candidate_limit} high-value
+    directions toward B2, sorted by value. Each object must contain:
+    title, problem, value (1-10), risk_reduction (1-10), effort (1-10),
+    confidence (1-10), evidence (existing file/symbol paths), and
+    acceptance (testable checks mapping to T-5/T-10.1/T-10.2/T-4).
+    Do not modify code. Claims without repository evidence must be
+    identified as proposed, not verified.
+
+selection:
+  max_directions: 2
+  minimum_score: 0
+
+implementation:
+  pipeline: examples/repository-campaign-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  timeout: 14400
+  worktree_root: .pi-batch/worktrees
+
+state:
+  output_dir: docs/auto
+  state_file: docs/auto/state.jsonl
+  summary_file: docs/auto/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 3
+  pipeline_minutes: 25

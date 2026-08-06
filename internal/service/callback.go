@@ -436,7 +436,13 @@ func validateCallbackEndpoint(raw string, allowPrivate bool) error {
 	if isPrivateHost(parsed.Hostname()) {
 		return errors.New("private callback targets are not allowed")
 	}
-	ips, err := net.LookupIP(parsed.Hostname())
+	return validateCallbackResolvesPublic(parsed.Hostname())
+}
+
+// validateCallbackResolvesPublic rejects hostnames that do not resolve or that
+// resolve to private addresses (SSRF guard: no DNS-rebinding vector).
+func validateCallbackResolvesPublic(host string) error {
+	ips, err := net.LookupIP(host)
 	if err != nil || len(ips) == 0 {
 		return errors.New("callback hostname cannot be resolved")
 	}

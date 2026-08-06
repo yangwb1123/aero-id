@@ -2,10 +2,10 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"math"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -50,11 +50,22 @@ type MetricsSink interface {
 	ObserveOutboxDrain(pending int, oldestAge, dur time.Duration)
 }
 
+// defaultRenewEvery is how often the relay extends the claims of a pending
+// batch while it is still handling it (D12). Sized so the default lease
+// (30s) comfortably exceeds cadence + longest single handler call + margin.
+const defaultRenewEvery = 10 * time.Second
+
 // Relay periodically polls unpublished events and dispatches each to a Handler,
 // marking only the successfully handled events published. An event whose
 // handler errors is left unpublished, its retry_count incremented and a
 // backoff applied; after maxRetries failures it becomes a dead letter and is
 // no longer picked up by the relay.
+//
+// Delivery is at-least-once: each drain pass claims a batch with a durable
+// token (ClaimBatch), holds the claim across the handler window (renewing it
+// on long drains), and finalizes conditionally on still holding an unexpired
+// claim. A claim lost to lease expiry or a crash means the event is simply
+// re-claimed and re-delivered by the next pass.
 type Relay struct {
 	repo       Repository
 	handler    Handler
@@ -63,6 +74,7 @@ type Relay struct {
 	maxRetries int
 	metrics    MetricsSink // nil-safe: observations are skipped when unset
 	now        func() time.Time
+	renewEvery time.Duration
 }
 
 // NewRelay builds a Relay draining repo through handler. maxRetries is the
@@ -76,7 +88,7 @@ func NewRelay(repo Repository, handler Handler, maxRetries int, log *zap.Logger,
 	if maxRetries <= 0 {
 		maxRetries = DefaultMaxRetries
 	}
-	r := &Relay{repo: repo, handler: handler, log: log, batch: defaultBatchSize, maxRetries: maxRetries, now: time.Now}
+	r := &Relay{repo: repo, handler: handler, log: log, batch: defaultBatchSize, maxRetries: maxRetries, now: time.Now, renewEvery: defaultRenewEvery}
 	if len(metrics) > 0 {
 		r.metrics = metrics[0]
 	}
@@ -87,26 +99,32 @@ func NewRelay(repo Repository, handler Handler, maxRetries int, log *zap.Logger,
 // Per-event handler failures are logged, the event's retry_count is
 // incremented with a backoff delay applied; after maxRetries failures the
 // event becomes a dead letter. Events still inside their backoff window are
-// skipped (not handled, not failed-forward).
+// skipped (not handled, not failed-forward) and their claims released so they
+// stay immediately claimable by the next pass (D4/H5).
+//
+// The batch is claimed with a durable token (ClaimBatch); long drains renew
+// the claim every renewEvery so a live handler never loses its claim (D12);
+// finalization is conditional on still holding an unexpired claim, so a crash
+// between claim and finalize simply re-delivers after lease expiry.
 // After every drain pass (including empty ones) a single aggregated summary line
 // is logged at info level: "outbox drain: handled=X failed=Y pending=Z oldest_age=... duration=...".
 //
-//nolint:cyclop,funlen // retry, backoff, and dead-letter transitions are one durable outbox state machine.
+//nolint:cyclop,funlen // retry, backoff, claim, and dead-letter transitions are one durable outbox state machine.
 func (r *Relay) drain(ctx context.Context) int {
 	start := r.now()
-	events, err := r.repo.FetchUnpublished(ctx, r.batch)
+	claimed, err := r.repo.ClaimBatch(ctx, r.batch)
 	if err != nil {
-		r.log.Warn("outbox: fetch unpublished failed", zap.Error(err))
+		r.log.Warn("outbox: claim batch failed", zap.Error(err))
 		return 0
 	}
-	// Observe backlog from the batch: events are oldest-first, so events[0] is the
-	// oldest unpublished event and len(events) is the pending count this pass saw.
+	// Observe backlog from the batch: events are oldest-first, so claimed[0] is the
+	// oldest unpublished event and len(claimed) is the pending count this pass saw.
 	// This runs even on an empty outbox so the gauges decay back to zero.
 	var oldestAge time.Duration
-	if len(events) > 0 && !events[0].CreatedAt.IsZero() {
-		oldestAge = start.Sub(events[0].CreatedAt)
+	if len(claimed) > 0 && !claimed[0].Event.CreatedAt.IsZero() {
+		oldestAge = start.Sub(claimed[0].Event.CreatedAt)
 	}
-	if len(events) == 0 {
+	if len(claimed) == 0 {
 		r.observeDrain(0, 0, start)
 		r.log.Info("outbox drain",
 			zap.Int("pending", 0),
@@ -114,14 +132,59 @@ func (r *Relay) drain(ctx context.Context) int {
 		)
 		return 0
 	}
-	published := make([]uuid.UUID, 0, len(events))
+	published := make([]Claim, 0, len(claimed))
 	var failed int
 	now := r.now()
-	for _, e := range events {
-		// Skip events still in their backoff window.
+	lastRenew := now
+	// held is every claim of this drain that is still ours: not yet released
+	// (backoff skip) and not yet cleared by MarkFailed. Renewal extends the
+	// whole held set — including queued and in-flight claims — so the lease
+	// sizing rule (lease > renewEvery + single call + margin) holds for every
+	// batch position, not just the head (a claim minted at batch start ages
+	// while earlier events are handled; renewing only already-handled claims
+	// lets the tail expire mid-handling).
+	held := make([]Claim, 0, len(claimed))
+	for _, ce := range claimed {
+		held = append(held, ce.Claim)
+	}
+	dropHeld := func(c Claim) {
+		for i, h := range held {
+			if h == c {
+				held = append(held[:i], held[i+1:]...)
+				return
+			}
+		}
+	}
+	for _, ce := range claimed {
+		e := ce.Event
+		// Refresh the clock each iteration so renewal cadence and backoff
+		// decisions observe elapsed real/fake time across a long drain.
+		now = r.now()
+		// Renewal (D12): keep the batch's claims alive across long handler
+		// chains. Runs before each handler call so the claim is fresh when the
+		// next call starts; DB errors degrade to lease expiry (at-least-once).
+		if len(held) > 0 && now.Sub(lastRenew) >= r.renewEvery {
+			if err := r.repo.RenewClaims(ctx, held); err != nil {
+				r.log.Warn("outbox: renew claims failed; lease expiry will re-deliver", zap.Error(err))
+			}
+			lastRenew = now
+		}
+		// Skip events still in their backoff window (the primary backoff
+		// exclusion, D4). Skipped rows sit at the batch head (oldest-first),
+		// so they are claimed and released within the first loop iterations —
+		// bounded churn, no lease-induced invisibility (H5).
 		if e.LastRetryAt != nil {
 			next := e.LastRetryAt.Add(backoff(e.RetryCount))
 			if now.Before(next) {
+				if err := r.repo.Release(ctx, []Claim{ce.Claim}); err != nil {
+					r.log.Warn("outbox: release skipped claim failed",
+						zap.String("event_id", e.ID.String()), zap.Error(err))
+				}
+				dropHeld(ce.Claim)
+				r.log.Debug("outbox: skipping event in backoff window",
+					zap.String("event_id", e.ID.String()),
+					zap.Int("retry_count", e.RetryCount),
+					zap.Time("retry_due_at", next))
 				continue
 			}
 		}
@@ -137,18 +200,26 @@ func (r *Relay) drain(ctx context.Context) int {
 			}
 			// Record the failure so the backoff is tracked; if this pushes
 			// retry_count past maxRetries the event becomes a dead letter.
-			if err := r.repo.MarkFailed(ctx, e.ID, e.RetryCount+1, r.maxRetries, now); err != nil {
-				r.log.Warn("outbox: mark failed failed", zap.String("event_id", e.ID.String()), zap.Error(err))
+			// The failed claim is cleared by MarkFailed and drops out of the
+			// renewal set (F4).
+			if err := r.repo.MarkFailed(ctx, ce.Claim, e.RetryCount+1, r.maxRetries, now); err != nil {
+				if errors.Is(err, ErrClaimLost) {
+					r.log.Warn("outbox: claim lost on mark failed; event will be re-claimed after lease expiry",
+						zap.String("event_id", e.ID.String()), zap.Error(err))
+				} else {
+					r.log.Warn("outbox: mark failed failed", zap.String("event_id", e.ID.String()), zap.Error(err))
+				}
 			}
+			dropHeld(ce.Claim)
 			failed++
 			continue
 		}
-		published = append(published, e.ID)
+		published = append(published, ce.Claim)
 		if r.metrics != nil {
 			r.metrics.ObserveOutboxPublished(e.EventType)
 		}
 	}
-	r.observeDrain(len(events), oldestAge, start)
+	r.observeDrain(len(claimed), oldestAge, start)
 	dur := r.now().Sub(start)
 	// Aggregate summary: one info line replacing dozens of per-event logs.
 	// Individual handler failures are still logged at warn level above; this line
@@ -156,11 +227,16 @@ func (r *Relay) drain(ctx context.Context) int {
 	r.log.Info("outbox drain",
 		zap.Int("handled", len(published)),
 		zap.Int("failed", failed),
-		zap.Int("pending", len(events)),
+		zap.Int("pending", len(claimed)),
 		zap.Duration("oldest_age", oldestAge),
 		zap.Duration("duration", dur),
 	)
 	if err := r.repo.MarkPublished(ctx, published); err != nil {
+		if errors.Is(err, ErrClaimLost) {
+			r.log.Warn("outbox: some claims lost on mark published; stale events will be re-claimed",
+				zap.Int("handled", len(published)), zap.Error(err))
+			return len(published)
+		}
 		r.log.Warn("outbox: mark published failed; will retry", zap.Error(err))
 		return 0
 	}

@@ -6,17 +6,17 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"strconv"
 	"gorm.io/gorm/clause"
+	"strconv"
 )
 
 // LegacyCutoverStatus is the per-tenant cutover state machine (P8-04).
 type LegacyCutoverStatus string
 
 const (
-	LegacyCutoverStatusLegacy     LegacyCutoverStatus = "legacy"     // default: compatibility surface live
-	LegacyCutoverStatusShadow     LegacyCutoverStatus = "shadow"     // dual-read in progress; legacy still serves
-	LegacyCutoverStatusCutOver    LegacyCutoverStatus = "cut_over"   // facade answers "moved" for this tenant
+	LegacyCutoverStatusLegacy     LegacyCutoverStatus = "legacy"      // default: compatibility surface live
+	LegacyCutoverStatusShadow     LegacyCutoverStatus = "shadow"      // dual-read in progress; legacy still serves
+	LegacyCutoverStatusCutOver    LegacyCutoverStatus = "cut_over"    // facade answers "moved" for this tenant
 	LegacyCutoverStatusRolledBack LegacyCutoverStatus = "rolled_back" // explicit rollback; legacy serves again
 )
 
@@ -127,50 +127,77 @@ func NewLegacyCleanupRepository(db *gorm.DB) LegacyCleanupRepository {
 // (P8-05): references gone, exports/jobs drained, audit retained, rollback
 // window elapsed, deletion proofs present. Each item reports ready + details.
 func (r *legacyCleanupRepo) CleanupReadiness(ctx context.Context, tenantID string) ([]CleanupReadinessItem, error) {
-	var items []CleanupReadinessItem
+	items := make([]CleanupReadinessItem, 0, 4)
+	if err := r.appendLegacyRowsCheck(ctx, tenantID, &items); err != nil {
+		return nil, err
+	}
+	if err := r.appendJobsCheck(ctx, tenantID, &items); err != nil {
+		return nil, err
+	}
+	if err := r.appendAuditCheck(ctx, tenantID, &items); err != nil {
+		return nil, err
+	}
+	if err := r.appendRollbackWindowCheck(ctx, tenantID, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
-	// 1. Remaining legacy rows owned by the tenant's accounts.
+// appendLegacyRowsCheck reports remaining legacy rows owned by the tenant's
+// accounts (files, messages, comments).
+func (r *legacyCleanupRepo) appendLegacyRowsCheck(ctx context.Context, tenantID string, items *[]CleanupReadinessItem) error {
 	var remaining int64
 	if err := r.db.WithContext(ctx).Raw(`
 		SELECT count(*) FROM (
 			SELECT f.id FROM files f JOIN accounts a ON a.canonical_uid = f.owner_uid AND a.tenant_id = ? WHERE f.deleted_at IS NULL
 			UNION ALL
-			SELECT m.id FROM messages m JOIN accounts a ON (a.canonical_uid = m.from_uid OR a.canonical_uid = m.to_uid) AND a.tenant_id = ? WHERE m.deleted_at IS NULL
+			SELECT m.id FROM messages m JOIN accounts a
+			  ON (a.canonical_uid = m.from_uid OR a.canonical_uid = m.to_uid)
+			 AND a.tenant_id = ? WHERE m.deleted_at IS NULL
 			UNION ALL
 			SELECT c.id FROM comments c JOIN accounts a ON a.canonical_uid = c.owner_uid AND a.tenant_id = ? WHERE c.deleted_at IS NULL
 		) legacy_rows`, tenantID, tenantID, tenantID).Scan(&remaining).Error; err != nil {
-		return nil, err
+		return err
 	}
-	items = append(items, CleanupReadinessItem{
+	*items = append(*items, CleanupReadinessItem{
 		Check: "legacy_rows_drained", Ready: remaining == 0,
 		Details: itoa(remaining) + " legacy rows still reference tenant accounts",
 	})
+	return nil
+}
 
-	// 2. In-flight sync/export jobs for the tenant.
+// appendJobsCheck reports in-flight sync/export jobs for the tenant.
+func (r *legacyCleanupRepo) appendJobsCheck(ctx context.Context, tenantID string, items *[]CleanupReadinessItem) error {
 	var activeJobs int64
 	if err := r.db.WithContext(ctx).Model(&syncJobRow{}).
 		Where("tenant_id = ? AND status IN ?", tenantID, []string{"pending", "running", "unknown"}).
 		Count(&activeJobs).Error; err != nil {
-		return nil, err
+		return err
 	}
-	items = append(items, CleanupReadinessItem{
+	*items = append(*items, CleanupReadinessItem{
 		Check: "jobs_drained", Ready: activeJobs == 0,
 		Details: itoa(activeJobs) + " active sync/export jobs",
 	})
+	return nil
+}
 
-	// 3. Audit evidence retained for the tenant (durable ledger facts).
+// appendAuditCheck reports durable audit evidence retained for the tenant.
+func (r *legacyCleanupRepo) appendAuditCheck(ctx context.Context, tenantID string, items *[]CleanupReadinessItem) error {
 	var auditFacts int64
 	if err := r.db.WithContext(ctx).Raw(
 		"SELECT count(*) FROM audit_ledger WHERE tenant_id = ?", tenantID).Scan(&auditFacts).Error; err != nil {
-		return nil, err
+		return err
 	}
-	items = append(items, CleanupReadinessItem{
+	*items = append(*items, CleanupReadinessItem{
 		Check: "audit_retained", Ready: auditFacts > 0,
 		Details: itoa(auditFacts) + " durable audit facts",
 	})
+	return nil
+}
 
-	// 4. Rollback window: the cutover decision age; the service evaluates the
-	// window itself so the repository stays policy-free.
+// appendRollbackWindowCheck reports the cutover decision age; the service
+// evaluates the window itself so the repository stays policy-free.
+func (r *legacyCleanupRepo) appendRollbackWindowCheck(ctx context.Context, tenantID string, items *[]CleanupReadinessItem) error {
 	var decision struct {
 		Status    string     `gorm:"column:status"`
 		DecidedAt *time.Time `gorm:"column:decided_at"`
@@ -178,24 +205,24 @@ func (r *legacyCleanupRepo) CleanupReadiness(ctx context.Context, tenantID strin
 	decisionErr := r.db.WithContext(ctx).Raw(
 		"SELECT status, decided_at FROM legacy_cutover WHERE tenant_id = ?", tenantID).Scan(&decision).Error
 	if errors.Is(decisionErr, gorm.ErrRecordNotFound) {
-		items = append(items, CleanupReadinessItem{
+		*items = append(*items, CleanupReadinessItem{
 			Check: "rollback_window_elapsed", Ready: false,
 			Details: "no cutover decision recorded for tenant",
 		})
-	} else if decisionErr != nil {
-		return nil, decisionErr
-	} else {
-		age := "never"
-		if decision.DecidedAt != nil {
-			age = time.Since(*decision.DecidedAt).Round(time.Second).String()
-		}
-		items = append(items, CleanupReadinessItem{
-			Check: "rollback_window_elapsed", Ready: false,
-			Details: "decision " + decision.Status + " made " + age + " ago (window evaluated by service)",
-		})
+		return nil
 	}
-
-	return items, nil
+	if decisionErr != nil {
+		return decisionErr
+	}
+	age := "never"
+	if decision.DecidedAt != nil {
+		age = time.Since(*decision.DecidedAt).Round(time.Second).String()
+	}
+	*items = append(*items, CleanupReadinessItem{
+		Check: "rollback_window_elapsed", Ready: false,
+		Details: "decision " + decision.Status + " made " + age + " ago (window evaluated by service)",
+	})
+	return nil
 }
 
 func itoa(value int64) string {

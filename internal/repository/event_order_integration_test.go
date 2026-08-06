@@ -23,13 +23,14 @@ func errorsIsTenantMismatch(err error) bool {
 func TestEventReceiptOutOfOrderKeepsNewerVersion(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	account, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-ooo", "u-ooo", "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshots := repository.NewAccountSnapshotRepository(db)
-	receipts := repository.NewEventReceiptRepository(db)
+	receipts := repository.NewEventReceiptRepository(db, ledger)
 
 	apply := func(version int64, usage float64) repository.EventApplyStatus {
 		t.Helper()
@@ -98,12 +99,13 @@ func numericValue(value any) (float64, bool) {
 func TestEventReceiptTenantIsolation(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	tenantA, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-iso", "u-iso", "local")
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipts := repository.NewEventReceiptRepository(db)
+	receipts := repository.NewEventReceiptRepository(db, ledger)
 
 	envelope := eventStoreEnvelope(tenantA.ID, "aero-vault.buckets", 1, time.Now().UTC())
 	envelope.TenantID = "tenant-b" // spoofed tenant

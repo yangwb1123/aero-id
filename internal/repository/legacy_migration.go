@@ -40,11 +40,11 @@ func NewLegacyMigrationRepository(db *gorm.DB) LegacyMigrationRepository {
 
 // legacyFileRow is the canonical, content-free projection of a legacy file row.
 type legacyFileRow struct {
-	ID          string    `gorm:"column:id"`
-	Name        string    `gorm:"column:name"`
-	Size        int64     `gorm:"column:size"`
-	Checksum    string    `gorm:"column:checksum"`
-	CreatedAt   time.Time `gorm:"column:created_at"`
+	ID        string    `gorm:"column:id"`
+	Name      string    `gorm:"column:name"`
+	Size      int64     `gorm:"column:size"`
+	Checksum  string    `gorm:"column:checksum"`
+	CreatedAt time.Time `gorm:"column:created_at"`
 }
 
 func (r *legacyMigrationRepo) LegacyFileDigest(ctx context.Context, ownerUID string, limit int) (*LegacyDataDigest, error) {
@@ -99,7 +99,8 @@ func (r *legacyMigrationRepo) LegacyMessageDigest(ctx context.Context, uid strin
 	hasher := sha256.New()
 	for i := range rows {
 		row := &rows[i]
-		_, _ = fmt.Fprintf(hasher, "%s|%d|%s|%s|%s|%s\n", row.ID, row.Kind, row.FromUID, row.ToUID, row.ContentHash, row.CreatedAt.UTC().Format(time.RFC3339Nano))
+		_, _ = fmt.Fprintf(hasher, "%s|%d|%s|%s|%s|%s\n", row.ID, row.Kind, row.FromUID,
+			row.ToUID, row.ContentHash, row.CreatedAt.UTC().Format(time.RFC3339Nano))
 	}
 	digest.Digest = hex.EncodeToString(hasher.Sum(nil))
 	return digest, nil
@@ -136,7 +137,8 @@ func (r *legacyMigrationRepo) LegacyCommentDigest(ctx context.Context, ownerUID 
 		if row.ParentID != nil {
 			parent = *row.ParentID
 		}
-		_, _ = fmt.Fprintf(hasher, "%s|%s|%s|%s|%s|%s\n", row.ID, row.TargetType, row.TargetID, parent, row.ContentHash, row.CreatedAt.UTC().Format(time.RFC3339Nano))
+		_, _ = fmt.Fprintf(hasher, "%s|%s|%s|%s|%s|%s\n", row.ID, row.TargetType, row.TargetID,
+			parent, row.ContentHash, row.CreatedAt.UTC().Format(time.RFC3339Nano))
 	}
 	digest.Digest = hex.EncodeToString(hasher.Sum(nil))
 	return digest, nil

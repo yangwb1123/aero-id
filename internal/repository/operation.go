@@ -56,12 +56,8 @@ var ErrOperationStepUnknown = errors.New("operation step outcome is unknown")
 // hot-loop, while crash recovery (expired forward leases) stays prompt.
 const ReconcileUnknownRetryDelay = time.Minute
 
-func NewOperationRepository(db *gorm.DB, audit ...AuditLedgerRepository) OperationRepository {
-	var transactional AuditLedgerTransactionalRepository
-	if len(audit) > 0 {
-		transactional, _ = audit[0].(AuditLedgerTransactionalRepository)
-	}
-	return &operationRepo{db: db, audit: transactional}
+func NewOperationRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) OperationRepository {
+	return &operationRepo{db: db, audit: requireAuditLedger("NewOperationRepository", audit)}
 }
 
 type operationRow struct {

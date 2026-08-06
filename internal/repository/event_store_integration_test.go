@@ -104,13 +104,14 @@ func TestEventStoreAppendAndQuery(t *testing.T) {
 func TestEventStoreAtomicWithReceipt(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	account, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-replay", "u-replay", "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := repository.NewEventStoreRepository(db)
-	receipts := repository.NewEventReceiptRepositoryWithStore(db, store)
+	receipts := repository.NewEventReceiptRepositoryWithStore(db, store, ledger)
 	envelope := eventStoreEnvelope(account.ID, "aero-vault.buckets", 1, time.Now().UTC())
 	mutation, err := envelope.Snapshot()
 	if err != nil {

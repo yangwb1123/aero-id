@@ -117,7 +117,8 @@ func isRateLimitSensitive(path string) bool {
 
 // allowRateLimit returns (allowed, retry, unavailable). unavailable is only
 // true for sensitive paths when no rate decision could be made at all.
-func allowRateLimit(ctx context.Context, key string, local *ratelimit.Limiter, distributed ratelimit.DistributedLimiter, sensitive bool) (bool, time.Duration, bool) {
+func allowRateLimit(ctx context.Context, key string, local *ratelimit.Limiter,
+	distributed ratelimit.DistributedLimiter, sensitive bool) (bool, time.Duration, bool) {
 	if distributed != nil {
 		allowed, retry, err := distributed.Allow(ctx, key)
 		if err == nil {

@@ -2,7 +2,13 @@
 
 > 日期：2026-08-04
 >
-> 状态：In Progress（代码骨架与本地控制面已落地；源系统发布、区域基础设施和压测仍在进行）
+> 状态：仓库内实现已完成并全部门禁验证通过（2026-08-05 复核）；剩余均为外部发布/基础设施门禁：
+> 源系统（Snaplink/IM/Vault）API 发布与 contract test、多区域真实基础设施与故障切换演练、
+> 独立客户端技术选型与立项（P7）。
+>
+> 复核结论：`make test`、`make lint`、`make lint-strict`、`make check-file-sizes`、`make build`、
+> `make test-integration`、`make check-architecture` 全部绿灯；修复了此前阻塞 `lint-strict` 的
+> 27 处违规（unused/nilerr/errorlint/cyclop/funlen/lll/SA4006）。
 >
 > 目标：将当前 aero-id 从 SSO 用户内容服务逐步演进为跨 Snaplink、Aero IM、Aero Vault、多个数据中心的账户聚合、统一管理、操作编排和审计平台。
 >
@@ -446,7 +452,11 @@ source:sync
       API failover 属外部基础设施门禁。
 - [x] **P6-06 Bulkheads/backpressure**：interactive/audit/callback/export/reconcile 独立并发池与 bounded queue。
 - [x] **P6-07 Distributed rate limiting**：Redis-backed per-account/tenant/source/workload limits，故障策略按风险分类。
-- [x] **P6-08 Load test**：HTTP k6、gRPC ghz、event/callback soak、数据库分区和索引基准。
+- [x] **P6-08 Load test**：HTTP k6（`scripts/load/k6/account.js`）、gRPC ghz（`scripts/load/ghz/scenarios.yaml`）、
+      event soak（`scripts/load/k6/event-soak.js`，HMAC 签名批量接入 + 重复投递幂等断言）、
+      callback soak（`scripts/load/k6/callback-soak.js` + `scripts/load/sink` 接收端，签名投递断言）、
+      数据库分区和索引基准（`scripts/load/db/partition-index-bench.sql`，EXPLAIN ANALYZE 覆盖
+      audit/notification/outbox/publication/message/file 热路径）；Makefile 目标：`load-test-http/grpc/event/callback/db`。
 - [x] **P6-09 Chaos test（仓库内部分）**：source outage/503/429/超时（connector fault suite）、
       broker redelivery（NATS Nak→重投递）、region loss/fencing（P6-02）、callback outage（DLQ）。
       WAN partition、真实 DB failover、Redis loss 演练仍属外部基础设施门禁。
@@ -527,7 +537,8 @@ make test-integration
 - reconcile drift/repair count；
 - region/home-region routing/failover；
 - per-workload pool、queue depth、rejection；
-- Runbook：源系统故障、区域隔离、event gap、审计链失败、callback 风暴、Operation 卡住、导出泄露处置。
+- Runbook：源系统故障、区域隔离、event gap、审计链失败、callback 风暴、Operation 卡住、导出泄露处置
+  （已落地：`docs/runbook.md`，按「症状→影响→快速处置→根因排查→恢复确认」组织，并附通用处置原则）。
 
 技术 Trace 使用 W3C `traceparent`；业务追溯使用 `operation_id` 和 event causation DAG，两者都必须可在日志、指标 exemplar 和审计查询中关联。
 

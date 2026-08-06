@@ -23,7 +23,8 @@ func seedLegacyRow(t *testing.T, db *gorm.DB, query string, args ...any) {
 
 func newTestAccountService(t *testing.T, db *gorm.DB) service.AccountService {
 	t.Helper()
-	return service.NewAccountService(repository.NewAccountRepository(db),
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	return service.NewAccountService(repository.NewAccountRepository(db, ledger),
 		service.WithAccountIssuer("snaplink"),
 		service.WithAccountRegion("local"))
 }
@@ -34,7 +35,8 @@ func newTestAccountService(t *testing.T, db *gorm.DB) service.AccountService {
 func TestLegacyUIDBackfillScan(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	accounts := repository.NewAccountRepository(db)
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
 	backfill, ok := accounts.(repository.LegacyBackfillRepository)
 	if !ok {
 		t.Fatal("AccountRepository must implement LegacyBackfillRepository")

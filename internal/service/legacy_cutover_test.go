@@ -129,7 +129,7 @@ func TestCleanupReadinessRollbackWindow(t *testing.T) {
 	if _, err := svc.Set(ctx, "tenant-a", repository.LegacyCutoverStatusCutOver, ""); err != nil {
 		t.Fatal(err)
 	}
-	items, ready, err := svc.CleanupReadiness(ctx, "tenant-a")
+	_, ready, err := svc.CleanupReadiness(ctx, "tenant-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestCleanupReadinessRollbackWindow(t *testing.T) {
 	}
 	// Age the decision past the window.
 	cutover.entries["tenant-a"].DecidedAt = time.Now().UTC().Add(-48 * time.Hour)
-	items, ready, err = svc.CleanupReadiness(ctx, "tenant-a")
+	items, ready, err := svc.CleanupReadiness(ctx, "tenant-a")
 	if err != nil {
 		t.Fatal(err)
 	}

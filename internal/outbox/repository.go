@@ -9,10 +9,11 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // eventRow is the GORM-mapped representation of the outbox_events table.
+// ClaimToken/ClaimedAt are pointers: zero values must map to NULL (D9) — a
+// plain uuid.UUID/time.Time would insert all-zeros instead of NULL on Append.
 type eventRow struct {
 	ID            uuid.UUID      `gorm:"column:id;primaryKey"`
 	AggregateType string         `gorm:"column:aggregate_type"`
@@ -24,6 +25,8 @@ type eventRow struct {
 	RetryCount    int            `gorm:"column:retry_count"`
 	LastRetryAt   *time.Time     `gorm:"column:last_retry_at"`
 	DeadLetter    bool           `gorm:"column:dead_letter"`
+	ClaimToken    *uuid.UUID     `gorm:"column:claim_token"`
+	ClaimedAt     *time.Time     `gorm:"column:claimed_at"`
 }
 
 func (eventRow) TableName() string { return "outbox_events" }
@@ -47,9 +50,18 @@ func rowToEvent(r *eventRow) *Event {
 const outboxPurgeInterval = 100 * time.Millisecond
 
 // GormRepository is the Postgres-backed Repository.
-type GormRepository struct{ db *gorm.DB }
+type GormRepository struct {
+	db         *gorm.DB
+	claimLease time.Duration
+}
 
-func NewGormRepository(db *gorm.DB) *GormRepository { return &GormRepository{db: db} }
+func NewGormRepository(db *gorm.DB, opts ...Option) *GormRepository {
+	r := &GormRepository{db: db, claimLease: defaultClaimLease}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
 
 // Append inserts the event using the caller's transaction so it shares the
 // fate of the domain rows written in that same tx.
@@ -65,61 +77,6 @@ func (r *GormRepository) Append(ctx context.Context, tx *gorm.DB, e *Event) erro
 	}
 	if err := tx.WithContext(ctx).Create(row).Error; err != nil {
 		return fmt.Errorf("append outbox event: %w", err)
-	}
-	return nil
-}
-
-// FetchUnpublished returns up to limit unpublished events that are not dead
-// letters, ordered oldest-first. The caller (relay) applies the per-event
-// backoff check in Go before handling. Served by the partial index.
-//
-// Uses FOR UPDATE SKIP LOCKED so concurrent instances each obtain a disjoint
-// set of events — preventing duplicate processing in multi-instance deployments.
-func (r *GormRepository) FetchUnpublished(ctx context.Context, limit int) ([]*Event, error) {
-	var rows []eventRow
-	if err := r.db.WithContext(ctx).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-		Where("published_at IS NULL AND NOT dead_letter").
-		Order("created_at ASC, id ASC").
-		Limit(limit).
-		Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("fetch unpublished: %w", err)
-	}
-	out := make([]*Event, len(rows))
-	for i := range rows {
-		out[i] = rowToEvent(&rows[i])
-	}
-	return out, nil
-}
-
-// MarkPublished stamps published_at on the given event IDs.
-func (r *GormRepository) MarkPublished(ctx context.Context, ids []uuid.UUID) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	if err := r.db.WithContext(ctx).Model(&eventRow{}).
-		Where("id IN ?", ids).
-		UpdateColumn("published_at", time.Now().UTC()).Error; err != nil {
-		return fmt.Errorf("mark published: %w", err)
-	}
-	return nil
-}
-
-// MarkFailed increments retry_count, sets last_retry_at to now, and when
-// retryCount >= maxRetries marks the event as dead_letter so the relay stops
-// picking it up.
-func (r *GormRepository) MarkFailed(ctx context.Context, id uuid.UUID, retryCount int, maxRetries int, at time.Time) error {
-	updates := map[string]any{
-		"retry_count":   retryCount,
-		"last_retry_at": at,
-	}
-	if retryCount >= maxRetries {
-		updates["dead_letter"] = true
-	}
-	if err := r.db.WithContext(ctx).Model(&eventRow{}).
-		Where("id = ?", id).
-		Updates(updates).Error; err != nil {
-		return fmt.Errorf("mark failed: %w", err)
 	}
 	return nil
 }

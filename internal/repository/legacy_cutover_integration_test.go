@@ -17,6 +17,7 @@ import (
 func TestLegacyCutoverRegistry(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
 	cutover := repository.NewLegacyCutoverRepository(db)
 
 	// No decision => not found => default legacy at the service layer.
@@ -35,7 +36,7 @@ func TestLegacyCutoverRegistry(t *testing.T) {
 	}
 
 	// Cleanup readiness against seeded legacy rows.
-	accounts := repository.NewAccountRepository(db)
+	accounts := repository.NewAccountRepository(db, ledger)
 	account, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-clean", "u-clean", "local")
 	if err != nil {
 		t.Fatal(err)

@@ -48,19 +48,15 @@ type eventReceiptRepo struct {
 	events EventStoreRepository // optional; when set, applied events are appended atomically (P3-07)
 }
 
-func NewEventReceiptRepository(db *gorm.DB, audit ...AuditLedgerRepository) EventReceiptRepository {
-	var transactional AuditLedgerTransactionalRepository
-	if len(audit) > 0 {
-		transactional, _ = audit[0].(AuditLedgerTransactionalRepository)
-	}
-	return &eventReceiptRepo{db: db, audit: transactional}
+func NewEventReceiptRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) EventReceiptRepository {
+	return &eventReceiptRepo{db: db, audit: requireAuditLedger("NewEventReceiptRepository", audit)}
 }
 
 // NewEventReceiptRepositoryWithStore builds the receipt repository with a
 // durable event store so applied events are persisted atomically with their
 // receipt and projection update.
-func NewEventReceiptRepositoryWithStore(db *gorm.DB, events EventStoreRepository, audit ...AuditLedgerRepository) EventReceiptRepository {
-	repo := NewEventReceiptRepository(db, audit...).(*eventReceiptRepo)
+func NewEventReceiptRepositoryWithStore(db *gorm.DB, events EventStoreRepository, audit AuditLedgerTransactionalRepository) EventReceiptRepository {
+	repo := NewEventReceiptRepository(db, audit).(*eventReceiptRepo)
 	repo.events = events
 	return repo
 }

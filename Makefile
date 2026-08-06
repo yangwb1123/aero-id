@@ -3,7 +3,7 @@ MODULE := github.com/aero/aero-id
 BIN    := bin/aero-id
 PG_DSN ?= postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
 
-.PHONY: tidy build run test test-integration lint clean proto load-test-http load-test-grpc
+.PHONY: tidy build run test test-integration lint clean proto load-test-http load-test-grpc load-test-event load-test-callback load-test-db
 tidy:        ; go mod tidy
 build:       ; go build -o $(BIN) ./cmd/server
 run:         ; go run ./cmd/server -config configs/config.yaml
@@ -93,3 +93,43 @@ load-test-grpc:
 	@test -n "$(TOKEN)" || { echo "ERROR: TOKEN=<snaplink-bearer-token> is required"; exit 1; }
 	mkdir -p scripts/load/results
 	bash scripts/load/run-ghz.sh "$(TOKEN)" "$(BASE_URL_GRPC)"
+
+# Event ingest soak: canonical event batches with per-source HMAC signatures
+# plus duplicate redelivery idempotency checks. The load account needs the
+# source_event_ingest permission and a binding for SOURCE.
+SOURCE      ?= aero-im
+SOURCE_KEY  ?=
+BATCH       ?= 10
+
+load-test-event:
+	@command -v k6 >/dev/null 2>&1 || { echo "ERROR: k6 not found (https://grafana.com/docs/k6/latest/set-up/install-k6/)"; exit 1; }
+	@test -n "$(TOKEN)" || { echo "ERROR: TOKEN=<snaplink-bearer-token> is required"; exit 1; }
+	@test -n "$(SOURCE_KEY)" || { echo "ERROR: SOURCE_KEY=<event_ingest.source_keys[SOURCE]> is required"; exit 1; }
+	mkdir -p scripts/load/results
+	k6 run -e BASE_URL=$(BASE_URL) -e TOKEN=$(TOKEN) -e SOURCE=$(SOURCE) -e SOURCE_KEY=$(SOURCE_KEY) \
+	  -e BATCH=$(BATCH) -e VUS=$(VUS) -e DURATION=$(DURATION) \
+	  --out json=scripts/load/results/k6-event-$$(date +%Y%m%d-%H%M%S).json \
+	  scripts/load/k6/event-soak.js
+
+# Callback soak: register subscriptions against a local sink, trigger audited
+# profile operations, and assert signed at-least-once deliveries arrive.
+# Requires scripts/load/sink running (go run ./scripts/load/sink -addr :9091)
+# and a RECEIVER_URL reachable from the cell.
+RECEIVER_URL ?= http://127.0.0.1:9091
+
+load-test-callback:
+	@command -v k6 >/dev/null 2>&1 || { echo "ERROR: k6 not found (https://grafana.com/docs/k6/latest/set-up/install-k6/)"; exit 1; }
+	@test -n "$(TOKEN)" || { echo "ERROR: TOKEN=<snaplink-bearer-token> is required"; exit 1; }
+	mkdir -p scripts/load/results
+	k6 run -e BASE_URL=$(BASE_URL) -e TOKEN=$(TOKEN) -e RECEIVER_URL=$(RECEIVER_URL) \
+	  -e VUS=$(VUS) -e DURATION=$(DURATION) \
+	  --out json=scripts/load/results/k6-callback-$$(date +%Y%m%d-%H%M%S).json \
+	  scripts/load/k6/callback-soak.js
+
+# DB partition/index benchmark: EXPLAIN ANALYZE over the hot control-plane and
+# worker queries. Requires psql and a seeded regional database.
+PG_DSN_BENCH ?= $(PG_DSN)
+
+load-test-db:
+	@command -v psql >/dev/null 2>&1 || { echo "ERROR: psql not found (postgresql-client) — install it or set PG_DSN_BENCH"; exit 1; }
+	psql "$(PG_DSN_BENCH)" -v ON_ERROR_STOP=1 -f scripts/load/db/partition-index-bench.sql

@@ -45,12 +45,8 @@ type accountRepo struct {
 	audit AuditLedgerTransactionalRepository
 }
 
-func NewAccountRepository(db *gorm.DB, audit ...AuditLedgerRepository) AccountRepository {
-	var transactional AuditLedgerTransactionalRepository
-	if len(audit) > 0 {
-		transactional, _ = audit[0].(AuditLedgerTransactionalRepository)
-	}
-	return &accountRepo{db: db, audit: transactional}
+func NewAccountRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) AccountRepository {
+	return &accountRepo{db: db, audit: requireAuditLedger("NewAccountRepository", audit)}
 }
 
 type accountRow struct {

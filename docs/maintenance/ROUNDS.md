@@ -12,4 +12,19 @@
 - **R8 learn**：R4 gate FAIL 事故 → docs/rules/drafts/AERO-001-20260805.yaml（fail-open 安全默认 + 原子变更拆分，RCA 已填）。
 - **R5 审计链加固（续）**：implement 两次被 completion 门禁拒绝（我给的格式指引错误——验证器要求 changed_files/commands_executed/residual_risks/assumptions 必填），修正契约后通过；meta 对抗审查（testing_reviewer + security_engineer 两轮编排）→ **裁决门 FAIL**：F1 签名降级绕过被独立复现（真实 PG17 探针，record_hash 不绑定 signature_version）。**R6 单批修复 F1**（单调 version 检查 + 降级回归测试 + 0,0,1,1 前缀兼容，门禁+完成报告契约）→ 重跑流水线（删 FAIL gate 产物强制重审）→ **gate PASS** → 归档 3 份交付物。git 每阶段提交。
 - **R9 memory**：ingest 1322 条历史消息 → recent/find/read；`--memory-mode on` 任务产出证据化缺陷清单（R3/R5/R6 全部命中，未编造）。
+- **R11 08-06 双设计落地**：`outbox claim-based dispatch` + `repository audit wiring fail-closed`。
+  门禁全绿（test/lint/lint-strict/check-file-sizes/build/test-integration）。outbox：迁移 000058
+  claim 列、`ClaimBatch` 原子领取、`(id,token)+lease` 条件落定、Go backstop 退避、长批次续租；
+  实施中实证发现设计 D12 缺口（只续租已处理 claim → 尾部过期重复投递），改为 held 全量续租并
+  以 `TestTwoRelaysSlowHandlerRenewalExactlyOnce` 验证；AC-1..AC-3 + backlog 扫描界 + 迁移可逆。
+  audit wiring：`FullAuditLedgerRepository` + `requireAuditLedger`（nil/typed-nil 启动 panic，
+  含 C5 修正）、四构造函数必选参数、19 调用点迁移、AC1 单元 + AC3 集成（happy-path 同事务行 +
+  ErrAuditDuplicate 回滚原子性）。
 - **R10 最终验收**：完整 done gate + eval 套件 + 提交。
+
+## 最终状态
+
+- 完整 done gate 全绿：make test / lint / lint-strict / check-file-sizes / build（test-integration 由 R5 gate 独立复核 37 包通过）
+- 工具回归：eval 27/27 PASS，check 全门禁过
+- 提交：`d27a901`（审计链加固 + fencing 修复 + 维护产物）、`756b65b`（k8s 占位 key ≥32B）
+- 未触碰：历史 WIP（2026-08-05 复核轮遗留，非本周期范围）

@@ -67,30 +67,36 @@ func (s *accountService) BackfillLegacyIdentities(ctx context.Context, limit int
 	}
 	result := &BackfillResult{Total: total, Tenant: s.backfillTenant, Issuer: s.issuer}
 	for _, uid := range uids {
-		result.Scanned++
-		if strings.TrimSpace(uid) == "" {
-			result.Skipped++
-			continue
-		}
-		existing, findErr := s.repo.FindByIdentity(ctx, s.backfillTenant, s.issuer, uid)
-		if findErr == nil && existing != nil {
-			result.Existing++
-			continue
-		}
-		if findErr != nil && !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
-			result.Skipped++
-			continue
-		}
-		homeRegion := s.region
-		if s.home != nil {
-			homeRegion = s.home.Resolve(s.issuer, uid)
-		}
-		if _, err := s.repo.EnsureByIdentity(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion); err != nil {
-			result.Skipped++
-			continue
-		}
-		result.Created++
+		s.backfillOne(ctx, uid, result)
 	}
 	result.Completed = int64(len(uids)) < int64(limit)
 	return result, nil
+}
+
+// backfillOne resolves one legacy uid into a shadow account identity. Each
+// failure mode is counted, never fatal: the run is idempotent and resumable.
+func (s *accountService) backfillOne(ctx context.Context, uid string, result *BackfillResult) {
+	result.Scanned++
+	if strings.TrimSpace(uid) == "" {
+		result.Skipped++
+		return
+	}
+	existing, findErr := s.repo.FindByIdentity(ctx, s.backfillTenant, s.issuer, uid)
+	if findErr == nil && existing != nil {
+		result.Existing++
+		return
+	}
+	if findErr != nil && !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+		result.Skipped++
+		return
+	}
+	homeRegion := s.region
+	if s.home != nil {
+		homeRegion = s.home.Resolve(s.issuer, uid)
+	}
+	if _, err := s.repo.EnsureByIdentity(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion); err != nil {
+		result.Skipped++
+		return
+	}
+	result.Created++
 }
