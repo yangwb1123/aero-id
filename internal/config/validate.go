@@ -162,6 +162,9 @@ func validateStorageGC(value StorageGCConfig) error {
 	if value.Enabled && (value.Interval <= 0 || value.Retention <= 0) {
 		return fmt.Errorf("storage.gc.interval and storage.gc.retention must be > 0 when enabled")
 	}
+	if value.PurgePaused && !value.Enabled {
+		return fmt.Errorf("storage.gc.purge_paused requires storage.gc.enabled")
+	}
 	return nil
 }
 

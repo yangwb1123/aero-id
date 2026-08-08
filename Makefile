@@ -3,9 +3,13 @@ MODULE := github.com/aero/aero-id
 BIN    := bin/aero-id
 PG_DSN ?= postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
 
-.PHONY: tidy build run test test-integration lint clean proto load-test-http load-test-grpc load-test-event load-test-callback load-test-db
+.PHONY: tidy build build-audit-replay run test test-integration lint clean proto load-test-http load-test-grpc load-test-event load-test-callback load-test-db check-integration-compile
 tidy:        ; go mod tidy
 build:       ; go build -o $(BIN) ./cmd/server
+	@$(MAKE) --no-print-directory build-audit-replay
+# Operator replay tool for dead-lettered audit publications/deliveries (B2-5);
+# built alongside the server so bin/ ships both binaries (no repo-root binaries).
+build-audit-replay: ; go build -o bin/audit-replay ./cmd/audit-replay
 run:         ; go run ./cmd/server -config configs/config.yaml
 test:        ; go test ./... -count=1
 test-integration: ; go test -tags=integration -p 1 ./... -count=1
@@ -21,6 +25,17 @@ GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || printf '%s/bin/
 lint-strict:
 	@command -v $(GOLANGCI_LINT) >/dev/null 2>&1 || { echo "ERROR: golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; exit 1; }
 	$(GOLANGCI_LINT) run ./...
+
+# Compile guard for integration-tagged _test.go files (FM-11): plain
+# `go build -tags integration` does not compile _test.go, so an interface
+# change that breaks an integration-only fake is invisible to the default
+# gate. `go test -tags integration -run '^$'` compiles every test file and
+# runs nothing; `go vet -tags integration` type-checks them too. Docker-free
+# (no testcontainers started).
+.PHONY: check-integration-compile
+check-integration-compile:
+	go test -tags integration -run '^$$' ./...
+	go vet -tags integration ./...
 
 # Enforce one-way dependency: no cross-feature imports.
 .PHONY: check-architecture
@@ -45,6 +60,30 @@ check-file-sizes:
 	  exit 1; \
 	fi; \
 	echo "✓ All files ≤ $(MAX_FILE_LINES) lines"
+
+# Ban swallowed/bare-call audit writes in the live service layer (single
+# delivery + swallow ban). Self-tests against scripts/testdata/audit-swallow/
+# before scanning; ROOT parameterized for the self-test fixture.
+.PHONY: check-audit-swallow
+check-audit-swallow:
+	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage cmd
+
+# R-1/R-2 regression gate for the deterministic event-ID derivation contract:
+# the only random EventID: idgen.NewID() left in non-test Go is the C2
+# callback replay site; derivation sources stay confined to idgen +
+# projection_replication.go; AnchorNamespace is defined exactly once.
+.PHONY: check-anchored-event-ids
+check-anchored-event-ids:
+	@bash scripts/check-anchored-event-ids.sh internal cmd
+
+# Enumerated bare-site manifest gate (sweep-and-lock REQ-1): every bare
+# s.audit.Record/Log site in internal/service must be enumerated in
+# scripts/check-audit-manifest.sh with its audit-site marker; a NEW mutation
+# path cannot regress to a non-tx Record without landing a manifest row and
+# its integration proof.
+.PHONY: check-audit-manifest
+check-audit-manifest:
+	@bash scripts/check-audit-manifest.sh
 
 proto:
 	mkdir -p internal/sso/ssopb internal/handler/grpc/aeropb

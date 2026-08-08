@@ -121,6 +121,26 @@ WHERE id IN (
 **Important:** Events that are still being retried (`published_at IS NULL AND
 dead_letter = false`) are **never** touched by the cleaner.
 
+**Maintenance pause (`data_retention.purge_paused`):** the cleaner can be
+suspended for maintenance flows such as dead-letter replay
+(`cmd/audit-replay`, which recovers dead-lettered `audit_publications` and
+`callback_deliveries` rows). With `purge_paused: true` every tick performs **no
+purge work** — no SELECT, no DELETE; every `outbox_events` row (dead-letter or
+published) is preserved bit-for-bit. The flag is static per boot (config is
+loaded once; "purge resumes" means the next restart with the flag cleared) and
+is validated so it is accepted only while the cleaner is actually wired
+(`outbox_clean_interval > 0` and `outbox_dead_letter_retention > 0`). Negative
+retentions are rejected at load: a negative bound would put the cutoff in the
+future and purge every eligible row on the next tick.
+
+```yaml
+data_retention:
+  outbox_dead_letter_retention: 168h   # 7 days
+  outbox_published_retention: 720h     # 30 days
+  outbox_clean_interval: 1h
+  purge_paused: false                  # maintenance: suspend retention purge
+```
+
 ### 4. Idempotency Keys Cleaner
 
 **File:** `internal/idempotency/store.go` — `RunCleaner`

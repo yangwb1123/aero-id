@@ -27,13 +27,37 @@ type CallbackRepository interface {
 	MarkDelivery(context.Context, domain.ID, string, string, int, string, string, time.Time) error
 	ResetDelivery(context.Context, domain.ID) error
 	GetDelivery(context.Context, domain.ID) (*domain.CallbackDelivery, error)
+	// RequeueDead moves dead_letter deliveries back to pending (attempt reset
+	// to 0, lease cleared, error_code manual_replay) with a mandatory operator
+	// intent: one in-tx audit fact per affected tenant (tenant derived from
+	// the subscription); idempotent by the dead_letter status predicate.
+	RequeueDead(context.Context, []domain.ID, int, ReplayIntent) (int, []*domain.AuditFact, error)
+	// CountDeadLetterDeliveries returns exactly the number of rows the next
+	// RequeueDead call would affect (bounded by ids/limit/tenant — dry-run
+	// support).
+	CountDeadLetterDeliveries(context.Context, []domain.ID, int, string) (int, error)
+	// DeadLetterTenants lists the distinct tenants of the rows the next
+	// requeue would affect (dry-run report + friendly binding pre-flight).
+	DeadLetterTenants(context.Context, []domain.ID, int, string) ([]string, error)
+	// PurgeDeadLetterDeliveries deletes dead_letter rows past cutoff, guarded
+	// by lease-owner empty and lease expiry; bounded and keyset-ordered.
+	PurgeDeadLetterDeliveries(context.Context, time.Time, int) (int64, error)
 }
 
-type callbackRepo struct{ db *gorm.DB }
+type callbackRepo struct {
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
+}
 
 var ErrCallbackDeliveryLeaseLost = errors.New("callback delivery lease lost")
 
-func NewCallbackRepository(db *gorm.DB) CallbackRepository { return &callbackRepo{db: db} }
+// NewCallbackRepository wires the durable ledger fail-closed: the ledger is
+// constructed unconditionally in the composition root before the callback repo,
+// so production never hits the panic; a nil/typed-nil ledger is a programmer
+// error and must stop startup (precedent: NewAccountRepository).
+func NewCallbackRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) CallbackRepository {
+	return &callbackRepo{db: db, audit: requireAuditLedger("NewCallbackRepository", audit)}
+}
 
 type callbackSubscriptionRow struct {
 	ID               uuid.UUID      `gorm:"column:id;primaryKey"`

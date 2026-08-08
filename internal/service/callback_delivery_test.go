@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -20,6 +21,9 @@ type callbackFakeRepo struct {
 	deliveries []*domain.CallbackDelivery
 	marked     []markRecord
 	resetCount int
+	subs       []*domain.CallbackSubscription
+	facts      []*domain.AuditFact // facts appended via the WithAudit methods
+	failAudit  error               // non-nil => WithAudit methods fail with this
 }
 
 type markRecord struct {
@@ -31,6 +35,45 @@ type markRecord struct {
 }
 
 func (f *callbackFakeRepo) CreateSubscription(ctx context.Context, s *domain.CallbackSubscription) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.subs = append(f.subs, s)
+	return nil
+}
+
+// WithAudit variants: record the fact (or fail) and delegate to the plain impl.
+func (f *callbackFakeRepo) CreateSubscriptionWithAudit(ctx context.Context, s *domain.CallbackSubscription, fact *domain.AuditFact) error {
+	f.mu.Lock()
+	if f.failAudit != nil {
+		err := f.failAudit
+		f.mu.Unlock()
+		return err
+	}
+	f.facts = append(f.facts, fact)
+	f.mu.Unlock()
+	return f.CreateSubscription(ctx, s)
+}
+func (f *callbackFakeRepo) DeleteSubscriptionWithAudit(ctx context.Context, tenant, owner string, id domain.ID, fact *domain.AuditFact) error {
+	f.mu.Lock()
+	if f.failAudit != nil {
+		err := f.failAudit
+		f.mu.Unlock()
+		return err
+	}
+	f.facts = append(f.facts, fact)
+	f.mu.Unlock()
+	return f.DeleteSubscription(ctx, tenant, owner, id)
+}
+func (f *callbackFakeRepo) ResetDeliveryWithAudit(ctx context.Context, id domain.ID, fact *domain.AuditFact) error {
+	f.mu.Lock()
+	if f.failAudit != nil {
+		err := f.failAudit
+		f.mu.Unlock()
+		return err
+	}
+	f.facts = append(f.facts, fact)
+	f.resetCount++
+	f.mu.Unlock()
 	return nil
 }
 func (f *callbackFakeRepo) GetSubscription(ctx context.Context, id domain.ID) (*domain.CallbackSubscription, error) {
@@ -70,6 +113,23 @@ func (f *callbackFakeRepo) ResetDelivery(ctx context.Context, id domain.ID) erro
 	defer f.mu.Unlock()
 	f.resetCount++
 	return nil
+}
+
+// RequeueDead, DeadLetterTenants and PurgeDeadLetterDeliveries are the
+// operator recovery surface (B2-5); service tests never drive it — record and
+// fail if invoked so a regression that calls it from the drain path surfaces
+// immediately.
+func (f *callbackFakeRepo) RequeueDead(context.Context, []domain.ID, int, repository.ReplayIntent) (int, []*domain.AuditFact, error) {
+	return 0, nil, errors.New("callbackFakeRepo.RequeueDead invoked in service test")
+}
+func (f *callbackFakeRepo) PurgeDeadLetterDeliveries(context.Context, time.Time, int) (int64, error) {
+	return 0, errors.New("callbackFakeRepo.PurgeDeadLetterDeliveries invoked in service test")
+}
+func (f *callbackFakeRepo) CountDeadLetterDeliveries(context.Context, []domain.ID, int, string) (int, error) {
+	return 0, errors.New("callbackFakeRepo.CountDeadLetterDeliveries invoked in service test")
+}
+func (f *callbackFakeRepo) DeadLetterTenants(context.Context, []domain.ID, int, string) ([]string, error) {
+	return nil, errors.New("callbackFakeRepo.DeadLetterTenants invoked in service test")
 }
 func (f *callbackFakeRepo) GetDelivery(ctx context.Context, id domain.ID) (*domain.CallbackDelivery, error) {
 	f.mu.Lock()

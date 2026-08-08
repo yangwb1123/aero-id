@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
@@ -41,13 +41,36 @@ type AuditLedgerTransactionalRepository interface {
 
 type AuditPublicationRepository interface {
 	ClaimPublication(context.Context, string, time.Duration, int) ([]*domain.AuditPublication, error)
-	FinishPublication(context.Context, domain.ID, string, string, string, time.Time) error
+	FinishPublication(context.Context, domain.ID, string, int, string, string, time.Time) error
+	// RequeuePublication moves dead_letter publications back to pending
+	// (attempt reset to 0, lease cleared, error_code manual_replay) with a
+	// mandatory operator intent: one in-tx audit fact per affected tenant
+	// (fact tenant derived from the rows); idempotent by the dead_letter
+	// status predicate.
+	RequeuePublication(context.Context, []domain.ID, int, ReplayIntent) (int, []*domain.AuditFact, error)
+	// CountDeadLetterPublications returns exactly the number of rows the next
+	// RequeuePublication call would affect (bounded by ids/limit/tenant —
+	// dry-run support).
+	CountDeadLetterPublications(context.Context, []domain.ID, int, string) (int, error)
+	// DeadLetterTenants lists the distinct tenants of the rows the next
+	// requeue would affect (dry-run report + friendly binding pre-flight).
+	DeadLetterTenants(context.Context, []domain.ID, int, string) ([]string, error)
+	// PurgeDeadLetterPublications deletes dead_letter rows past cutoff, guarded
+	// by lease-owner empty and lease expiry; bounded and keyset-ordered.
+	PurgeDeadLetterPublications(context.Context, time.Time, int) (int64, error)
 }
 
 type AuditLedgerConfig struct{ SigningKey string }
 
 var ErrAuditDuplicate = errors.New("audit ledger: duplicate source event")
 var ErrAuditPublicationLeaseLost = errors.New("audit publication lease lost")
+
+// ErrAuditPublicationFactHydration wraps a post-claim fact-hydration failure
+// (FM-12): the claim tx committed (every row in the batch is delivering) but
+// loading a ledger fact failed partway. ClaimPublication returns the hydrated
+// prefix alongside the wrapped error; the drain delivers the prefix and the
+// remainder is re-claimed after lease expiry — attempt untouched (M-4).
+var ErrAuditPublicationFactHydration = errors.New("audit publication fact hydration failed")
 
 type auditLedgerRepo struct {
 	db         *gorm.DB
@@ -86,23 +109,6 @@ type auditLedgerRow struct {
 	Signature        string         `gorm:"column:signature"`
 	CreatedAt        time.Time      `gorm:"column:created_at"`
 }
-
-type auditPublicationRow struct {
-	ID            uuid.UUID  `gorm:"column:id;primaryKey"`
-	FactID        uuid.UUID  `gorm:"column:fact_id"`
-	Status        string     `gorm:"column:status"`
-	Attempt       int        `gorm:"column:attempt"`
-	LeaseOwner    string     `gorm:"column:lease_owner"`
-	LeaseUntil    *time.Time `gorm:"column:lease_until"`
-	NextAttemptAt time.Time  `gorm:"column:next_attempt_at"`
-	ErrorCode     string     `gorm:"column:error_code"`
-	CreatedAt     time.Time  `gorm:"column:created_at"`
-	UpdatedAt     time.Time  `gorm:"column:updated_at"`
-}
-
-func (auditPublicationRow) TableName() string { return "audit_publications" }
-
-func (auditLedgerRow) TableName() string { return "audit_ledger" }
 
 func (r *auditLedgerRepo) Append(ctx context.Context, fact *domain.AuditFact) error {
 	if len(r.signingKey) == 0 {
@@ -193,70 +199,30 @@ func (r *auditLedgerRepo) createAuditRows(tx *gorm.DB, fact *domain.AuditFact, p
 		fact.Signature = sign(r.signingKey, fact.RecordHash)
 	}
 	if err := tx.Create(auditLedgerFactToRow(fact, payload)).Error; err != nil {
+		// The unique constraint uq_audit_ledger_tenant_event is the final guard
+		// against duplicate (tenant_id, source, event_id). checkAuditDuplicate
+		// is only a pre-check: two concurrent appends on different partitions
+		// take different advisory locks, so the loser's pre-check cannot see the
+		// winner's uncommitted row and its INSERT fails here with a raw 23505.
+		// Translate it so the service-level duplicate contract holds (C1); a
+		// uq_audit_ledger_chain_seq violation is impossible under the partition
+		// advisory lock, and a publication-site violation stays raw (internal
+		// corruption).
+		//
+		// The mapping is constraint-precise on purpose: any other 23505 (audit
+		// ledger PK collision, uq_audit_ledger_chain_seq, publication PK) stays
+		// raw so the enclosing transaction rolls back. A broad gorm.ErrDuplicatedKey
+		// mapping would let an in-tx caller swallow those as ErrAuditDuplicate and
+		// commit the domain row without its audit row — the silent-drop invariant.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_audit_ledger_tenant_event" {
+			return ErrAuditDuplicate
+		}
 		return fmt.Errorf("append audit ledger: %w", err)
 	}
 	publication := &auditPublicationRow{ID: idgen.NewID(), FactID: fact.ID, Status: "pending", NextAttemptAt: now, CreatedAt: now, UpdatedAt: now}
 	if err := tx.Create(publication).Error; err != nil {
 		return fmt.Errorf("create audit publication: %w", err)
-	}
-	return nil
-}
-
-func (r *auditLedgerRepo) ClaimPublication(ctx context.Context, worker string, lease time.Duration, limit int) ([]*domain.AuditPublication, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if lease <= 0 {
-		lease = 5 * time.Minute
-	}
-	rows := make([]auditPublicationRow, 0, limit)
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC()
-		if err := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-			Where("((status = 'pending' AND next_attempt_at <= ?) OR (status = 'delivering' AND lease_until < ?))", now, now).
-			Order("next_attempt_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
-			return err
-		}
-		until := now.Add(lease)
-		for i := range rows {
-			if err := tx.Model(&auditPublicationRow{}).Where("id = ?", rows[i].ID).Updates(map[string]any{
-				"status": "delivering", "attempt": gorm.Expr("attempt + 1"), "lease_owner": worker,
-				"lease_until": until, "updated_at": now,
-			}).Error; err != nil {
-				return err
-			}
-			rows[i].Status = "delivering"
-			rows[i].Attempt++
-			rows[i].LeaseOwner = worker
-			rows[i].LeaseUntil = &until
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	result := make([]*domain.AuditPublication, 0, len(rows))
-	for i := range rows {
-		var factRow auditLedgerRow
-		if err := r.db.WithContext(ctx).Where("id = ?", rows[i].FactID).First(&factRow).Error; err != nil {
-			return nil, err
-		}
-		result = append(result, &domain.AuditPublication{ID: rows[i].ID, Fact: auditLedgerRowToFact(&factRow), Status: rows[i].Status,
-			Attempt: rows[i].Attempt, LeaseOwner: rows[i].LeaseOwner, LeaseUntil: rows[i].LeaseUntil,
-			NextAttemptAt: rows[i].NextAttemptAt, ErrorCode: rows[i].ErrorCode})
-	}
-	return result, nil
-}
-
-func (r *auditLedgerRepo) FinishPublication(ctx context.Context, id domain.ID, worker, status, errorCode string, next time.Time) error {
-	result := r.db.WithContext(ctx).Model(&auditPublicationRow{}).Where("id = ? AND status = 'delivering' AND lease_owner = ?", id, worker).
-		Updates(map[string]any{"status": status, "error_code": errorCode, "next_attempt_at": next,
-			"lease_owner": "", "lease_until": nil, "updated_at": time.Now().UTC()})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return ErrAuditPublicationLeaseLost
 	}
 	return nil
 }

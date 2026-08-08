@@ -1,24 +1,16 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -32,7 +24,6 @@ type CallbackService interface {
 	Register(context.Context, CallbackInput) (*domain.CallbackSubscription, string, error)
 	List(context.Context, domain.Page) ([]*domain.CallbackSubscription, string, error)
 	Delete(context.Context, domain.ID) error
-	Publish(context.Context, *domain.AuditFact) error
 	ReplayDelivery(context.Context, domain.ID) error
 	Start(context.Context, time.Duration) func()
 }
@@ -51,6 +42,17 @@ type CallbackConfig struct {
 	RetryBase          time.Duration
 	AllowPrivateTarget bool
 	WorkerConcurrency  int // in-flight deliveries/publications (P6-06); <=0 => serial
+	// PublicationTimeout bounds one governance publish (M-5); 0 = 5s default
+	// (matches audit_governance.timeout's connector default). It sizes the
+	// drain lease: lease = max(5m, 2 × 50 × timeout / concurrency) so a slow
+	// batch can never outlive its own lease.
+	PublicationTimeout time.Duration
+	// PurgePause suspends the dead-letter purge scan (B2-5 WORKER-1): while
+	// set, no dead_letter publication or delivery row is selected or deleted.
+	PurgePause bool
+	// DeadLetterRetention bounds dead-letter survival before the drain loop
+	// purges the row (0 = never purge — the default).
+	DeadLetterRetention time.Duration
 }
 
 type callbackService struct {
@@ -58,7 +60,6 @@ type callbackService struct {
 	cfg          CallbackConfig
 	key          []byte
 	worker       string
-	audit        AuditLedgerService
 	publications repository.AuditPublicationRepository
 	publishers   []AuditPublisher
 	bulkhead     *bulkhead.Bulkhead
@@ -89,12 +90,6 @@ func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) 
 	return &callbackService{repo: repo, cfg: cfg, key: sum[:], worker: "callback-" + idgen.NewID().String(),
 		bulkhead: bulkhead.New(cfg.WorkerConcurrency), metrics: noopControlPlaneMetrics{}}
 }
-
-// SetAuditLogger is called by the composition root after the callback service
-// and durable audit service are constructed. The setter avoids a construction
-// cycle: audit publishes through callbacks, while callback administration is
-// itself audited.
-func (s *callbackService) SetAuditLogger(audit AuditLedgerService) { s.audit = audit }
 
 // SetControlPlaneMetrics attaches the observability sink (called by the
 // composition root; safe before Start).
@@ -153,17 +148,30 @@ func (s *callbackService) Register(ctx context.Context, input CallbackInput) (*d
 	}
 	subscription := &domain.CallbackSubscription{OwnerUID: owner, TenantID: tenantID, Endpoint: input.Endpoint,
 		EventTypes: eventTypes, SecretCiphertext: ciphertext, Enabled: true, Verified: true}
-	if err := s.repo.CreateSubscription(ctx, subscription); err != nil {
+	// Pre-assign the ID so the audit fact (EventID = subscription.ID) is known
+	// before the transaction opens (repo ID-when-empty precedent makes this safe).
+	subscription.ID = idgen.NewID()
+	if err := s.registerWithAudit(ctx, subscription, owner, tenantID, input.Endpoint, eventTypes); err != nil {
 		return nil, "", apperr.Internal("callback.create_failed", "failed to create callback subscription").Wrap(err)
 	}
-	if s.audit != nil {
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: subscription.ID, ActorUID: owner,
-			TenantID: tenantID, Action: "callback.registered", ResourceType: "callback_subscription",
-			ResourceID: subscription.ID.String(), Payload: map[string]any{
-				"endpoint_sha256": hashAuditBytes([]byte(input.Endpoint)), "event_types": eventTypes,
-			}})
-	}
 	return subscription, hex.EncodeToString(secret), nil
+}
+
+// registerWithAudit persists the subscription and its callback.registered fact
+// in one transaction (the callback repo owns the ledger; a failed assert is a
+// test-wiring error and fails closed — never a silent plain write).
+func (s *callbackService) registerWithAudit(ctx context.Context, subscription *domain.CallbackSubscription,
+	owner, tenantID, endpoint string, eventTypes []string) error {
+	repo, ok := s.repo.(repository.CallbackAuditRepository)
+	if !ok {
+		return apperr.Internal("callback.audit_unavailable", "callback audit persistence is unavailable")
+	}
+	fact := buildAuditFact(ctx, AuditFactInput{Source: "aero-id", EventID: subscription.ID, ActorUID: owner,
+		TenantID: tenantID, Action: "callback.registered", ResourceType: "callback_subscription",
+		ResourceID: subscription.ID.String(), Payload: map[string]any{
+			"endpoint_sha256": hashAuditBytes([]byte(endpoint)), "event_types": eventTypes,
+		}})
+	return repo.CreateSubscriptionWithAudit(ctx, subscription, fact)
 }
 
 func normalizeCallbackEventTypes(values []string) ([]string, error) {
@@ -211,15 +219,19 @@ func (s *callbackService) Delete(ctx context.Context, id domain.ID) error {
 	if err != nil {
 		return err
 	}
-	if err := s.repo.DeleteSubscription(ctx, owner, tenantID, id); err != nil {
+	repo, ok := s.repo.(repository.CallbackAuditRepository)
+	if !ok {
+		return apperr.Internal("callback.audit_unavailable", "callback audit persistence is unavailable")
+	}
+	if err := repo.DeleteSubscriptionWithAudit(ctx, owner, tenantID, id, buildAuditFact(ctx, AuditFactInput{Source: "aero-id", EventID: id, ActorUID: owner,
+		TenantID: tenantID, Action: "callback.deleted", ResourceType: "callback_subscription", ResourceID: id.String()})); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return apperr.NotFound("callback.not_found", "callback subscription not found")
 		}
+		if errors.Is(err, repository.ErrAuditDuplicate) {
+			return nil
+		}
 		return apperr.Internal("callback.delete_failed", "failed to delete callback subscription").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: id, ActorUID: owner,
-			TenantID: tenantID, Action: "callback.deleted", ResourceType: "callback_subscription", ResourceID: id.String()})
 	}
 	return nil
 }
@@ -240,145 +252,20 @@ func (s *callbackService) ReplayDelivery(ctx context.Context, id domain.ID) erro
 	if delivery.OwnerUID != owner || delivery.TenantID != tenantID {
 		return apperr.NotFound("callback.delivery_not_found", "callback delivery not found")
 	}
-	if err := s.repo.ResetDelivery(ctx, id); err != nil {
+	repo, ok := s.repo.(repository.CallbackAuditRepository)
+	if !ok {
+		return apperr.Internal("callback.audit_unavailable", "callback audit persistence is unavailable")
+	}
+	// C2: fresh EventID per replay intent (precedent: operationAuditFact) — a
+	// second replay of a re-failed delivery is a new user intent that must
+	// re-apply the reset and record its own fact; anchoring EventID to the
+	// delivery ID would roll the reset back with ErrAuditDuplicate.
+	if err := repo.ResetDeliveryWithAudit(ctx, id, buildAuditFact(ctx, AuditFactInput{Source: "aero-id", EventID: idgen.NewID(), ActorUID: owner,
+		TenantID: tenantID, Action: "callback.delivery.replayed", ResourceType: "callback_delivery", ResourceID: id.String(),
+		Payload: map[string]any{"action": delivery.Action}})); err != nil {
 		return apperr.Internal("callback.delivery_replay_failed", "failed to replay callback delivery").Wrap(err)
 	}
-	if s.audit != nil {
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: id, ActorUID: owner,
-			Action: "callback.delivery.replayed", ResourceType: "callback_delivery", ResourceID: id.String(),
-			Payload: map[string]any{"action": delivery.Action}})
-	}
 	return nil
-}
-
-func (s *callbackService) Start(ctx context.Context, interval time.Duration) func() {
-	if interval <= 0 {
-		interval = time.Second
-	}
-	workerCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		defer close(done)
-		for {
-			select {
-			case <-ticker.C:
-				s.drainPublications(workerCtx)
-				s.drain(workerCtx)
-			case <-workerCtx.Done():
-				return
-			}
-		}
-	}()
-	return func() { cancel(); <-done }
-}
-
-func (s *callbackService) drain(ctx context.Context) {
-	deliveries, err := s.repo.FetchDueDeliveries(ctx, 50, s.worker, 5*time.Minute)
-	if err != nil {
-		return
-	}
-	// P6-06 bulkhead: concurrent deliveries are bounded by WorkerConcurrency;
-	// each delivery row is leased to this worker, so parallel marking is safe.
-	var wg sync.WaitGroup
-	for _, delivery := range deliveries {
-		delivery := delivery
-		if err := s.bulkhead.Acquire(ctx); err != nil {
-			break // context cancelled; remaining rows stay due for the next tick
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer s.bulkhead.Release()
-			s.markDelivery(ctx, delivery)
-		}()
-	}
-	wg.Wait()
-}
-
-func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.CallbackDelivery) {
-	statusCode, response, deliverErr := s.deliver(ctx, delivery)
-	status := "success"
-	errorCode := ""
-	next := time.Now().UTC()
-	if deliverErr != nil || statusCode < 200 || statusCode >= 300 {
-		status = "pending"
-		errorCode = "callback.delivery_failed"
-		if delivery.Attempt+1 >= s.cfg.MaxAttempts {
-			status = "dead_letter"
-		}
-		next = next.Add(s.retryDelay(delivery.Attempt + 1))
-	}
-	_ = s.repo.MarkDelivery(ctx, delivery.ID, s.worker, status, statusCode, response, errorCode, next)
-	s.metrics.ObserveCallbackOutcome(status)
-}
-
-func (s *callbackService) deliver(ctx context.Context, delivery *domain.CallbackDelivery) (int, string, error) {
-	if err := validateCallbackEndpoint(delivery.Endpoint, s.cfg.AllowPrivateTarget); err != nil {
-		return 0, "", err
-	}
-	secret, err := s.decrypt(delivery.SecretCiphertext)
-	if err != nil {
-		return 0, "", err
-	}
-	body, err := json.Marshal(delivery.Payload)
-	if err != nil {
-		return 0, "", err
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, delivery.Endpoint, bytes.NewReader(body))
-	if err != nil {
-		return 0, "", err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Aero-Callback-Schema-Version", "1")
-	request.Header.Set("X-Aero-Callback-Event-ID", delivery.EventID.String())
-	request.Header.Set("X-Aero-Callback-Attempt", fmt.Sprintf("%d", delivery.Attempt+1))
-	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
-	request.Header.Set("X-Aero-Callback-Timestamp", timestamp)
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(timestamp + "\n"))
-	_, _ = mac.Write(body)
-	request.Header.Set("X-Aero-Callback-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	client, err := s.httpClient(delivery.Endpoint)
-	if err != nil {
-		return 0, "", err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return 0, "", err
-	}
-	defer response.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(response.Body, s.cfg.MaxResponseBytes))
-	return response.StatusCode, string(data), nil
-}
-
-func (s *callbackService) retryDelay(attempt int) time.Duration {
-	delay := s.cfg.RetryBase
-	for i := 1; i < attempt && delay < time.Hour; i++ {
-		if delay > time.Hour/2 {
-			delay = time.Hour
-			break
-		}
-		delay *= 2
-	}
-	if delay > time.Hour {
-		delay = time.Hour
-	}
-	// Add bounded cryptographic jitter so many callback workers do not retry
-	// the same endpoint in lockstep after an outage. Failure to obtain one
-	// random byte is harmless: the deterministic cap remains safe.
-	var randomByte [1]byte
-	if _, err := rand.Read(randomByte[:]); err != nil {
-		return delay
-	}
-	jitter := delay / 4 * time.Duration(randomByte[0]) / 255
-	if delay > time.Hour-jitter {
-		return time.Hour
-	}
-	return delay + jitter
 }
 
 func (s *callbackService) encrypt(value []byte) (string, error) {
@@ -395,67 +282,6 @@ func (s *callbackService) encrypt(value []byte) (string, error) {
 		return "", err
 	}
 	return base64.RawStdEncoding.EncodeToString(append(nonce, gcm.Seal(nil, nonce, value, nil)...)), nil
-}
-
-func (s *callbackService) decrypt(value string) ([]byte, error) {
-	data, err := base64.RawStdEncoding.DecodeString(value)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(s.key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil || len(data) < gcm.NonceSize() {
-		return nil, errors.New("invalid callback secret")
-	}
-	return gcm.Open(nil, data[:gcm.NonceSize()], data[gcm.NonceSize():], nil)
-}
-
-//nolint:cyclop // endpoint validation is deliberately fail-closed across URL, DNS, and private-network checks.
-func (s *callbackService) httpClient(endpoint string) (*http.Client, error) {
-	client, err := newCallbackHTTPClient(endpoint, s.cfg)
-	if err != nil {
-		return nil, err
-	}
-	if s.roundTripper != nil {
-		client.Transport = s.roundTripper
-	}
-	return client, nil
-}
-
-func validateCallbackEndpoint(raw string, allowPrivate bool) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
-		return errors.New("endpoint must be an https URL without userinfo")
-	}
-	if allowPrivate {
-		return nil
-	}
-	if isPrivateHost(parsed.Hostname()) {
-		return errors.New("private callback targets are not allowed")
-	}
-	return validateCallbackResolvesPublic(parsed.Hostname())
-}
-
-// validateCallbackResolvesPublic rejects hostnames that do not resolve or that
-// resolve to private addresses (SSRF guard: no DNS-rebinding vector).
-func validateCallbackResolvesPublic(host string) error {
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
-		return errors.New("callback hostname cannot be resolved")
-	}
-	for _, ip := range ips {
-		if !publicIP(ip) {
-			return errors.New("callback resolves to a private address")
-		}
-	}
-	return nil
-}
-
-func isPrivateHost(host string) bool {
-	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".local")
 }
 
 func randomSecret() ([]byte, error) {

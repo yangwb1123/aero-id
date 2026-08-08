@@ -441,3 +441,42 @@ sso: {endpoint: "localhost:9090"}
 		t.Fatalf("enabled+binding Load error = %v, want success", err)
 	}
 }
+
+// TestStorageGCPurgePaused (storage GC pause): purge_paused parses and is
+// rejected when the sweep is disabled (the flag would be inert).
+func TestStorageGCPurgePaused(t *testing.T) {
+	base := `
+storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
+audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+signing_key: testkey
+database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
+sso: {endpoint: "localhost:9090"}
+`
+	// Pause with the sweep enabled and valid: accepted (gc keys inline in the
+	// single storage block — yaml forbids duplicate top-level keys).
+	ok := strings.Replace(base,
+		`storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}`,
+		`storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}, gc: {enabled: true, interval: 1h, retention: 168h, purge_paused: true}}`, 1)
+	cfg, err := Load(writeTemp(t, ok))
+	if err != nil {
+		t.Fatalf("valid paused gc config rejected: %v", err)
+	}
+	if !cfg.Storage.GC.PurgePaused {
+		t.Fatal("PurgePaused = false, want true")
+	}
+	// Pause with the sweep disabled: rejected (never inert).
+	bad := strings.Replace(base,
+		`storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}`,
+		`storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}, gc: {enabled: false, purge_paused: true}}`, 1)
+	if _, err := Load(writeTemp(t, bad)); err == nil || !strings.Contains(err.Error(), "purge_paused requires storage.gc.enabled") {
+		t.Fatalf("disabled gc with pause err = %v, want rejection", err)
+	}
+	// Defaults: absent flag is false.
+	cfg, err = Load(writeTemp(t, base))
+	if err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	if cfg.Storage.GC.PurgePaused {
+		t.Fatal("PurgePaused default = true, want false")
+	}
+}

@@ -302,6 +302,10 @@ type StorageGCConfig struct {
 	MinOrphanAge time.Duration `mapstructure:"min_orphan_age"` // orphan blobs younger than this are never swept
 	PurgeBatch   int           `mapstructure:"purge_batch"`    // max rows purged per pass (<=0 => default)
 	SweepOrphans bool          `mapstructure:"sweep_orphans"`  // enable orphan-blob detection (best-effort, backend-dependent)
+	// PurgePaused suspends the destructive sweep phases (row purge + orphan
+	// reclamation) so maintenance flows such as dead-letter replay cannot race
+	// blob reclamation. Meaningful only when the sweep is enabled.
+	PurgePaused bool `mapstructure:"purge_paused"`
 }
 
 type LocalStorageConfig struct {
@@ -369,6 +373,12 @@ type DataRetentionConfig struct {
 	OutboxPublishedRetention time.Duration `mapstructure:"outbox_published_retention"`
 	// OutboxCleanInterval is how often the outbox cleaner runs. 0 = disabled.
 	OutboxCleanInterval time.Duration `mapstructure:"outbox_clean_interval"`
+	// PurgePaused suspends the outbox retention cleaner (dead-letter and
+	// published purges) so maintenance flows such as dead-letter replay cannot
+	// race a purge. Meaningful only while the cleaner is enabled
+	// (outbox_clean_interval > 0 and outbox_dead_letter_retention > 0); see
+	// validateDataRetention. Static per boot (no hot reload).
+	PurgePaused bool `mapstructure:"purge_paused"`
 }
 
 func Load(path string) (*Config, error) {

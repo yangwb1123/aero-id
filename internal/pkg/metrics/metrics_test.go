@@ -1,6 +1,7 @@
 package metrics_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,11 @@ func TestControlPlaneMetrics_TextOutput(t *testing.T) {
 	reg.ObserveConsumerLag("aero-im", 12)
 	reg.ObserveOperationAge("unknown", 90)
 	reg.ObserveAuditIngestFailure("aero-id")
+	reg.ObserveAuditPublicationOutcome("dead_letter")
+	reg.ObserveAuditPublicationOutcome("completed")
+	reg.ObserveAuditPublicationDrainSkipped()
+	reg.ObserveAuditPublicationClaimFailed("claim_tx", errors.New("claim tx failed"))
+	reg.ObserveAuditPublicationFinishFailure("pending", errors.New("finish lease lost"))
 
 	var buf strings.Builder
 	reg.WriteText(&buf)
@@ -142,6 +148,11 @@ func TestControlPlaneMetrics_TextOutput(t *testing.T) {
 		`aero_control_callback_deliveries_total{status="dead_letter"} 1`,
 		`aero_control_reconcile_drift_total{source="aero-vault"} 1`,
 		`aero_control_audit_ingest_failures_total{source="aero-id"} 1`,
+		`aero_control_audit_publication_outcomes_total{status="dead_letter"} 1`,
+		`aero_control_audit_publication_outcomes_total{status="completed"} 1`,
+		`aero_control_audit_publication_drain_skipped_total 1`,
+		`aero_control_audit_publication_claim_failed_total{phase="claim_tx"} 1`,
+		`aero_control_audit_publication_finish_failures_total{status="pending"} 1`,
 		`aero_control_projection_lag_seconds`,
 		`aero_control_consumer_lag_seconds`,
 		`aero_control_operation_age_seconds`,

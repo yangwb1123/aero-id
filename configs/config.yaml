@@ -178,11 +178,15 @@ audit_governance:                # durable relay from audit_publications; disabl
   actor_id: aero-id
   schema_id: aero.id.audit-fact
   schema_version: 1
+  anchor_scheme: uuidv5-nul-separated # deterministic event_id derivation for audit facts (idgen.Anchor v5 over NUL-separated parts, fixed namespace); must match the compiled-in contract
+  anchor_scheme_version: 1            # derivation version; only 1 exists; a derivation change must bump and fail Load() on mismatch
   data_classification: personal
   retention_class: account_7y
   timeout: 5s
   refresh_skew: 30s
   allow_insecure_loopback: false # local development only; non-loopback HTTP is always rejected
+  purge_pause: false              # maintenance: pause dead-letter purge/dead-letter scanning in the drain loop
+  dead_letter_retention: 0        # how long dead-lettered publications/deliveries survive before purge (0 = never purge)
   bindings: {}                   # tenant_id -> {token_url, client_id, client_secret_env, scope: audit:event:write, resources: [audit-governance]}
 billing:                         # Snaplink entitlement + globally atomic quota reservations
   enabled: false
@@ -222,6 +226,7 @@ storage:
     min_orphan_age: 24h          # never sweep an orphan blob younger than this (guards in-flight uploads)
     purge_batch: 500             # max soft-deleted rows purged per pass (0 => default 500)
     sweep_orphans: false         # also delete orphaned blobs (best-effort; needs a listable backend)
+    purge_paused: false          # maintenance: suspend row purge + orphan reclamation so dead-letter replay cannot race blob deletion
 signing_key: change-me-please-very-long-random
 log:    { level: info, encoding: console, sample_ratio: 0 }   # 0..1; <1 samples info-level access logs
 data_retention:
@@ -233,3 +238,4 @@ data_retention:
   outbox_dead_letter_retention: 168h      # 7 days for dead letters (0 = never purge)
   outbox_published_retention: 720h        # 30 days for published events (0 = never purge)
   outbox_clean_interval: 1h               # how often the outbox cleaner runs (0 = disabled)
+  purge_paused: false                     # maintenance: suspend outbox retention purge so dead-letter replay cannot race it

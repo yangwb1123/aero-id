@@ -93,3 +93,4 @@ func TestOutboxRepo_FailedTxRollsBackEvent(t *testing.T) {
 		t.Fatalf("event must be rolled back with the tx, got %+v", got)
 	}
 }
+

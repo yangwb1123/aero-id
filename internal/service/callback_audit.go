@@ -7,25 +7,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aero/aero-id/internal/connector/auditgovernance"
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/repository"
 )
 
 var errAuditTenantUnbound = errors.New("audit publisher tenant binding unavailable")
+
+// auditPublicationClaimLimit bounds one claim batch; the lease sizing (M-5)
+// and the bulkhead fan-out are derived from it.
+const auditPublicationClaimLimit = 50
 
 type tenantBoundAuditPublisher interface {
 	CanPublishTenant(string) bool
 }
 
-func (s *callbackService) Publish(ctx context.Context, fact *domain.AuditFact) error {
-	if fact == nil || strings.TrimSpace(fact.TenantID) == "" {
-		return nil
-	}
-	if s.publications != nil {
-		return nil
-	}
-	return s.enqueueFact(ctx, fact)
-}
-
+// enqueueFact is the drain-worker-only delivery entry point (REQ-2): after
+// the Publish bypass was deleted, it is reachable solely from publishAuditFact.
 func (s *callbackService) enqueueFact(ctx context.Context, fact *domain.AuditFact) error {
 	subscriptions, err := s.repo.ListEnabledByAction(ctx, fact.TenantID, fact.Action)
 	if err != nil {
@@ -46,11 +44,30 @@ func (s *callbackService) enqueueFact(ctx context.Context, fact *domain.AuditFac
 
 func (s *callbackService) drainPublications(ctx context.Context) {
 	if s.publications == nil {
+		// FM-8: unwired outbox. Facts pend with no delivery attempt; the live
+		// composition root fails closed at wiring time (app.wireAuditServices),
+		// so this counter is the runtime signal if that guard is ever bypassed.
+		s.metrics.ObserveAuditPublicationDrainSkipped()
 		return
 	}
-	items, err := s.publications.ClaimPublication(ctx, s.worker, 5*time.Minute, 50)
+	items, err := s.publications.ClaimPublication(ctx, s.worker, s.publicationLease(), auditPublicationClaimLimit)
 	if err != nil {
-		return
+		// FM-1: never silent. The claim-failed counter carries a phase label
+		// splitting two distinct semantics:
+		//   claim_tx — the claim tx rolled back atomically; nothing was leased,
+		//     facts pend with no attempt, the next tick retries the claim.
+		//   fact_hydration — the claim tx committed (every row delivering) but
+		//     post-commit fact hydration failed partway (FM-12); the hydrated
+		//     prefix is still delivered below, the remainder re-claims after
+		//     lease expiry, attempt untouched (M-4).
+		phase := "claim_tx"
+		if errors.Is(err, repository.ErrAuditPublicationFactHydration) {
+			phase = "fact_hydration"
+		}
+		s.metrics.ObserveAuditPublicationClaimFailed(phase, err)
+		if phase == "claim_tx" {
+			return
+		}
 	}
 	// P6-06 bulkhead: audit publication is an outbound HTTP workload; bound
 	// in-flight publishes so a slow governance endpoint cannot starve callbacks.
@@ -70,15 +87,58 @@ func (s *callbackService) drainPublications(ctx context.Context) {
 	wg.Wait()
 }
 
+// publicationLease sizes the claim lease so it always exceeds the worst-case
+// batch latency of the shared bulkhead (M-5): auditPublicationClaimLimit items
+// × the per-publish governance timeout, serialized through WorkerConcurrency
+// slots, doubled for margin, floored at 5 minutes (the crash-recovery window
+// for default configs). drainPublications runs synchronously inside the ticker
+// (callback.go Start), so at most one batch is in flight per instance; a lease
+// ≥ 2× the worst-case batch latency therefore also prevents another instance
+// from re-claiming a still-in-flight batch. If a future publisher is allowed
+// unbounded latency, per-item lease refresh becomes mandatory (design §8).
+func (s *callbackService) publicationLease() time.Duration {
+	timeout := s.cfg.PublicationTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	concurrency := s.cfg.WorkerConcurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	lease := 2 * time.Duration(auditPublicationClaimLimit) * timeout / time.Duration(concurrency)
+	if lease < 5*time.Minute {
+		lease = 5 * time.Minute
+	}
+	return lease
+}
+
 func (s *callbackService) finishPublicationAttempt(ctx context.Context, item *domain.AuditPublication) {
 	if item == nil || item.Fact == nil {
 		return
 	}
 	now := time.Now().UTC()
+	// M-4: the attempt is incremented here, only when a publish outcome is
+	// computed — never at claim time. Lease-expiry re-claims that never
+	// published (crash after claim, saturated bulkhead, claim hydration
+	// failure) must not inflate the counter toward a premature terminal
+	// dead_letter. ClaimPublication now leaves attempt untouched; the value
+	// persisted here is this delivery attempt's number.
+	nextAttempt := item.Attempt + 1
 	status, code, next := publicationOutcome(
-		s.publishAuditFact(ctx, item.Fact), item.Attempt, s.cfg.MaxAttempts, now, s.retryDelay(item.Attempt),
+		s.publishAuditFact(ctx, item.Fact), nextAttempt, s.cfg.MaxAttempts, now, s.retryDelay(nextAttempt),
 	)
-	_ = s.publications.FinishPublication(ctx, item.ID, s.worker, status, code, next)
+	// No retry and no swallow: on ErrAuditPublicationLeaseLost the row is
+	// re-claimed after lease expiry; on a DB error the lease expires and the
+	// row is re-claimed too. The lease-guarded UPDATE prevents double-finish.
+	// Settlement observability (FM-5): count only committed settlements. On a
+	// finish failure the row stays delivering and the decision is re-made after
+	// lease-expiry re-claim, so the outcome is not counted — the failure is
+	// observed separately above.
+	if err := s.publications.FinishPublication(ctx, item.ID, s.worker, nextAttempt, status, code, next); err != nil {
+		s.metrics.ObserveAuditPublicationFinishFailure(status, err)
+		return
+	}
+	s.metrics.ObserveAuditPublicationOutcome(status)
 }
 
 func publicationOutcome(err error, attempt, maxAttempts int, now time.Time, retryDelay time.Duration) (string, string, time.Time) {
@@ -95,9 +155,12 @@ func publicationOutcome(err error, attempt, maxAttempts int, now time.Time, retr
 }
 
 func (s *callbackService) publishAuditFact(ctx context.Context, fact *domain.AuditFact) error {
-	if err := s.enqueueFact(ctx, fact); err != nil {
-		return err
-	}
+	// FM-3: the tenant-binding pre-filter runs before ANY publisher, so an
+	// unbound tenant can never let earlier publishers already publish (which
+	// would duplicate-publish on every retry of the row). The check consumes
+	// no attempt and never dead-letters (publicationOutcome handles
+	// errAuditTenantUnbound before the MaxAttempts comparison). enqueueFact
+	// stays first so callback deliveries are not delayed by a missing binding.
 	for _, publisher := range s.publishers {
 		if publisher == nil {
 			continue
@@ -105,7 +168,25 @@ func (s *callbackService) publishAuditFact(ctx context.Context, fact *domain.Aud
 		if bound, ok := publisher.(tenantBoundAuditPublisher); ok && !bound.CanPublishTenant(fact.TenantID) {
 			return errAuditTenantUnbound
 		}
+	}
+	if err := s.enqueueFact(ctx, fact); err != nil {
+		return err
+	}
+	for _, publisher := range s.publishers {
+		if publisher == nil {
+			continue
+		}
 		if err := publisher.Publish(ctx, fact); err != nil {
+			// REQ-5: a scope-missing classification (events 401-with-scope-body,
+			// events 403, or token-endpoint scope rejection) settles the row
+			// pending at audit.binding_unavailable — never completed, never
+			// swallowed, never dead-lettered (publicationOutcome handles
+			// errAuditTenantUnbound before the MaxAttempts check) — and alerts
+			// exactly once per failed attempt via the scope-missing counter.
+			if errors.Is(err, auditgovernance.ErrTokenScopeMissing) {
+				s.metrics.ObserveAuditScopeMissing(strings.TrimSpace(fact.Source))
+				return errAuditTenantUnbound
+			}
 			return err
 		}
 	}

@@ -68,3 +68,26 @@ func buildOutboxRelay(deps outboxDependencies) (stop func()) {
 	return relay.Start(pollInterval)
 }
 
+// buildOutboxCleaner constructs the outbox retention cleaner from the loaded
+// config, passing the purge_paused flag through so the value reaches the
+// cleaner (T-5.3 wiring control: a validated config with the flag set always
+// has the cleaner wired, so the flag is never inert in production). The repo
+// parameter is the Repository seam so the wiring test can inject a recording
+// fake.
+func buildOutboxCleaner(cfg *config.Config, log *zap.Logger, outboxRepo outbox.Repository) func() {
+	// The wiring gate lives HERE (mirroring the new.go guard it was extracted
+	// from) so no future caller can bypass it: the cleaner is wired only when
+	// both the interval and the dead-letter retention are positive, which is
+	// exactly when validateDataRetention permits purge_paused=true — the flag
+	// is never inert in production.
+	if cfg.DataRetention.OutboxCleanInterval <= 0 || cfg.DataRetention.OutboxDeadLetterRetention <= 0 {
+		return func() {}
+	}
+	return outbox.RunOutboxCleaner(
+		outboxRepo, log,
+		cfg.DataRetention.OutboxDeadLetterRetention,
+		cfg.DataRetention.OutboxPublishedRetention,
+		cfg.DataRetention.OutboxCleanInterval,
+		cfg.DataRetention.PurgePaused,
+	)
+}

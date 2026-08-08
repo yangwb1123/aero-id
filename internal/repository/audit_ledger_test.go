@@ -41,6 +41,17 @@ func validAuditFact() *domain.AuditFact {
 		TenantID: "tenant-a", Action: "test", OccurredAt: time.Now().UTC()}
 }
 
+// TestCheckAuditDuplicateZeroEventIDShortCircuits (T-10.1-E / REQ-6): a fact
+// with a zero EventID must never be deduplicated — checkAuditDuplicate returns
+// nil before touching the database (a nil tx would panic on any query), which
+// pins the legacy zero-EventID append behavior and blocks a future "helpful"
+// coercion from silently changing legacy Log callers (file/block/admin/ban).
+func TestCheckAuditDuplicateZeroEventIDShortCircuits(t *testing.T) {
+	if err := checkAuditDuplicate(nil, &domain.AuditFact{}); err != nil {
+		t.Fatalf("checkAuditDuplicate(zero EventID) = %v, want nil (no dedup, no DB touch)", err)
+	}
+}
+
 // TestAuditLedgerFailClosedWithoutSigningKey: with an empty key the ledger must
 // refuse append and verification before touching the database (a zero-value
 // *gorm.DB panics on any use, so reaching the DB would fail the test).

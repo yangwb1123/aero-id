@@ -25,7 +25,6 @@ import (
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/sso"
-	storagegc "github.com/aero/aero-id/internal/storage/gc"
 )
 
 // New builds the fully wired application. It opens the DB, storage, and SSO
@@ -128,37 +127,27 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		return nil, err
 	}
 
-	fileRepo := repository.NewFileRepository(gdb)
-	fileShareRepo := repository.NewFileShareRepository(gdb)
 	auditRepo := repository.NewAuditRepository(gdb)
-	auditLedgerRepo := repository.NewAuditLedgerRepository(gdb, repository.AuditLedgerConfig{SigningKey: cfg.AuditLedger.SigningKey})
-	callbackRepo := repository.NewCallbackRepository(gdb)
-	callbackSvc := service.NewCallbackService(callbackRepo, service.CallbackConfig{
-		MasterKey: cfg.Callback.MasterKey, RequestTimeout: cfg.Callback.RequestTimeout,
-		MaxResponseBytes: cfg.Callback.MaxResponseBytes, MaxAttempts: cfg.Callback.MaxAttempts,
-		RetryBase: cfg.Callback.RetryBase, AllowPrivateTarget: cfg.Callback.AllowPrivateTarget,
-		WorkerConcurrency: cfg.Callback.WorkerConcurrency,
-	})
-	auditPublishers, err := buildAuditPublishers(cfg, gdb)
+	callbackSvc, auditLedger, auditLedgerRepo, err := buildAuditStack(cfg, gdb, controlMetrics)
 	if err != nil {
 		return nil, err
 	}
-	auditLedger := service.NewAuditLedgerService(auditLedgerRepo)
-	if setter, ok := auditLedger.(service.ControlPlaneMetricsSetter); ok {
-		setter.SetControlPlaneMetrics(controlMetrics)
-	}
-	wireAuditServices(callbackSvc, auditLedger, auditLedgerRepo, auditPublishers...)
+	// F-1 (storage GC audit): NewFileRepository gains the ledger for the
+	// HardDeleteWithAudit sweep surface, so it is constructed AFTER the audit
+	// stack (mirroring the fileShareRepo placement).
+	fileRepo := repository.NewFileRepository(gdb, auditLedgerRepo)
+	fileShareRepo := repository.NewFileShareRepository(gdb, auditLedgerRepo)
 	outboxRepo := outbox.NewGormRepository(gdb)
 	// Materialized unread counter: shared by message and notification repos.
 	unreadCounter := repository.NewUnreadCounter(gdb)
-	msgRepo := repository.NewMessageRepository(gdb, outboxRepo, unreadCounter)
-	commentRepo := repository.NewCommentRepository(gdb, outboxRepo)
+	msgRepo := repository.NewMessageRepository(gdb, outboxRepo, auditLedgerRepo, unreadCounter)
+	commentRepo := repository.NewCommentRepository(gdb, outboxRepo, auditLedgerRepo)
 	notifRepo := repository.NewNotificationRepository(gdb, unreadCounter)
-	blockRepo := repository.NewBlockRepository(gdb)
-	banRepo := repository.NewBanRepository(gdb)
+	blockRepo := repository.NewBlockRepository(gdb, auditLedgerRepo)
+	banRepo := repository.NewBanRepository(gdb, auditLedgerRepo)
 	prefRepo := repository.NewPreferenceRepository(gdb)
 	storageRefRepo := repository.NewStorageRefRepository(gdb)
-	adminRepo := repository.NewAdminRepository(gdb)
+	adminRepo := repository.NewAdminRepository(gdb, auditLedgerRepo)
 	accountRepo := repository.NewAccountRepository(gdb, auditLedgerRepo)
 	billingRuntime, err := buildBillingRuntime(cfg, gdb)
 	if err != nil {
@@ -178,23 +167,13 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	})
 	stopCallbacks := callbackSvc.Start(context.Background(), cfg.Callback.WorkerInterval)
 
-	// Storage GC reconciliation sweep. OPT-IN and disabled by default: it only starts
-	// when storage.gc.enabled, so an operator must explicitly turn it on. It purges
-	// soft-deleted file rows past their retention (deleting unreferenced blobs) and,
-	// optionally, sweeps orphaned blobs the create path may have leaked.
+	// Storage GC reconciliation sweep. OPT-IN and disabled by default; purges
+	// soft-deleted file rows past retention (deleting unreferenced blobs) and,
+	// optionally, sweeps orphaned blobs. The destructive phases are audited
+	// (in-tx row purge + checked reclamation observations).
 	var stopGC func()
 	if cfg.Storage.GC.Enabled {
-		sweeper := storagegc.New(fileRepo, storageRefRepo, store, storagegc.Config{
-			Retention:    cfg.Storage.GC.Retention,
-			MinOrphanAge: cfg.Storage.GC.MinOrphanAge,
-			PurgeBatch:   cfg.Storage.GC.PurgeBatch,
-			SweepOrphans: cfg.Storage.GC.SweepOrphans,
-		}, log)
-		stopGC = sweeper.Start(cfg.Storage.GC.Interval)
-		log.Info("storage gc sweep enabled",
-			zap.Duration("interval", cfg.Storage.GC.Interval),
-			zap.Duration("retention", cfg.Storage.GC.Retention),
-			zap.Bool("sweep_orphans", cfg.Storage.GC.SweepOrphans))
+		stopGC = buildStorageGCSweeper(cfg, log, fileRepo, storageRefRepo, store, auditLedger)
 	} else if cfg.Storage.Type == "s3" {
 		log.Warn("storage gc is DISABLED with s3 backend — stale blobs will accumulate until gc.enabled is true",
 			zap.String("storage_type", cfg.Storage.Type))
@@ -238,7 +217,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithAccountRegionDirectory(repository.NewRegionDirectoryRepository(gdb), cfg.Account.HomeRegionVersion),
 	)
 	regionFencingSvc := service.NewRegionFencingService(repository.NewRegionDirectoryRepository(gdb))
-	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb),
+	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb, auditLedgerRepo),
 		repository.NewLegacyCleanupRepository(gdb), auditLedger)
 	aggregationSvc := service.NewAggregationService(accountSvc, snapshotRepo, sourceConnectors...)
 	eventIngestSvc := service.NewEventIngestService(eventReceiptRepo,
@@ -276,6 +255,17 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	stopSyncJobs := syncJobSvc.Start(context.Background(), time.Second)
 	banSvc := service.NewBanService(banRepo, adminSvc,
 		service.WithBanAuditLogger(auditLedger),
+	)
+
+	// FM-8 wiring assertion: the six legacy services own the `if s.audit != nil`
+	// skip guards at the 10 fail-closed Log sites; assert all six are wired.
+	assertAuditWiring(
+		auditWiredService{name: "file", svc: fileSvc},
+		auditWiredService{name: "message", svc: msgSvc},
+		auditWiredService{name: "comment", svc: commentSvc},
+		auditWiredService{name: "block", svc: blockSvc},
+		auditWiredService{name: "admin", svc: adminSvc},
+		auditWiredService{name: "ban", svc: banSvc},
 	)
 
 	// Redis client for shared state (idempotency store, SSO cache, leader election,
@@ -356,12 +346,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	// their respective retentions. OPT-IN.
 	var stopOutboxClean func()
 	if cfg.DataRetention.OutboxCleanInterval > 0 && cfg.DataRetention.OutboxDeadLetterRetention > 0 {
-		stopOutboxClean = outbox.RunOutboxCleaner(
-			outboxRepo, log,
-			cfg.DataRetention.OutboxDeadLetterRetention,
-			cfg.DataRetention.OutboxPublishedRetention,
-			cfg.DataRetention.OutboxCleanInterval,
-		)
+		stopOutboxClean = buildOutboxCleaner(cfg, log, outboxRepo)
 	}
 
 	// Degradation state manager — tracks upstream dependency health for the
@@ -376,7 +361,9 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	stopDegradation := degradationState.StartProbing(context.Background(), 30*time.Second, 3, 2)
 
 	health := buildHealthHandler(cfg, sqlDB, ssoClient, billingRuntime.probe)
-	holdSvc, anchorSvc := buildAuditComplianceServices(gdb, auditLedger, auditLedgerRepo, store)
+	holdSvc, anchorSvc, cutoverFacadeSvc := buildAuditComplianceServices(gdb, auditLedger, auditLedgerRepo, store)
+	// REQ-4/5 fail-closed wiring: hold/cutover services must not run with a nil audit service.
+	assertComplianceAuditWiring(holdSvc, cutoverSvc, cutoverFacadeSvc)
 	auditHandler := buildAuditLedgerHandler(auditLedger, holdSvc, anchorSvc, syncJobSvc, permissionChecker)
 	router := httpapi.NewRouter(
 		log,
@@ -408,8 +395,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewSearchHandler(searchSvc),
 		httpapi.NewAccountHandlerWithExtensions(accountSvc, regionFencingSvc,
 			service.NewLegacyMigrationService(repository.NewLegacyMigrationRepository(gdb), sourceConnectors...),
-			service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb),
-				repository.NewLegacyCleanupRepository(gdb), auditLedger),
+			cutoverFacadeSvc,
 			permissionChecker),
 		httpapi.NewAggregationHandler(aggregationSvc, permissionChecker),
 		httpapi.NewEventIngestHandler(eventIngestSvc, cfg.EventIngest.SigningKey, cfg.EventIngest.MaxBodyBytes, cfg.EventIngest.ClockSkew,

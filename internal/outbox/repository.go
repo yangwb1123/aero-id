@@ -92,14 +92,17 @@ func (r *GormRepository) PurgeDeadLetters(ctx context.Context, cutoff time.Time,
 	}
 	var total int64
 	for {
-		// Purge dead letters past cutoff.
+		// Purge dead letters past cutoff. The outer dead_letter qual is
+		// re-checked by EPQ against the new row version, so a row concurrently
+		// flipped out of dead_letter (a future requeue surface) survives the
+		// DELETE (mirror the delivery-leg guard in callback_audit.go).
 		sub := r.db.WithContext(ctx).Model(&eventRow{}).
 			Where("dead_letter = true AND created_at < ?", cutoff).
 			Order("created_at ASC, id ASC").
 			Select("id").
 			Limit(batchSize)
 		res := r.db.WithContext(ctx).
-			Where("id IN (?)", sub).
+			Where("id IN (?) AND dead_letter = true", sub).
 			Delete(&eventRow{})
 		if res.Error != nil {
 			return total, fmt.Errorf("purge dead letters: %w", res.Error)
@@ -128,38 +131,67 @@ func (r *GormRepository) PurgeDeadLetters(ctx context.Context, cutoff time.Time,
 	return total, nil
 }
 
+// outboxCleaner carries the retention bounds and the pause flag; tickOnce and
+// runCleanerLoop are extracted with injected clock/tick sources so scheduling
+// tests drive them deterministically (T-5.2) without wall-clock sleeps.
+type outboxCleaner struct {
+	repo              Repository
+	deadLetterRetention time.Duration
+	publishedRetention  time.Duration
+	purgePaused         bool
+}
+
+// tickOnce performs one purge pass with an injected now: cutoffs are derived
+// from now (never a wall clock inside the function) and, when paused, returns
+// 0,nil WITHOUT touching the repository (no SELECT, no DELETE).
+func tickOnce(ctx context.Context, c *outboxCleaner, now time.Time) (int64, error) {
+	if c.purgePaused {
+		return 0, nil
+	}
+	deadCutoff := now.Add(-c.deadLetterRetention)
+	pubCutoff := now.Add(-c.publishedRetention)
+	return c.repo.PurgeDeadLetters(ctx, deadCutoff, pubCutoff, 0)
+}
+
+// runCleanerLoop drives purge ticks from an injected tick channel; the caller
+// cancels ctx to stop. Logging lives here so tickOnce stays pure.
+func runCleanerLoop(ctx context.Context, ticks <-chan time.Time, log *zap.Logger, c *outboxCleaner) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticks:
+			deleted, err := tickOnce(ctx, c, now.UTC())
+			if err != nil {
+				log.Warn("outbox purge failed", zap.Error(err))
+			} else if deleted > 0 {
+				log.Info("outbox purge complete",
+					zap.Int64("deleted", deleted),
+					zap.Time("dead_letter_cutoff", now.Add(-c.deadLetterRetention)),
+					zap.Time("published_cutoff", now.Add(-c.publishedRetention)))
+			}
+		}
+	}
+}
+
 // RunOutboxCleaner starts a background goroutine that periodically purges old
 // outbox event rows. Dead letters older than deadLetterRetention and published
 // events older than publishedRetention are deleted. Runs on the given interval.
-// Returns a stop function. A non-positive interval disables the cleaner.
-func RunOutboxCleaner(repo Repository, log *zap.Logger, deadLetterRetention, publishedRetention, interval time.Duration) func() {
+// purgePaused suspends all purge work (no SELECT, no DELETE) so dead-letter
+// replay cannot race a purge. Returns a stop function. A non-positive interval
+// disables the cleaner.
+func RunOutboxCleaner(repo Repository, log *zap.Logger, deadLetterRetention, publishedRetention, interval time.Duration, purgePaused bool) func() {
 	if interval <= 0 {
 		return func() {}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	t := time.NewTicker(interval)
-	done := make(chan struct{})
 	go func() {
-		ctx := context.Background()
-		for {
-			select {
-			case <-t.C:
-				now := time.Now().UTC()
-				deadCutoff := now.Add(-deadLetterRetention)
-				pubCutoff := now.Add(-publishedRetention)
-				deleted, err := repo.PurgeDeadLetters(ctx, deadCutoff, pubCutoff, 0)
-				if err != nil {
-					log.Warn("outbox purge failed", zap.Error(err))
-				} else if deleted > 0 {
-					log.Info("outbox purge complete",
-						zap.Int64("deleted", deleted),
-						zap.Time("dead_letter_cutoff", deadCutoff),
-						zap.Time("published_cutoff", pubCutoff))
-				}
-			case <-done:
-				t.Stop()
-				return
-			}
-		}
+		runCleanerLoop(ctx, t.C, log, &outboxCleaner{
+			repo: repo, deadLetterRetention: deadLetterRetention,
+			publishedRetention: publishedRetention, purgePaused: purgePaused,
+		})
+		t.Stop()
 	}()
-	return func() { close(done) }
+	return func() { cancel() }
 }
