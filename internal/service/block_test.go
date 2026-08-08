@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -62,60 +63,94 @@ func TestBlockService_UnblockHappyPath(t *testing.T) {
 	}
 }
 
+// TestBlockService_BlockEmitsAuditEvent (B2-1): with an auditor wired, the
+// in-tx BlockWithAudit path carries the fact with adapter-parity fields plus
+// target_uid.
 func TestBlockService_BlockEmitsAuditEvent(t *testing.T) {
-	var logged *domain.AuditEvent
+	var captured *domain.AuditFact
 	calls := 0
-	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
-		logged = e
+	repo := &mocks.BlockRepo{BlockWithAuditFn: func(_ context.Context, blocker, blocked string, fact *domain.AuditFact) error {
+		captured = fact
 		calls++
 		return nil
 	}}
-	repo := &mocks.BlockRepo{BlockFn: func(context.Context, string, string) error { return nil }}
-	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(audit))
+	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
 	ctx := service.WithActor(context.Background(), "a")
 	if err := svc.Block(ctx, "b"); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
-		t.Fatalf("audit Log called %d times, want 1", calls)
+		t.Fatalf("BlockWithAudit called %d times, want 1", calls)
 	}
-	if logged.Action != domain.AuditUserBlock {
-		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditUserBlock)
+	if captured.Action != domain.AuditUserBlock {
+		t.Fatalf("action = %q, want %q", captured.Action, domain.AuditUserBlock)
 	}
-	if logged.ActorUID != "a" {
-		t.Fatalf("actor = %q, want a", logged.ActorUID)
+	if captured.ActorUID != "a" {
+		t.Fatalf("actor = %q, want a", captured.ActorUID)
 	}
-	if logged.SubjectType != "user" || logged.SubjectID != "b" || logged.TargetUID != "b" {
-		t.Fatalf("subject/target wrong: type=%q id=%q target=%q", logged.SubjectType, logged.SubjectID, logged.TargetUID)
+	if captured.ResourceType != "user" || captured.ResourceID != "b" {
+		t.Fatalf("resource wrong: type=%q id=%q", captured.ResourceType, captured.ResourceID)
+	}
+	if captured.Payload["target_uid"] != "b" {
+		t.Fatalf("payload target_uid = %v, want b (adapter dropped it before B2-1)", captured.Payload["target_uid"])
 	}
 }
 
+// TestBlockService_UnblockEmitsAuditEvent (B2-1): same fact-level assertion
+// for the unblock path.
 func TestBlockService_UnblockEmitsAuditEvent(t *testing.T) {
-	var logged *domain.AuditEvent
+	var captured *domain.AuditFact
 	calls := 0
-	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
-		logged = e
+	repo := &mocks.BlockRepo{UnblockWithAuditFn: func(_ context.Context, blocker, blocked string, fact *domain.AuditFact) error {
+		captured = fact
 		calls++
 		return nil
 	}}
-	repo := &mocks.BlockRepo{UnblockFn: func(context.Context, string, string) error { return nil }}
-	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(audit))
+	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
 	ctx := service.WithActor(context.Background(), "a")
 	if err := svc.Unblock(ctx, "b"); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
-		t.Fatalf("audit Log called %d times, want 1", calls)
+		t.Fatalf("UnblockWithAudit called %d times, want 1", calls)
 	}
-	if logged.Action != domain.AuditUserUnblock {
-		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditUserUnblock)
+	if captured.Action != domain.AuditUserUnblock {
+		t.Fatalf("action = %q, want %q", captured.Action, domain.AuditUserUnblock)
 	}
-	if logged.ActorUID != "a" {
-		t.Fatalf("actor = %q, want a", logged.ActorUID)
+	if captured.ActorUID != "a" {
+		t.Fatalf("actor = %q, want a", captured.ActorUID)
 	}
-	if logged.SubjectType != "user" || logged.SubjectID != "b" || logged.TargetUID != "b" {
-		t.Fatalf("subject/target wrong: type=%q id=%q target=%q", logged.SubjectType, logged.SubjectID, logged.TargetUID)
+	if captured.ResourceType != "user" || captured.ResourceID != "b" {
+		t.Fatalf("resource wrong: type=%q id=%q", captured.ResourceType, captured.ResourceID)
 	}
+	if captured.Payload["target_uid"] != "b" {
+		t.Fatalf("payload target_uid = %v, want b", captured.Payload["target_uid"])
+	}
+}
+
+// TestBlockAuditFailureFailsClosed (B2-1): the in-tx BlockWithAudit path
+// fails closed — the request fails and the block never commits.
+func TestBlockAuditFailureFailsClosed(t *testing.T) {
+	repo := &mocks.BlockRepo{BlockWithAuditFn: func(context.Context, string, string, *domain.AuditFact) error {
+		return stderrors.New("ledger down")
+	}}
+	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
+	ctx := service.WithActor(context.Background(), "a")
+
+	err := svc.Block(ctx, "b")
+	assertAppCode(t, err, 500)
+}
+
+// TestUnblockAuditFailureFailsClosed (B2-1): same fail-closed contract for unblock.
+func TestUnblockAuditFailureFailsClosed(t *testing.T) {
+	repo := &mocks.BlockRepo{UnblockWithAuditFn: func(context.Context, string, string, *domain.AuditFact) error {
+		return stderrors.New("ledger down")
+	}}
+	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
+	ctx := service.WithActor(context.Background(), "a")
+
+	err := svc.Unblock(ctx, "b")
+	assertAppCode(t, err, 500)
 }
 
 func TestBlockService_ListBlockedHappyPath(t *testing.T) {

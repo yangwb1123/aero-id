@@ -20,6 +20,13 @@ type MessageRepository interface {
 	// (or not at all).
 	Create(ctx context.Context, m *domain.Message, evt *outbox.Event) error
 	Get(ctx context.Context, id domain.ID) (*domain.Message, error)
+	// GetIncludingDeleted returns the message row even when it has been
+	// soft-deleted, so callers can distinguish "never existed" (ErrNotFound)
+	// from "already deleted" after a scoped Get misses. Used to converge the
+	// audit fact of a delete whose mutation committed but whose audit append
+	// failed (503 audit.ingest_failed), without fabricating facts for messages
+	// that never existed. Returns ErrNotFound when no row exists in any state.
+	GetIncludingDeleted(ctx context.Context, id domain.ID) (*domain.Message, error)
 	ListInbox(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversation(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkRead(ctx context.Context, id domain.ID, at time.Time) error
@@ -64,14 +71,15 @@ type messageRepo struct {
 	db      *gorm.DB
 	outbox  outbox.Repository
 	counter *UnreadCounter // materialized unread counter; nil = no-op
+	audit   AuditLedgerTransactionalRepository
 }
 
 // NewMessageRepository builds a message repository. ob is the outbox repository
 // used to append domain events transactionally with message writes; it may be nil
 // (events are then simply not emitted), keeping existing wiring/tests working.
 // When counterOpt is provided, the unread counter table is updated transactionally.
-func NewMessageRepository(db *gorm.DB, ob outbox.Repository, counterOpt ...*UnreadCounter) MessageRepository {
-	r := &messageRepo{db: db, outbox: ob}
+func NewMessageRepository(db *gorm.DB, ob outbox.Repository, audit AuditLedgerTransactionalRepository, counterOpt ...*UnreadCounter) MessageRepository {
+	r := &messageRepo{db: db, outbox: ob, audit: requireAuditLedger("NewMessageRepository", audit)}
 	if len(counterOpt) > 0 {
 		r.counter = counterOpt[0]
 	}
@@ -112,6 +120,20 @@ func (r *messageRepo) Get(ctx context.Context, id domain.ID) (*domain.Message, e
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get message: %w", err)
+	}
+	return msgRowToDomain(&row), nil
+}
+
+// GetIncludingDeleted is Get without GORM's soft-delete scope: it returns the
+// row in any state (deleted or not), or ErrNotFound when no row exists at all.
+func (r *messageRepo) GetIncludingDeleted(ctx context.Context, id domain.ID) (*domain.Message, error) {
+	var row messageRow
+	err := r.db.WithContext(ctx).Unscoped().First(&row, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get message including deleted: %w", err)
 	}
 	return msgRowToDomain(&row), nil
 }

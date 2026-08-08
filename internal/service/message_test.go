@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"testing"
 	"time"
 
@@ -555,47 +556,76 @@ func TestMessageService_UnreactToMissingMessageNotFound(t *testing.T) {
 
 func TestMessageService_DeleteEmitsAuditEvent(t *testing.T) {
 	id := idgen.NewID()
-	var logged *domain.AuditEvent
 	calls := 0
-	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
-		logged = e
-		calls++
-		return nil
-	}}
+	var captured *domain.AuditFact
 	repo := &mocks.MessageRepo{
 		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
 			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
 		},
-		SoftDeleteFn: func(_ context.Context, _ domain.ID) error { return nil },
+		SoftDeleteWithEventAuditFn: func(_ context.Context, _ domain.ID, _ *outbox.Event, fact *domain.AuditFact) error {
+			captured = fact
+			calls++
+			return nil
+		},
 	}
-	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(&mocks.Auditor{}))
 	ctx := service.WithActor(context.Background(), "a")
 	if err := svc.Delete(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
-		t.Fatalf("audit Log called %d times, want 1", calls)
+		t.Fatalf("SoftDeleteWithEventAudit called %d times, want 1", calls)
 	}
-	if logged.Action != domain.AuditMessageDelete {
-		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditMessageDelete)
+	if captured.Action != domain.AuditMessageDelete {
+		t.Fatalf("action = %q, want %q", captured.Action, domain.AuditMessageDelete)
 	}
-	if logged.ActorUID != "a" {
-		t.Fatalf("actor = %q, want a", logged.ActorUID)
+	if captured.ActorUID != "a" {
+		t.Fatalf("actor = %q, want a", captured.ActorUID)
 	}
-	if logged.SubjectType != "message" || logged.SubjectID != id.String() {
-		t.Fatalf("subject = (%q,%q), want (message,%s)", logged.SubjectType, logged.SubjectID, id.String())
+	if captured.ResourceType != "message" || captured.ResourceID != id.String() {
+		t.Fatalf("resource = (%q,%q), want (message,%s)", captured.ResourceType, captured.ResourceID, id.String())
 	}
-	if logged.TargetUID != "b" {
-		t.Fatalf("target = %q, want b (recipient)", logged.TargetUID)
+	if captured.Payload["target_uid"] != "b" {
+		t.Fatalf("payload target_uid = %v, want b (recipient)", captured.Payload["target_uid"])
 	}
+	// The fact must be anchored on the message ID (EventID = id) so a retry
+	// after a 503 dedups to this fact instead of appending a duplicate.
+	if captured.EventID != id {
+		t.Fatalf("event ID = %v, want %v (anchored for dedup)", captured.EventID, id)
+	}
+}
+
+// TestDeleteMessageAuditFailureFailsClosed (B2-1): the in-tx
+// SoftDeleteWithEventAudit path fails closed — the request fails and the soft
+// delete never commits (same transaction as the anchored fact).
+func TestDeleteMessageAuditFailureFailsClosed(t *testing.T) {
+	id := idgen.NewID()
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+		SoftDeleteWithEventAuditFn: func(_ context.Context, _ domain.ID, _ *outbox.Event, _ *domain.AuditFact) error {
+			return stderrors.New("ledger down")
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(&mocks.Auditor{}))
+	ctx := service.WithActor(context.Background(), "a")
+
+	err := svc.Delete(ctx, id)
+	assertAppCode(t, err, 500)
 }
 
 func TestMessageService_DeleteMissingDoesNotAudit(t *testing.T) {
 	calls := 0
 	audit := &mocks.Auditor{LogFn: func(_ context.Context, _ *domain.AuditEvent) error { calls++; return nil }}
-	repo := &mocks.MessageRepo{GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
-		return nil, repository.ErrNotFound
-	}}
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound
+		},
+		GetIncludingDeletedFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound // no row in any state: never existed
+		},
+	}
 	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
 	ctx := service.WithActor(context.Background(), "a")
 	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
@@ -603,5 +633,113 @@ func TestMessageService_DeleteMissingDoesNotAudit(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("audit must not fire for an idempotent no-op delete, called %d times", calls)
+	}
+}
+
+// TestDeleteMessageRetryAfter503ReattemptsAudit (FM-1 fix): the first delete
+// attempt committed the soft delete but failed the audit append (503
+// audit.ingest_failed). The retry reads the message back as NotFound and must
+// NOT short-circuit before the audit write (which would lose the destructive
+// fact permanently): it re-attempts the fact, anchored on the message ID so
+// the ledger dedups it to the first fact. The no-op idempotency of a re-delete
+// is preserved — the retry never fabricates a fresh fact for a message that
+// never existed, and the anchored re-append dedups instead of duplicating.
+func TestDeleteMessageRetryAfter503ReattemptsAudit(t *testing.T) {
+	id := idgen.NewID()
+	var logged *domain.AuditEvent
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		return nil
+	}}
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound // soft-deleted rows are invisible to Get
+		},
+		GetIncludingDeletedFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Delete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if logged == nil {
+		t.Fatal("retry must re-attempt the audit fact instead of short-circuiting")
+	}
+	if logged.ID != id {
+		t.Fatalf("event ID = %v, want %v (anchored so the ledger dedups the re-append)", logged.ID, id)
+	}
+	if logged.Action != domain.AuditMessageDelete || logged.SubjectID != id.String() || logged.TargetUID != "b" {
+		t.Fatalf("unexpected retry fact: %+v", logged)
+	}
+}
+
+// TestDeleteMessageRetryAuditFailureFailsClosed: the already-gone retry path
+// fails closed exactly like the first attempt — 503 audit.ingest_failed — so a
+// sustained audit outage stays observable instead of silently succeeding.
+func TestDeleteMessageRetryAuditFailureFailsClosed(t *testing.T) {
+	id := idgen.NewID()
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound
+		},
+		GetIncludingDeletedFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+	}
+	audit := &mocks.Auditor{LogFn: func(context.Context, *domain.AuditEvent) error {
+		return stderrors.New("ledger down")
+	}}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	assertAuditIngestFailed(t, svc.Delete(ctx, id))
+}
+
+// TestDeleteMessageNeverExistedStillNoAudit: NotFound with no row in any state
+// stays a silent no-op without an audit fact — the audit-before-short-circuit
+// fix must not fabricate facts for messages that never existed.
+func TestDeleteMessageNeverExistedStillNoAudit(t *testing.T) {
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, _ *domain.AuditEvent) error { calls++; return nil }}
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound
+		},
+		GetIncludingDeletedFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "a")
+	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("never-existed delete must not audit, called %d times", calls)
+	}
+}
+
+// TestDeleteMessageSoftDeletedByOtherSenderNoAudit: the already-gone retry path
+// keeps the ownership check — a non-sender re-delete of an already-deleted
+// message stays a silent no-op and must not fabricate a fact.
+func TestDeleteMessageSoftDeletedByOtherSenderNoAudit(t *testing.T) {
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, _ *domain.AuditEvent) error { calls++; return nil }}
+	repo := &mocks.MessageRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.Message, error) {
+			return nil, repository.ErrNotFound
+		},
+		GetIncludingDeletedFn: func(_ context.Context, gid domain.ID) (*domain.Message, error) {
+			return &domain.Message{ID: gid, FromUID: "a", ToUID: "b"}, nil
+		},
+	}
+	svc := service.NewMessageService(repo, &mocks.FileRepo{}, &mocks.UserDir{}, service.WithMessageAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "c") // not the sender
+	if err := svc.Delete(ctx, idgen.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("non-sender re-delete must not audit, called %d times", calls)
 	}
 }

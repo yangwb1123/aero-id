@@ -46,6 +46,7 @@ func NewBanService(bans repository.BanRepository, admin AdminService, opts ...Ba
 	return s
 }
 
+//nolint:cyclop // legacy ban endpoint combines self-ban, permission, and duration policy; fail-closed audit adds one branch.
 func (s *banService) Ban(ctx context.Context, uid string, reason string, duration time.Duration) error {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -76,21 +77,20 @@ func (s *banService) Ban(ctx context.Context, uid string, reason string, duratio
 		expiresAt = &t
 	}
 
+	if s.audit != nil {
+		repo, ok := s.bans.(repository.BanAuditRepository)
+		if !ok {
+			return apperr.Internal("ban.audit_unavailable", "ban audit persistence is unavailable")
+		}
+		if err := repo.BanWithAudit(ctx, uid, actor, reason, expiresAt,
+			buildLegacyAuditFact(ctx, actor, domain.AuditUserBan, "user", uid, uid,
+				map[string]any{"reason": reason, "expiresAt": expiresAt}, domain.ID{})); err != nil {
+			return apperr.Internal("ban.failed", "failed to ban user").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.bans.Ban(ctx, uid, actor, reason, expiresAt); err != nil {
 		return apperr.Internal("ban.failed", "failed to ban user").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditUserBan,
-			SubjectType: "user",
-			SubjectID:   uid,
-			TargetUID:   uid,
-			Meta: map[string]any{
-				"reason":    reason,
-				"expiresAt": expiresAt,
-			},
-		})
 	}
 	return nil
 }
@@ -112,17 +112,19 @@ func (s *banService) Unban(ctx context.Context, uid string) error {
 		return apperr.Forbidden("ban.denied", "insufficient permissions to unban users")
 	}
 
+	if s.audit != nil {
+		repo, ok := s.bans.(repository.BanAuditRepository)
+		if !ok {
+			return apperr.Internal("ban.audit_unavailable", "ban audit persistence is unavailable")
+		}
+		if err := repo.UnbanWithAudit(ctx, uid,
+			buildLegacyAuditFact(ctx, actor, domain.AuditUserUnban, "user", uid, uid, nil, domain.ID{})); err != nil {
+			return apperr.Internal("ban.unban_failed", "failed to unban user").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.bans.Unban(ctx, uid); err != nil {
 		return apperr.Internal("ban.unban_failed", "failed to unban user").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditUserUnban,
-			SubjectType: "user",
-			SubjectID:   uid,
-			TargetUID:   uid,
-		})
 	}
 	return nil
 }

@@ -539,13 +539,8 @@ func TestCommentService_ResolveReportInvalidStatusIsBadRequest(t *testing.T) {
 func TestCommentService_ResolveReportEmitsAuditEvent(t *testing.T) {
 	reportID := idgen.NewID()
 	commentID := idgen.NewID()
-	var logged *domain.AuditEvent
+	var captured *domain.AuditFact
 	calls := 0
-	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
-		logged = e
-		calls++
-		return nil
-	}}
 	comments := &mocks.CommentRepo{
 		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
 			return &domain.CommentReport{ID: reportID, CommentID: commentID, Status: domain.ReportStatusOpen}, nil
@@ -553,36 +548,70 @@ func TestCommentService_ResolveReportEmitsAuditEvent(t *testing.T) {
 		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
 			return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
 		},
-		ResolveReportFn: func(_ context.Context, _ domain.ID, _ domain.ReportStatus, _ string, _ time.Time) error { return nil },
-		SetStatusFn:     func(_ context.Context, _ domain.ID, _ domain.CommentStatus) error { return nil },
+		ResolveReportWithAuditFn: func(_ context.Context, _ domain.ID, _ domain.ReportStatus, _ string, _ time.Time, _ domain.ID, fact *domain.AuditFact) error {
+			captured = fact
+			calls++
+			return nil
+		},
 	}
-	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{}, service.WithCommentAuditLogger(audit))
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{}, service.WithCommentAuditLogger(&mocks.Auditor{}))
 	ctx := service.WithActor(context.Background(), "author")
 	if err := svc.ResolveReport(ctx, reportID, domain.ReportStatusResolved); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
-		t.Fatalf("audit Log called %d times, want exactly 1", calls)
+		t.Fatalf("ResolveReportWithAudit called %d times, want exactly 1", calls)
 	}
-	if logged.Action != domain.AuditReportResolve {
-		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditReportResolve)
+	if captured.Action != domain.AuditReportResolve {
+		t.Fatalf("action = %q, want %q", captured.Action, domain.AuditReportResolve)
 	}
-	if logged.ActorUID != "author" {
-		t.Fatalf("actor = %q, want author (resolver)", logged.ActorUID)
+	if captured.ActorUID != "author" {
+		t.Fatalf("actor = %q, want author (resolver)", captured.ActorUID)
 	}
-	if logged.SubjectID != reportID.String() {
-		t.Fatalf("subject id = %q, want report id %s", logged.SubjectID, reportID.String())
+	if captured.ResourceID != reportID.String() {
+		t.Fatalf("resource id = %q, want report id %s", captured.ResourceID, reportID.String())
 	}
-	if logged.SubjectType != "comment_report" {
-		t.Fatalf("subject type = %q, want comment_report", logged.SubjectType)
+	if captured.EventID != reportID {
+		t.Fatalf("event id = %s, want report id %s (deterministic dedup anchor)", captured.EventID, reportID)
 	}
-	// Meta carries the comment id and the resolved status label.
-	if logged.Meta["comment_id"] != commentID.String() {
-		t.Fatalf("meta comment_id = %v, want %s", logged.Meta["comment_id"], commentID.String())
+	if captured.ResourceType != "comment_report" {
+		t.Fatalf("resource type = %q, want comment_report", captured.ResourceType)
 	}
-	if logged.Meta["status"] != "resolved" {
-		t.Fatalf("meta status = %v, want resolved", logged.Meta["status"])
+	// Payload carries the comment id, the resolved status label and target_uid.
+	if captured.Payload["comment_id"] != commentID.String() {
+		t.Fatalf("payload comment_id = %v, want %s", captured.Payload["comment_id"], commentID.String())
 	}
+	if captured.Payload["status"] != "resolved" {
+		t.Fatalf("payload status = %v, want resolved", captured.Payload["status"])
+	}
+	if captured.Payload["target_uid"] != "author" {
+		t.Fatalf("payload target_uid = %v, want author", captured.Payload["target_uid"])
+	}
+}
+
+// TestResolveReportAuditFailureFailsClosed (B2-1): the in-tx
+// ResolveReportWithAudit path fails closed — the request fails and the report
+// resolution never commits (same transaction as the anchored fact).
+func TestResolveReportAuditFailureFailsClosed(t *testing.T) {
+	reportID := idgen.NewID()
+	commentID := idgen.NewID()
+	comments := &mocks.CommentRepo{
+		GetReportFn: func(_ context.Context, _ domain.ID) (*domain.CommentReport, error) {
+			return &domain.CommentReport{ID: reportID, CommentID: commentID, Status: domain.ReportStatusOpen}, nil
+		},
+		GetFn: func(_ context.Context, cid domain.ID) (*domain.Comment, error) {
+			return &domain.Comment{ID: cid, OwnerUID: "author", Status: domain.CommentStatusNormal}, nil
+		},
+		ResolveReportWithAuditFn: func(_ context.Context, _ domain.ID, _ domain.ReportStatus, _ string, _ time.Time, _ domain.ID, _ *domain.AuditFact) error {
+			return stderrors.New("ledger down")
+		},
+	}
+	svc := service.NewCommentService(comments, &mocks.FileRepo{}, &mocks.MessageRepo{}, &mocks.UserDir{},
+		service.WithCommentAuditLogger(&mocks.Auditor{}))
+	ctx := service.WithActor(context.Background(), "author")
+
+	err := svc.ResolveReport(ctx, reportID, domain.ReportStatusResolved)
+	assertAppCode(t, err, 500)
 }
 
 func TestCommentService_LikeForbiddenForPrivateTarget(t *testing.T) {

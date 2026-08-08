@@ -29,9 +29,14 @@ type FileShareRepository interface {
 	IsSharedWith(ctx context.Context, fileID domain.ID, uid string) (bool, error)
 }
 
-type fileShareRepo struct{ db *gorm.DB }
+type fileShareRepo struct {
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
+}
 
-func NewFileShareRepository(db *gorm.DB) FileShareRepository { return &fileShareRepo{db: db} }
+func NewFileShareRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) FileShareRepository {
+	return &fileShareRepo{db: db, audit: requireAuditLedger("NewFileShareRepository", audit)}
+}
 
 func (r *fileShareRepo) Grant(ctx context.Context, fileID domain.ID, ownerUID string, granteeUIDs []string) error {
 	if len(granteeUIDs) == 0 {

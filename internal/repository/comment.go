@@ -64,13 +64,14 @@ type CommentRepository interface {
 type commentRepo struct {
 	db     *gorm.DB
 	outbox outbox.Repository
+	audit  AuditLedgerTransactionalRepository
 }
 
 // NewCommentRepository builds a comment repository. ob is the outbox repository
 // used to append domain events transactionally with comment writes; it may be nil
 // (events are then simply not emitted), keeping existing wiring/tests working.
-func NewCommentRepository(db *gorm.DB, ob outbox.Repository) CommentRepository {
-	return &commentRepo{db: db, outbox: ob}
+func NewCommentRepository(db *gorm.DB, ob outbox.Repository, audit AuditLedgerTransactionalRepository) CommentRepository {
+	return &commentRepo{db: db, outbox: ob, audit: requireAuditLedger("NewCommentRepository", audit)}
 }
 
 func (r *commentRepo) Create(ctx context.Context, c *domain.Comment) error {

@@ -37,9 +37,14 @@ type BlockRepository interface {
 	ListBlocked(ctx context.Context, blocker string, page domain.Page) ([]string, string, error)
 }
 
-type blockRepo struct{ db *gorm.DB }
+type blockRepo struct {
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
+}
 
-func NewBlockRepository(db *gorm.DB) BlockRepository { return &blockRepo{db: db} }
+func NewBlockRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) BlockRepository {
+	return &blockRepo{db: db, audit: requireAuditLedger("NewBlockRepository", audit)}
+}
 
 func (r *blockRepo) Block(ctx context.Context, blocker, blocked string) error {
 	row := userBlockRow{BlockerUID: blocker, BlockedUID: blocked, CreatedAt: time.Now().UTC()}

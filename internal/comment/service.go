@@ -429,6 +429,7 @@ func (s *serviceImpl) logResolveAudit(ctx context.Context, actor string, reportI
 		statusLabel = "resolved"
 	}
 	_ = s.audit.Log(ctx, &domain.AuditEvent{
+		ID:          reportID,
 		ActorUID:    actor,
 		Action:      domain.AuditReportResolve,
 		SubjectType: "comment_report",

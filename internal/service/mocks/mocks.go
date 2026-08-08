@@ -111,6 +111,10 @@ type FileShareRepo struct {
 	ListGranteesFn        func(ctx context.Context, fileID domain.ID) ([]string, error)
 	ListFilesSharedWithFn func(ctx context.Context, uid string, page domain.Page) ([]*domain.File, string, error)
 	IsSharedWithFn        func(ctx context.Context, fileID domain.ID, uid string) (bool, error)
+	// WithAudit surface (B2-1): when set, the service's in-tx audit path
+	// invokes these instead of the plain methods.
+	GrantWithAuditFn  func(ctx context.Context, fileID domain.ID, ownerUID string, granteeUIDs []string, facts []*domain.AuditFact) error
+	RevokeWithAuditFn func(ctx context.Context, fileID domain.ID, granteeUID string, fact *domain.AuditFact) error
 }
 
 // The defaults model "sharing inactive": no grants exist, lists are empty, and
@@ -151,9 +155,24 @@ func (m *FileShareRepo) IsSharedWith(ctx context.Context, fileID domain.ID, uid 
 	return m.IsSharedWithFn(ctx, fileID, uid)
 }
 
+func (m *FileShareRepo) GrantWithAudit(ctx context.Context, fileID domain.ID, ownerUID string, granteeUIDs []string, facts []*domain.AuditFact) error {
+	if m.GrantWithAuditFn == nil {
+		return nil
+	}
+	return m.GrantWithAuditFn(ctx, fileID, ownerUID, granteeUIDs, facts)
+}
+
+func (m *FileShareRepo) RevokeWithAudit(ctx context.Context, fileID domain.ID, granteeUID string, fact *domain.AuditFact) error {
+	if m.RevokeWithAuditFn == nil {
+		return nil
+	}
+	return m.RevokeWithAuditFn(ctx, fileID, granteeUID, fact)
+}
+
 type MessageRepo struct {
 	CreateFn                    func(ctx context.Context, m *domain.Message, evt *outbox.Event) error
 	GetFn                       func(ctx context.Context, id domain.ID) (*domain.Message, error)
+	GetIncludingDeletedFn       func(ctx context.Context, id domain.ID) (*domain.Message, error)
 	ListInboxFn                 func(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error)
 	ListConversationFn          func(ctx context.Context, uidA, uidB string, page domain.Page) ([]*domain.Message, string, error)
 	MarkReadFn                  func(ctx context.Context, id domain.ID, at time.Time) error
@@ -162,6 +181,7 @@ type MessageRepo struct {
 	UpdateContentFn             func(ctx context.Context, id domain.ID, content string, at time.Time) error
 	SoftDeleteFn                func(ctx context.Context, id domain.ID) error
 	SoftDeleteWithEventFn       func(ctx context.Context, id domain.ID, evt *outbox.Event) error
+	SoftDeleteWithEventAuditFn  func(ctx context.Context, id domain.ID, evt *outbox.Event, fact *domain.AuditFact) error
 	AppendEventFn               func(ctx context.Context, evt *outbox.Event) error
 	MarkConversationReadFn      func(ctx context.Context, toUID, peer string, at time.Time) error
 	ReactToMessageFn            func(ctx context.Context, messageID uuid.UUID, uid string) error
@@ -179,6 +199,15 @@ func (m *MessageRepo) Create(ctx context.Context, msg *domain.Message, evt *outb
 }
 func (m *MessageRepo) Get(ctx context.Context, id domain.ID) (*domain.Message, error) {
 	return m.GetFn(ctx, id)
+}
+
+// GetIncludingDeleted defaults to "no row in any state" (nil, nil) so tests
+// that only exercise the never-existed no-op path need not wire it.
+func (m *MessageRepo) GetIncludingDeleted(ctx context.Context, id domain.ID) (*domain.Message, error) {
+	if m.GetIncludingDeletedFn == nil {
+		return nil, nil
+	}
+	return m.GetIncludingDeletedFn(ctx, id)
 }
 func (m *MessageRepo) ListInbox(ctx context.Context, toUID string, page domain.Page, unreadOnly bool) ([]*domain.Message, string, error) {
 	return m.ListInboxFn(ctx, toUID, page, unreadOnly)
@@ -221,6 +250,13 @@ func (m *MessageRepo) SoftDeleteWithEvent(ctx context.Context, id domain.ID, evt
 		return nil
 	}
 	return m.SoftDeleteWithEventFn(ctx, id, evt)
+}
+
+func (m *MessageRepo) SoftDeleteWithEventAudit(ctx context.Context, id domain.ID, evt *outbox.Event, fact *domain.AuditFact) error {
+	if m.SoftDeleteWithEventAuditFn == nil {
+		return nil
+	}
+	return m.SoftDeleteWithEventAuditFn(ctx, id, evt, fact)
 }
 func (m *MessageRepo) AppendEvent(ctx context.Context, evt *outbox.Event) error {
 	if m.AppendEventFn == nil {
@@ -286,6 +322,8 @@ type CommentRepo struct {
 		page domain.Page) ([]*domain.CommentReport, string, error)
 	GetReportFn                 func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
 	ResolveReportFn             func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
+	ResolveReportWithAuditFn func(ctx context.Context, reportID domain.ID, status domain.ReportStatus,
+		resolverUID string, at time.Time, hideCommentID domain.ID, fact *domain.AuditFact) error
 	SearchCommentsFn            func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
 	SearchCommentsLikeFn        func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)
 	SearchCommentsWithSnippetFn func(ctx context.Context, ownerUID, query string, limit int) ([]repository.CommentSearchResult, error)
@@ -368,6 +406,14 @@ func (m *CommentRepo) ResolveReport(ctx context.Context, reportID domain.ID, sta
 		return nil
 	}
 	return m.ResolveReportFn(ctx, reportID, status, resolverUID, at)
+}
+
+func (m *CommentRepo) ResolveReportWithAudit(ctx context.Context, reportID domain.ID, status domain.ReportStatus,
+	resolverUID string, at time.Time, hideCommentID domain.ID, fact *domain.AuditFact) error {
+	if m.ResolveReportWithAuditFn == nil {
+		return nil
+	}
+	return m.ResolveReportWithAuditFn(ctx, reportID, status, resolverUID, at, hideCommentID, fact)
 }
 
 func (m *CommentRepo) SearchComments(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error) {
@@ -482,6 +528,10 @@ type BlockRepo struct {
 	UnblockFn     func(ctx context.Context, blocker, blocked string) error
 	IsBlockedFn   func(ctx context.Context, blocker, blocked string) (bool, error)
 	ListBlockedFn func(ctx context.Context, blocker string, page domain.Page) ([]string, string, error)
+	// WithAudit surface (B2-1): when set, the service's in-tx audit path
+	// invokes these instead of the plain methods.
+	BlockWithAuditFn   func(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error
+	UnblockWithAuditFn func(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error
 }
 
 // Defaults model "no blocks": Block/Unblock succeed, IsBlocked is false (so the
@@ -512,6 +562,20 @@ func (m *BlockRepo) ListBlocked(ctx context.Context, blocker string, page domain
 		return nil, "", nil
 	}
 	return m.ListBlockedFn(ctx, blocker, page)
+}
+
+func (m *BlockRepo) BlockWithAudit(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error {
+	if m.BlockWithAuditFn == nil {
+		return nil
+	}
+	return m.BlockWithAuditFn(ctx, blocker, blocked, fact)
+}
+
+func (m *BlockRepo) UnblockWithAudit(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error {
+	if m.UnblockWithAuditFn == nil {
+		return nil
+	}
+	return m.UnblockWithAuditFn(ctx, blocker, blocked, fact)
 }
 
 type Storage struct {

@@ -125,20 +125,11 @@ func (s *operationService) Create(ctx context.Context, input OperationInput) (*d
 
 func (s *operationService) persistCreatedOperation(ctx context.Context, actor string,
 	operation *domain.Operation) (*domain.Operation, error) {
-	atomicAudit, err := s.createWithAudit(ctx, operation)
-	if err != nil {
+	if err := s.createWithAudit(ctx, operation); err != nil {
 		if existing, findErr := s.repo.FindByIdempotency(ctx, actor, operation.TenantID, operation.IdempotencyKey); findErr == nil {
 			return existing, nil
 		}
 		return nil, apperr.Internal("operation.create_failed", "failed to create operation").Wrap(err)
-	}
-	if s.audit != nil && !atomicAudit {
-		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", SourceRegion: operation.HomeRegion,
-			EventID: operation.ID, OperationID: operation.ID, RequestID: operation.RequestID, ActorUID: actor,
-			AccountID: operation.AccountID, TenantID: operation.TenantID, Action: "operation.requested",
-			ResourceType: "operation", ResourceID: operation.ID.String(), Payload: map[string]any{"type": operation.OperationType}}); err != nil {
-			return nil, apperr.Internal("operation.audit_failed", "failed to record operation audit").Wrap(err)
-		}
 	}
 	return operation, nil
 }

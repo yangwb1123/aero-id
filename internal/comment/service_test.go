@@ -686,6 +686,9 @@ func TestCommentService_ResolveReportEmitsAuditEvent(t *testing.T) {
 	if logged.SubjectID != reportID.String() {
 		t.Fatalf("subject id = %q, want report id %s", logged.SubjectID, reportID.String())
 	}
+	if logged.ID != reportID {
+		t.Fatalf("event id = %s, want report id %s (deterministic dedup anchor)", logged.ID, reportID)
+	}
 	if logged.SubjectType != "comment_report" {
 		t.Fatalf("subject type = %q, want comment_report", logged.SubjectType)
 	}

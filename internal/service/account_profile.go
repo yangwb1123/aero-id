@@ -41,29 +41,23 @@ func (s *accountService) UpdateProfile(ctx context.Context, input UpdateAccountP
 		return nil, err
 	}
 	profile.Normalize()
-	atomicAudit := false
 	if s.audit != nil {
-		if repo, ok := s.repo.(repository.AccountProfileAuditRepository); ok {
-			atomicAudit = true
-			err = repo.UpdateProfileWithAudit(ctx, profile, buildAuditFact(ctx, AuditFactInput{Source: "aero-id",
-				ActorUID: actorFromContext(ctx), AccountID: account.ID, TenantID: TenantFrom(ctx),
-				Action: "account.profile.updated", ResourceType: "account_profile", ResourceID: account.ID.String(),
-				Payload: map[string]any{"fields": changed}}))
-		} else {
-			err = s.repo.UpdateProfile(ctx, profile)
+		repo, ok := s.repo.(repository.AccountProfileAuditRepository)
+		if !ok {
+			// Fail closed (B2-1 REQ-4): a repo without the WithAudit surface must
+			// not silently fall back to a plain UpdateProfile that drops the
+			// account.profile.updated fact.
+			return nil, apperr.Internal("account.profile_audit_unavailable", "profile audit persistence is unavailable")
 		}
+		err = repo.UpdateProfileWithAudit(ctx, profile, buildAuditFact(ctx, AuditFactInput{Source: "aero-id",
+			ActorUID: actorFromContext(ctx), AccountID: account.ID, TenantID: TenantFrom(ctx),
+			Action: "account.profile.updated", ResourceType: "account_profile", ResourceID: account.ID.String(),
+			Payload: map[string]any{"fields": changed}}))
 	} else {
 		err = s.repo.UpdateProfile(ctx, profile)
 	}
 	if err != nil {
 		return nil, mapAccountError(err, "account.profile_update_failed", "failed to update account profile")
-	}
-	if s.audit != nil && !atomicAudit {
-		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", ActorUID: actorFromContext(ctx), AccountID: account.ID,
-			TenantID: TenantFrom(ctx), Action: "account.profile.updated", ResourceType: "account_profile", ResourceID: account.ID.String(),
-			Payload: map[string]any{"fields": changed}}); err != nil {
-			return nil, apperr.Internal("account.profile_audit_failed", "failed to record profile update audit").Wrap(err)
-		}
 	}
 	return profile, nil
 }

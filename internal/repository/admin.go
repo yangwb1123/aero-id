@@ -29,11 +29,12 @@ type AdminRepository interface {
 }
 
 type adminRepo struct {
-	db *gorm.DB
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
 }
 
-func NewAdminRepository(db *gorm.DB) AdminRepository {
-	return &adminRepo{db: db}
+func NewAdminRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) AdminRepository {
+	return &adminRepo{db: db, audit: requireAuditLedger("NewAdminRepository", audit)}
 }
 
 type userRoleRow struct {

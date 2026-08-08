@@ -45,6 +45,15 @@ func countAuditLedgerRows(t *testing.T, db *gorm.DB, eventID domain.ID) int64 {
 	return n
 }
 
+func countAuditPublicationRows(t *testing.T, db *gorm.DB, eventID domain.ID) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Raw(`SELECT count(*) FROM audit_publications ap JOIN audit_ledger l ON l.id = ap.fact_id WHERE l.event_id = ?`, eventID).Scan(&n).Error; err != nil {
+		t.Fatalf("count audit publication rows: %v", err)
+	}
+	return n
+}
+
 // TestAuditWiringHappyPath is AC3a: every *WithAudit mutation commits its
 // durable audit fact in the SAME transaction as the domain rows — one ledger
 // row per call, with the fact's event_id and action preserved.
@@ -68,6 +77,9 @@ func TestAuditWiringHappyPath(t *testing.T) {
 	}
 	if n := countAuditLedgerRows(t, db, e1); n != 1 {
 		t.Fatalf("ledger rows for e1 = %d, want 1", n)
+	}
+	if n := countAuditPublicationRows(t, db, e1); n != 1 {
+		t.Fatalf("publication rows for e1 = %d, want 1 (one publication per fact)", n)
 	}
 
 	// 2. Operation creation + audit fact.
@@ -198,9 +210,11 @@ func TestAuditWiringRollbackAtomicity(t *testing.T) {
 		t.Fatalf("ledger rows for e1 = %d, want exactly 1 (no double append)", n)
 	}
 
-	// Step: finish step A with e3, then finish a DIFFERENT step B reusing e3 —
-	// the second finalization rolls back: step B stays running with its lease,
-	// ledger keeps exactly one e3.
+	// Step: the step path is a Class B site (contract §4.2) — a duplicate
+	// append is swallowed inside the transaction. A retried finalization of a
+	// DIFFERENT step reusing an existing event_id (an artificial duplicate, as
+	// real anchors are per-step) now COMMITS the step mutation with the append
+	// swallowed: ledger keeps exactly one e3 row and step B is finalized.
 	opRepo := repository.NewOperationRepository(db, ledger).(repository.OperationAuditRepository)
 	opStateRepo := repository.NewOperationRepository(db, ledger).(repository.OperationStateAuditRepository)
 	op := &domain.Operation{
@@ -228,10 +242,9 @@ func TestAuditWiringRollbackAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimNextStep B: %v", err)
 	}
-	err = opStateRepo.FinishStepWithAudit(ctx, stepB.ID, "worker-b", domain.StepSucceeded,
-		"src-op-b", "", nil, "", auditWiringFact(e3, "tenant-a", "operation.step.succeeded"))
-	if !errors.Is(err, repository.ErrAuditDuplicate) {
-		t.Fatalf("duplicate step err = %v, want ErrAuditDuplicate", err)
+	if err := opStateRepo.FinishStepWithAudit(ctx, stepB.ID, "worker-b", domain.StepSucceeded,
+		"src-op-b", "", nil, "", auditWiringFact(e3, "tenant-a", "operation.step.succeeded")); err != nil {
+		t.Fatalf("duplicate step append must be swallowed in-tx, got %v", err)
 	}
 	var stepBRow struct {
 		Status     string
@@ -240,10 +253,76 @@ func TestAuditWiringRollbackAtomicity(t *testing.T) {
 	if err := db.Raw(`SELECT status, lease_owner FROM operation_steps WHERE id = ?`, stepB.ID).Scan(&stepBRow).Error; err != nil {
 		t.Fatal(err)
 	}
-	if stepBRow.Status != string(domain.StepRunning) || stepBRow.LeaseOwner != "worker-b" {
-		t.Fatalf("step B after rollback = %+v, want running/worker-b (UPDATE rolled back)", stepBRow)
+	if stepBRow.Status != string(domain.StepSucceeded) || stepBRow.LeaseOwner != "" {
+		t.Fatalf("step B after swallowed duplicate = %+v, want succeeded/cleared lease (mutation committed)", stepBRow)
 	}
 	if n := countAuditLedgerRows(t, db, e3); n != 1 {
-		t.Fatalf("ledger rows for e3 = %d, want exactly 1", n)
+		t.Fatalf("ledger rows for e3 = %d, want exactly 1 (duplicate append swallowed)", n)
+	}
+}
+
+// installFailPublicationInsertTrigger installs a BEFORE INSERT trigger on
+// audit_publications that raises: the in-tree mechanism for failing an append
+// AFTER the audit_ledger row is staged. The publication insert is the last
+// statement of every WithAudit transaction, so this is the only failure mode
+// that proves the crash window — a failure after the ledger row exists must
+// roll the ledger row back with the mutation (never a ledger row without its
+// publication, never a mutation without its fact).
+func installFailPublicationInsertTrigger(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Exec(`CREATE FUNCTION fail_publication_insert() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'publication insert blocked (test)';
+		END;
+		$$ LANGUAGE plpgsql`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TRIGGER fail_publication_insert_trigger
+		BEFORE INSERT ON audit_publications FOR EACH ROW EXECUTE FUNCTION fail_publication_insert()`).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Exec(`DROP TRIGGER IF EXISTS fail_publication_insert_trigger ON audit_publications`).Error
+		_ = db.Exec(`DROP FUNCTION IF EXISTS fail_publication_insert()`).Error
+	})
+}
+
+// TestAuditWiringPublicationInsertRollsBackLedgerRow (FM-2): when the
+// publication-row insert fails inside the shared transaction, the LEDGER row
+// rolls back with it — a publication can never exist without its ledger row,
+// and the drain's post-commit fact read stays safe.
+func TestAuditWiringPublicationInsertRollsBackLedgerRow(t *testing.T) {
+	ctx := context.Background()
+	db := testpg.Start(t)
+	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	installFailPublicationInsertTrigger(t, db)
+
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{SigningKey: "integration-audit-wiring-key-0123456789abcdef"})
+	accountRepo := repository.NewAccountRepository(db, ledger)
+	profileRepo := accountRepo.(repository.AccountProfileAuditRepository)
+	account, err := accountRepo.EnsureByIdentity(ctx, "tenant-a", "snaplink", "u-fm2", "u-fm2", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventID := idgen.NewID()
+	profile := &domain.AccountProfile{AccountID: account.ID, DisplayName: "blocked"}
+	err = profileRepo.UpdateProfileWithAudit(ctx, profile, auditWiringFact(eventID, "tenant-a", "account.profile.updated"))
+	if err == nil {
+		t.Fatal("mutation must fail when the publication insert fails")
+	}
+	if n := countAuditLedgerRows(t, db, eventID); n != 0 {
+		t.Fatalf("ledger rows after publication failure = %d, want 0 (ledger rolled back with publication)", n)
+	}
+	if n := countAuditPublicationRows(t, db, eventID); n != 0 {
+		t.Fatalf("publication rows after publication failure = %d, want 0", n)
+	}
+	var profileRow struct {
+		DisplayName string
+	}
+	if err := db.Raw(`SELECT display_name FROM account_profiles WHERE account_id = ?`, account.ID).Scan(&profileRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if profileRow.DisplayName == "blocked" {
+		t.Fatal("profile mutation must roll back with the failed append")
 	}
 }

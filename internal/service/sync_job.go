@@ -152,19 +152,11 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 		RequestID: RequestIDFrom(ctx), JobType: input.JobType, Status: domain.SyncJobPending,
 		IdempotencyKey: input.IdempotencyKey, Request: request, Result: map[string]any{}}
 	job.ID = idgen.NewID()
-	atomicAudit, err := s.createWithAudit(ctx, job)
-	if err != nil {
+	if err := s.createWithAudit(ctx, job); err != nil {
 		if existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey); findErr == nil {
 			return existing, nil
 		}
 		return nil, apperr.Internal("sync.create_failed", "failed to create sync job").Wrap(err)
-	}
-	if s.audit != nil && !atomicAudit {
-		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: job.ID, RequestID: job.RequestID, ActorUID: actor,
-			AccountID: job.AccountID, TenantID: job.TenantID, Action: "sync.job.requested", ResourceType: "sync_job", ResourceID: job.ID.String(),
-			Payload: map[string]any{"job_type": job.JobType, "datasets": datasets}}); err != nil {
-			return nil, apperr.Internal("sync.audit_failed", "failed to record sync job audit").Wrap(err)
-		}
 	}
 	return job, nil
 }
@@ -453,21 +445,17 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 
 func (s *syncJobService) finishJob(ctx context.Context, job *domain.SyncJob, status domain.SyncJobStatus, code, message string, result map[string]any) error {
 	if s.audit != nil {
-		if repo, ok := s.repo.(repository.SyncJobAuditRepository); ok {
-			return repo.FinishWithAudit(ctx, job.ID, job.LeaseOwner, status, code, message, result,
-				syncJobFinishedAudit(ctx, s.region, job, status, code, result))
+		// Single minting point (contract §2.3 / D-7): the fact is appended
+		// in-tx via FinishWithAudit; a repo without the WithAudit surface fails
+		// closed (B2-1 REQ-4) — no standalone fallback tail.
+		fact := syncJobFinishedAudit(ctx, s.region, job, status, code, result)
+		repo, ok := s.repo.(repository.SyncJobAuditRepository)
+		if !ok {
+			return apperr.Internal("sync.audit_unavailable", "sync audit persistence is unavailable")
 		}
+		return repo.FinishWithAudit(ctx, job.ID, job.LeaseOwner, status, code, message, result, fact)
 	}
-	if err := s.repo.Finish(ctx, job.ID, job.LeaseOwner, status, code, message, result); err != nil {
-		return err
-	}
-	if s.audit == nil {
-		return nil
-	}
-	return s.audit.Record(ctx, AuditFactInput{Source: "aero-id", SourceRegion: s.region, EventID: idgen.NewID(), RequestID: job.RequestID,
-		ActorUID: job.ActorUID, AccountID: job.AccountID, TenantID: job.TenantID, Action: "sync.job.finished",
-		ResourceType: "sync_job", ResourceID: job.ID.String(), Payload: map[string]any{"job_type": job.JobType,
-			"status": status, "error_code": code}})
+	return s.repo.Finish(ctx, job.ID, job.LeaseOwner, status, code, message, result)
 }
 
 func remoteErrorCode(err error) string {

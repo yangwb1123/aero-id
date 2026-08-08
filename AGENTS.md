@@ -40,6 +40,7 @@ make test-integration  # integration tag; Postgres + MinIO via testcontainers (n
 make lint              # go vet ./...
 make lint-strict       # golangci-lint (funlen 50, cyclop 10)
 make check-file-sizes  # non-test/non-generated Go files must be <= 500 lines
+make check-integration-compile  # compiles every integration-tagged _test.go file without running tests (go test -tags integration -run '^$' + go vet -tags integration) — no Docker; catches interface breaks that plain `go build -tags integration` misses
 make build             # -> bin/aero-id
 make run               # go run ./cmd/server -config configs/config.yaml
 make migrate-up        # explicit migration runner; migrations are not auto-applied by default
@@ -49,7 +50,7 @@ make proto             # regenerate stubs only after editing api/proto/**/*.prot
 Done-gate:
 
 ```bash
-make test && make lint && make lint-strict && make check-file-sizes && make build
+make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-integration-compile && make build
 ```
 
 Run `make test-integration` after changing repository SQL, migrations, storage, source connectors, event
@@ -261,6 +262,16 @@ Until explicitly migrated, current live APIs keep their existing behavior:
   CORS -> Degradation -> Timeout; `/v1`: Auth -> Ban -> RateLimit -> Idempotency.
 - `signing_key` signs only local-storage download URLs. It is never a token-signing key.
 - SSE is best-effort; durable notification state and replay provide correctness.
+- Live-layer audit writes (`Record` and `Log`) are durable; swallowing either is a gate violation
+  (`make check-audit-swallow`). The dead-tree `AuditLogger` carve-out does not apply to the live
+  `service.AuditLogger` adapter, and the legacy fail-open carve-out for Ban and other middleware
+  must never be re-applied to audit writes: the fail-closed `audit.ingest_failed`/503 contract
+  stands for every live-layer audit site.
+- The audit-coverage invariant covers every operation that emits an audit fact, not every mutation.
+  These legacy compatibility surfaces currently emit zero audit facts (before and after the
+  fail-closed conversion) and are exempt only until migration: file create/delete/update, message
+  send/edit/react, comment create/edit/report, preferences, region promotion, and projection
+  replication.
 
 Do not add new canonical file/chat authority to aero-id while Aero Vault/Aero IM are the target authorities.
 Treat the current file/message/comment surface as a compatibility source until a migration/deprecation decision
@@ -332,7 +343,9 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
   protobuf files also requires updating the generation target; creating a `.proto` file alone generates nothing.
 - Current rate limits, SSO caches, and some notification limits are process-local unless Redis-backed. Do not
   describe them as globally enforced.
-- Ban and several legacy middleware checks fail open by design. Global account lifecycle and security policy
+- Ban and several legacy middleware checks fail open by design. This carve-out covers request
+  middleware only and must never be re-applied to live-layer audit writes, which are fail-closed
+  by contract and by `make check-audit-swallow`. Global account lifecycle and security policy
   must not inherit this behavior accidentally.
 - Build through `make build` / `go build ./...`; do not leave binaries at repository root.
 - Toolchain is Go 1.26; module path is `github.com/aero/aero-id`.

@@ -15,14 +15,19 @@ type FullAuditLedgerRepository interface {
 // would silently disable the transactional audit path for account, operation,
 // event-receipt, and sync-job mutations; a nil dependency is a programmer
 // error and must stop the process at startup (the fail-closed position for a
-// compliance ledger).
+// compliance ledger). The typed-nil check covers every nil-able kind (pointer
+// today, but also map/slice/chan/func/interface implementations), not just
+// pointers, so no implementation shape can smuggle a nil ledger past wiring.
 func requireAuditLedger(name string, audit AuditLedgerTransactionalRepository) AuditLedgerTransactionalRepository {
 	if audit == nil {
 		panic("repository: " + name + " requires a non-nil AuditLedgerTransactionalRepository")
 	}
 	v := reflect.ValueOf(audit)
-	if v.Kind() == reflect.Ptr && v.IsNil() {
-		panic("repository: " + name + " requires a non-nil AuditLedgerTransactionalRepository")
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		if v.IsNil() {
+			panic("repository: " + name + " requires a non-nil AuditLedgerTransactionalRepository")
+		}
 	}
 	return audit
 }

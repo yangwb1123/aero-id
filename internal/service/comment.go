@@ -390,6 +390,35 @@ func (s *commentService) ResolveReport(ctx context.Context, reportID domain.ID, 
 		return apperr.Forbidden("comment.forbidden", "only the comment author may resolve its reports")
 	}
 	now := time.Now().UTC()
+	// Only resolved/dismissed reach here (validated above); map to the API's
+	// string vocabulary rather than the raw int16 enum for a readable audit trail.
+	statusLabel := "dismissed"
+	if status == domain.ReportStatusResolved {
+		statusLabel = "resolved"
+	}
+	// The report update, the conditional comment hide and the anchored fact
+	// (EventID = reportID, load-bearing retry-dedup) commit in ONE transaction
+	// (B2-1): a failing hide now rolls the resolve back with it — the intended
+	// atomicity change; report-not-found still wins when both fail.
+	hideCommentID := domain.ID{}
+	if status == domain.ReportStatusResolved && c.Status == domain.CommentStatusNormal {
+		hideCommentID = rep.CommentID
+	}
+	if s.audit != nil {
+		repo, ok := s.comments.(repository.CommentAuditRepository)
+		if !ok {
+			return apperr.Internal("comment.audit_unavailable", "comment audit persistence is unavailable")
+		}
+		if err := repo.ResolveReportWithAudit(ctx, reportID, status, actor, now, hideCommentID,
+			buildLegacyAuditFact(ctx, actor, domain.AuditReportResolve, "comment_report", reportID.String(),
+				c.OwnerUID, map[string]any{"comment_id": rep.CommentID.String(), "status": statusLabel}, reportID)); err != nil {
+			if stderrors.Is(err, repository.ErrNotFound) {
+				return apperr.NotFound("comment.report_not_found", "report not found")
+			}
+			return apperr.Internal("comment.resolve_failed", "failed to resolve report").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.comments.ResolveReport(ctx, reportID, status, actor, now); err != nil {
 		if stderrors.Is(err, repository.ErrNotFound) {
 			return apperr.NotFound("comment.report_not_found", "report not found")
@@ -397,29 +426,13 @@ func (s *commentService) ResolveReport(ctx context.Context, reportID domain.ID, 
 		return apperr.Internal("comment.resolve_failed", "failed to resolve report").Wrap(err)
 	}
 	// Resolving a report hides the offending comment; dismissing leaves it visible.
-	if status == domain.ReportStatusResolved && c.Status == domain.CommentStatusNormal {
-		if err := s.comments.SetStatus(ctx, rep.CommentID, domain.CommentStatusHidden); err != nil {
+	if hideCommentID != (domain.ID{}) {
+		if err := s.comments.SetStatus(ctx, hideCommentID, domain.CommentStatusHidden); err != nil {
 			if stderrors.Is(err, repository.ErrNotFound) {
 				return apperr.NotFound("comment.not_found", "comment not found")
 			}
 			return apperr.Internal("comment.status_failed", "failed to update comment status").Wrap(err)
 		}
-	}
-	if s.audit != nil {
-		// Only resolved/dismissed reach here (validated above); map to the API's
-		// string vocabulary rather than the raw int16 enum for a readable audit trail.
-		statusLabel := "dismissed"
-		if status == domain.ReportStatusResolved {
-			statusLabel = "resolved"
-		}
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditReportResolve,
-			SubjectType: "comment_report",
-			SubjectID:   reportID.String(),
-			TargetUID:   c.OwnerUID,
-			Meta:        map[string]any{"comment_id": rep.CommentID.String(), "status": statusLabel},
-		})
 	}
 	return nil
 }

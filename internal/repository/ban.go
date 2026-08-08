@@ -34,12 +34,13 @@ type BanRepository interface {
 }
 
 type banRepo struct {
-	db *gorm.DB
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
 }
 
 // NewBanRepository builds a BanRepository backed by the user_bans table.
-func NewBanRepository(db *gorm.DB) BanRepository {
-	return &banRepo{db: db}
+func NewBanRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) BanRepository {
+	return &banRepo{db: db, audit: requireAuditLedger("NewBanRepository", audit)}
 }
 
 type userBanRow struct {

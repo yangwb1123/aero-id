@@ -106,19 +106,23 @@ func (s *fileService) ShareFile(ctx context.Context, id domain.ID, granteeUIDs [
 	if len(grantees) == 0 {
 		return nil
 	}
+	if s.audit != nil {
+		repo, ok := s.shares.(repository.FileShareAuditRepository)
+		if !ok {
+			return apperr.Internal("file.audit_unavailable", "file share audit persistence is unavailable")
+		}
+		facts := make([]*domain.AuditFact, 0, len(grantees))
+		for _, g := range grantees {
+			facts = append(facts, buildLegacyAuditFact(ctx, actor, domain.AuditFileShareGrant,
+				"file", id.String(), g, nil, domain.ID{}))
+		}
+		if err := repo.GrantWithAudit(ctx, id, f.OwnerUID, grantees, facts); err != nil {
+			return apperr.Internal("file.share_failed", "failed to share file").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.shares.Grant(ctx, id, f.OwnerUID, grantees); err != nil {
 		return apperr.Internal("file.share_failed", "failed to share file").Wrap(err)
-	}
-	if s.audit != nil {
-		for _, g := range grantees {
-			_ = s.audit.Log(ctx, &domain.AuditEvent{
-				ActorUID:    actor,
-				Action:      domain.AuditFileShareGrant,
-				SubjectType: "file",
-				SubjectID:   id.String(),
-				TargetUID:   g,
-			})
-		}
 	}
 	return nil
 }
@@ -139,17 +143,20 @@ func (s *fileService) UnshareFile(ctx context.Context, id domain.ID, granteeUID 
 	if _, err := s.ownedFile(ctx, id, actor); err != nil {
 		return err
 	}
+	if s.audit != nil {
+		repo, ok := s.shares.(repository.FileShareAuditRepository)
+		if !ok {
+			return apperr.Internal("file.audit_unavailable", "file share audit persistence is unavailable")
+		}
+		if err := repo.RevokeWithAudit(ctx, id, granteeUID,
+			buildLegacyAuditFact(ctx, actor, domain.AuditFileShareRevoke, "file", id.String(),
+				granteeUID, nil, domain.ID{})); err != nil {
+			return apperr.Internal("file.unshare_failed", "failed to unshare file").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.shares.Revoke(ctx, id, granteeUID); err != nil {
 		return apperr.Internal("file.unshare_failed", "failed to unshare file").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditFileShareRevoke,
-			SubjectType: "file",
-			SubjectID:   id.String(),
-			TargetUID:   granteeUID,
-		})
 	}
 	return nil
 }

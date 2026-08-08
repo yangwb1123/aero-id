@@ -83,21 +83,23 @@ func (s *adminService) GrantRole(ctx context.Context, uid, roleCode string) erro
 	if uid == actor {
 		return apperr.BadRequest("admin.self_grant", "cannot grant a role to yourself")
 	}
+	if s.audit != nil {
+		repo, ok := s.adminRepo.(repository.AdminAuditRepository)
+		if !ok {
+			return apperr.Internal("admin.audit_unavailable", "admin audit persistence is unavailable")
+		}
+		if err := repo.GrantRoleWithAudit(ctx, uid, roleCode, actor,
+			buildLegacyAuditFact(ctx, actor, domain.AuditAdminGrantRole, "user", uid, uid,
+				map[string]any{"role": roleCode}, domain.ID{})); err != nil {
+			return apperr.Internal("admin.grant_role_failed", "failed to grant role").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.adminRepo.GrantRole(ctx, uid, roleCode, actor); err != nil {
 		if stderrors.Is(err, repository.ErrNotFound) {
 			return apperr.NotFound("admin.role_not_found", "role not found")
 		}
 		return apperr.Internal("admin.grant_role_failed", "failed to grant role").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditAdminGrantRole,
-			SubjectType: "user",
-			SubjectID:   uid,
-			TargetUID:   uid,
-			Meta:        map[string]any{"role": roleCode},
-		})
 	}
 	return nil
 }
@@ -113,18 +115,20 @@ func (s *adminService) RevokeRole(ctx context.Context, uid, roleCode string) err
 	if roleCode == "" {
 		return apperr.BadRequest("admin.invalid_role", "role code must not be blank")
 	}
+	if s.audit != nil {
+		repo, ok := s.adminRepo.(repository.AdminAuditRepository)
+		if !ok {
+			return apperr.Internal("admin.audit_unavailable", "admin audit persistence is unavailable")
+		}
+		if err := repo.RevokeRoleWithAudit(ctx, uid, roleCode,
+			buildLegacyAuditFact(ctx, actor, domain.AuditAdminRevokeRole, "user", uid, uid,
+				map[string]any{"role": roleCode}, domain.ID{})); err != nil {
+			return apperr.Internal("admin.revoke_role_failed", "failed to revoke role").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.adminRepo.RevokeRole(ctx, uid, roleCode); err != nil {
 		return apperr.Internal("admin.revoke_role_failed", "failed to revoke role").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditAdminRevokeRole,
-			SubjectType: "user",
-			SubjectID:   uid,
-			TargetUID:   uid,
-			Meta:        map[string]any{"role": roleCode},
-		})
 	}
 	return nil
 }

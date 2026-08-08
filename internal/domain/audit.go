@@ -7,8 +7,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// AuditLogger records a single audit event. Implementations must be non-blocking
-// from the caller's perspective; a failed log must not fail the primary operation.
+// AuditLogger records a single audit event. A failed log is a failed durable audit
+// write: callers must propagate the error (fail-closed). The earlier "a failed log
+// must not fail the primary operation" fail-open wording is revoked — it predates
+// the live-layer fail-closed conversion and must never be reinstated.
+//
+// QUARANTINED DEAD TREE — do not wire as-is: this interface is used only by the
+// unwired parallel tree (internal/{file,message,comment,block,notification,search,
+// audit}), reachable only from its own tests. Six `_ = s.audit.Log(` swallow sites
+// remain there (internal/file/service_share.go:45,75; internal/block/block.go:66,86;
+// internal/comment/service.go:431; internal/message/service.go:289). They must be
+// converted to propagated `if err :=` form before this tree is ever wired. The live
+// layer uses service.AuditLogger and is policed by make check-audit-swallow.
 type AuditLogger interface {
 	Log(ctx context.Context, e *AuditEvent) error
 }

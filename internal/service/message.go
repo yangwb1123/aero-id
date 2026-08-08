@@ -284,6 +284,15 @@ func (s *messageService) Edit(ctx context.Context, id domain.ID, content string)
 // Delete soft-deletes a message. Only the sender may delete; the call is idempotent
 // (deleting an already-deleted message, which reads back as NotFound, is a no-op success).
 // A "message.deleted" domain event is emitted to notify the recipient.
+//
+// Retry semantics (FM-1): the soft delete commits before the audit append, so a
+// 503 audit.ingest_failed leaves the mutation applied but the fact unrecorded. A
+// retry then reads the message back as NotFound; instead of short-circuiting before
+// the audit write (which would lose the destructive fact permanently), Delete
+// distinguishes "never existed" from "already soft-deleted" via GetIncludingDeleted
+// and, for the latter, re-attempts the audit. The fact is anchored on the message
+// ID (EventID = id), so the re-append dedups to the first fact (checkAuditDuplicate)
+// — a re-delete never fabricates a fresh audit fact.
 func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
 	actor, err := mustActor(ctx)
 	if err != nil {
@@ -291,7 +300,7 @@ func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
 	}
 	m, err := s.messages.Get(ctx, id)
 	if stderrors.Is(err, repository.ErrNotFound) {
-		return nil // already gone — idempotent no-op
+		return s.deleteAlreadyGone(ctx, actor, id)
 	}
 	if err != nil {
 		return apperr.Internal("message.get_failed", "failed to load message").Wrap(err)
@@ -306,19 +315,69 @@ func (s *messageService) Delete(ctx context.Context, id domain.ID) error {
 		"from_uid":   m.FromUID,
 		"to_uid":     m.ToUID,
 	})
+	// The soft delete, its domain event and the anchored fact (EventID =
+	// message ID — load-bearing retry-dedup) commit in ONE transaction (B2-1).
+	if s.audit != nil {
+		repo, ok := s.messages.(repository.MessageAuditRepository)
+		if !ok {
+			return apperr.Internal("message.audit_unavailable", "message audit persistence is unavailable")
+		}
+		if err := repo.SoftDeleteWithEventAudit(ctx, id, evt,
+			buildLegacyAuditFact(ctx, actor, domain.AuditMessageDelete, "message", id.String(),
+				m.ToUID, nil, id)); err != nil {
+			return apperr.Internal("message.delete_failed", "failed to delete message").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.messages.SoftDeleteWithEvent(ctx, id, evt); err != nil {
 		return apperr.Internal("message.delete_failed", "failed to delete message").Wrap(err)
 	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditMessageDelete,
-			SubjectType: "message",
-			SubjectID:   id.String(),
-			TargetUID:   m.ToUID,
-		})
+	return nil
+}
+
+// deleteAlreadyGone handles the NotFound read-back of a delete. NotFound covers
+// both "never existed" and "already soft-deleted" (GORM hides deleted rows). For
+// the latter, a prior delete attempt committed the mutation; if it failed at the
+// audit step (503 audit.ingest_failed) the retry must still record the fact. The
+// anchored EventID (ID: id) makes the re-append dedup to the existing fact,
+// preserving the idempotent no-op semantics: a re-delete never fabricates a fresh
+// audit fact. Never-existed and non-sender re-deletes stay silent no-ops.
+func (s *messageService) deleteAlreadyGone(ctx context.Context, actor string, id domain.ID) error {
+	deleted, err := s.messages.GetIncludingDeleted(ctx, id)
+	if stderrors.Is(err, repository.ErrNotFound) {
+		return nil // no row in any state — never existed, nothing to audit
+	}
+	if err != nil {
+		return apperr.Internal("message.get_failed", "failed to load message").Wrap(err)
+	}
+	if deleted == nil || deleted.FromUID != actor {
+		return nil // never existed, or not the sender — nothing to audit
+	}
+	if err := s.auditMessageDelete(ctx, actor, id, deleted.ToUID); err != nil {
+		return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
 	}
 	return nil
+}
+
+// auditMessageDelete records the message.delete fact anchored on the message ID
+// (EventID = id), so a retry after a 503 dedups to the first fact instead of
+// appending a duplicate. Returns nil when no audit logger is wired.
+//
+// audit-site: standalone-fact — the deleteAlreadyGone residual path only: the
+// mutation's domain row predates this request (already soft-deleted), so there
+// is no write left to join; the fact-only append stays checked and anchored.
+func (s *messageService) auditMessageDelete(ctx context.Context, actor string, id domain.ID, targetUID string) error {
+	if s.audit == nil {
+		return nil
+	}
+	return s.audit.Log(ctx, &domain.AuditEvent{
+		ID:          id,
+		ActorUID:    actor,
+		Action:      domain.AuditMessageDelete,
+		SubjectType: "message",
+		SubjectID:   id.String(),
+		TargetUID:   targetUID,
+	})
 }
 
 // MarkConversationRead marks every message from withUID to the caller as read.

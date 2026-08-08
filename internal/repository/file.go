@@ -48,11 +48,12 @@ type FileRepository interface {
 }
 
 type fileRepo struct {
-	db *gorm.DB
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
 }
 
-func NewFileRepository(db *gorm.DB) FileRepository {
-	return &fileRepo{db: db}
+func NewFileRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) FileRepository {
+	return &fileRepo{db: db, audit: requireAuditLedger("NewFileRepository", audit)}
 }
 
 func (r *fileRepo) Create(ctx context.Context, f *domain.File) error {
@@ -175,6 +176,33 @@ func (r *fileRepo) HardDelete(ctx context.Context, ids []domain.ID) error {
 		return fmt.Errorf("hard delete files: %w", err)
 	}
 	return nil
+}
+
+// FileAuditRepository is the in-transaction audit surface for the storage GC
+// sweep (the last un-audited destructive path in the live tree): the hard
+// delete of purged file rows and the audit fact commit in one gorm
+// transaction — a failed append rolls the purge back (never a purge without
+// its fact).
+type FileAuditRepository interface {
+	HardDeleteWithAudit(ctx context.Context, ids []domain.ID, fact *domain.AuditFact) error
+}
+
+// HardDeleteWithAudit hard-deletes the rows and appends the fact atomically.
+// Empty ids are a no-op with no fact (mirrors the plain HardDelete short
+// circuit). ErrAuditDuplicate folds in-tx only.
+func (r *fileRepo) HardDeleteWithAudit(ctx context.Context, ids []domain.ID, fact *domain.AuditFact) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Where("id IN ?", ids).Delete(&fileRow{}).Error; err != nil {
+			return fmt.Errorf("hard delete files: %w", err)
+		}
+		if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+			return fmt.Errorf("append storage gc audit: %w", err)
+		}
+		return nil
+	})
 }
 
 // UpdateMetadata performs a column-scoped GORM update of the named fields on the live

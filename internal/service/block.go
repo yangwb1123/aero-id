@@ -47,17 +47,19 @@ func (s *blockService) Block(ctx context.Context, uid string) error {
 	if uid == actor {
 		return apperr.BadRequest("block.invalid", "cannot block yourself")
 	}
+	if s.audit != nil {
+		repo, ok := s.blocks.(repository.BlockAuditRepository)
+		if !ok {
+			return apperr.Internal("block.audit_unavailable", "block audit persistence is unavailable")
+		}
+		if err := repo.BlockWithAudit(ctx, actor, uid,
+			buildLegacyAuditFact(ctx, actor, domain.AuditUserBlock, "user", uid, uid, nil, domain.ID{})); err != nil {
+			return apperr.Internal("block.block_failed", "failed to block user").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.blocks.Block(ctx, actor, uid); err != nil {
 		return apperr.Internal("block.block_failed", "failed to block user").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditUserBlock,
-			SubjectType: "user",
-			SubjectID:   uid,
-			TargetUID:   uid,
-		})
 	}
 	return nil
 }
@@ -70,17 +72,19 @@ func (s *blockService) Unblock(ctx context.Context, uid string) error {
 	if uid == "" {
 		return apperr.BadRequest("block.invalid", "uid is required")
 	}
+	if s.audit != nil {
+		repo, ok := s.blocks.(repository.BlockAuditRepository)
+		if !ok {
+			return apperr.Internal("block.audit_unavailable", "block audit persistence is unavailable")
+		}
+		if err := repo.UnblockWithAudit(ctx, actor, uid,
+			buildLegacyAuditFact(ctx, actor, domain.AuditUserUnblock, "user", uid, uid, nil, domain.ID{})); err != nil {
+			return apperr.Internal("block.unblock_failed", "failed to unblock user").Wrap(err)
+		}
+		return nil
+	}
 	if err := s.blocks.Unblock(ctx, actor, uid); err != nil {
 		return apperr.Internal("block.unblock_failed", "failed to unblock user").Wrap(err)
-	}
-	if s.audit != nil {
-		_ = s.audit.Log(ctx, &domain.AuditEvent{
-			ActorUID:    actor,
-			Action:      domain.AuditUserUnblock,
-			SubjectType: "user",
-			SubjectID:   uid,
-			TargetUID:   uid,
-		})
 	}
 	return nil
 }

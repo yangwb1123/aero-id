@@ -46,13 +46,15 @@ type AuditFactInput struct {
 }
 
 type auditLedgerService struct {
-	repo       repository.AuditLedgerRepository
-	publishers []AuditPublisher
-	metrics    ControlPlaneMetrics
+	repo    repository.AuditLedgerRepository
+	metrics ControlPlaneMetrics
 }
 
-func NewAuditLedgerService(repo repository.AuditLedgerRepository, publishers ...AuditPublisher) AuditLedgerService {
-	s := &auditLedgerService{repo: repo, publishers: publishers, metrics: noopControlPlaneMetrics{}}
+// NewAuditLedgerService builds the standalone-append audit service. Delivery
+// of audit facts is exclusively the drain worker's job (drainPublications on
+// audit_publications rows); Record only appends, it never publishes.
+func NewAuditLedgerService(repo repository.AuditLedgerRepository) AuditLedgerService {
+	s := &auditLedgerService{repo: repo, metrics: noopControlPlaneMetrics{}}
 	return s
 }
 
@@ -67,6 +69,13 @@ func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) e
 	fact := buildAuditFact(ctx, input)
 	if err := s.repo.Append(ctx, fact); err != nil {
 		if errors.Is(err, repository.ErrAuditDuplicate) {
+			// The standalone path completed: the append folded on the dedup key,
+			// which is a successful execution of the out-of-tx surface (the
+			// retry re-derived the identical fact). Count it like a success —
+			// failures keep observing ObserveAuditIngestFailure instead.
+			if s.metrics != nil {
+				s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(input.Action))
+			}
 			return nil
 		}
 		if s.metrics != nil {
@@ -74,10 +83,8 @@ func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) e
 		}
 		return err
 	}
-	for _, publisher := range s.publishers {
-		if publisher != nil {
-			_ = publisher.Publish(ctx, fact)
-		}
+	if s.metrics != nil {
+		s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(input.Action))
 	}
 	return nil
 }
@@ -141,7 +148,7 @@ func (s *auditLedgerService) Log(ctx context.Context, legacy *domain.AuditEvent)
 		return nil
 	}
 	return s.Record(ctx, AuditFactInput{ActorUID: legacy.ActorUID, Action: legacy.Action,
-		ResourceType: legacy.SubjectType, ResourceID: legacy.SubjectID, Payload: legacy.Meta, OccurredAt: legacy.CreatedAt})
+		ResourceType: legacy.SubjectType, ResourceID: legacy.SubjectID, EventID: legacy.ID, Payload: legacy.Meta, OccurredAt: legacy.CreatedAt})
 }
 
 func (s *auditLedgerService) List(ctx context.Context, filter domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
