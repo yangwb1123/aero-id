@@ -22,10 +22,12 @@
 #   discard the audit-fact append error.
 #
 # Exclusions (documented):
-#   - the unwired parallel tree internal/{file,message,comment,block,
+#   - the unwired parallel tree internal/{file,message,comment,
 #     notification,search,audit} — only the live layer is scanned (default
-#     root internal/service; the gate adds internal/repository, internal/app
-#     and cmd — the replay tool must not swallow its own audit writes).
+#     root internal/service; the gate adds internal/repository, internal/app,
+#     internal/storage, internal/block and cmd — internal/block was deleted in
+#     the dead-tree quarantine, and the root is a regression tripwire: a
+#     swallowed audit write reintroduced there turns the gate red).
 #   - the self-test fixtures under scripts/testdata/audit-swallow/ live
 #     outside the scanned tree and are never scanned.
 #
@@ -61,6 +63,19 @@ P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publ
 P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead)\('
 
 fail=0
+
+# ── quarantine guard (FM-12): internal/block must never exist ──────────────
+# The tripwire root scans the (absent) path for swallow shapes; this assertion
+# makes the tripwire total — even a benign reintroduction (compilable package,
+# working import, propagated audit error) is a gate violation. Deliberately
+# lifting the quarantine = deleting this block AND updating the audit.go note
+# + the exclusion comment, in one commit.
+if [ -d "$SELF_DIR/../internal/block" ]; then
+  echo "QUARANTINE VIOLATION: internal/block must not exist (dead-tree quarantine, FM-12)"
+  fail=1
+else
+  echo "✓ quarantine guard: internal/block absent (FM-12)"
+fi
 
 # ── self-test: the gate must flag its own positive fixtures ──────────────
 pos_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/positive" --include='*.go' 2>/dev/null | wc -l)"

@@ -23,10 +23,14 @@ func seedLegacyRow(t *testing.T, db *gorm.DB, query string, args ...any) {
 
 func newTestAccountService(t *testing.T, db *gorm.DB) service.AccountService {
 	t.Helper()
-	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	// The backfill provisions with in-tx audit (unconditional since REQ-2), so
+	// the ledger needs a signing key and the service needs the audit wired.
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{SigningKey: "backfill-integration-audit-key-0123456789abcdef"})
+	auditSvc := service.NewAuditLedgerService(ledger)
 	return service.NewAccountService(repository.NewAccountRepository(db, ledger),
 		service.WithAccountIssuer("snaplink"),
-		service.WithAccountRegion("local"))
+		service.WithAccountRegion("local"),
+		service.WithAccountAudit(auditSvc))
 }
 
 // TestLegacyUIDBackfillScan exercises the P1-07 union scan against a real

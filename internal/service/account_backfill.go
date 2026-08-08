@@ -109,10 +109,8 @@ func (s *accountService) backfillOne(ctx context.Context, uid string, result *Ba
 // the same transaction (A5). Failures are counted, never fatal: the run is
 // idempotent and resumable.
 func (s *accountService) ensureBackfillAccount(ctx context.Context, uid, homeRegion string) error {
-	if s.audit == nil {
-		_, err := s.repo.EnsureByIdentity(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion)
-		return err
-	}
+	// Unconditional: nil audit logger is a construction error (REQ-2); the
+	// plain EnsureByIdentity branch was deleted.
 	repo, ok := s.repo.(repository.AccountProvisionAuditRepository)
 	if !ok {
 		return repository.ErrNotFound

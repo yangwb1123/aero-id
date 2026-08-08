@@ -16,7 +16,7 @@ func setupBlockRepo(t *testing.T) repository.BlockRepository {
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewBlockRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
+	return repository.NewBlockRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{SigningKey: "block-integration-audit-key-0123456789abcdef"}))
 }
 
 func TestBlockRepo_BlockIsBlockedUnblock(t *testing.T) {

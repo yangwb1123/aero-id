@@ -5,22 +5,28 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/aero/aero-id/internal/block"
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/hub"
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 )
 
+// blockChecker is the package-local view of the block store used by the
+// notification guard (the unwired internal/block dead tree was deleted; the
+// live service.BlockChecker satisfies this interface structurally).
+type blockChecker interface {
+	IsBlocked(ctx context.Context, blocker, blocked string) (bool, error)
+}
+
 type Dispatcher struct {
 	notifs Repository
-	blocks block.BlockChecker
+	blocks blockChecker
 	pusher hub.Pusher
 }
 
 type DispatcherOption func(*Dispatcher)
 
-func WithDispatcherBlockChecker(blocks block.BlockChecker) DispatcherOption {
+func WithDispatcherBlockChecker(blocks blockChecker) DispatcherOption {
 	return func(d *Dispatcher) { d.blocks = blocks }
 }
 

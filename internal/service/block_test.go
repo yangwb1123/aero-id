@@ -33,7 +33,7 @@ func TestBlockService_BlockRequiresActor(t *testing.T) {
 
 func TestBlockService_BlockHappyPath(t *testing.T) {
 	var gotBlocker, gotBlocked string
-	repo := &mocks.BlockRepo{BlockFn: func(_ context.Context, blocker, blocked string) error {
+	repo := &mocks.BlockRepo{BlockWithAuditFn: func(_ context.Context, blocker, blocked string, _ *domain.AuditFact) error {
 		gotBlocker, gotBlocked = blocker, blocked
 		return nil
 	}}
@@ -49,7 +49,7 @@ func TestBlockService_BlockHappyPath(t *testing.T) {
 
 func TestBlockService_UnblockHappyPath(t *testing.T) {
 	var gotBlocker, gotBlocked string
-	repo := &mocks.BlockRepo{UnblockFn: func(_ context.Context, blocker, blocked string) error {
+	repo := &mocks.BlockRepo{UnblockWithAuditFn: func(_ context.Context, blocker, blocked string, _ *domain.AuditFact) error {
 		gotBlocker, gotBlocked = blocker, blocked
 		return nil
 	}}
@@ -74,7 +74,7 @@ func TestBlockService_BlockEmitsAuditEvent(t *testing.T) {
 		calls++
 		return nil
 	}}
-	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
+	svc := service.NewBlockService(repo)
 	ctx := service.WithActor(context.Background(), "a")
 	if err := svc.Block(ctx, "b"); err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestBlockService_UnblockEmitsAuditEvent(t *testing.T) {
 		calls++
 		return nil
 	}}
-	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
+	svc := service.NewBlockService(repo)
 	ctx := service.WithActor(context.Background(), "a")
 	if err := svc.Unblock(ctx, "b"); err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestBlockAuditFailureFailsClosed(t *testing.T) {
 	repo := &mocks.BlockRepo{BlockWithAuditFn: func(context.Context, string, string, *domain.AuditFact) error {
 		return stderrors.New("ledger down")
 	}}
-	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
+	svc := service.NewBlockService(repo)
 	ctx := service.WithActor(context.Background(), "a")
 
 	err := svc.Block(ctx, "b")
@@ -146,7 +146,7 @@ func TestUnblockAuditFailureFailsClosed(t *testing.T) {
 	repo := &mocks.BlockRepo{UnblockWithAuditFn: func(context.Context, string, string, *domain.AuditFact) error {
 		return stderrors.New("ledger down")
 	}}
-	svc := service.NewBlockService(repo, service.WithBlockAuditLogger(&mocks.Auditor{}))
+	svc := service.NewBlockService(repo)
 	ctx := service.WithActor(context.Background(), "a")
 
 	err := svc.Unblock(ctx, "b")

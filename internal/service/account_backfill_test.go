@@ -44,6 +44,7 @@ func (f *fakeBackfillRepo) EnsureByIdentityWithAudit(ctx context.Context, tenant
 	f.identities[key] = true
 	if created {
 		f.facts = append(f.facts, fact)
+		f.created[subject] = homeRegion
 	}
 	return &domain.Account{ID: accountID, TenantID: tenantID, CanonicalUID: canonicalUID, HomeRegion: homeRegion}, nil
 }

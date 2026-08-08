@@ -330,7 +330,7 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
 
 ## Current repository gotchas
 
-- `internal/{file,message,comment,block,notification,search}` and `internal/audit` are an unwired parallel tree.
+- `internal/{file,message,comment,notification,search}` and `internal/audit` are an unwired parallel tree (the former `internal/block` dead tree was deleted in the 2026-08-08 quarantine; its `BlockChecker` role is served by the live `service.BlockChecker`).
   The running application uses `internal/service` + `internal/repository`. Do not implement target account/audit
   work in an unwired tree.
 - `make check-architecture` currently polices that dead tree, not the live layered runtime. A green result does

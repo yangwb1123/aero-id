@@ -39,6 +39,13 @@ func TestConstructorsRejectNilAudit(t *testing.T) {
 	mustPanic(t, "NewCallbackRepository", func() { repository.NewCallbackRepository(db, nil) })
 	mustPanic(t, "NewAuditHoldRepository", func() { repository.NewAuditHoldRepository(db, nil) })
 	mustPanic(t, "NewLegacyCutoverRepository", func() { repository.NewLegacyCutoverRepository(db, nil) })
+	mustPanic(t, "NewAdminRepository", func() { repository.NewAdminRepository(db, nil) })
+	mustPanic(t, "NewBanRepository", func() { repository.NewBanRepository(db, nil) })
+	mustPanic(t, "NewBlockRepository", func() { repository.NewBlockRepository(db, nil) })
+	mustPanic(t, "NewCommentRepository", func() { repository.NewCommentRepository(db, nil, nil) })
+	mustPanic(t, "NewMessageRepository", func() { repository.NewMessageRepository(db, nil, nil) })
+	mustPanic(t, "NewFileShareRepository", func() { repository.NewFileShareRepository(db, nil) })
+	mustPanic(t, "NewFileRepository", func() { repository.NewFileRepository(db, nil) })
 }
 
 // TestConstructorsRejectTypedNilAudit is the C5 hardening: a typed-nil
@@ -60,6 +67,13 @@ func TestConstructorsRejectTypedNilAudit(t *testing.T) {
 	mustPanic(t, "NewCallbackRepository (typed nil)", func() { repository.NewCallbackRepository(db, ledger) })
 	mustPanic(t, "NewAuditHoldRepository (typed nil)", func() { repository.NewAuditHoldRepository(db, ledger) })
 	mustPanic(t, "NewLegacyCutoverRepository (typed nil)", func() { repository.NewLegacyCutoverRepository(db, ledger) })
+	mustPanic(t, "NewAdminRepository (typed nil)", func() { repository.NewAdminRepository(db, ledger) })
+	mustPanic(t, "NewBanRepository (typed nil)", func() { repository.NewBanRepository(db, ledger) })
+	mustPanic(t, "NewBlockRepository (typed nil)", func() { repository.NewBlockRepository(db, ledger) })
+	mustPanic(t, "NewCommentRepository (typed nil)", func() { repository.NewCommentRepository(db, nil, ledger) })
+	mustPanic(t, "NewMessageRepository (typed nil)", func() { repository.NewMessageRepository(db, nil, ledger) })
+	mustPanic(t, "NewFileShareRepository (typed nil)", func() { repository.NewFileShareRepository(db, ledger) })
+	mustPanic(t, "NewFileRepository (typed nil)", func() { repository.NewFileRepository(db, ledger) })
 }
 
 // auditLedgerMap is a non-pointer implementation of the transactional ledger

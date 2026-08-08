@@ -10,9 +10,10 @@ package service
 func (s *fileService) AuditLoggerWired() bool    { return s.audit != nil }
 func (s *messageService) AuditLoggerWired() bool { return s.audit != nil }
 func (s *commentService) AuditLoggerWired() bool { return s.audit != nil }
-func (s *blockService) AuditLoggerWired() bool   { return s.audit != nil }
+func (s *blockService) AuditLoggerWired() bool   { return true } // WithAudit surface is part of BlockRepository; no gate exists
 func (s *adminService) AuditLoggerWired() bool   { return s.audit != nil }
 func (s *banService) AuditLoggerWired() bool     { return s.audit != nil }
+func (s *accountService) AuditLoggerWired() bool { return s.audit != nil }
 
 // The hold and cutover services guard their fact append with the same
 // `if s.audit != nil` skip guard (0 = disabled convention for unit tests);

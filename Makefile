@@ -66,7 +66,7 @@ check-file-sizes:
 # before scanning; ROOT parameterized for the self-test fixture.
 .PHONY: check-audit-swallow
 check-audit-swallow:
-	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage cmd
+	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage internal/block cmd
 
 # R-1/R-2 regression gate for the deterministic event-ID derivation contract:
 # the only random EventID: idgen.NewID() left in non-test Go is the C2

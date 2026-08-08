@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,6 +31,11 @@ type BlockRepository interface {
 	Block(ctx context.Context, blocker, blocked string) error
 	// Unblock removes the (blocker, blocked) record. Unblocking a non-existent pair is a no-op.
 	Unblock(ctx context.Context, blocker, blocked string) error
+	// BlockWithAudit records the block and appends the fact atomically (one gorm
+	// transaction; the fact is unconditional — a re-block no-op still records).
+	BlockWithAudit(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error
+	// UnblockWithAudit removes the block pair and appends the fact atomically.
+	UnblockWithAudit(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error
 	// IsBlocked reports whether blocker has blocked blocked.
 	IsBlocked(ctx context.Context, blocker, blocked string) (bool, error)
 	// ListBlocked returns the uids blocker has blocked, newest first, paginated by the
@@ -63,6 +69,36 @@ func (r *blockRepo) Unblock(ctx context.Context, blocker, blocked string) error 
 		return fmt.Errorf("delete user block: %w", err)
 	}
 	return nil
+}
+
+// BlockWithAudit records the block and appends the fact atomically (B2-1). The
+// audit surface is part of BlockRepository so a block service without an audit
+// path is unconstructible at compile time (fail-closed by construction).
+func (r *blockRepo) BlockWithAudit(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		row := userBlockRow{BlockerUID: blocker, BlockedUID: blocked, CreatedAt: time.Now().UTC()}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			return fmt.Errorf("create user block: %w", err)
+		}
+		if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+			return fmt.Errorf("append block audit: %w", err)
+		}
+		return nil
+	})
+}
+
+// UnblockWithAudit removes the block pair and appends the fact atomically.
+func (r *blockRepo) UnblockWithAudit(ctx context.Context, blocker, blocked string, fact *domain.AuditFact) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("blocker_uid = ? AND blocked_uid = ?", blocker, blocked).
+			Delete(&userBlockRow{}).Error; err != nil {
+			return fmt.Errorf("delete user block: %w", err)
+		}
+		if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+			return fmt.Errorf("append block audit: %w", err)
+		}
+		return nil
+	})
 }
 
 func (r *blockRepo) IsBlocked(ctx context.Context, blocker, blocked string) (bool, error) {

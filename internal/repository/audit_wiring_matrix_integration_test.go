@@ -22,7 +22,7 @@ type matrixRepo struct {
 	ledger    repository.FullAuditLedgerRepository
 	admin     repository.AdminAuditRepository
 	ban       repository.BanAuditRepository
-	block     repository.BlockAuditRepository
+	block     repository.BlockRepository // WithAudit surface folded into the interface
 	comment   repository.CommentAuditRepository
 	message   repository.MessageAuditRepository
 	fileShare repository.FileShareAuditRepository
@@ -38,7 +38,7 @@ func startMatrixRepo(t *testing.T) *matrixRepo {
 	// each constructed with the same ledger.
 	m.admin = repository.NewAdminRepository(db, ledger).(repository.AdminAuditRepository)
 	m.ban = repository.NewBanRepository(db, ledger).(repository.BanAuditRepository)
-	m.block = repository.NewBlockRepository(db, ledger).(repository.BlockAuditRepository)
+	m.block = repository.NewBlockRepository(db, ledger)
 	m.comment = repository.NewCommentRepository(db, nil, ledger).(repository.CommentAuditRepository)
 	m.message = repository.NewMessageRepository(db, nil, ledger).(repository.MessageAuditRepository)
 	m.fileShare = repository.NewFileShareRepository(db, ledger).(repository.FileShareAuditRepository)

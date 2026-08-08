@@ -194,9 +194,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithCommentAuditLogger(auditLedger),
 	)
 	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
-	blockSvc := service.NewBlockService(blockRepo,
-		service.WithBlockAuditLogger(auditLedger),
-	)
+	blockSvc := service.NewBlockService(blockRepo)
 	prefSvc := service.NewPreferenceService(prefRepo)
 	searchSvc := service.NewSearchService(msgRepo, commentRepo, fileRepo)
 	adminSvc := service.NewAdminService(adminRepo,
@@ -266,6 +264,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		auditWiredService{name: "block", svc: blockSvc},
 		auditWiredService{name: "admin", svc: adminSvc},
 		auditWiredService{name: "ban", svc: banSvc},
+		auditWiredService{name: "account", svc: accountSvc},
 	)
 
 	// Redis client for shared state (idempotency store, SSO cache, leader election,

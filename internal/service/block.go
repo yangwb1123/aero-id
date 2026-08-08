@@ -17,23 +17,14 @@ type BlockChecker interface {
 
 type blockService struct {
 	blocks repository.BlockRepository
-	audit  AuditLogger // nil => audit inactive
 }
 
-// BlockOption configures optional blockService behaviour.
-type BlockOption func(*blockService)
-
-// WithBlockAuditLogger wires an AuditLogger into the block service.
-func WithBlockAuditLogger(a AuditLogger) BlockOption {
-	return func(s *blockService) { s.audit = a }
-}
-
-func NewBlockService(blocks repository.BlockRepository, opts ...BlockOption) BlockService {
-	s := &blockService{blocks: blocks}
-	for _, opt := range opts {
-		opt(s)
-	}
-	return s
+// NewBlockService builds the block service. The WithAudit surface is part of
+// BlockRepository, so a block service without an audit path is unconstructible
+// at compile time (fail-closed by construction — the WithBlockAuditLogger gate
+// was removed in the B2-2 closure).
+func NewBlockService(blocks repository.BlockRepository) BlockService {
+	return &blockService{blocks: blocks}
 }
 
 func (s *blockService) Block(ctx context.Context, uid string) error {
@@ -47,18 +38,8 @@ func (s *blockService) Block(ctx context.Context, uid string) error {
 	if uid == actor {
 		return apperr.BadRequest("block.invalid", "cannot block yourself")
 	}
-	if s.audit != nil {
-		repo, ok := s.blocks.(repository.BlockAuditRepository)
-		if !ok {
-			return apperr.Internal("block.audit_unavailable", "block audit persistence is unavailable")
-		}
-		if err := repo.BlockWithAudit(ctx, actor, uid,
-			buildLegacyAuditFact(ctx, actor, domain.AuditUserBlock, "user", uid, uid, nil, domain.ID{})); err != nil {
-			return apperr.Internal("block.block_failed", "failed to block user").Wrap(err)
-		}
-		return nil
-	}
-	if err := s.blocks.Block(ctx, actor, uid); err != nil {
+	if err := s.blocks.BlockWithAudit(ctx, actor, uid,
+		buildLegacyAuditFact(ctx, actor, domain.AuditUserBlock, "user", uid, uid, nil, domain.ID{})); err != nil {
 		return apperr.Internal("block.block_failed", "failed to block user").Wrap(err)
 	}
 	return nil
@@ -72,18 +53,8 @@ func (s *blockService) Unblock(ctx context.Context, uid string) error {
 	if uid == "" {
 		return apperr.BadRequest("block.invalid", "uid is required")
 	}
-	if s.audit != nil {
-		repo, ok := s.blocks.(repository.BlockAuditRepository)
-		if !ok {
-			return apperr.Internal("block.audit_unavailable", "block audit persistence is unavailable")
-		}
-		if err := repo.UnblockWithAudit(ctx, actor, uid,
-			buildLegacyAuditFact(ctx, actor, domain.AuditUserUnblock, "user", uid, uid, nil, domain.ID{})); err != nil {
-			return apperr.Internal("block.unblock_failed", "failed to unblock user").Wrap(err)
-		}
-		return nil
-	}
-	if err := s.blocks.Unblock(ctx, actor, uid); err != nil {
+	if err := s.blocks.UnblockWithAudit(ctx, actor, uid,
+		buildLegacyAuditFact(ctx, actor, domain.AuditUserUnblock, "user", uid, uid, nil, domain.ID{})); err != nil {
 		return apperr.Internal("block.unblock_failed", "failed to unblock user").Wrap(err)
 	}
 	return nil
