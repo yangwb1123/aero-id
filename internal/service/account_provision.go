@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"gorm.io/gorm"
 )
@@ -113,24 +114,64 @@ func (s *accountService) provisionAccount(ctx context.Context, tenantID, issuer,
 	if err != nil {
 		return nil, err
 	}
-	account, err := quotaRepo.EnsureByIdentityWithQuota(ctx, tenantID, issuer, subject, subject, homeRegion, reservationID)
+	account, err := s.provisionAccountWithAudit(ctx, tenantID, issuer, subject, homeRegion, reservationID)
 	if err != nil {
-		return nil, mapAccountError(err, "account.ensure_failed", "failed to resolve account")
+		return nil, err
 	}
 	if err := s.commitAccountQuota(ctx, quotaRepo, tenantID, account, reservationID); err != nil {
 		return nil, err
 	}
-	s.recordAccountProvisioned(ctx, account, subject, homeRegion)
 	return account, nil
 }
 
 func (s *accountService) provisionUnmeteredAccount(ctx context.Context, tenantID, issuer, subject,
 	homeRegion string) (*domain.Account, error) {
-	account, err := s.repo.EnsureByIdentity(ctx, tenantID, issuer, subject, subject, homeRegion)
+	return s.provisionAccountWithAudit(ctx, tenantID, issuer, subject, homeRegion, "")
+}
+
+// provisionAccountWithAudit provisions the account and appends the
+// account.provisioned fact in the same transaction (A3/A5): the service
+// pre-assigns the account ID so the fact (EventID = accountID) is known before
+// the tx opens; the repo appends only when this call created the account (A4),
+// so retried/concurrent ensures never roll back their own last_seen_at touch.
+// ErrAuditDuplicate maps to success (defense-in-depth; unreachable under A4
+// gating). A repo that does not implement the audit surface is a test-wiring
+// error and fails closed — never a silent plain write.
+func (s *accountService) provisionAccountWithAudit(ctx context.Context, tenantID, issuer, subject,
+	homeRegion, reservationID string) (*domain.Account, error) {
+	if s.audit == nil {
+		if reservationID == "" {
+			return s.repo.EnsureByIdentity(ctx, tenantID, issuer, subject, subject, homeRegion)
+		}
+		quotaRepo, ok := s.repo.(repository.AccountQuotaRepository)
+		if !ok {
+			return nil, apperr.Unavailable("billing.saga_unavailable", "account quota persistence is unavailable")
+		}
+		return quotaRepo.EnsureByIdentityWithQuota(ctx, tenantID, issuer, subject, subject, homeRegion, reservationID)
+	}
+	repo, ok := s.repo.(repository.AccountProvisionAuditRepository)
+	if !ok {
+		return nil, apperr.Internal("account.audit_unavailable", "account provision audit persistence is unavailable")
+	}
+	accountID := idgen.NewID()
+	fact := buildAuditFact(ctx, AuditFactInput{Source: "aero-id", EventID: accountID, ActorUID: subject,
+		AccountID: accountID, TenantID: tenantID, Action: "account.provisioned", ResourceType: "account",
+		ResourceID: accountID.String(), Payload: map[string]any{"home_region": homeRegion}})
+	var (
+		account *domain.Account
+		err     error
+	)
+	if reservationID == "" {
+		account, err = repo.EnsureByIdentityWithAudit(ctx, tenantID, issuer, subject, subject, homeRegion, accountID, fact)
+	} else {
+		account, err = repo.EnsureByIdentityWithQuotaWithAudit(ctx, tenantID, issuer, subject, subject, homeRegion, reservationID, accountID, fact)
+	}
 	if err != nil {
+		if errors.Is(err, repository.ErrAuditDuplicate) {
+			return account, nil
+		}
 		return nil, mapAccountError(err, "account.ensure_failed", "failed to resolve account")
 	}
-	s.recordAccountProvisioned(ctx, account, subject, homeRegion)
 	return account, nil
 }
 
@@ -161,12 +202,4 @@ func (s *accountService) commitAccountQuota(ctx context.Context, quotaRepo repos
 		return mapAccountError(err, "billing.saga_commit_failed", "failed to persist account quota state")
 	}
 	return nil
-}
-
-func (s *accountService) recordAccountProvisioned(ctx context.Context, account *domain.Account, subject, homeRegion string) {
-	if s.audit != nil {
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: account.ID, ActorUID: subject,
-			AccountID: account.ID, TenantID: account.TenantID, Action: "account.provisioned", ResourceType: "account",
-			ResourceID: account.ID.String(), Payload: map[string]any{"home_region": homeRegion}})
-	}
 }

@@ -15,11 +15,14 @@ import (
 )
 
 var (
-	ErrInvalidConfig    = errors.New("audit governance: invalid configuration")
-	ErrInvalidEvent     = errors.New("audit governance: invalid event")
-	ErrInvalidReceipt   = errors.New("audit governance: invalid receipt")
-	ErrTokenUnavailable = errors.New("audit governance: token unavailable")
-	ErrTenantUnbound    = errors.New("audit governance: tenant binding unavailable")
+	ErrInvalidConfig     = errors.New("audit governance: invalid configuration")
+	ErrInvalidEvent      = errors.New("audit governance: invalid event")
+	ErrInvalidReceipt    = errors.New("audit governance: invalid receipt")
+	ErrTokenUnavailable  = errors.New("audit governance: token unavailable")
+	ErrTenantUnbound     = errors.New("audit governance: tenant binding unavailable")
+	ErrTokenRejected     = errors.New("audit governance: token rejected")      // events-endpoint 401, non-scope body
+	ErrTokenScopeMissing = errors.New("audit governance: token scope missing") // events 401-with-scope-body, token endpoint
+	errEpochDiscarded    = errors.New("audit governance: epoch discarded")     // stale in-flight fetch, internal only
 )
 
 type Config struct {
@@ -40,6 +43,15 @@ type OAuthConfig struct {
 	RefreshSkew           time.Duration
 	AllowInsecureLoopback bool
 	Bindings              map[string]OAuthBindingConfig
+	// OnScopeRejected is invoked exactly once per token-endpoint scope
+	// rejection (400 + {"error":"invalid_scope"|"insufficient_scope"}), and
+	// once per successful token response whose scope claim omits
+	// audit:event:write or explicitly empties it ("scope":""). It runs on
+	// the singleflight flight goroutine: it is recover-wrapped and
+	// re-entrancy-guarded in-package, so it may panic safely, but it must not
+	// call back into the same tenant's AccessToken (the guard returns
+	// ErrTokenUnavailable instead of self-joining). Keep the hook short.
+	OnScopeRejected func(tenantID string)
 }
 
 type OAuthBindingConfig struct {
@@ -55,9 +67,16 @@ type SourceBinding struct {
 	SourceSystem string
 }
 
+// TokenSource is the merged interface pinned by
+// docs/plans/2026-08-07-auditgovernance-tokensource-merged-interface.md (fixed
+// exactly once; no third signature). BindingUnhealthy/MarkBindingUnhealthy are
+// the sibling campaign's 403-cooldown scope and carry no behavior here.
 type TokenSource interface {
 	AccessToken(context.Context, SourceBinding) (string, error)
 	HasBinding(string) bool
+	Invalidate(SourceBinding) error      // 401: clear cached token, bump epoch; best-effort, always nil today
+	BindingUnhealthy(SourceBinding) bool // 403 cooldown predicate (zero = healthy)
+	MarkBindingUnhealthy(SourceBinding)  // 403: set cooldown; never clears the token cache
 }
 
 func TenantSourceID(prefix, tenantID string) (string, error) {

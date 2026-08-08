@@ -3,11 +3,14 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"strconv"
+
+	"github.com/aero/aero-id/internal/domain"
 )
 
 // LegacyCutoverStatus is the per-tenant cutover state machine (P8-04).
@@ -55,6 +58,15 @@ type LegacyCutoverRepository interface {
 	SetCutover(ctx context.Context, cutover *LegacyCutover) error
 }
 
+// LegacyCutoverAuditRepository is the in-transaction audit surface for the
+// cutover registry. SetCutoverWithAudit appends the fact in the SAME
+// transaction as the decision write: an append failure rolls the whole
+// mutation back (pattern: CallbackAuditRepository). The concrete repo
+// implements it; the service type-asserts.
+type LegacyCutoverAuditRepository interface {
+	SetCutoverWithAudit(ctx context.Context, cutover *LegacyCutover, fact *domain.AuditFact) error
+}
+
 // CleanupReadinessItem is one checklist item of the P8-05 cleanup guard.
 type CleanupReadinessItem struct {
 	Check   string `gorm:"column:check_name"`
@@ -74,11 +86,16 @@ type legacyCutoverRow struct {
 func (legacyCutoverRow) TableName() string { return "legacy_cutover" }
 
 type legacyCutoverRepo struct {
-	db *gorm.DB
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
 }
 
-func NewLegacyCutoverRepository(db *gorm.DB) LegacyCutoverRepository {
-	return &legacyCutoverRepo{db: db}
+// NewLegacyCutoverRepository builds the cutover repo. The transactional
+// ledger is mandatory: a nil or typed-nil ledger would let a cutover decision
+// commit without its durable fact, so requireAuditLedger panics at wiring
+// time (fail-closed).
+func NewLegacyCutoverRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) LegacyCutoverRepository {
+	return &legacyCutoverRepo{db: db, audit: requireAuditLedger("NewLegacyCutoverRepository", audit)}
 }
 
 func (r *legacyCutoverRepo) GetCutover(ctx context.Context, tenantID string) (*LegacyCutover, error) {
@@ -93,14 +110,45 @@ func (r *legacyCutoverRepo) GetCutover(ctx context.Context, tenantID string) (*L
 	return legacyCutoverRowToDomain(&row), nil
 }
 
+// SetCutover records a decision without an audit append (0 = disabled
+// convention: the service only reaches this path when no audit service is
+// configured).
 func (r *legacyCutoverRepo) SetCutover(ctx context.Context, cutover *LegacyCutover) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return r.setCutoverInTx(tx, cutover)
+	})
+}
+
+func (r *legacyCutoverRepo) setCutoverInTx(tx *gorm.DB, cutover *LegacyCutover) error {
 	now := time.Now().UTC()
 	row := &legacyCutoverRow{TenantID: cutover.TenantID, Status: string(cutover.Status),
 		DecidedAt: now, DecidedBy: cutover.DecidedBy, Note: cutover.Note, UpdatedAt: now}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "tenant_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"status", "decided_at", "decided_by", "note", "updated_at"}),
 	}).Create(row).Error
+}
+
+// SetCutoverWithAudit upserts the decision and appends the fact in the SAME
+// transaction, the append LAST: a keyless/down ledger or any append error
+// rolls the decision back (the mutation never commits without its durable
+// fact). The transition validation stays a service concern — the repo writes
+// whatever the service has already validated.
+func (r *legacyCutoverRepo) SetCutoverWithAudit(ctx context.Context, cutover *LegacyCutover, fact *domain.AuditFact) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := r.setCutoverInTx(tx, cutover); err != nil {
+			return err
+		}
+		// ErrAuditDuplicate is swallowed in-tx (contract §4.2, defensive
+		// parity): a duplicate append implies the retried decision write
+		// already committed with identical anchor inputs; the swallow runs
+		// after the domain write inside the same tx, so it can never mask a
+		// failed domain write.
+		if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+			return fmt.Errorf("append legacy cutover audit: %w", err)
+		}
+		return nil
+	})
 }
 
 func legacyCutoverRowToDomain(row *legacyCutoverRow) *LegacyCutover {

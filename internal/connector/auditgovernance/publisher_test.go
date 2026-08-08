@@ -1,8 +1,10 @@
 package auditgovernance
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -90,6 +92,107 @@ func assertGovernanceRequest(t *testing.T, request *http.Request, expectedSource
 	if _, supplied := body["tenant_id"]; supplied {
 		t.Error("tenant_id must not be an event-body authorization input")
 	}
+}
+
+// TestPublisherConflictReceiptIsIdempotentSuccess (FM-9): a duplicate
+// delivery (outbox lease-expiry re-claim, FM-3) is answered by the endpoint
+// with 202 + a conflict receipt echoing the original acceptance. That dedup
+// acknowledgement must be a success — never ErrInvalidReceipt, which would
+// retry and settle the duplicated successful event as dead_letter.
+func TestPublisherConflictReceiptIsIdempotentSuccess(t *testing.T) {
+	const tenantID = "tenant-a"
+	fact := &domain.AuditFact{
+		ID: idgen.NewID(), TenantID: tenantID, ActorUID: "user-1", Action: "account.profile.updated",
+		ResourceType: "account_profile", ResourceID: "account-1", OccurredAt: time.Now().UTC(),
+		Payload: map[string]any{"changed_fields": []string{"locale"}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"service-token","token_type":"Bearer","expires_in":300}`))
+		case "/api/v1/events":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"receipt": map[string]any{
+				"event_id": fact.ID.String(), "tenant_id": tenantID, "status": "ledgered",
+				"accepted_at": time.Now().UTC(), "conflict": true,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	tokens, err := NewOAuthTokenSource(OAuthConfig{
+		SourcePrefix: "aero-id", AllowInsecureLoopback: true,
+		Bindings: map[string]OAuthBindingConfig{tenantID: {
+			TokenURL: server.URL + "/token", ClientID: "client", ClientSecret: "secret",
+			Scope: auditScope, Resources: []string{auditResource},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := NewPublisher(Config{
+		Endpoint: server.URL, SourcePrefix: "aero-id", AllowInsecureLoopback: true,
+	}, tokens, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.Publish(t.Context(), fact); err != nil {
+		t.Fatalf("conflict receipt must be idempotent success, got %v", err)
+	}
+}
+
+// TestPublisherConflictReceiptMustEchoTheFact (FM-9 guard): only a conflict
+// receipt that echoes this exact event_id/tenant_id with a non-zero
+// accepted_at is an idempotent success; a misrouted or degenerate conflict
+// stays ErrInvalidReceipt so a foreign idempotency state can never be
+// acknowledged as this fact's success.
+func TestPublisherConflictReceiptMustEchoTheFact(t *testing.T) {
+	fact := &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "test.action"}
+	// buildReceipt returns a synthetic 202 response; the caller owns the body
+	// (validateReceipt closes it too, so a defer in the caller is harmless).
+	buildReceipt := func(eventID, tenantID, status string, conflict bool, acceptedAt time.Time) *http.Response {
+		body, err := json.Marshal(map[string]any{"receipt": map[string]any{
+			"event_id": eventID, "tenant_id": tenantID, "status": status,
+			"accepted_at": acceptedAt, "conflict": conflict,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusAccepted,
+			Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}
+	}
+	checkInvalid := func(t *testing.T, name string, build func() *http.Response) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			response := build()
+			defer response.Body.Close()
+			if err := validateReceipt(response, fact); !errors.Is(err, ErrInvalidReceipt) {
+				t.Fatalf("receipt error = %v, want ErrInvalidReceipt", err)
+			}
+		})
+	}
+	t.Run("matching echo is idempotent success", func(t *testing.T) {
+		response := buildReceipt(fact.ID.String(), "tenant-a", "ledgered", true, time.Now().UTC())
+		defer response.Body.Close()
+		if err := validateReceipt(response, fact); err != nil {
+			t.Fatalf("matching conflict receipt = %v, want nil", err)
+		}
+	})
+	checkInvalid(t, "different event_id", func() *http.Response {
+		return buildReceipt("11111111-1111-4111-8111-111111111111", "tenant-a", "ledgered", true, time.Now().UTC())
+	})
+	checkInvalid(t, "different tenant_id", func() *http.Response {
+		return buildReceipt(fact.ID.String(), "tenant-b", "ledgered", true, time.Now().UTC())
+	})
+	checkInvalid(t, "zero accepted_at", func() *http.Response {
+		return buildReceipt(fact.ID.String(), "tenant-a", "ledgered", true, time.Time{})
+	})
+	checkInvalid(t, "non-conflict rejected", func() *http.Response {
+		return buildReceipt(fact.ID.String(), "tenant-a", "rejected", false, time.Now().UTC())
+	})
 }
 
 func TestPublisherEventTypeDoesNotVaryWithFactAction(t *testing.T) {

@@ -44,7 +44,7 @@ func (r *accountRepo) EnsureByIdentityWithQuota(ctx context.Context, tenantID, i
 	}
 	var result *domain.Account
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result, err = ensureAccountIdentityTx(tx, input)
+		result, _, err = ensureAccountIdentityTx(tx, input, domain.ID{})
 		if err != nil {
 			return err
 		}

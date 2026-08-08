@@ -81,15 +81,72 @@ func (s *legacyCutoverService) Set(ctx context.Context, tenantID string,
 			"cannot move tenant from "+string(current)+" to "+string(status))
 	}
 	entry := &repository.LegacyCutover{TenantID: tenantID, Status: status, DecidedBy: s.actor(ctx), Note: note}
-	if err := s.cutover.SetCutover(ctx, entry); err != nil {
+	input := cutoverSetFactInput(ctx, tenantID, status, current, entry.DecidedBy, note)
+	atomicAudit, err := s.setWithAudit(ctx, entry, input)
+	if err != nil {
+		// With the WithAudit surface this is an ATOMIC failure: the ledger
+		// append rolled the whole decision back, so neither the cutover nor
+		// its fact committed. save_failed is truthful and fail-closed — a
+		// keyless or down ledger never lets a decision commit without its
+		// durable fact (sync createWithAudit precedent). It must NOT be read
+		// as "audit skipped, mutation committed".
 		return nil, apperr.Internal("cutover.save_failed", "failed to record the cutover decision").Wrap(err)
 	}
-	if s.audit != nil {
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: idgen.NewID(), ActorUID: entry.DecidedBy,
-			TenantID: tenantID, Action: "legacy.cutover.set", ResourceType: "tenant", ResourceID: tenantID,
-			Payload: map[string]any{"status": string(status), "previous": string(current), "note": note}})
+	if s.audit != nil && !atomicAudit {
+		// audit-site: with-audit-fallback (sibling SetCutoverWithAudit) —
+		// fallback tail reachable only for repositories without the WithAudit
+		// surface (unit-test fakes). The decision committed and the fact is
+		// appended now via the same pipeline; a failure surfaces
+		// cutover.audit_failed and is never swallowed. Concrete repos always
+		// take the atomic path, so this tail is unreachable in the
+		// composition root.
+		if err := s.audit.Record(ctx, input); err != nil {
+			return nil, apperr.Internal("cutover.audit_failed", "failed to record the cutover audit").Wrap(err)
+		}
 	}
 	return entry, nil
+}
+
+// setWithAudit performs the cutover write with its audit fact: atomically
+// when the repository exposes the WithAudit surface (production), otherwise as
+// a plain write whose fact the caller's post-commit Record fallback appends.
+// It returns atomicAudit=true when the fact was appended in the same
+// transaction as the decision write.
+func (s *legacyCutoverService) setWithAudit(ctx context.Context, entry *repository.LegacyCutover, input AuditFactInput) (bool, error) {
+	if s.audit == nil {
+		return false, s.cutover.SetCutover(ctx, entry) // 0 = disabled convention
+	}
+	repo, ok := s.cutover.(repository.LegacyCutoverAuditRepository)
+	if !ok {
+		// Non-audit repository (test fake): the fact is appended by the
+		// caller's checked Record fallback — never silently dropped.
+		return false, s.cutover.SetCutover(ctx, entry)
+	}
+	return true, repo.SetCutoverWithAudit(ctx, entry, buildAuditFact(ctx, input))
+}
+
+// cutoverSetFactInput builds the anchored fact input for a cutover decision.
+// Anchored event_id (contract §2.3 / D-4): [legacy.cutover.set, tenant,
+// status, previous]. previous is the status read by Get before the
+// transition, so cycle returns (Legacy→…→RolledBack→Legacy) and same-status
+// re-assertions record distinct facts (G11≠G12≠G13) while racing duplicate
+// executions that read the same previous dedup exactly. Every input is known
+// before the transaction starts, so the in-tx append is byte-identical to the
+// post-commit Record it replaces.
+func cutoverSetFactInput(ctx context.Context, tenantID string, status, previous repository.LegacyCutoverStatus,
+	decidedBy, note string) AuditFactInput {
+	tenant := tenantID
+	if fromCtx := TenantFrom(ctx); fromCtx != "" {
+		tenant = fromCtx
+	}
+	return AuditFactInput{Source: "aero-id",
+		EventID:      idgen.Anchor("legacy.cutover.set", tenant, string(status), string(previous)),
+		ActorUID:     decidedBy,
+		TenantID:     tenant,
+		Action:       "legacy.cutover.set",
+		ResourceType: "tenant",
+		ResourceID:   tenantID,
+		Payload:      map[string]any{"status": string(status), "previous": string(previous), "note": note}}
 }
 
 func (s *legacyCutoverService) CleanupReadiness(ctx context.Context, tenantID string) ([]repository.CleanupReadinessItem, bool, error) {

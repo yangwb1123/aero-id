@@ -84,8 +84,8 @@ type accountService struct {
 	region         string
 	home           *region.Resolver
 	backfillTenant string
-	directory     repository.RegionDirectoryRepository // optional durable fencing guard (P6-02)
-	homeVersion   string
+	directory      repository.RegionDirectoryRepository // optional durable fencing guard (P6-02)
+	homeVersion    string
 }
 
 type AccountOption func(*accountService)
@@ -152,9 +152,14 @@ func (s *accountService) GetAccount(ctx context.Context, id domain.ID) (*Account
 		return nil, mapAccountError(err, "account.not_found", "account not found")
 	}
 	if s.audit != nil {
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", ActorUID: actorFromContext(ctx), AccountID: id,
+		// audit-site: standalone-fact — sensitive-read access audit with no
+		// domain write of its own; appends one row per execution by design
+		// (fresh event_id, no retry-dedup contract).
+		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", ActorUID: actorFromContext(ctx), AccountID: id,
 			TenantID: TenantFrom(ctx), Action: "account.viewed", ResourceType: "account", ResourceID: id.String(),
-			Payload: map[string]any{"mode": "admin"}})
+			Payload: map[string]any{"mode": "admin"}}); err != nil {
+			return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
 	}
 	return s.view(ctx, account)
 }
@@ -181,8 +186,12 @@ func (s *accountService) ListAccounts(ctx context.Context, input ListAccountsInp
 		if strings.TrimSpace(input.Query) != "" {
 			payload["query_sha256"] = hashAuditBytes([]byte(input.Query))
 		}
-		_ = s.audit.Record(ctx, AuditFactInput{Source: "aero-id", ActorUID: actorFromContext(ctx), TenantID: TenantFrom(ctx),
-			Action: "account.listed", ResourceType: "account", Payload: payload})
+		// audit-site: standalone-fact — sensitive-read access audit with no
+		// domain write of its own; one row per execution by design.
+		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", ActorUID: actorFromContext(ctx), TenantID: TenantFrom(ctx),
+			Action: "account.listed", ResourceType: "account", Payload: payload}); err != nil {
+			return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
 	}
 	return &AccountList{Accounts: rows, NextCursor: next}, nil
 }

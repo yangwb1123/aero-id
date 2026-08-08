@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -91,7 +92,26 @@ func (p *Publisher) Publish(ctx context.Context, fact *domain.AuditFact) error {
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return err
+		// F1: the raw client.Do error is a *url.Error embedding the full
+		// events-endpoint URL; wrap it like the sibling token path so no
+		// internal endpoint information can leak through any error.
+		return fmt.Errorf("%w: transport", ErrTokenUnavailable)
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		defer response.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes))
+		// Status-driven invalidation: the cached token is rejected; drop it
+		// and bump the epoch so the next AccessToken refetches immediately
+		// (REQ-3). Runs regardless of whether the body parses.
+		_ = p.tokens.Invalidate(SourceBinding{TenantID: fact.TenantID, SourceSystem: source})
+		// Direction delta over the merged table (C-4): a drained body that
+		// best-effort parses to invalid_scope/insufficient_scope is
+		// ErrTokenScopeMissing — mutually exclusive with ErrTokenRejected.
+		// Body-parse failure is non-fatal: the plain path applies.
+		if scopeRejectedCode(tokenErrorCode(body)) {
+			return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
+		}
+		return fmt.Errorf("%w: HTTP %d", ErrTokenRejected, response.StatusCode)
 	}
 	return validateReceipt(response, fact)
 }
@@ -109,6 +129,12 @@ func (p *Publisher) authorization(ctx context.Context, fact *domain.AuditFact) (
 		return "", "", ErrInvalidEvent
 	}
 	token, err := p.tokens.AccessToken(ctx, SourceBinding{TenantID: fact.TenantID, SourceSystem: source})
+	// C-B propagation: the token-endpoint scope classification must escape to
+	// the caller (the service routes it to audit.binding_unavailable); every
+	// other token-source failure keeps the historical collapse.
+	if errors.Is(err, ErrTokenScopeMissing) {
+		return "", "", err
+	}
 	if err != nil || token == "" || strings.ContainsAny(token, "\r\n") {
 		return "", "", ErrTokenUnavailable
 	}
@@ -227,6 +253,15 @@ func validateReceipt(response *http.Response, fact *domain.AuditFact) error {
 	if err != nil || !receiptMatches(envelope, fact) {
 		return ErrInvalidReceipt
 	}
+	// Conflict receipts are idempotent successes: the endpoint already
+	// accepted this event under the same event_id/idempotency_key. Duplicate
+	// delivery is by design (outbox lease-expiry re-claim, FM-3) or follows a
+	// lost response; receiptMatches already proved the conflict echoes this
+	// exact fact, so acking it as success prevents a duplicated successful
+	// event from settling as dead_letter.
+	if envelope.Receipt.Conflict {
+		return nil
+	}
 	switch envelope.Receipt.Status {
 	case "ledgered", "indexed", "archived":
 		return nil
@@ -251,8 +286,13 @@ func decodeReceipt(response *http.Response) (receiptEnvelope, error) {
 	return envelope, nil
 }
 
+// receiptMatches verifies the receipt echoes the exact fact that was sent.
+// Conflict is deliberately not part of the match: a conflict receipt for this
+// event_id/tenant_id is the endpoint's dedup acknowledgement and is validated
+// as idempotent success in validateReceipt; a conflict for any other event is
+// still rejected as invalid.
 func receiptMatches(envelope receiptEnvelope, fact *domain.AuditFact) bool {
 	receipt := envelope.Receipt
 	return receipt.EventID == fact.ID.String() && receipt.TenantID == fact.TenantID &&
-		!receipt.AcceptedAt.IsZero() && !receipt.Conflict
+		!receipt.AcceptedAt.IsZero()
 }

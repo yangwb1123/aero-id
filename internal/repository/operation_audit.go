@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -122,5 +123,18 @@ func (r *operationRepo) appendAudit(tx *gorm.DB, ctx context.Context, fact *doma
 	if r.audit == nil {
 		return fmt.Errorf("transactional audit repository is not configured")
 	}
-	return r.audit.AppendInTx(ctx, tx, fact)
+	// ErrAuditDuplicate is swallowed in-tx (contract §4.2, event_receipt.go
+	// precedent): a duplicate append implies the retried domain write already
+	// committed with identical anchor inputs, which implies an identical
+	// idempotent UPDATE; the retry's re-apply is a no-op-equivalent state
+	// transition, so committing the transaction with the swallowed append
+	// yields the same final state as the original commit. The swallow happens
+	// after the domain write inside the same tx, so it can never mask a failed
+	// domain write. Without it, a deterministic re-claim (ListRunnable re-claim,
+	// unknown->unknown reconcile loop) would roll the whole tx back including
+	// the domain write and poison the worker batch.
+	if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+		return fmt.Errorf("append operation audit: %w", err)
+	}
+	return nil
 }

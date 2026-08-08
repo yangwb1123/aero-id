@@ -3,6 +3,7 @@ package auditgovernance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -28,16 +30,20 @@ type OAuthTokenSource struct {
 }
 
 type tenantTokenSource struct {
-	endpoint     *url.URL
-	clientID     string
-	clientSecret string
-	client       *http.Client
-	refreshSkew  time.Duration
-	now          func() time.Time
-	mu           sync.RWMutex
-	token        string
-	refreshAt    time.Time
-	fetches      singleflight.Group
+	endpoint        *url.URL
+	clientID        string
+	clientSecret    string
+	client          *http.Client
+	refreshSkew     time.Duration
+	now             func() time.Time
+	tenantID        string
+	onScopeRejected func(string)
+	hookRunning     atomic.Bool // re-entrancy guard; see accessToken
+	mu              sync.RWMutex
+	token           string
+	refreshAt       time.Time
+	epoch           uint64 // bumped by Invalidate; fences stale singleflight results
+	fetches         singleflight.Group
 }
 
 func NewOAuthTokenSource(config OAuthConfig, client *http.Client) (*OAuthTokenSource, error) {
@@ -48,7 +54,7 @@ func NewOAuthTokenSource(config OAuthConfig, client *http.Client) (*OAuthTokenSo
 	result := &OAuthTokenSource{sourcePrefix: config.SourcePrefix, bindings: make(map[string]*tenantTokenSource)}
 	clients, secrets := map[string]struct{}{}, map[string]struct{}{}
 	for tenantID, binding := range config.Bindings {
-		tokens, err := newTenantTokenSource(binding, config, client)
+		tokens, err := newTenantTokenSource(tenantID, binding, config, client)
 		if err != nil || !validTenantID(tenantID) || duplicateCredential(tokens, clients, secrets) {
 			return nil, ErrInvalidConfig
 		}
@@ -68,7 +74,7 @@ func defaultOAuthConfig(config OAuthConfig) OAuthConfig {
 	return config
 }
 
-func newTenantTokenSource(binding OAuthBindingConfig, config OAuthConfig, client *http.Client) (*tenantTokenSource, error) {
+func newTenantTokenSource(tenantID string, binding OAuthBindingConfig, config OAuthConfig, client *http.Client) (*tenantTokenSource, error) {
 	binding.TokenURL = strings.TrimSpace(binding.TokenURL)
 	binding.ClientID = strings.TrimSpace(binding.ClientID)
 	binding.Scope = strings.Join(strings.Fields(binding.Scope), " ")
@@ -79,7 +85,8 @@ func newTenantTokenSource(binding OAuthBindingConfig, config OAuthConfig, client
 	return &tenantTokenSource{
 		endpoint: endpoint, clientID: binding.ClientID, clientSecret: binding.ClientSecret,
 		client: noRedirectClient(client, config.Timeout), refreshSkew: config.RefreshSkew,
-		now: func() time.Time { return time.Now().UTC() },
+		now: func() time.Time { return time.Now().UTC() }, tenantID: tenantID,
+		onScopeRejected: config.OnScopeRejected,
 	}, nil
 }
 
@@ -119,28 +126,81 @@ func (s *OAuthTokenSource) AccessToken(ctx context.Context, binding SourceBindin
 	return tokens.accessToken(ctx)
 }
 
-func (s *tenantTokenSource) accessToken(ctx context.Context) (string, error) {
-	if token, ok := s.cachedToken(); ok {
-		return token, nil
+// Invalidate drops the cached token for the binding and bumps its epoch. An
+// unbound or mismatched binding is a no-op returning nil (mirrors
+// AccessToken's validation). The epoch bump is unconditional for a bound
+// tenant — even with an empty cache — so a pre-invalidation in-flight fetch
+// can never repopulate the cache (REQ-1/REQ-2).
+//nolint:nilerr // an unbound or mismatched binding is a documented no-op (mirrors AccessToken's validation)
+func (s *OAuthTokenSource) Invalidate(binding SourceBinding) error {
+	expected, err := TenantSourceID(s.sourcePrefix, binding.TenantID)
+	tokens := s.bindings[binding.TenantID]
+	if err != nil || binding.SourceSystem != expected || tokens == nil {
+		return nil
 	}
-	result := s.fetches.DoChan("client", func() (any, error) {
+	tokens.invalidate()
+	return nil
+}
+
+// BindingUnhealthy and MarkBindingUnhealthy are the sibling campaign's 403
+// cooldown scope (merged plan §2) — present on the interface so the merged
+// TokenSource is fixed exactly once, with no behavior in this campaign (the
+// 403 path keeps validateReceipt's generic classification).
+func (s *OAuthTokenSource) BindingUnhealthy(SourceBinding) bool { return false }
+func (s *OAuthTokenSource) MarkBindingUnhealthy(SourceBinding)  {}
+
+func (s *tenantTokenSource) invalidate() {
+	s.mu.Lock()
+	s.token = ""
+	s.epoch++
+	s.mu.Unlock()
+}
+
+//nolint:cyclop // bounded re-entry state machine (counter-based discard/re-entry loop, REQ-2)
+func (s *tenantTokenSource) accessToken(ctx context.Context) (string, error) {
+	// Counter-based re-entry, bounded (REQ-2 constraint 3): a stale in-flight
+	// result (errEpochDiscarded) triggers at most one re-entry against the
+	// current epoch; a second consecutive discard is terminal
+	// ErrTokenUnavailable — no unbounded loop under a 401 storm.
+	for attempt := 0; ; attempt++ {
 		if token, ok := s.cachedToken(); ok {
 			return token, nil
 		}
-		return s.fetchToken(ctx)
-	})
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case outcome := <-result:
-		if outcome.Err != nil {
-			return "", outcome.Err
-		}
-		token, ok := outcome.Val.(string)
-		if !ok || token == "" {
+		if s.hookRunning.Load() {
+			// The OnScopeRejected hook is executing on this source. Joining the
+			// flight would self-join the in-flight singleflight call (x/sync has
+			// no cancellation) and deadlock forever; fail fast instead.
 			return "", ErrTokenUnavailable
 		}
-		return token, nil
+		// s.mu is never held across DoChan/wait: the flight closure's
+		// cacheToken takes Lock, and a held RLock would writer-starve it into
+		// a deadlock. The closure captures the keyed epoch (never re-reads
+		// s.epoch) — key/epoch identity is the anti-poisoning invariant.
+		s.mu.RLock()
+		epoch := s.epoch
+		s.mu.RUnlock()
+		result := s.fetches.DoChan(fmt.Sprintf("client-%d", epoch), func() (any, error) {
+			if token, ok := s.cachedToken(); ok {
+				return token, nil
+			}
+			return s.fetchToken(ctx, epoch)
+		})
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case outcome := <-result:
+			if outcome.Err != nil {
+				if errors.Is(outcome.Err, errEpochDiscarded) && attempt == 0 {
+					continue
+				}
+				return "", outcome.Err
+			}
+			token, ok := outcome.Val.(string)
+			if !ok || token == "" {
+				return "", ErrTokenUnavailable
+			}
+			return token, nil
+		}
 	}
 }
 
@@ -150,7 +210,12 @@ func (s *tenantTokenSource) cachedToken() (string, bool) {
 	return s.token, s.token != "" && s.now().Before(s.refreshAt)
 }
 
-func (s *tenantTokenSource) fetchToken(ctx context.Context) (string, error) {
+// fetchToken runs inside the singleflight flight closure. The 400-gated scope
+// classification (C-2: token-endpoint 401/403 with any body stay
+// ErrTokenUnavailable — sibling FM-4 boundary), the scope-claim validation,
+// and the epoch-fenced cache write all happen here so coalesced waiters share
+// one classification and one fetch.
+func (s *tenantTokenSource) fetchToken(ctx context.Context, epoch uint64) (string, error) {
 	request, err := s.tokenRequest(ctx)
 	if err != nil {
 		return "", ErrTokenUnavailable
@@ -161,14 +226,26 @@ func (s *tenantTokenSource) fetchToken(ctx context.Context) (string, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxTokenBodyBytes))
+		body, _ := io.ReadAll(io.LimitReader(response.Body, maxTokenBodyBytes))
+		if response.StatusCode == http.StatusBadRequest && scopeRejectedCode(tokenErrorCode(body)) {
+			s.notifyScopeRejected()
+			return "", fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
+		}
 		return "", fmt.Errorf("%w: HTTP %d", ErrTokenUnavailable, response.StatusCode)
 	}
 	wire, err := decodeTokenResponse(response)
 	if err != nil {
 		return "", err
 	}
-	s.cacheToken(wire)
+	if !validScopeClaim(wire) {
+		s.notifyScopeRejected()
+		return "", ErrTokenScopeMissing
+	}
+	if !s.cacheToken(wire, epoch) {
+		// A pre-invalidation fetch finishing after Invalidate bumped the
+		// epoch: the result is stale and must never repopulate the cache.
+		return "", errEpochDiscarded
+	}
 	return wire.AccessToken, nil
 }
 
@@ -185,9 +262,10 @@ func (s *tenantTokenSource) tokenRequest(ctx context.Context) (*http.Request, er
 }
 
 type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int64  `json:"expires_in"`
+	AccessToken string  `json:"access_token"`
+	TokenType   string  `json:"token_type"`
+	ExpiresIn   int64   `json:"expires_in"`
+	Scope       *string `json:"scope"`
 }
 
 func decodeTokenResponse(response *http.Response) (tokenResponse, error) {
@@ -207,11 +285,79 @@ func decodeTokenResponse(response *http.Response) (tokenResponse, error) {
 	return wire, nil
 }
 
-func (s *tenantTokenSource) cacheToken(wire tokenResponse) {
+// cacheToken persists a fetched token only when it belongs to the current
+// epoch; a stale result (epoch mismatch) is discarded and reported so the
+// caller can re-enter against the fresh epoch (REQ-2).
+func (s *tenantTokenSource) cacheToken(wire tokenResponse, epoch uint64) bool {
 	lifetime := time.Duration(min(wire.ExpiresIn, int64((24*time.Hour)/time.Second))) * time.Second
 	skew := min(s.refreshSkew, lifetime/2)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if epoch != s.epoch {
+		return false
+	}
 	s.token = wire.AccessToken
 	s.refreshAt = s.now().Add(lifetime - skew)
-	s.mu.Unlock()
+	return true
+}
+
+// notifyScopeRejected invokes the composition-root hook exactly once per
+// classification, contained in-package. The hook runs inside the singleflight
+// flight fn; x/sync v0.20.0 re-raises a flight panic as an unrecoverable
+// process crash (go panic(e); select {}) and never delivers to coalesced
+// waiters, so a panicking hook must never escape: the deferred recover
+// converts it into a classified ErrTokenScopeMissing for every waiter instead.
+// The re-entrancy guard (hookRunning) is armed for the hook's duration so a
+// hook that calls back into this source fails fast instead of self-joining
+// the in-flight flight.
+func (s *tenantTokenSource) notifyScopeRejected() {
+	hook := s.onScopeRejected
+	if hook == nil {
+		return
+	}
+	s.hookRunning.Store(true)
+	defer s.hookRunning.Store(false)
+	defer func() { _ = recover() }()
+	hook(s.tenantID)
+}
+
+// tokenErrorCode is the SINGLE classifier helper for both classification
+// sites (one signature set, bulkhead design §2.2): it best-effort parses
+// {"error":"<code>"} from an already-drained, bounded body; any parse failure
+// yields "" (non-fatal — classification never blocks the publish path).
+// Status gates stay at the call sites (token endpoint: 400; events endpoint:
+// 401).
+func tokenErrorCode(body []byte) string {
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return ""
+	}
+	return envelope.Error
+}
+
+func scopeRejectedCode(code string) bool {
+	return code == "invalid_scope" || code == "insufficient_scope"
+}
+
+// validScopeClaim reports whether a successful token response's scope claim
+// grants the requested audit scope (RFC 6749 §3.3: exact space-delimited
+// token). A nil claim (absent) is accepted — the server may omit scope when
+// identical to the request. A present claim must contain auditScope as an
+// exact token (strings.Fields + equality, so xaudit:event:write or
+// audit:event:write-extra cannot pass); a present-but-empty claim
+// ("scope":"") is a rejection, not an absence — fail closed (F2). JSON null
+// unmarshals to nil and is indistinguishable from absent → accepted
+// (documented boundary).
+func validScopeClaim(wire tokenResponse) bool {
+	if wire.Scope == nil {
+		return true
+	}
+	for _, token := range strings.Fields(*wire.Scope) {
+		if token == auditScope {
+			return true
+		}
+	}
+	return false
 }

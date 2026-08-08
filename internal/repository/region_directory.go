@@ -48,15 +48,15 @@ type RegionDirectoryRepository interface {
 }
 
 type regionDirectoryRow struct {
-	ID              domain.ID    `gorm:"column:id;primaryKey"`
-	AccountID       domain.ID    `gorm:"column:account_id"`
-	TenantID        string       `gorm:"column:tenant_id"`
-	HomeRegion      string       `gorm:"column:home_region"`
-	ResolverVersion string       `gorm:"column:resolver_version"`
-	FencedEpoch     int64        `gorm:"column:fenced_epoch"`
-	PromotedAt      *time.Time   `gorm:"column:promoted_at"`
-	CreatedAt       time.Time    `gorm:"column:created_at"`
-	UpdatedAt       time.Time    `gorm:"column:updated_at"`
+	ID              domain.ID  `gorm:"column:id;primaryKey"`
+	AccountID       domain.ID  `gorm:"column:account_id"`
+	TenantID        string     `gorm:"column:tenant_id"`
+	HomeRegion      string     `gorm:"column:home_region"`
+	ResolverVersion string     `gorm:"column:resolver_version"`
+	FencedEpoch     int64      `gorm:"column:fenced_epoch"`
+	PromotedAt      *time.Time `gorm:"column:promoted_at"`
+	CreatedAt       time.Time  `gorm:"column:created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at"`
 }
 
 func (regionDirectoryRow) TableName() string { return "region_directory" }

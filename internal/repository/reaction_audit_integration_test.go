@@ -26,7 +26,7 @@ func TestMessageReactionsRepo(t *testing.T) {
 	ctx := context.Background()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	repo := repository.NewMessageRepository(db, outbox.NewGormRepository(db))
+	repo := repository.NewMessageRepository(db, outbox.NewGormRepository(db), repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
 
 	// A reaction row FK-references messages(id), so seed a real message first.
 	msg := &domain.Message{

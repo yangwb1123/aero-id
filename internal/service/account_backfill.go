@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"gorm.io/gorm"
 )
@@ -94,9 +95,32 @@ func (s *accountService) backfillOne(ctx context.Context, uid string, result *Ba
 	if s.home != nil {
 		homeRegion = s.home.Resolve(s.issuer, uid)
 	}
-	if _, err := s.repo.EnsureByIdentity(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion); err != nil {
+	// A5: the backfill is a state-changing administrative path; it must record
+	// an account.provisioned fact for every shadow account it creates (same
+	// in-tx append and A4 created-signal gating as the provision path).
+	if err := s.ensureBackfillAccount(ctx, uid, homeRegion); err != nil {
 		result.Skipped++
 		return
 	}
 	result.Created++
+}
+
+// ensureBackfillAccount provisions one shadow account with its audit fact in
+// the same transaction (A5). Failures are counted, never fatal: the run is
+// idempotent and resumable.
+func (s *accountService) ensureBackfillAccount(ctx context.Context, uid, homeRegion string) error {
+	if s.audit == nil {
+		_, err := s.repo.EnsureByIdentity(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion)
+		return err
+	}
+	repo, ok := s.repo.(repository.AccountProvisionAuditRepository)
+	if !ok {
+		return repository.ErrNotFound
+	}
+	accountID := idgen.NewID()
+	fact := buildAuditFact(ctx, AuditFactInput{Source: "aero-id", EventID: accountID, ActorUID: uid,
+		AccountID: accountID, TenantID: s.backfillTenant, Action: "account.provisioned", ResourceType: "account",
+		ResourceID: accountID.String(), Payload: map[string]any{"home_region": homeRegion}})
+	_, err := repo.EnsureByIdentityWithAudit(ctx, s.backfillTenant, s.issuer, uid, uid, homeRegion, accountID, fact)
+	return err
 }

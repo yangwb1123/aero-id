@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"unicode"
@@ -63,11 +65,43 @@ func validateAuditBindings(value AuditGovernanceConfig, clients, secrets map[str
 			!exactResources(binding.Resources, auditResource) {
 			return fmt.Errorf("audit governance contains an invalid tenant, scope, or resource binding")
 		}
+		if !validAuditTokenURL(binding.TokenURL, value.AllowInsecureLoopback) {
+			return fmt.Errorf("audit governance binding contains an invalid token URL")
+		}
 		if err := registerCredential(binding.ClientID, binding.ClientSecretEnv, clients, secrets); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// validAuditTokenURL mirrors auditgovernance.newTenantTokenSource's URL rules
+// (secureEndpoint + RawQuery) so a misconfigured enabled gate fails at Load()
+// instead of connector construction at boot-wiring. The error never echoes the
+// raw value; T-10.1.6 pins parity with the connector cross-layer.
+func validAuditTokenURL(raw string, allowLoopback bool) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" || endpoint.RawQuery != "" {
+		return false
+	}
+	return endpoint.Scheme == "https" || allowedLoopbackTokenURL(endpoint, allowLoopback)
+}
+
+// allowedLoopbackTokenURL mirrors auditgovernance.allowedLoopbackHTTP: plain
+// http is accepted only when allowed and the hostname is localhost or a
+// loopback IP.
+func allowedLoopbackTokenURL(endpoint *url.URL, allowLoopback bool) bool {
+	if endpoint.Scheme != "http" || !allowLoopback {
+		return false
+	}
+	if strings.EqualFold(endpoint.Hostname(), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(endpoint.Hostname())
+	return ip != nil && ip.IsLoopback()
 }
 
 func registerCredential(clientID, secretEnv string, clients, secrets map[string]struct{}) error {

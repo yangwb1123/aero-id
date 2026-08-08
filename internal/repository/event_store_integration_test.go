@@ -24,7 +24,7 @@ func eventStoreEnvelope(accountID domain.ID, dataset string, version int64, occu
 		Payload: map[string]any{
 			"account_id": accountID.String(), "dataset": dataset, "status": "fresh",
 			"version": float64(version), "data": map[string]any{"usage_bytes": version * 10},
-			"secret":  "redact-me", // must not survive redaction
+			"secret": "redact-me", // must not survive redaction
 		},
 	}
 }

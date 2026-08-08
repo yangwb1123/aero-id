@@ -175,7 +175,11 @@ func (r *operationRepo) create(ctx context.Context, operation *domain.Operation,
 			}
 		}
 		if fact != nil {
-			if err := r.audit.AppendInTx(ctx, tx, fact); err != nil {
+			// ErrAuditDuplicate is swallowed in-tx (contract §4.2): a duplicate
+			// append implies the retried operation create already committed with
+			// identical anchor inputs; the swallow runs after the domain write
+			// inside the same tx, so it can never mask a failed domain write.
+			if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
 				return fmt.Errorf("append operation audit: %w", err)
 			}
 		}
