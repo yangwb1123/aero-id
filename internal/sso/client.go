@@ -14,7 +14,6 @@ import (
 	"google.golang.org/grpc/connectivity"
 
 	"github.com/aero/aero-id/internal/domain"
-	"github.com/aero/aero-id/internal/sso/auditpb"
 	"github.com/aero/aero-id/internal/sso/authzpb"
 	"github.com/aero/aero-id/internal/sso/ssopb"
 )
@@ -62,7 +61,6 @@ type Client struct {
 	conn          *grpc.ClientConn
 	rpc           ssopb.SSOClient
 	authz         authzpb.AuthorizerClient
-	audit         auditpb.AuditWriterClient
 	authzClientID string
 	tokenCache    *TokenCache
 	userCache     *UserCache
@@ -113,7 +111,6 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 		conn:          conn,
 		rpc:           ssopb.NewSSOClient(conn),
 		authz:         authzpb.NewAuthorizerClient(conn),
-		audit:         auditpb.NewAuditWriterClient(conn),
 		authzClientID: cfg.AuthZClientID,
 		tokenCache:    NewTokenCacheWithStale(cfg.TokenCacheTTL, cfg.StaleTTL),
 		breaker:       newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown),
@@ -221,44 +218,11 @@ func (c *Client) HasPermission(ctx context.Context, uid, permission string) (boo
 	return response.GetAllowed(), nil
 }
 
-// Publish adapts Snaplink-scoped durable facts to Snaplink's stable AuditWriter
-// contract. It deliberately forwards only metadata and never the redacted local
-// payload. Facts from IM/Vault remain in aero-id's ledger and are not sent to
-// Snaplink's authority by this adapter.
-func (c *Client) Publish(ctx context.Context, fact *domain.AuditFact) error {
-	if c.audit == nil || fact == nil || fact.Source != "snaplink" {
-		return nil
-	}
-	requestCtx := ctx
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		requestCtx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-	}
-	eventID := ""
-	if fact.EventID != (domain.ID{}) {
-		eventID = fact.EventID.String()
-	}
-	metadata := map[string]string{"source_region": fact.SourceRegion, "operation_id": optionalAuditID(fact.OperationID),
-		"tenant_id": fact.TenantID, "resource_type": fact.ResourceType, "resource_id": fact.ResourceID}
-	if fact.AccountID != (domain.ID{}) {
-		metadata["account_id"] = fact.AccountID.String()
-	}
-	_, err := c.audit.Record(requestCtx, &auditpb.Event{Id: eventID, Type: fact.Action, Outcome: "success",
-		TimestampUnix: fact.OccurredAt.Unix(), RequestId: optionalAuditID(fact.CorrelationID), TraceId: fact.TraceID,
-		ActorId: fact.ActorUID, ClientId: c.authzClientID, Metadata: metadata})
-	if err != nil {
-		return fmt.Errorf("snaplink audit writer: %w", err)
-	}
-	return nil
-}
-
-func optionalAuditID(value domain.ID) string {
-	if value == (domain.ID{}) {
-		return ""
-	}
-	return value.String()
-}
+// NOTE: the inline Snaplink AuditWriter delivery path (Client.Publish) was
+// deleted — it was dead in the composition root (no call site, no wiring) and
+// the durable audit relay is the audit_publications drain (B2-2). The
+// auditpb client stub remains available for a future scoped Snaplink audit
+// connector; wiring one through the drain is the only sanctioned delivery path.
 
 // callWithRetry runs fn up to maxAttempts times, retrying ONLY on availability
 // errors with exponential backoff, all within the caller's (timeout-bounded) ctx.

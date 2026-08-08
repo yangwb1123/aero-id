@@ -18,7 +18,8 @@ func setupShareRepos(t *testing.T) (repository.FileRepository, repository.FileSh
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewFileRepository(db), repository.NewFileShareRepository(db)
+	return repository.NewFileRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})),
+		repository.NewFileShareRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
 }
 
 func TestFileShareRepo_GrantRevokeListIsShared(t *testing.T) {

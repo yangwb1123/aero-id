@@ -2,6 +2,7 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -237,3 +238,134 @@ func TestRun_ReferencedObjectNotSwept(t *testing.T) {
 		t.Fatalf("object with a referencing row must not be swept; deletes=%v", base.deleted)
 	}
 }
+
+// recordingAuditWriter records the audit surface invocations. When repo is
+// set, PurgeWithAudit also performs the domain write (modelling the real
+// in-tx HardDeleteWithAudit) so blob-refcount semantics stay truthful.
+type recordingAuditWriter struct {
+	mu          sync.Mutex
+	repo        *fakeRepo
+	purged      []domain.ID
+	purgeFacts  []*domain.AuditFact
+	blobReclaim []string // keys
+	orphans     []string
+	failPurge   error // when set, PurgeWithAudit fails (rollback simulation)
+}
+
+func (w *recordingAuditWriter) PurgeWithAudit(ctx context.Context, ids []domain.ID, fact *domain.AuditFact) error {
+	if w.failPurge != nil {
+		return w.failPurge
+	}
+	w.mu.Lock()
+	w.purged = append(w.purged, ids...)
+	w.purgeFacts = append(w.purgeFacts, fact)
+	w.mu.Unlock()
+	if w.repo != nil {
+		return w.repo.HardDelete(ctx, ids)
+	}
+	return nil
+}
+
+func (w *recordingAuditWriter) RecordBlobReclaim(_ context.Context, blobs int, keys []string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.blobReclaim = append(w.blobReclaim, keys...)
+	return nil
+}
+
+func (w *recordingAuditWriter) RecordOrphanSweep(_ context.Context, keys []string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.orphans = append(w.orphans, keys...)
+	return nil
+}
+
+// TestRun_PurgePausedSkipsEverything (storage GC pause): with PausePurge set,
+// Run performs no purge work — no rows deleted, no audit facts, no orphans.
+func TestRun_PurgePausedSkipsEverything(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old := &domain.File{ID: idgen.NewID(), OwnerUID: "u-1", StorageKey: "k-1"}
+	repo := &fakeRepo{softDeleted: []*domain.File{old}, refs: map[string]int64{"k-1": 1}}
+	audits := &recordingAuditWriter{}
+	s := New(repo, nil, &fakeStore{}, Config{
+		Retention: 24 * time.Hour, MinOrphanAge: time.Hour, PurgeBatch: 10, SweepOrphans: true, PausePurge: true,
+	}, nil).WithClock(func() time.Time { return now }).WithAuditWriter(audits)
+
+	stats, err := s.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.RowsPurged != 0 || stats.OrphansSwept != 0 {
+		t.Fatalf("paused pass stats = %+v, want zero purges", stats)
+	}
+	if len(repo.hardDeleted) != 0 {
+		t.Fatalf("paused pass hard-deleted %d rows, want 0", len(repo.hardDeleted))
+	}
+	if len(audits.purged) != 0 || len(audits.blobReclaim) != 0 || len(audits.orphans) != 0 {
+		t.Fatalf("paused pass minted audit facts: purged=%d reclaim=%d orphans=%d, want 0",
+			len(audits.purged), len(audits.blobReclaim), len(audits.orphans))
+	}
+}
+
+// TestRun_PurgeWritesInTxAuditAndBlobReclaimObservation: with the audit writer
+// wired, the row purge goes through PurgeWithAudit (in-tx fact) and the blob
+// reclamation is observed as a separate checked fact.
+func TestRun_PurgeWritesInTxAuditAndBlobReclaimObservation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old := &domain.File{ID: idgen.NewID(), OwnerUID: "u-1", StorageKey: "k-1"}
+	repo := &fakeRepo{softDeleted: []*domain.File{old}, refs: map[string]int64{"k-1": 1}}
+	audits := &recordingAuditWriter{repo: repo}
+	s := New(repo, nil, &fakeStore{}, Config{
+		Retention: 24 * time.Hour, MinOrphanAge: time.Hour, PurgeBatch: 10,
+	}, nil).WithClock(func() time.Time { return now }).WithAuditWriter(audits)
+
+	stats, err := s.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.RowsPurged != 1 {
+		t.Fatalf("rows purged = %d, want 1", stats.RowsPurged)
+	}
+	if len(audits.purged) != 1 || audits.purged[0] != old.ID {
+		t.Fatalf("PurgeWithAudit ids = %v, want [%s]", audits.purged, old.ID)
+	}
+	if len(audits.purgeFacts) != 1 || audits.purgeFacts[0].Action != "storage.gc.purged" {
+		t.Fatalf("purge facts = %v, want one storage.gc.purged", audits.purgeFacts)
+	}
+	if audits.purgeFacts[0].TenantID != "legacy" {
+		t.Fatalf("purge fact tenant = %q, want legacy (system worker, excluded from binding coverage)", audits.purgeFacts[0].TenantID)
+	}
+	// The blob was reclaimed after the purge (refcount 1 -> 0, blob deleted).
+	if stats.BlobsPurged != 1 || len(audits.blobReclaim) != 1 {
+		t.Fatalf("blob reclaim = %d / %v, want 1 observation", stats.BlobsPurged, audits.blobReclaim)
+	}
+}
+
+// TestRun_PurgeAuditFailurePreventsPurge: a failed PurgeWithAudit surfaces the
+// error and the rows are NOT hard-deleted (the in-tx contract: never a purge
+// without its fact).
+func TestRun_PurgeAuditFailurePreventsPurge(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old := &domain.File{ID: idgen.NewID(), OwnerUID: "u-1", StorageKey: "k-1"}
+	repo := &fakeRepo{softDeleted: []*domain.File{old}, refs: map[string]int64{"k-1": 1}}
+	audits := &recordingAuditWriter{failPurge: errAuditDown}
+	s := New(repo, nil, &fakeStore{}, Config{
+		Retention: 24 * time.Hour, MinOrphanAge: time.Hour, PurgeBatch: 10,
+	}, nil).WithClock(func() time.Time { return now }).WithAuditWriter(audits)
+
+	stats, err := s.Run(ctx)
+	if err == nil {
+		t.Fatal("Run must surface the purge audit failure")
+	}
+	if stats.RowsPurged != 0 {
+		t.Fatalf("rows purged = %d, want 0 (in-tx rollback)", stats.RowsPurged)
+	}
+	if len(repo.hardDeleted) != 0 {
+		t.Fatalf("rows hard-deleted despite the audit failure = %d, want 0", len(repo.hardDeleted))
+	}
+}
+
+var errAuditDown = errors.New("audit ledger down")

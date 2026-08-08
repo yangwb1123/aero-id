@@ -23,9 +23,9 @@ func setupSearchRepos(t *testing.T) (repository.MessageRepository, repository.Co
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewMessageRepository(db, outbox.NewGormRepository(db)),
-		repository.NewCommentRepository(db, outbox.NewGormRepository(db)),
-		repository.NewFileRepository(db)
+	return repository.NewMessageRepository(db, outbox.NewGormRepository(db), repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})),
+		repository.NewCommentRepository(db, outbox.NewGormRepository(db), repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})),
+		repository.NewFileRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
 }
 
 // TestSearchRepo_FullText exercises the migration-000016 full-text search path

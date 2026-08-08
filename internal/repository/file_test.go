@@ -18,7 +18,7 @@ func setupFileRepo(t *testing.T) repository.FileRepository {
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewFileRepository(db)
+	return repository.NewFileRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
 }
 
 func TestFileRepo_CreateGetListDelete(t *testing.T) {

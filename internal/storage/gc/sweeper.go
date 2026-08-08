@@ -56,6 +56,30 @@ type Config struct {
 	// SweepOrphans enables the orphan-blob phase. When false (or the backend can't list)
 	// only row purging runs.
 	SweepOrphans bool
+	// PausePurge suspends the destructive phases (row purge + orphan sweep) so
+	// maintenance flows such as dead-letter replay cannot race blob
+	// reclamation. When true, Run performs no purge work — no rows deleted, no
+	// blobs reclaimed, no audit facts minted.
+	PausePurge bool
+}
+
+// AuditWriter records durable audit facts for the destructive sweep phases
+// (purge and orphan reclamation). The composition root wires the ledger-backed
+// writer; a nil writer disables auditing (unit-test construction only — the
+// production wiring always supplies one so a purge without its fact is
+// impossible).
+type AuditWriter interface {
+	// PurgeWithAudit hard-deletes the purged file rows and appends the fact in
+	// ONE transaction: a failed fact append rolls the row purge back (never a
+	// purge without its fact — the in-tx contract of the audit migration).
+	// The fact is built by the caller with action "storage.gc.purged".
+	PurgeWithAudit(ctx context.Context, ids []domain.ID, fact *domain.AuditFact) error
+	// RecordBlobReclaim records blob reclamation that happened AFTER the
+	// in-tx purge committed (blob deletion is an external storage side effect
+	// with no domain row to join; the observation is a checked, durable fact).
+	RecordBlobReclaim(ctx context.Context, blobs int, keys []string) error
+	// RecordOrphanSweep records orphan-blob deletion (external side effect).
+	RecordOrphanSweep(ctx context.Context, keys []string) error
 }
 
 const defaultPurgeBatch = 500
@@ -63,12 +87,13 @@ const defaultPurgeBatch = 500
 // Sweeper runs the reconciliation sweep. Construct with New and either call Run for a
 // single pass or Start for periodic passes.
 type Sweeper struct {
-	repo  FileRepo
-	refs  RefCounter // nil => uses legacy CountAnyByStorageKey
-	store storage.FileStorage
-	now   func() time.Time
-	log   *zap.Logger
-	cfg   Config
+	repo   FileRepo
+	refs   RefCounter // nil => uses legacy CountAnyByStorageKey
+	store  storage.FileStorage
+	now    func() time.Time
+	log    *zap.Logger
+	cfg    Config
+	audits AuditWriter // nil => auditing disabled (unit tests)
 }
 
 // New builds a Sweeper. log may be nil. The clock defaults to time.Now and can be
@@ -81,6 +106,16 @@ func New(repo FileRepo, refs RefCounter, store storage.FileStorage, cfg Config, 
 		cfg.PurgeBatch = defaultPurgeBatch
 	}
 	return &Sweeper{repo: repo, refs: refs, store: store, now: time.Now, log: log, cfg: cfg}
+}
+
+// WithAuditWriter attaches the durable audit surface (composition root; safe
+// before Start). The writer's RecordPurge/RecordOrphanSweep are called only
+// after the corresponding destructive phase committed.
+func (s *Sweeper) WithAuditWriter(audits AuditWriter) *Sweeper {
+	if audits != nil {
+		s.audits = audits
+	}
+	return s
 }
 
 // WithClock overrides the time source (tests).
@@ -107,16 +142,26 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 	var stats Stats
 	var firstErr error
 
-	purged, blobs, err := s.purgeSoftDeleted(ctx)
+	if s.cfg.PausePurge {
+		// Maintenance pause (mirrors the drain-loop purge_pause contract): no
+		// SELECT, no DELETE, no audit facts — a replay run cannot race blob
+		// reclamation.
+		s.log.Info("gc: reconciliation pass skipped (purge paused)")
+		return stats, nil
+	}
+
+	purged, blobs, purgedIDs, err := s.purgeSoftDeleted(ctx)
 	stats.RowsPurged = purged
 	stats.BlobsPurged = blobs
 	if err != nil {
 		s.log.Warn("gc: purge phase failed", zap.Error(err))
 		firstErr = err
+	} else {
+		s.observePurgeAudit(ctx, blobs, purgedIDs)
 	}
 
 	if s.cfg.SweepOrphans {
-		scanned, swept, oerr := s.sweepOrphans(ctx)
+		scanned, swept, sweptKeys, oerr := s.sweepOrphans(ctx)
 		stats.OrphansScanned = scanned
 		stats.OrphansSwept = swept
 		if oerr != nil {
@@ -124,6 +169,8 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 			if firstErr == nil {
 				firstErr = oerr
 			}
+		} else {
+			s.observeOrphanAudit(ctx, swept, sweptKeys)
 		}
 	}
 
@@ -135,6 +182,33 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 	return stats, firstErr
 }
 
+// observePurgeAudit records the blob-reclamation observation that happens
+// AFTER the in-tx purge committed (blob deletion is an external storage side
+// effect with no domain row to join). The in-tx storage.gc.purged fact is
+// written by PurgeWithAudit inside purgeSoftDeleted.
+func (s *Sweeper) observePurgeAudit(ctx context.Context, blobs int, purgedIDs []domain.ID) {
+	if s.audits == nil || blobs <= 0 {
+		return
+	}
+	blobKeys := make([]string, 0, len(purgedIDs))
+	for _, id := range purgedIDs {
+		blobKeys = append(blobKeys, id.String())
+	}
+	if aerr := s.audits.RecordBlobReclaim(ctx, blobs, blobKeys); aerr != nil {
+		s.log.Warn("gc: blob reclaim audit observation failed", zap.Error(aerr))
+	}
+}
+
+// observeOrphanAudit records orphan-blob deletion (external side effect).
+func (s *Sweeper) observeOrphanAudit(ctx context.Context, swept int, sweptKeys []string) {
+	if s.audits == nil || swept <= 0 {
+		return
+	}
+	if aerr := s.audits.RecordOrphanSweep(ctx, sweptKeys); aerr != nil {
+		s.log.Warn("gc: orphan sweep audit observation failed", zap.Error(aerr))
+	}
+}
+
 // purgeSoftDeleted hard-deletes soft-deleted rows older than the retention window and
 // removes each blob that no remaining row references (refcount-safe, mirroring the
 // service Delete path). The row is hard-deleted first so the sweeper no longer counts
@@ -143,28 +217,44 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 // race window between a concurrent content-dedup Create and this purge pass.
 //
 //nolint:cyclop // row purge and refcount-safe blob reclamation form one reconciliation phase.
-func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged int, err error) {
+func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged int, purgedIDs []domain.ID, err error) {
 	before := s.now().Add(-s.cfg.Retention)
 	rows, lerr := s.repo.ListSoftDeletedBefore(ctx, before, s.cfg.PurgeBatch)
 	if lerr != nil {
-		return 0, 0, lerr
+		return 0, 0, nil, lerr
 	}
 	if len(rows) == 0 {
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 
 	ids := make([]domain.ID, len(rows))
 	for i, f := range rows {
 		ids[i] = f.ID
 	}
-	if derr := s.repo.HardDelete(ctx, ids); derr != nil {
-		return 0, 0, derr
+	if s.audits != nil {
+		// In-tx audit: the row purge and its storage.gc.purged fact commit in
+		// one transaction — an append failure rolls the purge back.
+		fact := &domain.AuditFact{Source: "aero-id", SourceRegion: "local", PartitionKey: "legacy:gc",
+			TenantID: "legacy", ActorUID: "storage-gc", Action: "storage.gc.purged",
+			ResourceType: "file", OccurredAt: s.now().UTC(), Payload: map[string]any{"rows": len(ids)}}
+		if derr := s.audits.PurgeWithAudit(ctx, ids, fact); derr != nil {
+			return 0, 0, nil, derr
+		}
+	} else if derr := s.repo.HardDelete(ctx, ids); derr != nil {
+		return 0, 0, nil, derr
 	}
 	rowsPurged = len(ids)
+	purgedIDs = ids
 
-	// De-dup storage keys: a blob shared by several purged rows must be checked/deleted
-	// once. After HardDelete, a still-referenced key (by a live row or another
-	// soft-deleted row not yet purged) reports count > 0 and is left alone.
+	return rowsPurged, s.reclaimUnreferencedBlobs(ctx, rows), purgedIDs, nil
+}
+
+// reclaimUnreferencedBlobs de-dups storage keys and deletes each blob that no
+// remaining row references. After HardDelete, a still-referenced key (by a
+// live row or another soft-deleted row not yet purged) reports count > 0 and
+// is left alone.
+func (s *Sweeper) reclaimUnreferencedBlobs(ctx context.Context, rows []*domain.File) int {
+	blobsPurged := 0
 	seen := make(map[string]struct{}, len(rows))
 	for _, f := range rows {
 		if f.StorageKey == "" {
@@ -190,7 +280,7 @@ func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged
 		}
 		blobsPurged++
 	}
-	return rowsPurged, blobsPurged, nil
+	return blobsPurged
 }
 
 // countLive returns how many live references exist for a storage key. When a
@@ -207,11 +297,11 @@ func (s *Sweeper) countLive(ctx context.Context, storageKey string) (int, error)
 // sweepOrphans enumerates stored objects (best-effort) and deletes those with no
 // referencing row, skipping objects younger than MinOrphanAge so an in-flight upload is
 // never reaped. If the backend can't list objects the phase is a logged no-op.
-func (s *Sweeper) sweepOrphans(ctx context.Context) (scanned, swept int, err error) {
+func (s *Sweeper) sweepOrphans(ctx context.Context) (scanned, swept int, sweptKeys []string, err error) {
 	lister, ok := s.store.(storage.Lister)
 	if !ok {
 		s.log.Info("gc: storage backend does not support listing; skipping orphan sweep")
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 	cutoff := s.now().Add(-s.cfg.MinOrphanAge)
 	listErr := lister.List(ctx, func(obj storage.ObjectInfo) (bool, error) {
@@ -239,12 +329,13 @@ func (s *Sweeper) sweepOrphans(ctx context.Context) (scanned, swept int, err err
 			return true, nil
 		}
 		swept++
+		sweptKeys = append(sweptKeys, obj.Key)
 		return true, nil
 	})
 	if listErr != nil {
-		return scanned, swept, listErr
+		return scanned, swept, sweptKeys, listErr
 	}
-	return scanned, swept, nil
+	return scanned, swept, sweptKeys, nil
 }
 
 // Start launches a goroutine that runs a pass every interval and returns a stop func

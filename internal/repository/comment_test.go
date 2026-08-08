@@ -19,7 +19,7 @@ func setupCommentRepo(t *testing.T) repository.CommentRepository {
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewCommentRepository(db, outbox.NewGormRepository(db))
+	return repository.NewCommentRepository(db, outbox.NewGormRepository(db), repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
 }
 
 func TestCommentRepo_TopLevelAndReply(t *testing.T) {

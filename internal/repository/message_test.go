@@ -19,7 +19,7 @@ func setupMsgRepo(t *testing.T) repository.MessageRepository {
 	t.Helper()
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
-	return repository.NewMessageRepository(db, outbox.NewGormRepository(db))
+	return repository.NewMessageRepository(db, outbox.NewGormRepository(db), repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
 }
 
 func TestMessageRepo_CountUnread(t *testing.T) {
@@ -196,6 +196,49 @@ func TestMessageRepo_SoftDeleteExcludedFromList(t *testing.T) {
 	// SoftDelete is idempotent.
 	if err := repo.SoftDelete(ctx, m.ID); err != nil {
 		t.Fatalf("second SoftDelete should be a no-op, got %v", err)
+	}
+}
+
+func TestMessageRepo_GetIncludingDeleted(t *testing.T) {
+	ctx := context.Background()
+	repo := setupMsgRepo(t)
+
+	m := &domain.Message{
+		ID: idgen.NewID(), FromUID: "alice", ToUID: "bob",
+		Kind: domain.MessageKindText, Content: "hi", CreatedAt: time.Now().UTC(),
+	}
+	if err := repo.Create(ctx, m, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Live row: both Get and GetIncludingDeleted return it.
+	live, err := repo.GetIncludingDeleted(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetIncludingDeleted on live row: %v", err)
+	}
+	if live == nil || live.FromUID != "alice" || live.ToUID != "bob" {
+		t.Fatalf("unexpected live row: %+v", live)
+	}
+
+	// After the soft delete, scoped Get misses but GetIncludingDeleted still
+	// returns the row — the distinction the delete retry path relies on.
+	if err := repo.SoftDelete(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Get(ctx, m.ID); err != repository.ErrNotFound {
+		t.Fatalf("Get after soft delete = %v, want ErrNotFound", err)
+	}
+	deleted, err := repo.GetIncludingDeleted(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetIncludingDeleted after soft delete: %v", err)
+	}
+	if deleted == nil || deleted.ID != m.ID || deleted.FromUID != "alice" {
+		t.Fatalf("soft-deleted row not returned: %+v", deleted)
+	}
+
+	// A never-existing id stays ErrNotFound in both scopes.
+	if _, err := repo.GetIncludingDeleted(ctx, idgen.NewID()); err != repository.ErrNotFound {
+		t.Fatalf("GetIncludingDeleted on missing id = %v, want ErrNotFound", err)
 	}
 }
 
