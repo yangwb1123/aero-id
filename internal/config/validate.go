@@ -43,6 +43,12 @@ func (c *Config) applyDefaults() {
 	if strings.TrimSpace(c.Sources.AeroVault.Region) == "" {
 		c.Sources.AeroVault.Region = c.Account.Region
 	}
+	if strings.TrimSpace(c.AuditGovernance.AnchorScheme) == "" {
+		c.AuditGovernance.AnchorScheme = AnchorSchemeUUIDv5NulSeparated
+	}
+	if c.AuditGovernance.AnchorSchemeVersion <= 0 {
+		c.AuditGovernance.AnchorSchemeVersion = AnchorSchemeVersionDefault
+	}
 }
 
 func (c *Config) validateRequired() error {
@@ -127,6 +133,7 @@ func (c *Config) validateRuntimeLimits() error {
 		validateStorage(c.Storage), validateRateLimit(c.RateLimit), validateStorageGC(c.Storage.GC),
 		validateExport(c.Export), validateWebhook(c.Outbox.Webhook), validateEventIngest(c.EventIngest),
 		validateEventBus(c.EventBus), validateReplication(c.Replication), validateAuditLedger(c.AuditLedger),
+		validateDataRetention(c.DataRetention), validateAuditGovernance(c.AuditGovernance),
 		c.validateCommercialIntegrations(),
 	}
 	for _, err := range checks {
@@ -199,6 +206,77 @@ func validateAuditLedger(value AuditLedgerConfig) error {
 	}
 	if len(key) < 32 {
 		return fmt.Errorf("audit_ledger.signing_key must be at least 32 bytes")
+	}
+	return nil
+}
+
+// validateAuditGovernance rejects a negative dead-letter retention bound; a
+// negative bound would put the purge cutoff in the future and delete every
+// dead-letter row on the next drain tick. purge_pause is inert when the
+// governance relay is disabled (the drain loop does not run).
+//
+// B2-6 activation gate (F-03): enabling the relay without any tenant
+// binding is a boot failure — an enabled relay with zero bindings would
+// silently drop every publication (no tenant is captured), which is the
+// exact silent-loss class the outbox contract forbids. The gate runs at
+// Load() so env-enable (AERO_ID_AUDIT_GOVERNANCE_ENABLED=true) cannot
+// bypass it; disabling the relay (the kill switch) accepts empty bindings.
+func validateAuditGovernance(value AuditGovernanceConfig) error {
+	if value.DeadLetterRetention < 0 {
+		return fmt.Errorf("audit_governance.dead_letter_retention must not be negative")
+	}
+	if value.Enabled && len(value.Bindings) == 0 {
+		return fmt.Errorf("audit_governance.enabled requires at least one tenant binding (activation gate)")
+	}
+	if err := validateAuditAnchor(value); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AnchorSchemeUUIDv5NulSeparated is the compiled-in deterministic event_id
+// derivation contract: idgen.Anchor produces an RFC-4122 v5 UUID over
+// NUL-separated identity parts in the fixed AnchorNamespace. The name is the
+// single accepted value of audit_governance.anchor_scheme; the parity test
+// pins it to the idgen implementation.
+const AnchorSchemeUUIDv5NulSeparated = "uuidv5-nul-separated"
+
+// AnchorSchemeVersionDefault is the only existing derivation version.
+const AnchorSchemeVersionDefault = 1
+
+// validateAuditAnchor rejects a config that contradicts the compiled-in
+// event_id derivation. Enabled-independent: the ledger dedup guard
+// (checkAuditDuplicate) runs on every append regardless of whether the
+// governance relay is enabled, so a disabled relay must not silently accept
+// a derivation contradiction. Empty/zero values mean the defaults (the
+// AGENTS.md zero-value convention). Errors never echo the raw value.
+func validateAuditAnchor(value AuditGovernanceConfig) error {
+	scheme := strings.TrimSpace(value.AnchorScheme)
+	if scheme != "" && scheme != AnchorSchemeUUIDv5NulSeparated {
+		return fmt.Errorf("audit_governance.anchor_scheme must be %q", AnchorSchemeUUIDv5NulSeparated)
+	}
+	if value.AnchorSchemeVersion != 0 && value.AnchorSchemeVersion != AnchorSchemeVersionDefault {
+		return fmt.Errorf("audit_governance.anchor_scheme_version must be %d", AnchorSchemeVersionDefault)
+	}
+	return nil
+}
+
+// validateDataRetention guards the outbox retention purge: a paused cleaner
+// must actually be wired (both interval and dead-letter retention positive,
+// matching the composition-root gate in app/new.go) and negative retentions
+// would delete every eligible row on the next tick.
+func validateDataRetention(value DataRetentionConfig) error {
+	if value.PurgePaused && value.OutboxCleanInterval <= 0 {
+		return fmt.Errorf("data_retention.purge_paused requires data_retention.outbox_clean_interval > 0")
+	}
+	if value.PurgePaused && value.OutboxDeadLetterRetention <= 0 {
+		return fmt.Errorf("data_retention.purge_paused requires data_retention.outbox_dead_letter_retention > 0")
+	}
+	if value.OutboxDeadLetterRetention < 0 {
+		return fmt.Errorf("data_retention.outbox_dead_letter_retention must not be negative")
+	}
+	if value.OutboxPublishedRetention < 0 {
+		return fmt.Errorf("data_retention.outbox_published_retention must not be negative")
 	}
 	return nil
 }
