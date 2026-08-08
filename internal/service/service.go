@@ -91,8 +91,11 @@ func mustTenant(ctx context.Context) (string, error) {
 	return tenantID, nil
 }
 
-// AuditLogger records a single audit event. Implementations must be non-blocking
-// from the caller's perspective; a failed log must not fail the primary operation.
+// AuditLogger records a single audit event. Implementations must be safe for
+// concurrent use. A failed log is a failed durable audit write: callers must
+// propagate the error (service layer returns apperr.Unavailable("audit.ingest_failed", …)).
+// There is no fire-and-forget surface in the live layer; check-audit-swallow
+// bans both the `_ =` and the bare-statement forms for Log and Record alike.
 type AuditLogger interface {
 	Log(ctx context.Context, e *domain.AuditEvent) error
 }

@@ -151,6 +151,8 @@ func (s *eventIngestService) recordAudit(ctx context.Context, envelope *event.En
 	if s.audit == nil {
 		return nil
 	}
+	// audit-site: standalone-fact — quarantine/outcome fact for source events
+	// that could not be applied; anchored on the envelope event_id (retry-dedup).
 	return s.audit.Record(ctx, eventAuditInput(envelope, mutation, status))
 }
 

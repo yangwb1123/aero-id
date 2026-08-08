@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -19,7 +21,8 @@ func main() {
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		panic("load config: " + err.Error())
+		fmt.Fprintln(os.Stderr, "load config: "+err.Error())
+		os.Exit(1)
 	}
 
 	log, err := logger.New(cfg.Log.Level, cfg.Log.Encoding)

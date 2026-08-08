@@ -108,7 +108,12 @@ func (r *syncJobRepo) create(ctx context.Context, job *domain.SyncJob, fact *dom
 			return err
 		}
 		if fact != nil {
-			if err := r.audit.AppendInTx(ctx, tx, fact); err != nil {
+			// ErrAuditDuplicate is swallowed in-tx (contract §4.2): a duplicate
+			// append implies the retried create already committed with identical
+			// anchor inputs, so the retry is a no-op-equivalent re-apply; the
+			// append runs after the domain write inside the same tx, so the
+			// swallow can never mask a failed domain write.
+			if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
 				return fmt.Errorf("append sync job audit: %w", err)
 			}
 		}

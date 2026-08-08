@@ -142,6 +142,8 @@ func (s *replayService) createDryRun(ctx context.Context, actor string, input Re
 	simulation := map[string]any{"mode": "dry-run", "would_execute": false, "commands": commands,
 		"authorization_rechecked": authorized, "historical_credentials_reused": false, "current_state": state}
 	if s.audit != nil {
+		// audit-site: standalone-fact — dry-run simulation fact; fresh
+		// replayID per call, one row per execution by design.
 		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: replayID, ActorUID: actor,
 			AccountID: input.AccountID, OperationID: input.OperationID, Action: "audit.replay.dry_run",
 			ResourceType: "replay", ResourceID: replayID.String(), Payload: map[string]any{"command_count": len(commands)}}); err != nil {
@@ -237,6 +239,8 @@ func (s *replayService) createControlled(ctx context.Context, actor string, inpu
 		return nil, err
 	}
 	if s.audit != nil {
+		// audit-site: standalone-fact — controlled-replay intent fact anchored
+		// on the operation ID (retry-dedup).
 		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: operation.ID,
 			OperationID: operation.ID, ActorUID: actor, AccountID: input.AccountID, Action: "audit.replay.requested",
 			ResourceType: "replay", ResourceID: operation.ID.String(), Payload: map[string]any{

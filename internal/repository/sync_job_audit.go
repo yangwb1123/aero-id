@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,12 +35,25 @@ func (r *syncJobRepo) finish(ctx context.Context, id domain.ID, worker string, s
 		if updated.RowsAffected != 1 {
 			return ErrSyncJobLeaseLost
 		}
-		if fact == nil {
-			return nil
-		}
-		if r.audit == nil {
-			return fmt.Errorf("transactional audit repository is not configured")
-		}
-		return r.audit.AppendInTx(ctx, tx, fact)
+		return r.appendFinishedAudit(tx, ctx, fact)
 	})
+}
+
+// appendFinishedAudit appends the sync.job.finished fact inside the transaction.
+// ErrAuditDuplicate is swallowed in-tx (contract §4.2): a duplicate append
+// implies the retried finish already committed with identical anchor inputs,
+// so the retry re-applies a no-op-equivalent idempotent UPDATE; the swallow
+// runs after the domain write inside the same tx, so it can never mask a
+// failed domain write.
+func (r *syncJobRepo) appendFinishedAudit(tx *gorm.DB, ctx context.Context, fact *domain.AuditFact) error {
+	if fact == nil {
+		return nil
+	}
+	if r.audit == nil {
+		return fmt.Errorf("transactional audit repository is not configured")
+	}
+	if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+		return fmt.Errorf("append sync job audit: %w", err)
+	}
+	return nil
 }

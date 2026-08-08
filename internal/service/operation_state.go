@@ -29,8 +29,20 @@ func (s *operationService) reconcileClaimed(ctx context.Context, operation *doma
 			return nil, apperr.Internal("operation.compensation_reconcile_failed", "failed to reconcile compensation outcome").Wrap(err)
 		}
 	}
-	if err := s.recordOperationAudit(ctx, operation, "operation.reconciled", map[string]any{"worker": worker}); err != nil {
-		return nil, apperr.Internal("operation.audit_failed", "failed to record operation audit").Wrap(err)
+	// operation.reconciled is a standalone fact with no domain write of its own
+	// (the subsequent finishOperation records operation.finished in-tx). Keep the
+	// non-swallowed standalone Record — A1-class, same shape as operation.requested.
+	// Status is captured at this pinned point (operation.Status as loaded for this
+	// pass) so a status-changing later pass records its own fact (contract §2.3).
+	if s.audit != nil {
+		// audit-site: standalone-fact — A1-class standalone fact with no domain
+		// write of its own (documented above); anchored event_id dedups retries.
+		fact := operationAuditFact(ctx, operation, domain.ID{}, string(operation.Status), "operation.reconciled", map[string]any{"worker": worker})
+		if err := s.audit.Record(ctx, AuditFactInput{Source: fact.Source, SourceRegion: fact.SourceRegion, EventID: fact.EventID,
+			OperationID: fact.OperationID, RequestID: fact.RequestID, ActorUID: fact.ActorUID, AccountID: fact.AccountID,
+			TenantID: fact.TenantID, Action: fact.Action, ResourceType: fact.ResourceType, ResourceID: fact.ResourceID, Payload: fact.Payload}); err != nil {
+			return nil, apperr.Internal("operation.audit_failed", "failed to record operation audit").Wrap(err)
+		}
 	}
 	return s.finishOperation(ctx, operation.ID)
 }

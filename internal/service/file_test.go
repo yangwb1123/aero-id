@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,23 @@ func assertAppCode(t *testing.T, err error, wantHTTP int) {
 	}
 	if ae.HTTP != wantHTTP {
 		t.Fatalf("HTTP = %d, want %d (code=%s)", ae.HTTP, wantHTTP, ae.Code)
+	}
+}
+
+// assertAuditIngestFailed asserts err is an *AppError with code audit.ingest_failed
+// and HTTP 503 — the fail-closed contract for a durable audit write (Log/Record)
+// failure. Shared by the per-site AuditFailureFailsClosed tests.
+func assertAuditIngestFailed(t *testing.T, err error) {
+	t.Helper()
+	var ae *apperr.AppError
+	if !stderrors.As(err, &ae) {
+		t.Fatalf("expected *AppError, got %v", err)
+	}
+	if ae.Code != "audit.ingest_failed" {
+		t.Fatalf("code = %q, want audit.ingest_failed (http=%d)", ae.Code, ae.HTTP)
+	}
+	if ae.HTTP != http.StatusServiceUnavailable {
+		t.Fatalf("HTTP = %d, want 503 (code=%s)", ae.HTTP, ae.Code)
 	}
 }
 
