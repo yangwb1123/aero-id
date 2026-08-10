@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package aero_id.v1;
+
+option go_package = "github.com/aero/aero-id/internal/handler/grpc/aeropb";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message CanonicalEvent {
+  string event_id = 1;
+  string source = 2;
+  string source_region = 3;
+  string event_type = 4;
+  int32 schema_version = 5;
+  string aggregate_type = 6;
+  string aggregate_id = 7;
+  int64 aggregate_version = 8;
+  string actor_uid = 9;
+  string tenant_id = 10;
+  string operation_id = 11;
+  string correlation_id = 12;
+  string causation_id = 13;
+  string trace_id = 14;
+  google.protobuf.Timestamp occurred_at = 15;
+  google.protobuf.Struct payload = 16;
+}
+
+message IngestEventsRequest { repeated CanonicalEvent events = 1; }
+message EventIngestResult {
+  string event_id = 1;
+  string status = 2;
+}
+message IngestEventsResponse { repeated EventIngestResult results = 1; }
+
+service SourceIngestService {
+  rpc IngestEvents(IngestEventsRequest) returns (IngestEventsResponse);
+}

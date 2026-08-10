@@ -1,0 +1,693 @@
+syntax = "proto3";
+
+package aero_id.v1;
+
+option go_package = "github.com/aero/aero-id/internal/handler/grpc/aeropb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ---- shared ----
+message User {
+  string uid      = 1;
+  string nickname = 2;
+  string avatar   = 3;
+}
+
+message Page {
+  int32  limit  = 1;
+  string cursor = 2;
+}
+
+// ---- files ----
+message File {
+  string id                              = 1;
+  string owner_uid                       = 2;
+  string name                            = 3;
+  int64  size                            = 4;
+  string mime_type                       = 5;
+  int32  visibility                      = 6;
+  string storage_type                    = 7;
+  google.protobuf.Timestamp created_at   = 8;
+  google.protobuf.Timestamp updated_at   = 9;
+  google.protobuf.Struct meta            = 10;
+}
+
+message GetFileRequest { string id = 1; }
+message GetFileResponse { File file = 1; }
+message ListFilesRequest { string owner_uid = 1; Page page = 2; }
+message ListFilesResponse { repeated File files = 1; string next_cursor = 2; }
+message DeleteFileRequest { string id = 1; }
+message DeleteFileResponse {}
+message DownloadURLRequest { string id = 1; int64 ttl_seconds = 2; }
+message DownloadURLResponse { string url = 1; }
+
+message ShareFileRequest { string file_id = 1; repeated string grantee_uids = 2; }
+message ShareFileResponse {}
+message UnshareFileRequest { string file_id = 1; string grantee_uid = 2; }
+message UnshareFileResponse {}
+message ListSharedWithMeRequest { Page page = 1; }
+message PresignUploadRequest { string name = 1; string mime_type = 2; int32 visibility = 3; }
+message PresignUploadResponse { string file_id = 1; string upload_url = 2; string storage_key = 3; }
+message CompleteUploadRequest { string file_id = 1; string storage_key = 2; string name = 3; string mime_type = 4; int32 visibility = 5; }
+message CompleteUploadResponse { File file = 1; }
+
+// UpdateFileMetadataRequest mirrors the HTTP PATCH field-mask semantics: only the
+// fields explicitly present are applied. name/visibility use proto3 `optional`
+// (presence-tracked); meta, when set, is merged into the existing meta map.
+message UpdateFileMetadataRequest {
+  string id                     = 1;
+  optional string name          = 2;
+  optional int32  visibility    = 3;
+  google.protobuf.Struct meta   = 4;
+}
+message UpdateFileMetadataResponse { File file = 1; }
+
+service FileService {
+  rpc GetFile(GetFileRequest) returns (GetFileResponse);
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  rpc GetDownloadURL(DownloadURLRequest) returns (DownloadURLResponse);
+  rpc ShareFile(ShareFileRequest) returns (ShareFileResponse);
+  rpc UnshareFile(UnshareFileRequest) returns (UnshareFileResponse);
+  rpc ListSharedWithMe(ListSharedWithMeRequest) returns (ListFilesResponse);
+  rpc PresignUpload(PresignUploadRequest) returns (PresignUploadResponse);
+  rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
+  rpc UpdateFileMetadata(UpdateFileMetadataRequest) returns (UpdateFileMetadataResponse);
+}
+
+// ---- messages ----
+message Message {
+  string id                            = 1;
+  string from_uid                      = 2;
+  string to_uid                        = 3;
+  int32  kind                          = 4;
+  string content                       = 5;
+  string file_id                       = 6;
+  google.protobuf.Timestamp read_at    = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp edited_at  = 9;
+}
+
+message SendMessageRequest { string to_uid = 1; int32 kind = 2; string content = 3; string file_id = 4; }
+message SendMessageResponse { Message message = 1; }
+message GetMessageRequest { string id = 1; }
+message GetMessageResponse { Message message = 1; }
+message InboxRequest { Page page = 1; bool unread_only = 2; }
+message InboxResponse { repeated Message messages = 1; map<string, User> users = 2; string next_cursor = 3; }
+message ConversationRequest { string with_uid = 1; Page page = 2; }
+message ConversationResponse { repeated Message messages = 1; map<string, User> users = 2; string next_cursor = 3; }
+message MarkReadRequest { string id = 1; }
+message MarkReadResponse {}
+message UnreadCountRequest {}
+message UnreadCountResponse { int64 unread_count = 1; }
+message EditMessageRequest { string id = 1; string content = 2; }
+message EditMessageResponse { Message message = 1; }
+message DeleteMessageRequest { string id = 1; }
+message DeleteMessageResponse {}
+message MarkConversationReadRequest { string with_uid = 1; }
+message MarkConversationReadResponse {}
+message ReactToMessageRequest { string message_id = 1; }
+message ReactToMessageResponse {}
+message UnreactMessageRequest { string message_id = 1; }
+message UnreactMessageResponse {}
+
+service MessageService {
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc GetMessage(GetMessageRequest) returns (GetMessageResponse);
+  rpc Inbox(InboxRequest) returns (InboxResponse);
+  rpc Conversation(ConversationRequest) returns (ConversationResponse);
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+  rpc UnreadCount(UnreadCountRequest) returns (UnreadCountResponse);
+  rpc EditMessage(EditMessageRequest) returns (EditMessageResponse);
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+  rpc MarkConversationRead(MarkConversationReadRequest) returns (MarkConversationReadResponse);
+  rpc ReactToMessage(ReactToMessageRequest) returns (ReactToMessageResponse);
+  rpc UnreactMessage(UnreactMessageRequest) returns (UnreactMessageResponse);
+}
+
+// ---- comments ----
+message Comment {
+  string id                            = 1;
+  string owner_uid                     = 2;
+  string target_type                   = 3;
+  string target_id                     = 4;
+  string parent_id                     = 5;
+  string root_id                       = 6;
+  string content                       = 7;
+  int32  reply_count                   = 8;
+  int32  status                        = 9;
+  google.protobuf.Timestamp created_at = 10;
+  int32  like_count                    = 11;
+  google.protobuf.Timestamp edited_at  = 12;
+}
+
+// CommentReport mirrors the HTTP moderation report response.
+message CommentReport {
+  string id                             = 1;
+  string comment_id                     = 2;
+  string reporter_uid                   = 3;
+  string reason                         = 4;
+  string status                         = 5;
+  google.protobuf.Timestamp created_at  = 6;
+  google.protobuf.Timestamp resolved_at = 7;
+  string resolved_by                    = 8;
+}
+
+message CreateCommentRequest { string target_type = 1; string target_id = 2; string parent_id = 3; string content = 4; }
+message CreateCommentResponse { Comment comment = 1; }
+message ListCommentsRequest { string target_type = 1; string target_id = 2; Page page = 3; }
+message ListCommentsResponse { repeated Comment comments = 1; map<string, User> users = 2; string next_cursor = 3; }
+message RepliesRequest { string root_id = 1; Page page = 2; }
+message RepliesResponse { repeated Comment comments = 1; map<string, User> users = 2; string next_cursor = 3; }
+message DeleteCommentRequest { string id = 1; }
+message DeleteCommentResponse {}
+
+message LikeCommentRequest { string comment_id = 1; }
+message LikeCommentResponse { int32 like_count = 1; }
+message UnlikeCommentRequest { string comment_id = 1; }
+message UnlikeCommentResponse { int32 like_count = 1; }
+message ReportCommentRequest { string comment_id = 1; string reason = 2; }
+message ReportCommentResponse {}
+message HideCommentRequest { string comment_id = 1; }
+message HideCommentResponse {}
+message UnhideCommentRequest { string comment_id = 1; }
+message UnhideCommentResponse {}
+
+message EditCommentRequest { string id = 1; string content = 2; }
+message EditCommentResponse { Comment comment = 1; }
+// ListReportsRequest scopes to one comment; status, when set, filters by lifecycle
+// state ("open"/"resolved"/"dismissed"), matching the HTTP query parameter.
+message ListReportsRequest { string comment_id = 1; optional string status = 2; Page page = 3; }
+message ListReportsResponse { repeated CommentReport reports = 1; map<string, User> users = 2; string next_cursor = 3; }
+message ResolveReportRequest { string report_id = 1; string status = 2; }
+message ResolveReportResponse {}
+
+service CommentService {
+  rpc CreateComment(CreateCommentRequest) returns (CreateCommentResponse);
+  rpc ListComments(ListCommentsRequest) returns (ListCommentsResponse);
+  rpc Replies(RepliesRequest) returns (RepliesResponse);
+  rpc DeleteComment(DeleteCommentRequest) returns (DeleteCommentResponse);
+  rpc LikeComment(LikeCommentRequest) returns (LikeCommentResponse);
+  rpc UnlikeComment(UnlikeCommentRequest) returns (UnlikeCommentResponse);
+  rpc ReportComment(ReportCommentRequest) returns (ReportCommentResponse);
+  rpc HideComment(HideCommentRequest) returns (HideCommentResponse);
+  rpc UnhideComment(UnhideCommentRequest) returns (UnhideCommentResponse);
+  rpc EditComment(EditCommentRequest) returns (EditCommentResponse);
+  rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
+  rpc ResolveReport(ResolveReportRequest) returns (ResolveReportResponse);
+}
+
+// ---- notifications ----
+message Notification {
+  string id                            = 1;
+  string recipient_uid                 = 2;
+  string type                          = 3;
+  string actor_uid                     = 4;
+  string subject_type                  = 5;
+  string subject_id                    = 6;
+  google.protobuf.Timestamp read_at    = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListNotificationsRequest { Page page = 1; }
+message ListNotificationsResponse { repeated Notification notifications = 1; map<string, User> users = 2; string next_cursor = 3; }
+message NotificationUnreadCountRequest {}
+message NotificationUnreadCountResponse { int64 unread_count = 1; }
+message MarkNotificationReadRequest { string id = 1; }
+message MarkNotificationReadResponse {}
+message MarkAllNotificationsReadRequest {}
+message MarkAllNotificationsReadResponse {}
+
+service NotificationService {
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc UnreadCount(NotificationUnreadCountRequest) returns (NotificationUnreadCountResponse);
+  rpc MarkRead(MarkNotificationReadRequest) returns (MarkNotificationReadResponse);
+  rpc MarkAllRead(MarkAllNotificationsReadRequest) returns (MarkAllNotificationsReadResponse);
+}
+
+// ---- blocks ----
+// Blocking is directional and private to the caller (the blocker); the actor uid
+// comes from the auth interceptor, so requests carry only the target uid.
+message BlockRequest { string uid = 1; }
+message BlockResponse {}
+message UnblockRequest { string uid = 1; }
+message UnblockResponse {}
+message ListBlockedRequest { Page page = 1; }
+message ListBlockedResponse { repeated string uids = 1; string next_cursor = 2; }
+
+service BlockService {
+  rpc Block(BlockRequest) returns (BlockResponse);
+  rpc Unblock(UnblockRequest) returns (UnblockResponse);
+  rpc ListBlocked(ListBlockedRequest) returns (ListBlockedResponse);
+}
+
+// ---- search ----
+message SearchRequest {
+  string query = 1;
+  repeated string kinds = 2; // "messages", "comments", "files"; empty = all
+  int32 limit = 3;
+}
+message SearchHit {
+  string kind = 1;
+  Message message = 2;
+  Comment comment = 3;
+  File file = 4;
+  string snippet = 5; // ts_headline-highlighted excerpt with <mark> tags
+}
+message SearchResponse { repeated SearchHit hits = 1; }
+
+service SearchService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
+
+// ---- notification preferences ----
+message NotificationPreference {
+  string notification_type = 1;
+  bool   enabled           = 2;
+  string quiet_hours_start = 3; // "HH:MM" 24h; empty = no quiet hours
+  string quiet_hours_end   = 4;
+  string timezone          = 5; // IANA timezone, default "UTC"
+}
+
+message GetPreferencesRequest {}
+message GetPreferencesResponse { repeated NotificationPreference preferences = 1; }
+
+message SetPreferencesRequest { repeated NotificationPreference preferences = 1; }
+message SetPreferencesResponse {}
+
+service PreferenceService {
+  rpc GetPreferences(GetPreferencesRequest) returns (GetPreferencesResponse);
+  rpc SetPreferences(SetPreferencesRequest) returns (SetPreferencesResponse);
+}
+
+// ---- admin / role management ----
+message GrantRoleRequest { string uid = 1; string role_code = 2; }
+message GrantRoleResponse {}
+message RevokeRoleRequest { string uid = 1; string role_code = 2; }
+message RevokeRoleResponse {}
+
+message Role {
+  string code        = 1;
+  string name        = 2;
+  repeated string permissions = 3;
+}
+message UserRole {
+  string uid        = 1;
+  string role_code  = 2;
+  string granted_by = 3;
+}
+
+message ListRolesRequest {}
+message ListRolesResponse { repeated Role roles = 1; }
+
+message ListUserRolesRequest { string uid = 1; }
+message ListUserRolesResponse { repeated UserRole roles = 1; }
+
+message ListAuditRequest { string action = 1; Page page = 2; }
+
+message AuditEvent {
+  string id                = 1;
+  string actor_uid         = 2;
+  string action            = 3;
+  string subject_type      = 4;
+  string subject_id        = 5;
+  string target_uid        = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message ListAuditResponse { repeated AuditEvent events = 1; string next_cursor = 2; }
+
+// ---- ban management ----
+message BanRequest { string uid = 1; string reason = 2; string duration = 3; }
+message BanResponse {}
+message UnbanRequest { string uid = 1; }
+message UnbanResponse {}
+message ListBansRequest { Page page = 1; }
+
+message BanEvent {
+  string uid       = 1;
+  string actor_uid = 2;
+  string reason    = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message ListBansResponse {
+  repeated BanEvent bans = 1;
+  string next_cursor = 2;
+}
+
+service AdminService {
+  rpc GrantRole(GrantRoleRequest) returns (GrantRoleResponse);
+  rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse);
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc ListUserRoles(ListUserRolesRequest) returns (ListUserRolesResponse);
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+  rpc Ban(BanRequest) returns (BanResponse);
+  rpc Unban(UnbanRequest) returns (UnbanResponse);
+  rpc ListBans(ListBansRequest) returns (ListBansResponse);
+}
+
+// ---- account control plane ----
+message Account {
+  string account_id    = 1;
+  string canonical_uid = 2;
+  string home_region   = 3;
+  string status        = 4;
+}
+
+message AccountProfile {
+  string account_id             = 1;
+  string display_name           = 2;
+  string avatar_url             = 3;
+  string locale                 = 4;
+  string timezone               = 5;
+  google.protobuf.Struct preferences = 6;
+}
+
+message AccountSource {
+  string id                = 1;
+  string source            = 2;
+  string source_region     = 3;
+  string source_account_id = 4;
+  string scope_type        = 5;
+  string scope_id          = 6;
+  string status            = 7;
+  int64  version           = 8;
+  google.protobuf.Timestamp generated_at   = 9;
+  google.protobuf.Timestamp last_synced_at = 10;
+  string error_code        = 11;
+  google.protobuf.Struct data = 12;
+}
+
+message AccountMembership {
+  string id               = 1;
+  string source           = 2;
+  string source_region    = 3;
+  string scope_type       = 4;
+  string scope_id         = 5;
+  string source_member_id = 6;
+  string role             = 7;
+  string status           = 8;
+  int64  version          = 9;
+  google.protobuf.Timestamp last_synced_at = 10;
+  google.protobuf.Struct data = 11;
+}
+
+message AccountView {
+  Account account = 1;
+  AccountProfile profile = 2;
+  repeated AccountSource sources = 3;
+  repeated AccountMembership memberships = 4;
+}
+
+message GetMeRequest {}
+message GetMeResponse { AccountView view = 1; }
+message GetProfileRequest {}
+message GetProfileResponse { AccountProfile profile = 1; }
+
+message UpdateProfileRequest {
+  optional string display_name = 1;
+  optional string avatar_url = 2;
+  optional string locale = 3;
+  optional string timezone = 4;
+  google.protobuf.Struct preferences = 5;
+}
+message UpdateProfileResponse { AccountProfile profile = 1; }
+
+message ListAccountSourcesRequest { Page page = 1; }
+message ListAccountSourcesResponse {
+  repeated AccountSource sources = 1;
+  string next_cursor = 2;
+}
+
+message ListAccountMembershipsRequest { Page page = 1; }
+message ListAccountMembershipsResponse {
+  repeated AccountMembership memberships = 1;
+  string next_cursor = 2;
+}
+
+message GetAccountRequest { string account_id = 1; }
+message GetAccountResponse { AccountView view = 1; }
+
+message ListAccountsRequest {
+  string query = 1;
+  string status = 2;
+  string home_region = 3;
+  Page page = 4;
+}
+message ListAccountsResponse {
+  repeated Account accounts = 1;
+  string next_cursor = 2;
+}
+
+service AccountService {
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+  rpc ListSources(ListAccountSourcesRequest) returns (ListAccountSourcesResponse);
+  rpc ListMemberships(ListAccountMembershipsRequest) returns (ListAccountMembershipsResponse);
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+}
+
+// ---- account aggregation ----
+message AccountSnapshot {
+  string id = 1;
+  string source = 2;
+  string source_region = 3;
+  string dataset = 4;
+  string status = 5;
+  int64 version = 6;
+  google.protobuf.Timestamp generated_at = 7;
+  google.protobuf.Timestamp last_synced_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  string error_code = 10;
+  google.protobuf.Struct data = 11;
+}
+
+message AggregationView {
+  Account account = 1;
+  AccountProfile profile = 2;
+  repeated AccountSnapshot snapshots = 3;
+  string consistency = 4;
+  bool partial = 5;
+  map<string, string> source_errors = 6;
+  repeated string stale_datasets = 7;
+  google.protobuf.Timestamp generated_at = 8;
+}
+
+message GetMeOverviewRequest {
+  string consistency = 1;
+  repeated string datasets = 2;
+  int64 max_age_seconds = 3;
+}
+message GetMeOverviewResponse { AggregationView view = 1; }
+message GetAccountOverviewRequest {
+  string account_id = 1;
+  string consistency = 2;
+  repeated string datasets = 3;
+  int64 max_age_seconds = 4;
+}
+message GetAccountOverviewResponse { AggregationView view = 1; }
+
+service AggregationService {
+  rpc GetMeOverview(GetMeOverviewRequest) returns (GetMeOverviewResponse);
+  rpc GetAccountOverview(GetAccountOverviewRequest) returns (GetAccountOverviewResponse);
+}
+
+// ---- durable audit ledger ----
+message AuditFact {
+  string id = 1;
+  int64 chain_sequence = 2;
+  string source = 3;
+  string source_region = 4;
+  string partition_key = 5;
+  string event_id = 6;
+  string operation_id = 7;
+  string correlation_id = 8;
+  string causation_id = 9;
+  string trace_id = 10;
+  string actor_uid = 11;
+  string account_id = 12;
+  string tenant_id = 13;
+  string action = 14;
+  string resource_type = 15;
+  string resource_id = 16;
+  google.protobuf.Timestamp occurred_at = 17;
+  google.protobuf.Struct payload = 18;
+  string payload_hash = 19;
+  string previous_hash = 20;
+  string record_hash = 21;
+  int32 signature_version = 22;
+  string signature = 23;
+	google.protobuf.Timestamp created_at = 24;
+	int32 hash_version = 25;
+	string request_id = 26;
+}
+
+message ListAuditFactsRequest {
+  string source = 1;
+  string actor_uid = 2;
+  string account_id = 3;
+  string tenant_id = 4;
+  string action = 5;
+  string resource_type = 6;
+	string operation_id = 7;
+	Page page = 8;
+	string request_id = 9;
+	google.protobuf.Timestamp from = 10;
+	google.protobuf.Timestamp to = 11;
+}
+message ListAuditFactsResponse {
+  repeated AuditFact events = 1;
+  string next_cursor = 2;
+}
+
+service AuditLedgerService {
+  rpc ListAuditFacts(ListAuditFactsRequest) returns (ListAuditFactsResponse);
+}
+
+// ---- durable cross-source operations ----
+message OperationStep {
+  string id = 1;
+  string step_key = 2;
+  string source = 3;
+  string action = 4;
+  string status = 5;
+  int32 attempt = 6;
+  google.protobuf.Timestamp lease_until = 7;
+  string source_operation_id = 8;
+  google.protobuf.Struct request_payload = 9;
+  google.protobuf.Struct result = 10;
+  string error_code = 11;
+	string error_message = 12;
+	string compensation_action = 13;
+	string compensation_status = 14;
+	int32 compensation_attempt = 15;
+	google.protobuf.Timestamp compensation_lease_until = 16;
+	string compensation_source_operation_id = 17;
+	google.protobuf.Struct compensation_result = 18;
+	string compensation_error_code = 19;
+	string compensation_error_message = 20;
+}
+
+message Operation {
+  string operation_id = 1;
+  string account_id = 2;
+  string actor_uid = 3;
+  string tenant_id = 4;
+  string home_region = 5;
+  string operation_type = 6;
+  string status = 7;
+  string idempotency_key = 8;
+  google.protobuf.Struct request_payload = 9;
+  google.protobuf.Struct result = 10;
+  string error_code = 11;
+  string error_message = 12;
+  google.protobuf.Timestamp created_at = 13;
+	google.protobuf.Timestamp updated_at = 14;
+	google.protobuf.Timestamp completed_at = 15;
+	repeated OperationStep steps = 16;
+	string request_id = 17;
+}
+
+message CreateOperationRequest {
+  string account_id = 1;
+  string home_region = 2;
+  string operation_type = 3;
+  string idempotency_key = 4;
+  google.protobuf.Struct request_payload = 5;
+  repeated OperationStep steps = 6;
+}
+message CreateOperationResponse { Operation operation = 1; }
+message GetOperationRequest { string operation_id = 1; }
+message GetOperationResponse { Operation operation = 1; }
+message ListOperationsRequest { Page page = 1; }
+message ListOperationsResponse { repeated Operation operations = 1; string next_cursor = 2; }
+message RunOperationRequest { string operation_id = 1; string worker_id = 2; }
+message RunOperationResponse { Operation operation = 1; }
+message ReconcileOperationRequest { string operation_id = 1; string worker_id = 2; }
+message ReconcileOperationResponse { Operation operation = 1; }
+
+service OperationService {
+  rpc CreateOperation(CreateOperationRequest) returns (CreateOperationResponse);
+  rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  rpc RunOperation(RunOperationRequest) returns (RunOperationResponse);
+  rpc ReconcileOperation(ReconcileOperationRequest) returns (ReconcileOperationResponse);
+}
+
+// ---- callback administration ----
+message CallbackSubscription {
+  string id = 1;
+  string owner_uid = 2;
+  string tenant_id = 3;
+  string endpoint = 4;
+  repeated string event_types = 5;
+  bool enabled = 6;
+  bool verified = 7;
+}
+message RegisterCallbackRequest {
+  string endpoint = 1;
+  string tenant_id = 2;
+  repeated string event_types = 3;
+}
+message RegisterCallbackResponse {
+  CallbackSubscription subscription = 1;
+  string secret = 2;
+}
+message ListCallbacksRequest { Page page = 1; }
+message ListCallbacksResponse { repeated CallbackSubscription subscriptions = 1; string next_cursor = 2; }
+message DeleteCallbackRequest { string id = 1; }
+message DeleteCallbackResponse {}
+message ReplayCallbackDeliveryRequest { string id = 1; }
+message ReplayCallbackDeliveryResponse {}
+
+service CallbackService {
+  rpc RegisterCallback(RegisterCallbackRequest) returns (RegisterCallbackResponse);
+  rpc ListCallbacks(ListCallbacksRequest) returns (ListCallbacksResponse);
+  rpc DeleteCallback(DeleteCallbackRequest) returns (DeleteCallbackResponse);
+  rpc ReplayCallbackDelivery(ReplayCallbackDeliveryRequest) returns (ReplayCallbackDeliveryResponse);
+}
+
+// ---- synchronization/export jobs ----
+message SyncJob {
+  string id = 1;
+  string account_id = 2;
+  string actor_uid = 3;
+  string job_type = 4;
+  string status = 5;
+  string idempotency_key = 6;
+  google.protobuf.Struct request = 7;
+  google.protobuf.Struct result = 8;
+  string error_code = 9;
+  string error_message = 10;
+  int32 attempt = 11;
+  google.protobuf.Timestamp created_at = 12;
+	google.protobuf.Timestamp updated_at = 13;
+	google.protobuf.Timestamp completed_at = 14;
+	string tenant_id = 15;
+	string request_id = 16;
+}
+message CreateSyncJobRequest {
+  string account_id = 1;
+  string job_type = 2;
+  repeated string datasets = 3;
+  string idempotency_key = 4;
+}
+message CreateSyncJobResponse { SyncJob job = 1; }
+message GetSyncJobRequest { string id = 1; }
+message GetSyncJobResponse { SyncJob job = 1; }
+message ListSyncJobsRequest { Page page = 1; }
+message ListSyncJobsResponse { repeated SyncJob jobs = 1; string next_cursor = 2; }
+message ReconcileSyncJobRequest { string id = 1; string worker_id = 2; }
+message ReconcileSyncJobResponse { SyncJob job = 1; }
+
+service SyncJobService {
+  rpc CreateSyncJob(CreateSyncJobRequest) returns (CreateSyncJobResponse);
+  rpc GetSyncJob(GetSyncJobRequest) returns (GetSyncJobResponse);
+  rpc ListSyncJobs(ListSyncJobsRequest) returns (ListSyncJobsResponse);
+  rpc ReconcileSyncJob(ReconcileSyncJobRequest) returns (ReconcileSyncJobResponse);
+}

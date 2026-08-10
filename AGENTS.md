@@ -50,7 +50,7 @@ make proto             # regenerate stubs only after editing api/proto/**/*.prot
 Done-gate:
 
 ```bash
-make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-composition-root && make check-integration-compile && make build
+make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-composition-root && make check-proto-sync && make check-integration-compile && make build
 ```
 
 Run `make test-integration` after changing repository SQL, migrations, storage, source connectors, event
@@ -325,7 +325,8 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
   out-of-order, gap, replay, and poison-event behavior.
 - Operation tests inject crashes before and after remote success. Callback tests cover signing, retry, DLQ,
   duplicate delivery, key rotation, and manual replay.
-- Generated protobuf is committed. Never hand-edit `*.pb.go`; edit `.proto`, then run `make proto` with plugin
+- Generated protobuf is committed. Never hand-edit `*.pb.go`; edit `.proto`, then run `make proto` (and
+  `make check-proto-sync` to prove the committed stubs match the pinned toolchain) with plugin
   versions compatible with `go.mod`.
 
 ## Current repository gotchas

@@ -21,7 +21,7 @@ clean:       ; rm -rf bin/
 # Requires golangci-lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || printf '%s/bin/golangci-lint' "$$(go env GOPATH)")
 
-.PHONY: lint-strict check-file-sizes check-composition-root
+.PHONY: lint-strict check-file-sizes check-composition-root check-proto-sync
 lint-strict:
 	@command -v $(GOLANGCI_LINT) >/dev/null 2>&1 || { echo "ERROR: golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; exit 1; }
 	$(GOLANGCI_LINT) run ./...
@@ -103,6 +103,14 @@ check-audit-manifest:
 .PHONY: check-composition-root
 check-composition-root:
 	@bash scripts/check-composition-root.sh
+
+# Deterministic proto-stub sync gate: regenerates every committed *.pb.go from
+# api/proto/ with a PINNED toolchain (protoc-gen-go derived from go.mod,
+# protoc-gen-go-grpc v1.5.1, protoc 3.21.12) into a temp tree and diffs against
+# the committed stubs. Self-testing (green+red fixtures); never mutates the repo.
+.PHONY: check-proto-sync
+check-proto-sync:
+	@bash scripts/check-proto-sync.sh
 
 proto:
 	mkdir -p internal/sso/ssopb internal/handler/grpc/aeropb

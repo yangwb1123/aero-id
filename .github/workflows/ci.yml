@@ -53,3 +53,32 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - run: go test ./... -count=1 -race
+
+  # Deterministic proto-stub sync gate (B3): regenerates every committed *.pb.go
+  # from api/proto/ with the pinned toolchain into a temp tree and diffs. Fail-
+  # closed and self-testing (green+red fixtures). Requires protoc 3.21.12, which
+  # ubuntu-24.04 ships exactly; the gate asserts the version and fails otherwise.
+  # Runs on every PR/push (no paths filter): inputs are protos, stubs, go.mod
+  # (plugin pins), and the Makefile (parity guard), so a filter would recreate
+  # the blind spot this gate closes.
+  check-proto-sync:
+    runs-on: ubuntu-24.04
+    env:
+      # Supply-chain pinning (F2): the gate's `go install` fetches the
+      # protoc-gen-go plugins. Force the official proxy + checksum DB and keep
+      # GOPRIVATE empty so google.golang.org modules are never treated as
+      # private (which would bypass GOSUMDB verification; GONOSUMDB/GONOPROXY
+      # inherit empty from GOPRIVATE).
+      GOPROXY: https://proxy.golang.org,direct
+      GOSUMDB: sum.golang.org
+      GOPRIVATE: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Install protoc (3.21.12)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Proto-stub sync gate
+        run: make check-proto-sync
