@@ -24,6 +24,8 @@ type fakeBackfillRepo struct {
 
 func (f *fakeBackfillRepo) EnsureByIdentity(ctx context.Context, tenantID, issuer, subject, canonicalUID, homeRegion string) (*domain.Account, error) {
 	key := tenantID + "|" + issuer + "|" + subject
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.identities[key] {
 		return &domain.Account{ID: idgen.NewID(), TenantID: tenantID, CanonicalUID: canonicalUID, HomeRegion: homeRegion}, nil
 	}
@@ -56,6 +58,8 @@ func (f *fakeBackfillRepo) EnsureByIdentityWithQuotaWithAudit(ctx context.Contex
 
 func (f *fakeBackfillRepo) FindByIdentity(ctx context.Context, tenantID, issuer, subject string) (*domain.Account, error) {
 	key := tenantID + "|" + issuer + "|" + subject
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.identities[key] {
 		return &domain.Account{ID: idgen.NewID(), TenantID: tenantID, CanonicalUID: subject}, nil
 	}
