@@ -9,7 +9,7 @@ make test                # unit tests
 make lint                # go vet
 make lint-strict         # golangci-lint (complexity, function length, static analysis)
 make check-file-sizes    # file ≤ 500 lines (non-test, non-generated)
-make check-architecture  # no cross-feature imports, domain self-contained
+make check-architecture  # live-layer boundaries (rules a-e): dead-tree import ban, domain purity, repository/service, infra layers, handler/repository
 make build               # compile
 ```
 
