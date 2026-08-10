@@ -127,7 +127,9 @@ validators:
   root: "python cli.py check-root"
   # Reference path had an  prefix (snaplink repo layout); this repo
   # keeps quality.py at the root, so the path is adapted accordingly.
-  pyquality: "python {cwd}/quality.py {cwd}"
+  # aero-id: ai-dev/ 是未跟踪的 AI 工作区，质量门禁必须排除，否则预存违规会
+  # 误杀所有 implement 阶段（2026-08-10 B3 教训：同步 runner 配置后校验失败）。
+  pyquality: "python {cwd}/quality.py {cwd} --exclude ai-dev"
   designintelligence: "python {cwd}/scripts/check-design-intelligence.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral" 
   backendexperience: "python {cwd}/scripts/check-backend-experience.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral,vendor"
   knowledge: "python {cwd}/scripts/check-knowledge-freshness.py --dir {cwd} --json --skip .git,.dart_tool,test,build,vendor --skip-modules pbatch,checks,scripts,tools"
@@ -137,10 +139,10 @@ validators:
   # Go 项目（aero-id 等）：任务 cwd 为仓库根时直接可用
   gobuild: "go build ./... && go vet ./..."
   gotest: "go test ./... -count=1"
-  # aero-vault 等 Go 仓库的 repo-scope 门禁：阶段末尾对整树执行一次（N2），
-  # 避免与并发角色写入竞争。make check = gofmt+build+vet+test+filesize。
+  # aero-id 等 Go 仓库的 repo-scope 门禁：阶段末尾对整树执行一次（N2），
+  # 避免与并发角色写入竞争。aero-id 无 make check 目标，用 Docker-free 门禁链。
   gorepo:
-    cmd: "make check"
+    cmd: "make test && make lint && make check-file-sizes && make build"
     scope: repo
   clirepo:
     cmd: "python3 cli.py check"
