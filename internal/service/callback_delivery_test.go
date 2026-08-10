@@ -24,6 +24,7 @@ type callbackFakeRepo struct {
 	subs       []*domain.CallbackSubscription
 	facts      []*domain.AuditFact // facts appended via the WithAudit methods
 	failAudit  error               // non-nil => WithAudit methods fail with this
+	failMark   error               // non-nil => MarkDelivery fails without settling (drain-swallow regression seam)
 }
 
 type markRecord struct {
@@ -105,6 +106,12 @@ func (f *callbackFakeRepo) FetchDueDeliveries(ctx context.Context, limit int, wo
 func (f *callbackFakeRepo) MarkDelivery(ctx context.Context, id domain.ID, worker, status string, statusCode int, response, errorCode string, next time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failMark != nil {
+		// A failed settlement records nothing: the row stays delivering+leased
+		// and the attempt is NOT incremented (mirrors the real UPDATE that
+		// errors before commit). The drain must observe mark_failed instead.
+		return f.failMark
+	}
 	f.marked = append(f.marked, markRecord{id: id, status: status, statusCode: statusCode, errorCode: errorCode, next: next})
 	return nil
 }
@@ -362,6 +369,65 @@ func (t *slowTransport) RoundTrip(request *http.Request) (*http.Response, error)
 }
 
 func bytesReader(b []byte) *bytesReaderT { return &bytesReaderT{data: b} }
+
+// TestCallbackDelivery_MarkFailureEmitsMarkFailed (drain-swallow regression):
+// when the settlement UPDATE fails, the drain must not report a false outcome
+// (success/pending/dead_letter), must record nothing in the repo (no phantom
+// settlement), and must leave the retry state untouched — the row stays
+// delivering+leased and the existing lease re-fetch re-claims it with the
+// attempt unchanged. Exactly one mark_failed observation is the whole
+// observable contract (the service has no logger; the status-keyed counter is
+// the mandated seam).
+func TestCallbackDelivery_MarkFailureEmitsMarkFailed(t *testing.T) {
+	markErr := errors.New("mark delivery: connection lost")
+	delivery := callbackDelivery(callbackTestEndpoint, 1)
+	repo := newCallbackFakeRepo(delivery)
+	repo.failMark = markErr
+	metrics := &metricSpy{}
+	svc := newCallbackTestService(repo,
+		CallbackConfig{RequestTimeout: 2 * time.Second, MaxResponseBytes: 4096, MaxAttempts: 3, RetryBase: time.Millisecond,
+			AllowPrivateTarget: true}, &cannedTransport{status: http.StatusAccepted})
+	svc.metrics = metrics
+	attemptBefore, nextBefore := delivery.Attempt, delivery.NextAttemptAt
+
+	svc.drain(context.Background())
+
+	if len(metrics.callbackOutcomes) != 1 || metrics.callbackOutcomes[0] != "mark_failed" {
+		t.Fatalf("outcome observations = %v, want exactly [mark_failed] (no false settlement)", metrics.callbackOutcomes)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.marked) != 0 {
+		t.Fatalf("settlements recorded = %+v, want none (failed MarkDelivery must not settle)", repo.marked)
+	}
+	if delivery.Attempt != attemptBefore || !delivery.NextAttemptAt.Equal(nextBefore) {
+		t.Errorf("retry state mutated: attempt %d->%d, next_attempt_at %v->%v — failed settlement must leave the row untouched",
+			attemptBefore, delivery.Attempt, nextBefore, delivery.NextAttemptAt)
+	}
+}
+
+// TestCallbackDelivery_MarkSuccessObservesStatus pins the success path as
+// byte-identical: a settled delivery observes its real outcome label and the
+// repo records exactly one mark (the fix must not alter the happy path).
+func TestCallbackDelivery_MarkSuccessObservesStatus(t *testing.T) {
+	metrics := &metricSpy{}
+	svc := newCallbackTestService(newCallbackFakeRepo(callbackDelivery(callbackTestEndpoint, 1)),
+		CallbackConfig{RequestTimeout: 2 * time.Second, MaxResponseBytes: 4096, MaxAttempts: 5, RetryBase: time.Second,
+			AllowPrivateTarget: true}, &cannedTransport{status: http.StatusAccepted})
+	svc.metrics = metrics
+
+	svc.drain(context.Background())
+
+	if len(metrics.callbackOutcomes) != 1 || metrics.callbackOutcomes[0] != "success" {
+		t.Fatalf("outcome observations = %v, want exactly [success]", metrics.callbackOutcomes)
+	}
+	repo := svc.repo.(*callbackFakeRepo)
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.marked) != 1 || repo.marked[0].status != "success" {
+		t.Errorf("marks = %+v, want one success", repo.marked)
+	}
+}
 
 type bytesReaderT struct {
 	data []byte

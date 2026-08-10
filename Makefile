@@ -21,7 +21,7 @@ clean:       ; rm -rf bin/
 # Requires golangci-lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || printf '%s/bin/golangci-lint' "$$(go env GOPATH)")
 
-.PHONY: lint-strict check-file-sizes
+.PHONY: lint-strict check-file-sizes check-composition-root
 lint-strict:
 	@command -v $(GOLANGCI_LINT) >/dev/null 2>&1 || { echo "ERROR: golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; exit 1; }
 	$(GOLANGCI_LINT) run ./...
@@ -63,10 +63,19 @@ check-file-sizes:
 
 # Ban swallowed/bare-call audit writes in the live service layer (single
 # delivery + swallow ban). Self-tests against scripts/testdata/audit-swallow/
-# before scanning; ROOT parameterized for the self-test fixture.
+# before scanning; ROOT parameterized for the self-test fixture. The
+# internal/comment root is a quarantine TRIPWIRE, not a live scan: the tree
+# was deleted in the 2026-08-08 dead-tree quarantine (its service.go:431
+# `_ = s.audit.Log(` was the last swallowed fail-open out-of-transaction
+# audit write), the FM-12 guard in the script is the total tripwire, and the
+# comment_positive self-test pins both the root and the P1/P2 patterns. This
+# root also supersedes the live-root claims of the mutation-coverage campaign
+# (2026-08-08-internal-comment-mutation-audit-coverage) and its R0 predecessor
+# (2026-08-08-internal-comment-resolve-report-with-audit): Option A
+# (quarantine) was chosen over Option B (port), so the token means tripwire.
 .PHONY: check-audit-swallow
 check-audit-swallow:
-	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage internal/block cmd
+	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd
 
 # R-1/R-2 regression gate for the deterministic event-ID derivation contract:
 # the only random EventID: idgen.NewID() left in non-test Go is the C2
@@ -84,6 +93,16 @@ check-anchored-event-ids:
 .PHONY: check-audit-manifest
 check-audit-manifest:
 	@bash scripts/check-audit-manifest.sh
+
+# Composition-root seam gate (Mutation-A pin): the buildAuditStack call and
+# the drain Start must stay in internal/app/new.go with their exact shapes
+# (C-1/C-2), the drain must not move into buildAuditStack (C-2b), the stack
+# precedes NewFileRepository (C-3), and cmd/server/main.go hands the Loaded
+# config to app.New unmutated (C-4). Docker-free companion to the boot e2e
+# (internal/app/composition_root_integration_test.go).
+.PHONY: check-composition-root
+check-composition-root:
+	@bash scripts/check-composition-root.sh
 
 proto:
 	mkdir -p internal/sso/ssopb internal/handler/grpc/aeropb

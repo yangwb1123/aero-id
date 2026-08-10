@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aero/aero-id/internal/connector/auditgovernance"
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
@@ -56,12 +57,14 @@ func (f *failingPublicationRepo) DeadLetterTenants(context.Context, []domain.ID,
 }
 
 // settlingPublicationRepo accepts every finish: settlements commit and are
-// counted on the outcome metric. It records the persisted attempt so tests
-// can pin the M-4 contract: the incremented attempt is persisted only at
-// settlement, never at claim time.
+// counted on the outcome metric. It records the persisted attempt and error
+// code so tests can pin the M-4 contract (the incremented attempt is persisted
+// only at settlement, never at claim time) and the publicationOutcome code
+// (audit.binding_unavailable vs audit.publication_failed).
 type settlingPublicationRepo struct {
-	finishes  []string
-	attempts  []int
+	finishes []string
+	codes    []string
+	attempts []int
 }
 
 func (s *settlingPublicationRepo) ClaimPublication(ctx context.Context, worker string, lease time.Duration, limit int) ([]*domain.AuditPublication, error) {
@@ -69,6 +72,7 @@ func (s *settlingPublicationRepo) ClaimPublication(ctx context.Context, worker s
 }
 func (s *settlingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, attempt int, status, errorCode string, next time.Time) error {
 	s.finishes = append(s.finishes, status)
+	s.codes = append(s.codes, errorCode)
 	s.attempts = append(s.attempts, attempt)
 	return nil
 }
@@ -96,6 +100,21 @@ func (f *failingAuditPublisher) Publish(context.Context, *domain.AuditFact) erro
 	return errors.New("governance endpoint unavailable")
 }
 
+// scopeMissingPublisher models a governance sink that classifies scope-missing
+// with a caller-chosen error: the marker-wrapped token-endpoint sentinel (hook
+// path — the drain counter must stay silent because the composition-root hook
+// already counted it) or the bare ErrTokenScopeMissing (events-endpoint path —
+// the drain counter fires once per failed attempt).
+type scopeMissingPublisher struct {
+	calls int
+	err   error
+}
+
+func (s *scopeMissingPublisher) Publish(context.Context, *domain.AuditFact) error {
+	s.calls++
+	return s.err
+}
+
 // claimFailure records one ObserveAuditPublicationClaimFailed observation with
 // its phase (FM-1): "claim_tx" (nothing leased, next tick retries) vs
 // "fact_hydration" (rows delivering, hydrated prefix delivered, remainder
@@ -115,6 +134,7 @@ type metricSpy struct {
 	finishFailures    []string
 	finishFailureErrs []error
 	outcomes          []string
+	callbackOutcomes  []string // ObserveCallbackOutcome labels (success|pending|dead_letter|mark_failed)
 	drainSkipped      int
 	claimFailures     []claimFailure
 	ingestFailures    []string
@@ -155,7 +175,9 @@ func (m *metricSpy) ObserveAuditPublicationPurgeFailed(kind string, err error) {
 	m.purgeFailures = append(m.purgeFailures, kind)
 }
 func (m *metricSpy) ObserveOperationOutcome(string)                     {}
-func (m *metricSpy) ObserveCallbackOutcome(string)                      {}
+func (m *metricSpy) ObserveCallbackOutcome(status string) {
+	m.callbackOutcomes = append(m.callbackOutcomes, status)
+}
 func (m *metricSpy) ObserveReconcileDrift(string)                       {}
 func (m *metricSpy) ObserveProjectionLag(string, string, time.Duration) {}
 func (m *metricSpy) ObserveConsumerLag(string, time.Duration)           {}
@@ -407,6 +429,84 @@ func TestFinishPublicationDeadLetterSettlesObservesOutcome(t *testing.T) {
 	// MaxAttempts 8 — the persisted attempt is the incremented value.
 	if len(repo.attempts) != 1 || repo.attempts[0] != 8 {
 		t.Fatalf("persisted attempts = %v, want [8]", repo.attempts)
+	}
+}
+
+// TestPublishAuditFactTokenEndpointScopeMissingSkipsDrainCounter (A3, C-C): a
+// token-endpoint scope-missing error carries the ErrTokenEndpointScopeMissing
+// marker (multi-%w wrap over ErrTokenScopeMissing, connector oauth.go fetchToken
+// sites). The composition-root hook already counted it, so the drain counter
+// must stay silent — while the row still settles pending at
+// audit.binding_unavailable, even at the MaxAttempts edge (the unbound
+// classification precedes the dead-letter check). This is the no-Docker fast
+// detector for the A3 skip: a regression that drops the skip fires the counter
+// for the wrapped error and fails here.
+func TestPublishAuditFactTokenEndpointScopeMissingSkipsDrainCounter(t *testing.T) {
+	metrics := &metricSpy{}
+	repo := &settlingPublicationRepo{}
+	publisher := &scopeMissingPublisher{err: fmt.Errorf("%w: %w",
+		auditgovernance.ErrTokenEndpointScopeMissing, auditgovernance.ErrTokenScopeMissing)}
+	svc := newCallbackTestService(newCallbackFakeRepo(), CallbackConfig{MaxAttempts: 8, RetryBase: time.Second}, nil)
+	svc.publications = repo
+	svc.publishers = []AuditPublisher{publisher}
+	svc.metrics = metrics
+
+	fact := &domain.AuditFact{ID: idgen.NewID(), Source: "aero-id", TenantID: "tenant-a", Action: "account.provisioned"}
+	for _, attempt := range []int{0, 7} { // 7 → nextAttempt 8 == MaxAttempts: the unbound classification must still win
+		item := &domain.AuditPublication{ID: idgen.NewID(), Status: "delivering", Attempt: attempt, Fact: fact}
+		svc.finishPublicationAttempt(t.Context(), item)
+	}
+
+	if publisher.calls != 2 {
+		t.Fatalf("publisher calls = %d, want 2 (both attempts reached the sink)", publisher.calls)
+	}
+	if len(metrics.scopeMissing) != 0 {
+		t.Fatalf("scope-missing counter observations = %v, want none (token-endpoint path is hook-counted; A3 must skip the drain counter)", metrics.scopeMissing)
+	}
+	if len(repo.finishes) != 2 || repo.finishes[0] != "pending" || repo.finishes[1] != "pending" {
+		t.Fatalf("finishes = %v, want [pending pending] (never dead_letter, even at MaxAttempts)", repo.finishes)
+	}
+	if len(repo.codes) != 2 || repo.codes[0] != "audit.binding_unavailable" || repo.codes[1] != "audit.binding_unavailable" {
+		t.Fatalf("error codes = %v, want [audit.binding_unavailable audit.binding_unavailable]", repo.codes)
+	}
+	if len(repo.attempts) != 2 || repo.attempts[0] != 1 || repo.attempts[1] != 8 {
+		t.Fatalf("persisted attempts = %v, want [1 8]", repo.attempts)
+	}
+}
+
+// TestPublishAuditFactEventsEndpointScopeMissingFiresDrainCounter (A3, C-C):
+// an events-endpoint scope-missing error is the bare ErrTokenScopeMissing (no
+// marker — the connector hook is structurally unreachable there), so the drain
+// counter fires exactly once per failed attempt with the normalized
+// fact.Source label, and the row settles pending at audit.binding_unavailable,
+// never dead_letter.
+func TestPublishAuditFactEventsEndpointScopeMissingFiresDrainCounter(t *testing.T) {
+	metrics := &metricSpy{}
+	repo := &settlingPublicationRepo{}
+	publisher := &scopeMissingPublisher{err: auditgovernance.ErrTokenScopeMissing}
+	svc := newCallbackTestService(newCallbackFakeRepo(), CallbackConfig{MaxAttempts: 8, RetryBase: time.Second}, nil)
+	svc.publications = repo
+	svc.publishers = []AuditPublisher{publisher}
+	svc.metrics = metrics
+
+	item := &domain.AuditPublication{ID: idgen.NewID(), Status: "delivering", Attempt: 0,
+		Fact: &domain.AuditFact{ID: idgen.NewID(), Source: "aero-id", TenantID: "tenant-a", Action: "account.provisioned"}}
+	svc.finishPublicationAttempt(t.Context(), item)
+
+	if len(metrics.scopeMissing) != 1 || metrics.scopeMissing[0] != "aero-id" {
+		t.Fatalf("scope-missing counter observations = %v, want exactly [aero-id] (one per failed attempt, normalized label)", metrics.scopeMissing)
+	}
+	if len(metrics.outcomes) != 1 || metrics.outcomes[0] != "pending" {
+		t.Fatalf("outcome observations = %v, want [pending]", metrics.outcomes)
+	}
+	if len(repo.finishes) != 1 || repo.finishes[0] != "pending" {
+		t.Fatalf("finishes = %v, want [pending]", repo.finishes)
+	}
+	if len(repo.codes) != 1 || repo.codes[0] != "audit.binding_unavailable" {
+		t.Fatalf("error codes = %v, want [audit.binding_unavailable]", repo.codes)
+	}
+	if len(repo.attempts) != 1 || repo.attempts[0] != 1 {
+		t.Fatalf("persisted attempts = %v, want [1]", repo.attempts)
 	}
 }
 

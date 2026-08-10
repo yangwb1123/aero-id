@@ -9,7 +9,10 @@
 # Known exceptions are listed below with justification.
 set -euo pipefail
 
-FEATURES=(file message comment block notification search)
+# comment and search were deleted in the 2026-08-08 dead-tree quarantine
+# (internal/comment carried the last swallowed fail-open audit write;
+# internal/search was its only, equally unwired, consumer).
+FEATURES=(file message block notification)
 INTERNAL="github.com/aero/aero-id/internal"
 
 # Packages that any feature may import (shared infrastructure).
@@ -32,12 +35,6 @@ KNOWN_EXCEPTIONS=(
   # notification needs block.BlockChecker to suppress notifications for blocked users.
   # TODO: move BlockChecker interface to internal/domain/ to eliminate this dependency.
   "notification:block:notification dispatcher checks block status before pushing"
-  # search queries across all content types. It imports feature repos directly.
-  # TODO: define SearchableFile/SearchableMessage/SearchableComment interfaces in
-  # internal/domain/ and inject them, removing direct feature-package dependency.
-  "search:comment:search queries comments via feature repo"
-  "search:file:search queries files via feature repo"
-  "search:message:search queries messages via feature repo"
 )
 
 violations=0

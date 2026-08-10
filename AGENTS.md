@@ -50,7 +50,7 @@ make proto             # regenerate stubs only after editing api/proto/**/*.prot
 Done-gate:
 
 ```bash
-make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-integration-compile && make build
+make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-composition-root && make check-integration-compile && make build
 ```
 
 Run `make test-integration` after changing repository SQL, migrations, storage, source connectors, event
@@ -330,7 +330,7 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
 
 ## Current repository gotchas
 
-- `internal/{file,message,comment,notification,search}` and `internal/audit` are an unwired parallel tree (the former `internal/block` dead tree was deleted in the 2026-08-08 quarantine; its `BlockChecker` role is served by the live `service.BlockChecker`).
+- `internal/{file,message,notification}` and `internal/audit` are an unwired parallel tree (the former `internal/block`, `internal/comment`, and `internal/search` dead trees were deleted in the 2026-08-08 quarantine — `internal/comment` carried the last swallowed fail-open out-of-transaction audit write and is guarded by `check-audit-swallow`; `internal/block`'s `BlockChecker` role is served by the live `service.BlockChecker`).
   The running application uses `internal/service` + `internal/repository`. Do not implement target account/audit
   work in an unwired tree.
 - `make check-architecture` currently polices that dead tree, not the live layered runtime. A green result does

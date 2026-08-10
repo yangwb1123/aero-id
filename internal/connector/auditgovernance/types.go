@@ -22,6 +22,15 @@ var (
 	ErrTenantUnbound     = errors.New("audit governance: tenant binding unavailable")
 	ErrTokenRejected     = errors.New("audit governance: token rejected")      // events-endpoint 401, non-scope body
 	ErrTokenScopeMissing = errors.New("audit governance: token scope missing") // events 401-with-scope-body, token endpoint
+	// ErrTokenEndpointScopeMissing marks a scope-missing classification that
+	// originated at the token endpoint (400-gate or scope-claim validation) as
+	// opposed to the events endpoint. It always wraps ErrTokenScopeMissing, so
+	// errors.Is(err, ErrTokenScopeMissing) stays true for every consumer. The
+	// drain uses the marker to skip its service-side counter for the token-
+	// endpoint path (the composition-root hook already counted it — C-C, exactly
+	// one increment per condition). It must NEVER be emitted at the events-
+	// endpoint site (publisher.go:112).
+	ErrTokenEndpointScopeMissing = errors.New("audit governance: token endpoint scope missing")
 	errEpochDiscarded    = errors.New("audit governance: epoch discarded")     // stale in-flight fetch, internal only
 )
 

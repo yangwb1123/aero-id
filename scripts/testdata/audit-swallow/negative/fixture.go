@@ -17,5 +17,6 @@ func negative() error {
 	}
 	return s.audit.Log(ctx, event) // propagated Log return
 	d.pusher.Publish(ctx, ev)   // best-effort SSE hub: excluded from P2
+	_ = p.tokens.Invalidate(binding) // documented exclusion: token-cache invalidation (auditgovernance/publisher.go:106), not an audit write
 	return nil
 }

@@ -3,13 +3,18 @@
 #
 # P1 (assign-swallow): any statement that assigns the result of
 #   .Record / .Log / .Publish / .FinishPublication / .ClaimPublication /
-#   .RequeuePublication / .RequeueDead to _ or _, _
+#   .RequeuePublication / .RequeueDead / .MarkDelivery to _ or _, _
 #   — the caller discards the error. This is the historical swallow shape
 #   (the converted `_ = s.audit.Record(` and `_ = s.audit.Log(` sites, the inline
 #   `_ = publisher.Publish` loop, `_ = s.publications.FinishPublication(`).
 #   The B2-5 replay surface is included: RequeuePublication/RequeueDead take a
 #   *domain.AuditFact and their error covers the in-tx audit append, so a
 #   discarded result would silently drop both the requeue and its fact.
+#   MarkDelivery (B2-5 drain settlement) is included for the same reason: its
+#   error covers attempt+1 and lease-clear, so a discarded result silently
+#   drops the settlement AND the gate (a swallowed MarkDelivery is how the
+#   drain-path swallow went unobserved — callback_worker.go:121 pre-2026-08-08
+#   hardening). The new positive fixture line is matched by the self-test.
 # P2 (bare-call): a bare statement `s.audit.Record(ctx, f)` or `s.audit.Log(ctx, e)`
 #   also discards the error and matches nothing today (errcheck is not enabled in
 #   .golangci.yml) — P2 closes that false-negative hole. Anchoring at line
@@ -19,15 +24,26 @@
 #   best-effort SSE hub (AGENTS.md), not audit calls; a future bare audit
 #   `Publish` swallow is still caught by P1's `_ =` form. Requeue* IS in P2:
 #   the only callers are cmd/audit-replay, and a bare requeue call there would
-#   discard the audit-fact append error.
+#   discard the audit-fact append error. MarkDelivery IS in P2: a bare
+#   settlement call (e.g. a future regression to `s.repo.MarkDelivery(...)`
+#   without the error branch) discards the attempt+1/lease-clear error exactly
+#   like the historical swallow it replaces.
 #
 # Exclusions (documented):
-#   - the unwired parallel tree internal/{file,message,comment,
-#     notification,search,audit} — only the live layer is scanned (default
-#     root internal/service; the gate adds internal/repository, internal/app,
-#     internal/storage, internal/block and cmd — internal/block was deleted in
-#     the dead-tree quarantine, and the root is a regression tripwire: a
-#     swallowed audit write reintroduced there turns the gate red).
+#   - the unwired parallel tree internal/{file,message,notification,audit}
+#     — only the live layer is scanned (default root internal/service; the
+#     gate adds internal/repository, internal/app, internal/storage,
+#     internal/block, internal/comment and cmd — internal/block, internal/
+#     comment and internal/search were deleted in the 2026-08-08 dead-tree
+#     quarantines; the internal/block and internal/comment roots are
+#     regression tripwires (guards below; internal/comment additionally
+#     pinned by the comment_positive self-test), so a swallowed audit write
+#     reintroduced there turns the gate red).
+#   - *_test.go files are excluded from the ROOT scan (R-M scan-scope
+#     amendment): the P1/P2 patterns are statement-start anchored, so a bare
+#     `t.Log(` at statement start in a test would be a false positive; test-
+#     file audit correctness is enforced by the audit-coverage integration
+#     tests, which assert ledger/publication row counts.
 #   - the self-test fixtures under scripts/testdata/audit-swallow/ live
 #     outside the scanned tree and are never scanned.
 #
@@ -46,6 +62,9 @@
 # Usage: scripts/check-audit-swallow.sh [ROOT...]   (default: internal/service)
 # Multiple roots are scanned; the Makefile gate scans the whole live layer:
 #   internal/service internal/repository internal/app internal/storage
+#   internal/block internal/comment cmd
+# (internal/block and internal/comment are absent quarantine tripwires — the
+# directories were deleted; the FM-12 guards below are the total tripwires.)
 # Never add internal/sso without excluding its circuit-breaker calls: sso's
 # bare `c.breaker.Record(...)` is a breaker observation, not an audit write,
 # and would be a false positive for P2.
@@ -59,8 +78,8 @@ fi
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SELF_DIR/testdata/audit-swallow"
 
-P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publish|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead)\('
-P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead)\('
+P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publish|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\('
+P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\('
 
 fail=0
 
@@ -75,6 +94,34 @@ if [ -d "$SELF_DIR/../internal/block" ]; then
   fail=1
 else
   echo "✓ quarantine guard: internal/block absent (FM-12)"
+fi
+
+# ── quarantine guard (FM-12): internal/comment must never exist ────────────
+# internal/comment carried the last swallowed, fail-open, post-commit audit
+# write (service.go:431 `_ = s.audit.Log(`) outside any transaction; its only
+# consumer internal/search was equally unwired. The guard is total — even a
+# benign reintroduction (compilable package, propagated audit error) is a gate
+# violation. Deliberately lifting the quarantine = deleting this guard AND the
+# internal/search guard AND the Makefile tripwire root + comment_positive
+# self-test + the audit.go note + the exclusion comment + AGENTS.md, in one
+# commit.
+if [ -d "$SELF_DIR/../internal/comment" ]; then
+  echo "QUARANTINE VIOLATION: internal/comment must not exist (dead-tree quarantine, FM-12)"
+  fail=1
+else
+  echo "✓ quarantine guard: internal/comment absent (FM-12)"
+fi
+
+# ── quarantine guard (FM-12): internal/search must never exist ─────────────
+# internal/search was the only consumer of internal/comment (search queries
+# comments via the feature repo) and is itself unwired with zero importers;
+# without this guard it would be an unscanned path in the same class as the
+# deleted comment tree.
+if [ -d "$SELF_DIR/../internal/search" ]; then
+  echo "QUARANTINE VIOLATION: internal/search must not exist (dead-tree quarantine, FM-12)"
+  fail=1
+else
+  echo "✓ quarantine guard: internal/search absent (FM-12)"
 fi
 
 # ── self-test: the gate must flag its own positive fixtures ──────────────
@@ -93,6 +140,33 @@ if [ "$cmd_hits" -lt 1 ]; then
   fail=1
 fi
 
+# ── self-test (REQ-2): the comment_positive fixture pins the extended ───────
+# ── scope — the exact P1/P2 shapes that made internal/comment the last ──────
+# ── excluded swallow site must match (pattern-regression tripwire), and ─────
+# ── internal/comment must stay in the ROOTS list (root-removal tripwire: ────
+# ── dropping it from the Makefile gate would silently shrink the scan back ──
+# ── to the historical blind spot). The membership assertion applies to ──────
+# ── explicit-root invocations — the Makefile gate always passes explicit ────
+# ── roots — while the no-arg default (internal/service only) is the ─────────
+# ── documented single-service shortcut and is exempt. ───────────────────────
+comment_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/comment_positive" --include='*.go' 2>/dev/null | wc -l)"
+if [ "$comment_hits" -lt 1 ]; then
+  echo "SELF-TEST FAIL: comment fixture under $FIXTURES/comment_positive matched nothing"
+  fail=1
+fi
+if [ "$#" -gt 0 ]; then
+  root_has_comment=false
+  for root in "${ROOTS[@]}"; do
+    if [ "$root" = "internal/comment" ]; then
+      root_has_comment=true
+    fi
+  done
+  if [ "$root_has_comment" = false ]; then
+    echo "SELF-TEST FAIL: internal/comment missing from scan ROOTS (tripwire root removed)"
+    fail=1
+  fi
+fi
+
 # ── self-test: the gate must accept its own negative fixtures ────────────
 neg_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/negative" --include='*.go' 2>/dev/null | wc -l)"
 if [ "$neg_hits" -ne 0 ]; then
@@ -104,7 +178,7 @@ fi
 # ── scan the live tree ────────────────────────────────────────────────────
 matches=""
 for root in "${ROOTS[@]}"; do
-  found="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$root" --include='*.go' 2>/dev/null)"
+  found="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$root" --include='*.go' --exclude='*_test.go' 2>/dev/null)"
   if [ -n "$found" ]; then
     matches+="$found"$'\n'
   fi

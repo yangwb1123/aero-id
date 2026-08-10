@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aero/aero-id/internal/config"
+	"github.com/aero/aero-id/internal/connector/auditgovernance"
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/pkg/metrics"
@@ -372,15 +373,27 @@ func TestBuildAuditStackWiresControlMetricsIntoCallbackDrain(t *testing.T) {
 // and never appears in the counts).
 type governanceTestEndpoint struct {
 	url       string
+	tenantID  string
 	mu        sync.Mutex
 	bodies    []map[string]any
 	accepted  map[string]bool
 	conflicts int
 }
 
+// newGovernanceTestEndpoint starts the httptest governance fake for the
+// tenant-one binding (every current fixture Records tenant-one). The receipt
+// tenant is the endpoint's configured binding, never a hardcoded literal, so
+// a future test with a different binding tenant constructs the endpoint with
+// newGovernanceTestEndpointForTenant instead of hanging in pollPublication
+// (the connector's receiptMatches requires receipt.TenantID == fact.TenantID).
 func newGovernanceTestEndpoint(t *testing.T) *governanceTestEndpoint {
 	t.Helper()
-	e := &governanceTestEndpoint{accepted: map[string]bool{}}
+	return newGovernanceTestEndpointForTenant(t, "tenant-one")
+}
+
+func newGovernanceTestEndpointForTenant(t *testing.T, tenantID string) *governanceTestEndpoint {
+	t.Helper()
+	e := &governanceTestEndpoint{tenantID: tenantID, accepted: map[string]bool{}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
@@ -390,6 +403,15 @@ func newGovernanceTestEndpoint(t *testing.T) *governanceTestEndpoint {
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode governance event: %v", err)
+			}
+			// The event body deliberately carries no tenant_id (source-bound
+			// authorization); the fake validates the derived source_system
+			// against its configured binding tenant and echoes that tenant in
+			// the receipt — a mismatch is a loud test failure, never a hang.
+			source, _ := body["source_system"].(string)
+			wantSource, err := auditgovernance.TenantSourceID("aero-id", e.tenantID)
+			if err != nil || source != wantSource {
+				t.Errorf("events body source_system = %q, want %q (binding tenant %q)", source, wantSource, e.tenantID)
 			}
 			e.mu.Lock()
 			e.bodies = append(e.bodies, body)
@@ -404,7 +426,7 @@ func newGovernanceTestEndpoint(t *testing.T) *governanceTestEndpoint {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"receipt": map[string]any{
-				"event_id": eventID, "tenant_id": "tenant-one", "status": "ledgered",
+				"event_id": eventID, "tenant_id": e.tenantID, "status": "ledgered",
 				"accepted_at": time.Now().UTC(), "conflict": conflict,
 			}})
 		default:
@@ -450,6 +472,13 @@ func auditGovernanceTestConfig(endpoint string, purgePause bool, retention time.
 		},
 		AuditGovernance: config.AuditGovernanceConfig{
 			Enabled: true, Endpoint: endpoint, SourcePrefix: "aero-id", AllowInsecureLoopback: true,
+			// Distinct non-zero knob values (T-10.1, L10.1.3): the connector
+			// defaults (publisher.go defaultConfig) equal the shipped-file
+			// values byte-for-byte, so zero values would mask a dropped knob
+			// copy in buildAuditPublishers (value-coincidence false green).
+			// Every body field is pinned to these fixture values.
+			ActorID: "fixture-actor", SchemaID: "fixture.schema.id", SchemaVersion: 7,
+			DataClassification: "restricted", RetentionClass: "fixture_30d",
 			PurgePause: purgePause, DeadLetterRetention: retention,
 			Bindings: map[string]config.AuditGovernanceBindingConfig{
 				"tenant-one": {TokenURL: endpoint + "/token", ClientID: "audit-client",
@@ -472,6 +501,7 @@ type auditGovernanceFixture struct {
 	endpoint    *governanceTestEndpoint
 	callbackSvc service.CallbackService
 	auditLedger service.AuditLedgerService
+	ledgerRepo  repository.FullAuditLedgerRepository
 }
 
 func newAuditGovernanceFixture(t *testing.T, purgePause bool, retention time.Duration) *auditGovernanceFixture {
@@ -490,12 +520,13 @@ func newAuditGovernanceFixture(t *testing.T, purgePause bool, retention time.Dur
 func (f *auditGovernanceFixture) buildStack(t *testing.T, purgePause bool, retention time.Duration) {
 	t.Helper()
 	cfg := auditGovernanceTestConfig(f.endpoint.url, purgePause, retention)
-	callbackSvc, auditLedger, _, err := buildAuditStack(cfg, f.db, service.NewRegistryControlPlaneMetrics(metrics.NewRegistry()))
+	callbackSvc, auditLedger, ledgerRepo, err := buildAuditStack(cfg, f.db, service.NewRegistryControlPlaneMetrics(metrics.NewRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.callbackSvc = callbackSvc
 	f.auditLedger = auditLedger
+	f.ledgerRepo = ledgerRepo
 }
 
 // pollPublication deadline-polls until the publication row for the fact with
@@ -563,8 +594,20 @@ func appCountRows(t *testing.T, db *gorm.DB, query string, args ...any) int64 {
 func TestFirstEventGovernanceE2E(t *testing.T) {
 	fixture := newAuditGovernanceFixture(t, false, 0)
 	eventID := idgen.NewID()
+	// Explicit, microsecond-exact envelope (T-10.1, L10.1.2/L10.1.3): the
+	// fixed OccurredAt (never time.Now()) makes the hydrate-from-row
+	// occurred_at pin tautology-free; fixed operation/correlation/causation
+	// IDs and a neutral payload key (n survives redactAuditPayload) pin the
+	// ID propagation contract.
+	occurredAt := time.Date(2026, 1, 1, 0, 0, 0, 123456000, time.UTC)
+	operationID := idgen.NewID()
+	correlationID := idgen.NewID()
+	causationID := idgen.NewID()
+	const traceID = "trace-first-event-0001"
 	if err := fixture.auditLedger.Record(t.Context(), service.AuditFactInput{
-		TenantID: "tenant-one", EventID: eventID, ActorUID: "actor-one", Action: "account.viewed",
+		TenantID: "tenant-one", EventID: eventID, Action: "account.viewed",
+		OperationID: operationID, CorrelationID: correlationID, CausationID: causationID, TraceID: traceID,
+		OccurredAt: occurredAt, Payload: map[string]any{"n": 1},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -590,10 +633,7 @@ func TestFirstEventGovernanceE2E(t *testing.T) {
 		t.Fatalf("events POSTs after first delivery = %d, want exactly 1", got)
 	}
 	body := fixture.endpoint.recordedBodies()[0]
-	if body["event_id"] != rowID.String() || body["idempotency_key"] != rowID.String() {
-		t.Fatalf("body event_id/idempotency_key = %v/%v, want %s (ledger row id, not the known EventID)",
-			body["event_id"], body["idempotency_key"], rowID)
-	}
+	assertGovernanceEnvelope(t, fixture.db, body, rowID, occurredAt, operationID, correlationID, causationID, traceID)
 	if body["tenant_id"] != nil {
 		t.Error("tenant_id must not be an event-body authorization input")
 	}
@@ -626,6 +666,31 @@ func TestFirstEventGovernanceE2E(t *testing.T) {
 	}
 	if n := appCountRows(t, fixture.db, `SELECT count(*) FROM audit_ledger WHERE event_id = ?`, eventID); n != 1 {
 		t.Fatalf("ledger rows after replay = %d, want 1 (no re-append)", n)
+	}
+	// T-4 strengthening (L4.3): attempt == 2 is deterministic
+	// (FinishPublication writes hydratedAttempt+1; the claim never
+	// increments), and the finish path must have cleared the lease — these
+	// pin that the connector consumed the conflict receipt as idempotent
+	// success (a connector treating any 202 as success without reading the
+	// receipt's conflict field is observationally identical under the fake,
+	// so attempt/lease state is the pin).
+	var settled struct {
+		Attempt    int
+		LeaseOwner string
+		LeaseUntil *time.Time
+	}
+	if err := fixture.db.Raw(`SELECT ap.attempt, ap.lease_owner, ap.lease_until FROM audit_publications ap
+		JOIN audit_ledger l ON l.id = ap.fact_id WHERE l.event_id = ?`, eventID).Scan(&settled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if settled.Attempt != 2 {
+		t.Fatalf("attempt after conflict replay = %d, want 2", settled.Attempt)
+	}
+	if settled.LeaseOwner != "" {
+		t.Fatalf("lease_owner after conflict replay = %q, want '' (finish path cleared the lease)", settled.LeaseOwner)
+	}
+	if settled.LeaseUntil != nil {
+		t.Fatalf("lease_until after conflict replay = %v, want NULL (finish path cleared the lease)", settled.LeaseUntil)
 	}
 	var status string
 	if err := fixture.db.Raw(`SELECT ap.status FROM audit_publications ap
@@ -805,5 +870,333 @@ func TestBuildAuditStackHonorsPurgeKnobs(t *testing.T) {
 	}
 	if n := appCountRows(t, fixture.db, `SELECT count(*) FROM audit_ledger WHERE event_id = ?`, pastID); n != 1 {
 		t.Fatalf("ledger fact for purged publication = %d rows, want 1 (purge deletes only the publication)", n)
+	}
+}
+
+// assertGovernanceEnvelope (T-10.1, L10.1.3/L10.1.4): full-envelope pin of
+// the first delivered governance body. event_id == idempotency_key == the
+// ledger ROW id (the caller-known EventID is the dedup key and never appears
+// on the body); source_system recomputed via TenantSourceID (never a
+// hardcoded base64); the five publisher knobs pinned to the fixture's
+// distinct non-zero values (value-coincidence guard: connector defaults equal
+// the shipped-file values, so only a distinct override proves the knob copy);
+// operation/correlation/causation/trace propagated; occurred_at exact
+// equality normalized through idgen.RenderAnchorTime on BOTH sides — raw
+// RFC3339Nano string equality is a ~10% CI flake (json trims trailing zeros
+// while RenderAnchorTime always renders six digits). The row comparison pins
+// the hydrate-from-row contract: the drain publishes the post-claim row read,
+// not the pre-append fact.
+func assertGovernanceEnvelope(t *testing.T, db *gorm.DB, body map[string]any, rowID domain.ID,
+	occurredAt time.Time, operationID, correlationID, causationID domain.ID, traceID string) {
+	t.Helper()
+	sourceSystem, err := auditgovernance.TenantSourceID("aero-id", "tenant-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for field, want := range map[string]any{
+		"event_id": rowID.String(), "idempotency_key": rowID.String(),
+		"source_system": sourceSystem, "schema_id": "fixture.schema.id",
+		"event_type": "fixture.schema.id", "schema_version": float64(7),
+		"data_classification": "restricted", "retention_class": "fixture_30d",
+		"operation_id": operationID.String(), "correlation_id": correlationID.String(),
+		"causation_id": causationID.String(), "trace_id": traceID,
+	} {
+		if got := body[field]; got != want {
+			t.Errorf("body %s = %v, want %v", field, got, want)
+		}
+	}
+	actor, ok := body["actor"].(map[string]any)
+	if !ok || actor["id"] != "fixture-actor" || actor["type"] != "principal" {
+		t.Errorf("body actor = %v, want {id: fixture-actor, type: principal}", body["actor"])
+	}
+	payload, ok := body["payload"].(map[string]any)
+	if !ok || payload["n"] != float64(1) {
+		t.Errorf("body payload = %v, want {n: 1}", body["payload"])
+	}
+	var rowOccurredAt time.Time
+	if err := db.Raw(`SELECT occurred_at FROM audit_ledger WHERE id = ?`, rowID).Scan(&rowOccurredAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	bodyOccurredAtRaw, ok := body["occurred_at"].(string)
+	if !ok {
+		t.Fatalf("body occurred_at = %v, want RFC3339Nano string", body["occurred_at"])
+	}
+	bodyOccurredAt, err := time.Parse(time.RFC3339Nano, bodyOccurredAtRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idgen.RenderAnchorTime(&bodyOccurredAt) != idgen.RenderAnchorTime(&rowOccurredAt) {
+		t.Errorf("body occurred_at = %q, row occurred_at = %q (normalized %q vs %q)",
+			bodyOccurredAtRaw, rowOccurredAt.Format(time.RFC3339Nano),
+			idgen.RenderAnchorTime(&bodyOccurredAt), idgen.RenderAnchorTime(&rowOccurredAt))
+	}
+	if !bodyOccurredAt.Truncate(time.Microsecond).Equal(occurredAt) {
+		t.Errorf("body occurred_at = %v, want the recorded fixed instant %v", bodyOccurredAt, occurredAt)
+	}
+}
+
+// TestFirstEventGovernanceAnchorDerivationE2E (REQ-2, T-10.1, L10.1.2): the
+// anchored event_id derivation path (idgen.Anchor over NUL-separated parts,
+// arity 6, exercised in production by audit_hold.set) flows byte-exactly into
+// the ledger event_id column and onto the wire. The test drives the real hold
+// Put — never an explicit EventID literal — with a fixed microsecond-exact
+// expiry, recomputes idgen.Anchor from the pinned parts, and compares
+// byte-exact to the column (a parts/prefix/arity/precision mutation fails
+// here; recording with an explicit EventID would make this vacuous).
+func TestFirstEventGovernanceAnchorDerivationE2E(t *testing.T) {
+	fixture := newAuditGovernanceFixture(t, false, 0)
+	expiresAt := time.Date(2026, 6, 30, 23, 59, 59, 987654000, time.UTC)
+	holdSvc := service.NewAuditHoldService(repository.NewAuditHoldRepository(fixture.db, fixture.ledgerRepo), fixture.auditLedger)
+	if _, err := holdSvc.Put(t.Context(), "tenant-one", repository.AuditHoldScopeTenant,
+		"scope-1", "reason-1", &expiresAt); err != nil {
+		t.Fatalf("hold Put: %v", err)
+	}
+
+	wantID := idgen.Anchor("audit_hold.set", "tenant-one", string(repository.AuditHoldScopeTenant),
+		"scope-1", "reason-1", idgen.RenderAnchorTime(&expiresAt))
+	var gotID string
+	if err := fixture.db.Raw(`SELECT event_id::text FROM audit_ledger WHERE event_id = ?`, wantID.String()).Scan(&gotID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gotID != wantID.String() {
+		t.Fatalf("ledger event_id = %q, want re-derived anchor %q (derivation parts or arity drifted)", gotID, wantID)
+	}
+
+	stop := fixture.callbackSvc.Start(t.Context(), 50*time.Millisecond)
+	defer stop()
+	pollPublication(t, fixture.db, wantID, "completed", 15*time.Second)
+	if got := fixture.endpoint.postCount(); got != 1 {
+		t.Fatalf("events POSTs for the anchored hold fact = %d, want exactly 1", got)
+	}
+	body := fixture.endpoint.recordedBodies()[0]
+	rowID := ledgerRowID(t, fixture.db, wantID)
+	if body["event_id"] != rowID.String() || body["idempotency_key"] != rowID.String() {
+		t.Fatalf("body event_id/idempotency_key = %v/%v, want %s (derived anchor must propagate as the row id)",
+			body["event_id"], body["idempotency_key"], rowID)
+	}
+	if body["action"] != "audit_hold.set" || body["aggregate_type"] != "tenant" || body["aggregate_id"] != "scope-1" {
+		t.Fatalf("body action/aggregate_type/aggregate_id = %v/%v/%v, want audit_hold.set/tenant/scope-1",
+			body["action"], body["aggregate_type"], body["aggregate_id"])
+	}
+	var rowOccurredAt time.Time
+	if err := fixture.db.Raw(`SELECT occurred_at FROM audit_ledger WHERE id = ?`, rowID).Scan(&rowOccurredAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	bodyOccurredAtRaw, ok := body["occurred_at"].(string)
+	if !ok {
+		t.Fatalf("body occurred_at = %v, want RFC3339Nano string", body["occurred_at"])
+	}
+	bodyOccurredAt, err := time.Parse(time.RFC3339Nano, bodyOccurredAtRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idgen.RenderAnchorTime(&bodyOccurredAt) != idgen.RenderAnchorTime(&rowOccurredAt) {
+		t.Fatalf("body occurred_at %q != row %q (normalized; hydrate-from-row contract)",
+			bodyOccurredAtRaw, idgen.RenderAnchorTime(&rowOccurredAt))
+	}
+}
+
+// scopeMissingMode* are the stateful governance-fake modes for T-10.2.3: one
+// fixture drives all three classification sites with deterministic per-attempt
+// POST counts.
+const (
+	scopeMissingModeReject400 = "token-400-invalid-scope"
+	scopeMissingModeBadScope  = "token-200-scope-claim-missing"
+	scopeMissingModeEvents401 = "events-401-invalid-scope"
+)
+
+// scopeMissingTestEndpoint is the stateful governance fake for T-10.2.3: the
+// /token and /api/v1/events handlers switch modes between phases (token 400
+// gate → token scope-claim validation → events 401-with-scope-body) and count
+// POSTs per path. The events handler answers 500 outside events401 mode: the
+// token-rejection phases must never reach it, and any such request is a loud
+// 500 rather than a silent 202. The /token handler answers a valid token in
+// events401 mode so Phase B exercises the events classification (the 401's
+// status-driven Invalidate then evicts it).
+type scopeMissingTestEndpoint struct {
+	url         string
+	mu          sync.Mutex
+	mode        string
+	tokenPosts  int
+	eventsPosts int
+}
+
+func newScopeMissingTestEndpoint(t *testing.T) *scopeMissingTestEndpoint {
+	t.Helper()
+	e := &scopeMissingTestEndpoint{mode: scopeMissingModeReject400}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.mu.Lock()
+		mode := e.mode
+		switch r.URL.Path {
+		case "/token":
+			e.tokenPosts++
+		case "/api/v1/events":
+			e.eventsPosts++
+		}
+		e.mu.Unlock()
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			switch mode {
+			case scopeMissingModeReject400:
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_scope"})
+			case scopeMissingModeBadScope:
+				// 200 with a present scope claim that omits the exact
+				// audit:event:write token — the connector's scope-claim
+				// validation (oauth.go validScopeClaim) rejects it.
+				_, _ = w.Write([]byte(`{"access_token":"service-token","token_type":"Bearer","expires_in":300,"scope":"audit:event:read"}`))
+			default: // scopeMissingModeEvents401 — healthy token for the events leg
+				_, _ = w.Write([]byte(`{"access_token":"service-token","token_type":"Bearer","expires_in":300}`))
+			}
+		case "/api/v1/events":
+			if mode != scopeMissingModeEvents401 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_scope"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	e.url = server.URL
+	return e
+}
+
+func (e *scopeMissingTestEndpoint) setMode(mode string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.mode = mode
+}
+
+func (e *scopeMissingTestEndpoint) counts() (tokens, events int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.tokenPosts, e.eventsPosts
+}
+
+// pollPublicationPhase deadline-polls until the publication row for the fact
+// with the given event_id settles at the pinned phase boundary: status
+// pending, the exact attempt value, and error_code audit.binding_unavailable.
+// Polling the committed state (never an intermediate delivering/claim state)
+// makes the stop-drain discipline sound: next_attempt_at is written at finish
+// time to now + retryDelay(attempt+1) ≥ RetryBase (1s in the fixture config),
+// so once the pin is observed the caller can stop the drain with the row
+// unclaimable for ≥ 1s regardless of the 50ms tick. A too-slow poll (CI
+// preemption past the backoff) lets the drain re-claim and the assertion
+// fails loudly on the overshot attempt — never a false green.
+func pollPublicationPhase(t *testing.T, db *gorm.DB, eventID domain.ID, attempt int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var row struct {
+			Status    string
+			Attempt   int
+			ErrorCode string
+		}
+		if err := db.Raw(`SELECT ap.status, ap.attempt, ap.error_code FROM audit_publications ap
+			JOIN audit_ledger l ON l.id = ap.fact_id WHERE l.event_id = ?`, eventID).Scan(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.Status == "pending" && row.Attempt == attempt && row.ErrorCode == "audit.binding_unavailable" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("publication for event %s = %s/attempt %d/%q, want pending/attempt %d/audit.binding_unavailable within %s",
+				eventID, row.Status, row.Attempt, row.ErrorCode, attempt, timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// assertScopeMissingEndpointCounts pins the fake's per-phase POST counts: one
+// token fetch per attempt, and zero events POSTs while a token-rejection phase
+// is active (the token path must never reach the events endpoint).
+func assertScopeMissingEndpointCounts(t *testing.T, e *scopeMissingTestEndpoint, tokens, events int) {
+	t.Helper()
+	gotTokens, gotEvents := e.counts()
+	if gotTokens != tokens || gotEvents != events {
+		t.Fatalf("endpoint POSTs = %d token / %d events, want %d / %d (one token fetch per attempt; the token path must never reach events)",
+			gotTokens, gotEvents, tokens, events)
+	}
+}
+
+// TestScopeMissingTokenEndpointPlusEvents401IncrementsExactlyOncePerCondition
+// (T-10.2.3, R3): the C-C no-double-count contract through the real
+// composition root (buildAuditStack + testpg + registry-backed metrics) with
+// a stateful endpoint and stop-drain-on-row-state discipline. Phase A drives
+// BOTH token-endpoint sub-paths — attempt 1 = the 400 + invalid_scope gate,
+// attempt 2 = a 200 token whose scope claim omits audit:event:write — each
+// firing only the composition-root hook, so the family total tracks the
+// attempt count exactly (1, then 2). Phase B flips the endpoint to events-401
+// (drain path only) and the family total reaches exactly 3, with the row
+// still pending at audit.binding_unavailable — never completed, never
+// dead_letter.
+//
+// Negative framing: pre-fix code (no marker/skip) shows 2/4/5 → red at the
+// first phase; a marker forgotten at the 400-gate site is red at phase 1, at
+// the scope-claim site red at phase 2; a marker at the events site keeps the
+// total at 2 → red at phase 3; an unwired/noop hook leaves 0 → red at phase 1.
+func TestScopeMissingTokenEndpointPlusEvents401IncrementsExactlyOncePerCondition(t *testing.T) {
+	db := testpg.Start(t)
+	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	t.Setenv("TEST_AUDIT_SECRET", "audit-secret-value-000000000000000001")
+	endpoint := newScopeMissingTestEndpoint(t)
+	reg := metrics.NewRegistry()
+	callbackSvc, auditLedger, _, err := buildAuditStack(
+		auditGovernanceTestConfig(endpoint.url, false, 0), db, service.NewRegistryControlPlaneMetrics(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventID := idgen.NewID()
+	if err := auditLedger.Record(t.Context(), service.AuditFactInput{
+		TenantID: "tenant-one", EventID: eventID, ActorUID: "actor-one", Action: "account.viewed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase A1 — token-endpoint 400 + {"error":"invalid_scope"} (hook path,
+	// sub-path 1). The drain skips the marker-carrying error: family == 1.
+	stop := callbackSvc.Start(t.Context(), 50*time.Millisecond)
+	pollPublicationPhase(t, db, eventID, 1, 15*time.Second)
+	stop()
+	assertScopeMissingExposition(t, reg, 1)
+	assertScopeMissingEndpointCounts(t, endpoint, 1, 0)
+
+	// Phase A2 — token-endpoint 200 with a scope claim missing the exact
+	// audit:event:write token (hook path, sub-path 2): family == 2.
+	endpoint.setMode(scopeMissingModeBadScope)
+	stop = callbackSvc.Start(t.Context(), 50*time.Millisecond)
+	pollPublicationPhase(t, db, eventID, 2, 15*time.Second)
+	stop()
+	assertScopeMissingExposition(t, reg, 2)
+	assertScopeMissingEndpointCounts(t, endpoint, 2, 0)
+
+	// Phase B — events-endpoint 401 + {"error":"invalid_scope"} (drain path):
+	// the bare classification fires only the service counter: family == 3.
+	endpoint.setMode(scopeMissingModeEvents401)
+	stop = callbackSvc.Start(t.Context(), 50*time.Millisecond)
+	pollPublicationPhase(t, db, eventID, 3, 15*time.Second)
+	stop()
+	assertScopeMissingExposition(t, reg, 3)
+	assertScopeMissingEndpointCounts(t, endpoint, 3, 1)
+
+	// Terminality after all phases: still pending at audit.binding_unavailable
+	// with exactly 3 persisted attempts — never completed, never dead_letter.
+	var row struct {
+		Status    string
+		Attempt   int
+		ErrorCode string
+	}
+	if err := db.Raw(`SELECT ap.status, ap.attempt, ap.error_code FROM audit_publications ap
+		JOIN audit_ledger l ON l.id = ap.fact_id WHERE l.event_id = ?`, eventID).Scan(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != "pending" || row.Attempt != 3 || row.ErrorCode != "audit.binding_unavailable" {
+		t.Fatalf("publication after all phases = %s/attempt %d/%q, want pending/3/audit.binding_unavailable",
+			row.Status, row.Attempt, row.ErrorCode)
 	}
 }

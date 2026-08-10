@@ -437,3 +437,30 @@ func TestAuditReplayDBOutageFailsClosed(t *testing.T) {
 		t.Fatalf("requeue facts after outage = %d, want 0", facts)
 	}
 }
+
+// TestAuditReplayGovernanceActivationGatePreFlight (T-10.2, L10.2.4): the
+// replay CLI must inherit the Load-level activation gate — an
+// enabled+zero-bindings governance section exits before the DB is ever
+// reached, with the byte-identical documented error. The Load gate is the
+// binary-agnostic enforcement point for every root that can mint durable
+// facts (cmd/server, cmd/audit-replay, cmd/migrate); the composition-root
+// re-check in internal/app is the server-root second line only, and the CLI
+// must NOT gain an internal/app dependency. Mirrors
+// TestAuditReplaySigningKeyPreFlight: dead DSN proves the refusal is
+// config-layer, not a connection error.
+func TestAuditReplayGovernanceActivationGatePreFlight(t *testing.T) {
+	const wantErr = "audit_governance.enabled requires at least one tenant binding (activation gate)"
+	deadHost := "127.0.0.1"
+	cfgPath := writeReplayConfig(t,
+		replayConfigYAML(deadHost, 1, auditReplayTestKey)+"\naudit_governance: {enabled: true}\n")
+	err := run([]string{"-config", cfgPath, "-dry-run"})
+	if err == nil {
+		t.Fatal("run() with enabled+zero-bindings governance must fail at Load")
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("run() error = %v, want containing %q", err, wantErr)
+	}
+	if strings.Contains(err.Error(), "open db") || strings.Contains(err.Error(), "connection") {
+		t.Fatalf("run() touched the DB before rejecting the gate: %v", err)
+	}
+}

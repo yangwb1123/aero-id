@@ -229,7 +229,10 @@ func (s *tenantTokenSource) fetchToken(ctx context.Context, epoch uint64) (strin
 		body, _ := io.ReadAll(io.LimitReader(response.Body, maxTokenBodyBytes))
 		if response.StatusCode == http.StatusBadRequest && scopeRejectedCode(tokenErrorCode(body)) {
 			s.notifyScopeRejected()
-			return "", fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
+			// A2: the marker records this classification's token-endpoint origin
+			// (C-C — the composition-root hook already counted it, so the drain
+			// skips its counter); errors.Is(err, ErrTokenScopeMissing) stays true.
+			return "", fmt.Errorf("%w: %w: HTTP %d", ErrTokenEndpointScopeMissing, ErrTokenScopeMissing, response.StatusCode)
 		}
 		return "", fmt.Errorf("%w: HTTP %d", ErrTokenUnavailable, response.StatusCode)
 	}
@@ -239,7 +242,8 @@ func (s *tenantTokenSource) fetchToken(ctx context.Context, epoch uint64) (strin
 	}
 	if !validScopeClaim(wire) {
 		s.notifyScopeRejected()
-		return "", ErrTokenScopeMissing
+		// A2: same provenance marker as the 400-gate site (see above).
+		return "", fmt.Errorf("%w: %w", ErrTokenEndpointScopeMissing, ErrTokenScopeMissing)
 	}
 	if !s.cacheToken(wire, epoch) {
 		// A pre-invalidation fetch finishing after Invalidate bumped the

@@ -177,18 +177,31 @@ func (s *callbackService) publishAuditFact(ctx context.Context, fact *domain.Aud
 			continue
 		}
 		if err := publisher.Publish(ctx, fact); err != nil {
-			// REQ-5: a scope-missing classification (events 401-with-scope-body,
-			// events 403, or token-endpoint scope rejection) settles the row
-			// pending at audit.binding_unavailable — never completed, never
-			// swallowed, never dead-lettered (publicationOutcome handles
-			// errAuditTenantUnbound before the MaxAttempts check) — and alerts
-			// exactly once per failed attempt via the scope-missing counter.
-			if errors.Is(err, auditgovernance.ErrTokenScopeMissing) {
-				s.metrics.ObserveAuditScopeMissing(strings.TrimSpace(fact.Source))
-				return errAuditTenantUnbound
-			}
-			return err
+			return s.classifyScopeMissing(fact, err)
 		}
 	}
 	return nil
+}
+
+// classifyScopeMissing maps a publisher error onto the drain settlement and
+// the scope-missing alert (REQ-5): a scope-missing classification (events
+// 401-with-scope-body or a token-endpoint scope rejection) settles the row
+// pending at audit.binding_unavailable — never completed, never swallowed,
+// never dead-lettered (publicationOutcome handles errAuditTenantUnbound
+// before the MaxAttempts check). Alert semantics (C-C): a token-endpoint
+// rejection was already counted once by the composition-root hook, so the
+// marker-carrying error skips this counter; an events-endpoint classification
+// fires it once per pended publication attempt.
+func (s *callbackService) classifyScopeMissing(fact *domain.AuditFact, err error) error {
+	if errors.Is(err, auditgovernance.ErrTokenScopeMissing) {
+		// A3 skip: a token-endpoint rejection fires only the hook
+		// (buildAuditScopeMissingHook); the drain counter covers only
+		// events-endpoint classifications. Skipping here restores exactly
+		// one increment per scope-missing condition (T-10.2.3).
+		if !errors.Is(err, auditgovernance.ErrTokenEndpointScopeMissing) {
+			s.metrics.ObserveAuditScopeMissing(strings.TrimSpace(fact.Source))
+		}
+		return errAuditTenantUnbound
+	}
+	return err
 }

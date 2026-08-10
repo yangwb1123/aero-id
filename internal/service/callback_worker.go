@@ -118,7 +118,14 @@ func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.Cal
 		}
 		next = next.Add(s.retryDelay(delivery.Attempt + 1))
 	}
-	_ = s.repo.MarkDelivery(ctx, delivery.ID, s.worker, status, statusCode, response, errorCode, next)
+	if err := s.repo.MarkDelivery(ctx, delivery.ID, s.worker, status, statusCode, response, errorCode, next); err != nil {
+		// Settlement failed: keep the row delivering+leased (the existing
+		// 5-minute lease re-fetch re-claims it with attempt unchanged) and
+		// observe the failure on the outcome counter — never report
+		// success/pending/dead_letter for a settlement that did not happen.
+		s.metrics.ObserveCallbackOutcome("mark_failed")
+		return
+	}
 	s.metrics.ObserveCallbackOutcome(status)
 }
 

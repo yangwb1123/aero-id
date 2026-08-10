@@ -480,3 +480,78 @@ sso: {endpoint: "localhost:9090"}
 		t.Fatal("PurgePaused default = true, want false")
 	}
 }
+
+// repoRootConfigTest walks up from the test binary's CWD (the package
+// directory under `go test`) to the module root, mirroring testpg.RepoRoot
+// without the integration-tagged dependency (config tests are unit tests).
+func repoRootConfigTest(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for d := dir; d != "/"; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			return d
+		}
+	}
+	t.Fatalf("repo root not found from %s", dir)
+	return ""
+}
+
+// TestLoadShippedConfigFileAndEnvGate (REQ-3, T-10.2, L5.1/L10.2.2): the
+// shipped configs/config.yaml must Load as-is (governance disabled, zero
+// bindings) with the file-derived knob values intact — this is the first
+// full-file boot leg — and env-enabling it must trip the activation gate
+// with the documented error (viper env merge happens inside Load, before
+// validate, so the gate reads the merged config and env cannot bypass it).
+// Every real-file Load pins AERO_ID_AUDIT_GOVERNANCE_ENABLED=false first so
+// ambient CI env cannot leak in; t.Setenv restores automatically and the
+// package stays sequential (no t.Parallel).
+func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
+	shipped := filepath.Join(repoRootConfigTest(t), "configs", "config.yaml")
+
+	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
+	cfg, err := Load(shipped)
+	if err != nil {
+		t.Fatalf("shipped configs/config.yaml must load: %v", err)
+	}
+	gov := cfg.AuditGovernance
+	if gov.Enabled {
+		t.Fatal("shipped file governance enabled = true, want false (disabled until bindings exist)")
+	}
+	if len(gov.Bindings) != 0 {
+		t.Fatalf("shipped file bindings = %d, want 0", len(gov.Bindings))
+	}
+	// File-derived knob values (configs/config.yaml:177-184) — the boot leg
+	// pins these on the wire; pin them at Load so file edits fail loudly.
+	for name, got := range map[string]string{
+		"source_prefix":       gov.SourcePrefix,
+		"actor_id":            gov.ActorID,
+		"schema_id":           gov.SchemaID,
+		"data_classification": gov.DataClassification,
+		"retention_class":     gov.RetentionClass,
+		"anchor_scheme":       gov.AnchorScheme,
+	} {
+		want := map[string]string{
+			"source_prefix": "aero-id", "actor_id": "aero-id", "schema_id": "aero.id.audit-fact",
+			"data_classification": "personal", "retention_class": "account_7y",
+			"anchor_scheme": "uuidv5-nul-separated",
+		}[name]
+		if got != want {
+			t.Fatalf("shipped file %s = %q, want %q (file drifted)", name, got, want)
+		}
+	}
+	if gov.SchemaVersion != 1 || gov.AnchorSchemeVersion != 1 {
+		t.Fatalf("shipped file schema/anchor versions = %d/%d, want 1/1", gov.SchemaVersion, gov.AnchorSchemeVersion)
+	}
+
+	// Env leg: env-enabling the shipped file must fail with the documented
+	// activation-gate error (the file carries zero bindings, and env cannot
+	// conjure a nested bindings map).
+	const wantErr = "audit_governance.enabled requires at least one tenant binding (activation gate)"
+	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "true")
+	if _, err := Load(shipped); err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("env-enabled shipped file Load err = %v, want containing %q", err, wantErr)
+	}
+}

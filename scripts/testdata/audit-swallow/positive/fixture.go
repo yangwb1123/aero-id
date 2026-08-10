@@ -12,4 +12,6 @@ func positive() {
 	s.publications.ClaimPublication(ctx, w, 5, 1)                          // P2: bare claim
 	_ = s.publications.RequeuePublication(ctx, ids, 0, nil)               // P1: B2-5 replay swallow (fact append + requeue)
 	s.publications.RequeueDead(ctx, ids, 0, nil)                          // P2: bare B2-5 replay call discards the error
+	_ = s.repo.MarkDelivery(ctx, id, w, "success", 200, "", "", now)     // P1: drain settlement swallow (attempt+1/lease-clear lost)
+	s.repo.MarkDelivery(ctx, id, w, "pending", 503, "", "cb.failed", now) // P2: bare settlement call discards the error
 }

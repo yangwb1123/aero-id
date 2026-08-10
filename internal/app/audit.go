@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,6 +28,30 @@ func validateAuditLedgerConfig(cfg *config.Config) error {
 	return nil
 }
 
+// auditGovernanceActivationGateError is the byte-identical activation-gate
+// error from internal/config/validate.go (validateAuditGovernance): an
+// enabled relay with zero tenant bindings silently drops every publication
+// (no tenant is captured) — the exact silent-loss class the outbox contract
+// forbids. config.Load is the primary, binary-agnostic enforcement point
+// (cmd/server, cmd/audit-replay and cmd/migrate all Load the config before
+// any DB handle opens); this re-check is the server composition root's
+// second line for in-code configs that bypass Load. Without it an
+// enabled+zero-bindings config reaches the connector and refuses with the
+// incidental oauth ErrInvalidConfig message after a DB-touching coverage
+// check (FM-13).
+const auditGovernanceActivationGateError = "audit_governance.enabled requires at least one tenant binding (activation gate)"
+
+// validateAuditGovernanceGate re-checks the activation gate at the
+// composition root, before any DB or connector use (nil-gdb testable). It
+// returns the byte-identical documented error; any other message is drift
+// (FM-02). Disabling the relay (the kill switch) accepts empty bindings.
+func validateAuditGovernanceGate(cfg *config.Config) error {
+	if cfg != nil && cfg.AuditGovernance.Enabled && len(cfg.AuditGovernance.Bindings) == 0 {
+		return errors.New(auditGovernanceActivationGateError)
+	}
+	return nil
+}
+
 // buildAuditStack constructs the durable audit stack in dependency order:
 // ledger repo (fail-closed, wired into the callback repo) → callback service →
 // standalone-append audit service (single delivery: the drain worker) →
@@ -34,6 +59,13 @@ func validateAuditLedgerConfig(cfg *config.Config) error {
 func buildAuditStack(cfg *config.Config, gdb *gorm.DB, controlMetrics service.ControlPlaneMetrics) (
 	service.CallbackService, service.AuditLedgerService, repository.FullAuditLedgerRepository, error) {
 	if err := validateAuditLedgerConfig(cfg); err != nil {
+		return nil, nil, nil, err
+	}
+	// B2-6 activation gate (second line): refuse enabled+zero-bindings before
+	// any repository or connector is constructed. Load() already enforces the
+	// same error for every binary that Loads the config; this pin keeps the
+	// documented error on the boot path for in-code configs.
+	if err := validateAuditGovernanceGate(cfg); err != nil {
 		return nil, nil, nil, err
 	}
 	auditLedgerRepo := repository.NewAuditLedgerRepository(gdb, repository.AuditLedgerConfig{SigningKey: cfg.AuditLedger.SigningKey})
@@ -52,7 +84,7 @@ func buildAuditStack(cfg *config.Config, gdb *gorm.DB, controlMetrics service.Co
 		PurgePause:          cfg.AuditGovernance.PurgePause,
 		DeadLetterRetention: cfg.AuditGovernance.DeadLetterRetention,
 	})
-	auditPublishers, err := buildAuditPublishers(cfg, gdb, controlMetrics)
+	auditPublishers, err := buildAuditPublishers(cfg, controlMetrics, gormAuditBindingCoverage{gdb})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -100,9 +132,49 @@ func wireAuditServices(callbackSvc service.CallbackService, auditLedgerRepo repo
 	}
 }
 
-func buildAuditPublishers(cfg *config.Config, db *gorm.DB, controlMetrics service.ControlPlaneMetrics) ([]service.AuditPublisher, error) {
+// auditBindingCoverageSeamError is the byte-identical fail-fast error for a
+// nil binding-coverage seam (FM-9): a nil seam would silently skip the
+// coverage gate — the exact silent-loss class the outbox contract forbids.
+const auditBindingCoverageSeamError = "audit governance binding coverage seam is not wired"
+
+// auditBindingCoverage validates that every durable tenant with pending audit
+// state has a governance binding. The gorm implementation issues the UNION
+// query; tests inject a fake so buildAuditPublishers is unit-testable without
+// a database. This is the single shared seam also consumed by the sibling
+// direction's T-5 ("fake binding-coverage querier"): never fork a second
+// coverage mechanism.
+type auditBindingCoverage interface {
+	CheckAuditBindingCoverage(bindings map[string]config.AuditGovernanceBindingConfig) error
+}
+
+// gormAuditBindingCoverage is the production implementation of
+// auditBindingCoverage, wiring the existing UNION query into the seam.
+type gormAuditBindingCoverage struct{ db *gorm.DB }
+
+func (g gormAuditBindingCoverage) CheckAuditBindingCoverage(bindings map[string]config.AuditGovernanceBindingConfig) error {
+	return validateAuditBindingCoverage(g.db, bindings)
+}
+
+// buildAuditScopeMissingHook returns the OnScopeRejected closure wired to the
+// shared control-plane registry. The label is the normalized (TrimSpace'd)
+// configured source prefix; the connector contract (token_invalidation_test.go
+// :643 family) guarantees one invocation per token-endpoint scope rejection,
+// so one hook call must produce exactly one increment.
+func buildAuditScopeMissingHook(controlMetrics service.ControlPlaneMetrics, sourcePrefix string) func(string) {
+	return func(string) {
+		controlMetrics.ObserveAuditScopeMissing(strings.TrimSpace(sourcePrefix))
+	}
+}
+
+func buildAuditPublishers(cfg *config.Config, controlMetrics service.ControlPlaneMetrics, coverage auditBindingCoverage) ([]service.AuditPublisher, error) {
 	if !cfg.AuditGovernance.Enabled {
 		return nil, nil
+	}
+	// FM-9: a nil seam would silently skip the coverage gate. The guard sits
+	// after the Enabled early-return so the disabled path (the kill switch)
+	// stays behaviorally identical and never requires a seam.
+	if coverage == nil {
+		return nil, errors.New(auditBindingCoverageSeamError)
 	}
 	settings := cfg.AuditGovernance
 	// Label-seam guard (merged plan §5 delta 4): governance facts are stamped
@@ -117,20 +189,21 @@ func buildAuditPublishers(cfg *config.Config, db *gorm.DB, controlMetrics servic
 	if err != nil {
 		return nil, err
 	}
-	if err := validateAuditBindingCoverage(db, settings.Bindings); err != nil {
+	if err := coverage.CheckAuditBindingCoverage(settings.Bindings); err != nil {
 		return nil, err
 	}
 	tokens, err := auditgovernance.NewOAuthTokenSource(auditgovernance.OAuthConfig{
 		SourcePrefix: settings.SourcePrefix, Bindings: bindings,
 		Timeout: settings.Timeout, RefreshSkew: settings.RefreshSkew,
 		AllowInsecureLoopback: settings.AllowInsecureLoopback,
-		// Token-endpoint scope rejections alert through the same family the
-		// service seam uses (C-C: no double counting — a token-endpoint
-		// rejection fires only this hook; an events-endpoint classification
-		// fires only the service-side counter).
-		OnScopeRejected: func(string) {
-			controlMetrics.ObserveAuditScopeMissing(strings.TrimSpace(settings.SourcePrefix))
-		},
+		// C-C: no double counting. A token-endpoint scope rejection (400-gate
+		// or scope-claim validation) fires only this hook — the drain counter
+		// skips it via the ErrTokenEndpointScopeMissing marker
+		// (callback_audit.go publishAuditFact). An events-endpoint
+		// classification fires only the service-side counter (the hook is
+		// structurally unreachable there). Exactly one increment per condition,
+		// on the single label set {source="aero-id"}.
+		OnScopeRejected: buildAuditScopeMissingHook(controlMetrics, settings.SourcePrefix),
 	}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("audit governance oauth: %w", err)
