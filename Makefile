@@ -75,7 +75,7 @@ check-file-sizes:
 # (quarantine) was chosen over Option B (port), so the token means tripwire.
 .PHONY: check-audit-swallow
 check-audit-swallow:
-	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd
+	@bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd internal/file internal/message internal/notification internal/audit
 
 # R-1/R-2 regression gate for the deterministic event-ID derivation contract:
 # the only random EventID: idgen.NewID() left in non-test Go is the C2

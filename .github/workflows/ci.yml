@@ -82,3 +82,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Proto-stub sync gate
         run: make check-proto-sync
+
+  # Quarantine + live-layer gate tripwires (B3): the FM-12 must-not-exist
+  # guards, fixture-mode self-tests, and Makefile tripwire roots are enforced
+  # on every PR/push. The Makefile invocation is load-bearing: it carries the
+  # four quarantine roots and the membership tripwires. No paths filter: a
+  # filter would recreate the blind spot this gate closes. Pure bash + grep —
+  # no Go toolchain, no network, no Docker.
+  check-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit-swallow gate (incl. quarantine tripwires)
+        run: make check-audit-swallow
+      - name: Architecture gate (live-layer boundaries)
+        run: make check-architecture

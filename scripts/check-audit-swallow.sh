@@ -30,15 +30,16 @@
 #   like the historical swallow it replaces.
 #
 # Exclusions (documented):
-#   - the unwired parallel tree internal/{file,message,notification,audit}
-#     — only the live layer is scanned (default root internal/service; the
+#   - only the live layer is scanned (default root internal/service; the
 #     gate adds internal/repository, internal/app, internal/storage,
-#     internal/block, internal/comment and cmd — internal/block, internal/
-#     comment and internal/search were deleted in the 2026-08-08 dead-tree
-#     quarantines; the internal/block and internal/comment roots are
-#     regression tripwires (guards below; internal/comment additionally
-#     pinned by the comment_positive self-test), so a swallowed audit write
-#     reintroduced there turns the gate red).
+#     internal/block, internal/comment, cmd and the four absent quarantine
+#     tripwire roots internal/{file,message,notification,audit}).
+#     internal/block, internal/comment and internal/search were deleted in
+#     the 2026-08-08 dead-tree quarantine; internal/{file,message,
+#     notification,audit} in the 2026-08-10 quarantine. All seven are
+#     absent-path tripwire roots under the FM-12 guards below, so even a
+#     benign reintroduction (compilable package, propagated audit error)
+#     turns the gate red.
 #   - *_test.go files are excluded from the ROOT scan (R-M scan-scope
 #     amendment): the P1/P2 patterns are statement-start anchored, so a bare
 #     `t.Log(` at statement start in a test would be a false positive; test-
@@ -48,8 +49,10 @@
 #     outside the scanned tree and are never scanned.
 #
 # No `Log(` exclusion exists: Log is a first-class gate citizen (P1 + P2).
-# AGENTS.md's "AuditLogger ... legacy diagnostics only" carve-out refers to
-# the dead-tree internal/audit type, not the live service.AuditLogger adapter.
+# AGENTS.md's historical "AuditLogger ... legacy diagnostics only" carve-out
+# referred to the dead-tree internal/audit type, deleted in the 2026-08-10
+# quarantine along with domain.AuditLogger — it never applied to the live
+# service.AuditLogger adapter.
 # Likewise the legacy middleware fail-open carve-out (Ban and legacy checks,
 # AGENTS.md) must never be re-applied to audit writes: a swallowed or bare-call
 # Log/Record is a gate violation regardless of any middleware fail-open
@@ -62,12 +65,14 @@
 # Usage: scripts/check-audit-swallow.sh [ROOT...]   (default: internal/service)
 # Multiple roots are scanned; the Makefile gate scans the whole live layer:
 #   internal/service internal/repository internal/app internal/storage
-#   internal/block internal/comment cmd
-# (internal/block and internal/comment are absent quarantine tripwires — the
-# directories were deleted; the FM-12 guards below are the total tripwires.)
-# Never add internal/sso without excluding its circuit-breaker calls: sso's
-# bare `c.breaker.Record(...)` is a breaker observation, not an audit write,
-# and would be a false positive for P2.
+#   internal/block internal/comment cmd internal/file internal/message
+#   internal/notification internal/audit
+# (internal/block, internal/comment, internal/search and
+# internal/{file,message,notification,audit} are absent quarantine tripwires —
+# the directories were deleted; the FM-12 guards below are the total
+# tripwires.) Never add internal/sso without excluding its circuit-breaker
+# calls: sso's bare `c.breaker.Record(...)` is a breaker observation, not an
+# audit write, and would be a false positive for P2.
 
 set -u
 
@@ -124,6 +129,32 @@ else
   echo "✓ quarantine guard: internal/search absent (FM-12)"
 fi
 
+# ── quarantine guards (FM-12): internal/{file,message,notification,audit} ──
+# must never exist. The four unwired trees were deleted in the 2026-08-10
+# dead-tree quarantine; they carried the last excluded swallow sites (three
+# `_ = s.audit.Log(` at internal/file/service_share.go:45,75 and
+# internal/message/service.go:289 — historical). The guard is total — even a
+# benign reintroduction (compilable package, propagated audit error, no
+# swallow shape) is a gate violation. Deliberately lifting the quarantine =
+# deleting this guard block AND its fixture-mode/invocation self-tests AND
+# the Makefile tripwire roots AND the audit.go note AND the exclusion
+# comment + AGENTS.md, in one commit.
+assert_dead_tree_absent() {
+  local label="$1" dir="$2"
+  if [ -d "$dir" ]; then
+    echo "QUARANTINE VIOLATION: $label must not exist (dead-tree quarantine, FM-12)"
+    fail=1
+    return 1
+  fi
+  echo "✓ quarantine guard: $label absent (FM-12)"
+  return 0
+}
+
+assert_dead_tree_absent "internal/file" "$SELF_DIR/../internal/file"
+assert_dead_tree_absent "internal/message" "$SELF_DIR/../internal/message"
+assert_dead_tree_absent "internal/notification" "$SELF_DIR/../internal/notification"
+assert_dead_tree_absent "internal/audit" "$SELF_DIR/../internal/audit"
+
 # ── self-test: the gate must flag its own positive fixtures ──────────────
 pos_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/positive" --include='*.go' 2>/dev/null | wc -l)"
 if [ "$pos_hits" -lt 1 ]; then
@@ -165,6 +196,54 @@ if [ "$#" -gt 0 ]; then
     echo "SELF-TEST FAIL: internal/comment missing from scan ROOTS (tripwire root removed)"
     fail=1
   fi
+fi
+
+# ── self-test (REQ-3): fixture-mode totality proof — each dead_tree_positive
+# ── fixture is a benign reintroduction (compilable package, PROPAGATED audit
+# ── error — deliberately not a P1/P2 swallow shape) whose mere existence
+# ── must redden the FM-12 guard. A missing fixture dir fails the gate: the
+# ── fixtures are part of the gate, not decoration. Runs on every invocation.
+for pkg in file message notification audit; do
+  if ( assert_dead_tree_absent "internal/$pkg" "$FIXTURES/dead_tree_positive/internal/$pkg" >/dev/null ); then
+    echo "SELF-TEST FAIL: dead_tree_positive fixture for internal/$pkg missing or did not trip the FM-12 guard"
+    fail=1
+  else
+    echo "✓ fixture-mode self-test: internal/$pkg reintroduction reddens the FM-12 guard"
+  fi
+done
+if ( assert_dead_tree_absent "dead_tree_negative" "$FIXTURES/dead_tree_negative" >/dev/null ); then
+  echo "✓ fixture-mode self-test: absent path passes the FM-12 guard"
+else
+  echo "SELF-TEST FAIL: dead_tree_negative must not exist and must pass the FM-12 guard"
+  fail=1
+fi
+
+# ── self-test: each new guard invocation must stay in the script (deleting
+# ── one silently weakens the quarantine to the P1/P2 scan alone).
+for pkg in file message notification audit; do
+  if ! grep -q "assert_dead_tree_absent \"internal/$pkg\" \"\$SELF_DIR/../internal/$pkg\"" "$0"; then
+    echo "SELF-TEST FAIL: FM-12 guard invocation for internal/$pkg missing from $0"
+    fail=1
+  fi
+done
+
+# ── self-test (REQ-2.4): the four quarantine roots must stay in the ROOTS
+# ── list (root-removal tripwire: dropping one from the Makefile gate would
+# ── silently shrink the scan back toward the historical blind spot). Same
+# ── semantics as the internal/comment membership assertion above.
+if [ "$#" -gt 0 ]; then
+  for pkg in file message notification audit; do
+    root_has=false
+    for root in "${ROOTS[@]}"; do
+      if [ "$root" = "internal/$pkg" ]; then
+        root_has=true
+      fi
+    done
+    if [ "$root_has" = false ]; then
+      echo "SELF-TEST FAIL: internal/$pkg missing from scan ROOTS (tripwire root removed)"
+      fail=1
+    fi
+  done
 fi
 
 # ── self-test: the gate must accept its own negative fixtures ────────────

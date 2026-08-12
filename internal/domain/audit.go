@@ -1,31 +1,20 @@
 package domain
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// AuditLogger records a single audit event. A failed log is a failed durable audit
-// write: callers must propagate the error (fail-closed). The earlier "a failed log
-// must not fail the primary operation" fail-open wording is revoked — it predates
-// the live-layer fail-closed conversion and must never be reinstated.
-//
-// QUARANTINED DEAD TREE — do not wire as-is: this interface is used only by the
-// unwired parallel tree (internal/{file,message,notification,audit}), reachable
-// only from its own tests. Three `_ = s.audit.Log(` swallow sites remain there
-// (internal/file/service_share.go:45,75; internal/message/service.go:289).
-// internal/comment and internal/search were deleted in the 2026-08-08 quarantine
-// (check-audit-swallow FM-12 guards + Makefile tripwire root). The remaining
-// sites must be converted to propagated `if err :=` form before this tree is ever
-// wired. The live layer uses service.AuditLogger and is policed by make
-// check-audit-swallow.
-type AuditLogger interface {
-	Log(ctx context.Context, e *AuditEvent) error
-}
-
-// Audit action constants for sensitive operations.
+// Audit action constants for sensitive operations. A failed audit write is a
+// failed durable audit write: callers must propagate the error (fail-closed).
+// The earlier "a failed log must not fail the primary operation" fail-open
+// wording is revoked — it predates the live-layer fail-closed conversion and
+// must never be reinstated. The dead-tree AuditLogger interface (which
+// carried the last excluded `_ = s.audit.Log(` swallow sites in the unwired
+// internal/{file,message,notification,audit} tree) was deleted in the
+// 2026-08-10 quarantine; the live layer uses service.AuditLogger, policed by
+// make check-audit-swallow.
 const (
 	AuditFileShareGrant  = "file.share.grant"
 	AuditFileShareRevoke = "file.share.revoke"
@@ -39,7 +28,8 @@ const (
 	AuditUserUnban       = "user.unban"
 )
 
-// AuditEvent records who did what to which resource and when.
+// AuditEvent records who did what to which resource and when. Live: consumed
+// by the repository/ledger and admin read paths — do not prune.
 type AuditEvent struct {
 	ID          uuid.UUID
 	ActorUID    string

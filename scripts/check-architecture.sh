@@ -55,8 +55,9 @@
 #        audit_hold.go) to internal/domain, then delete this exception and
 #        rule (e)'s allow-lists.
 #   EX-3 domain -> github.com/google/uuid: internal/domain/audit.go imports
-#        github.com/google/uuid v1.6.0 for the AuditEvent.ID field type of
-#        the quarantined-tree audit types. The exception is exact-string
+#        github.com/google/uuid v1.6.0 for the live AuditEvent.ID field type
+#        (the dead-tree AuditLogger interface was deleted in the 2026-08-10
+#        quarantine; AuditEvent itself is live). The exception is exact-string
 #        (not a prefix), so gorm.io/gorm and any other third-party import
 #        still trips rule (b).
 #        TODO: switch AuditEvent.ID to internal/pkg/idgen (the pattern used

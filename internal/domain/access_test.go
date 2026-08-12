@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"testing"
 )
 
@@ -43,11 +42,3 @@ func TestErrDuplicate(t *testing.T) {
 		t.Fatal("ErrDuplicate must not be nil")
 	}
 }
-
-func TestAuditLoggerInterface(t *testing.T) {
-	var _ AuditLogger = (*mockAuditor)(nil)
-}
-
-type mockAuditor struct{}
-
-func (m *mockAuditor) Log(_ context.Context, _ *AuditEvent) error { return nil }

@@ -16,19 +16,17 @@ make build               # compile
 ## Architecture — strict one-way dependency
 
 ```
-handler  →  feature/service  →  feature/repository  →  Postgres (GORM)
-                                   ├→  storage (local | s3)
-                                   └→  sso (gRPC client + caches)
+handler  →  service  →  repository  →  Postgres (GORM)
+                              ├→  storage (local | s3)
+                              └→  sso (gRPC client + caches)
 ```
 
-Where each feature is a self-contained package under `internal/`:
-`file`, `message`, `comment`, `block`, `notification`, `search`.
-
-Rules:
-- `internal/domain/` must import nothing from `internal/` (only external deps + `internal/pkg/`)
-- Feature packages must not import from other feature packages.
-- `internal/audit/` may import only `internal/domain/` + GORM.
-- `internal/handler/` must NOT be imported by any non-handler package.
+Rules (canonical definitions live in `scripts/check-architecture.sh`):
+- `internal/domain/` must import nothing from `internal/` (only stdlib + `internal/pkg/*`; documented `google/uuid` exception)
+- `internal/repository/` must not import `internal/service`
+- `internal/{connector,event,outbox,region,sso}/` must not import service or repository (`internal/hub` is the documented EX-1 exception)
+- `internal/handler/` may import `internal/repository` only for the two documented enum casts (EX-2)
+- The dead trees `internal/{file,message,notification,audit,block,comment,search}` are quarantined: deletion + `check-audit-swallow` FM-12 must-not-exist guards + Makefile tripwire roots
 - `internal/app/` is the composition root; nothing imports it.
 - `internal/pkg/` packages must not import from feature packages.
 

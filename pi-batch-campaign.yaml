@@ -9,7 +9,6 @@ discovery:
     - internal/handler
     - internal/outbox
     - internal/middleware
-    - internal/audit
     - internal/event
   exclude:
     - testdata

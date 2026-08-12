@@ -214,8 +214,9 @@ binaries only when a service needs independent scaling, security, or failure iso
 - Distinguish `request_id` (one transport request), `trace_id` (technical call graph), `operation_id` (one user
   intent/workflow), `event_id` (one immutable fact), and `causation_id` (parent fact). Never overload one ID for
   all purposes.
-- The compliance audit ledger is append-only and durable. The current best-effort `AuditLogger` is suitable for
-  legacy diagnostics only; it is not the target ledger and must not be advertised as complete audit evidence.
+- The compliance audit ledger is append-only and durable. The dead-tree best-effort `AuditLogger`
+  (`internal/audit`, deleted in the 2026-08-10 quarantine) was suitable for legacy diagnostics only;
+  it is not the target ledger and must not be advertised as complete audit evidence.
 - Every state-changing, administrative, security, export, replay, callback-management, and sensitive-read
   operation produces a durable audit fact. Routine high-volume reads may use metadata-only access audit, but
   audit mode and retention must be explicit per dataset/tenant.
@@ -263,15 +264,24 @@ Until explicitly migrated, current live APIs keep their existing behavior:
 - `signing_key` signs only local-storage download URLs. It is never a token-signing key.
 - SSE is best-effort; durable notification state and replay provide correctness.
 - Live-layer audit writes (`Record` and `Log`) are durable; swallowing either is a gate violation
-  (`make check-audit-swallow`). The dead-tree `AuditLogger` carve-out does not apply to the live
-  `service.AuditLogger` adapter, and the legacy fail-open carve-out for Ban and other middleware
+  (`make check-audit-swallow`). The dead-tree `AuditLogger` carve-out is historical (the interface
+  was deleted in the 2026-08-10 quarantine) and never applied to the live `service.AuditLogger`
+  adapter; the legacy fail-open carve-out for Ban and other middleware
   must never be re-applied to audit writes: the fail-closed `audit.ingest_failed`/503 contract
   stands for every live-layer audit site.
 - The audit-coverage invariant covers every operation that emits an audit fact, not every mutation.
   These legacy compatibility surfaces currently emit zero audit facts (before and after the
-  fail-closed conversion) and are exempt only until migration: file create/delete/update, message
-  send/edit/react, comment create/edit/report, preferences, region promotion, and projection
-  replication.
+  fail-closed conversion) and are exempt only until migration — verified per op: file
+  create/delete/update (`internal/service/file.go`, `file_presign.go`, `file_share.go` — zero
+  `Record`/`Log` sites; file *share* is audited in-tx via `buildLegacyAuditFact` and is not exempt),
+  message send/edit/react (`internal/service/message.go` — audit sites exist only on the delete
+  path, `auditMessageDelete`), preferences (`internal/service/preference.go` — zero sites), region
+  promotion (`internal/service/region_fencing.go` — zero sites), projection replication
+  (`internal/service/projection_replication.go`, `projection_replay.go`, `sync_projection.go` —
+  zero sites). The comment tree was quarantined on 2026-08-08 and live comment report is audited
+  in-tx (`ResolveReportWithAudit`, `internal/service/comment.go`), so comment ops are no longer
+  exempt. `make check-audit-manifest` enumerates every bare site; `make check-audit-swallow` bans
+  swallowed/bare writes.
 
 Do not add new canonical file/chat authority to aero-id while Aero Vault/Aero IM are the target authorities.
 Treat the current file/message/comment surface as a compatibility source until a migration/deprecation decision
@@ -331,7 +341,13 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
 
 ## Current repository gotchas
 
-- `internal/{file,message,notification}` and `internal/audit` are an unwired parallel tree (the former `internal/block`, `internal/comment`, and `internal/search` dead trees were deleted in the 2026-08-08 quarantine — `internal/comment` carried the last swallowed fail-open out-of-transaction audit write and is guarded by `check-audit-swallow`; `internal/block`'s `BlockChecker` role is served by the live `service.BlockChecker`).
+- The dead trees `internal/{file,message,notification,audit}` were quarantined (deleted) in the
+  2026-08-10 quarantine with `check-audit-swallow` FM-12 must-not-exist guards and Makefile tripwire
+  roots, like `internal/block`, `internal/comment`, and `internal/search` before them (2026-08-08 —
+  `internal/comment` carried the last swallowed fail-open out-of-transaction audit write;
+  `internal/block`'s `BlockChecker` role is served by the live `service.BlockChecker`).
+  The running application uses `internal/service` + `internal/repository`. Do not implement target
+  account/audit work in an unwired tree.
   The running application uses `internal/service` + `internal/repository`. Do not implement target account/audit
   work in an unwired tree.
 - `make check-architecture` guards the live layered runtime: dead-tree import ban (`internal/{file,message,notification,audit}`), domain purity (stdlib + `internal/pkg/*`, with a documented `google/uuid` exception), repository-not-importing-service, infra-layer (`connector/event/outbox/region/sso`) isolation, and handler→repository enum-cast-only rules — a green result is meaningful for those boundaries; the script header is the canonical rule definition. TODO: relocate `LegacyCutoverStatus` and `AuditHoldScope` to `internal/domain`, then delete the two handler exceptions.
