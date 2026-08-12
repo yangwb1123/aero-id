@@ -348,8 +348,6 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
   `internal/block`'s `BlockChecker` role is served by the live `service.BlockChecker`).
   The running application uses `internal/service` + `internal/repository`. Do not implement target
   account/audit work in an unwired tree.
-  The running application uses `internal/service` + `internal/repository`. Do not implement target account/audit
-  work in an unwired tree.
 - `make check-architecture` guards the live layered runtime: dead-tree import ban (`internal/{file,message,notification,audit}`), domain purity (stdlib + `internal/pkg/*`, with a documented `google/uuid` exception), repository-not-importing-service, infra-layer (`connector/event/outbox/region/sso`) isolation, and handler→repository enum-cast-only rules — a green result is meaningful for those boundaries; the script header is the canonical rule definition. TODO: relocate `LegacyCutoverStatus` and `AuditHoldScope` to `internal/domain`, then delete the two handler exceptions.
 - Migrations are not auto-applied unless `database.auto_migrate: true`; production uses `cmd/migrate`. Every
   zero-padded `NNNNNN_name.up.sql` has a matching `.down.sql`; never edit an applied migration.
