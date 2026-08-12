@@ -147,13 +147,27 @@ assert_dead_tree_absent() {
     return 1
   fi
   echo "✓ quarantine guard: $label absent (FM-12)"
+  guard_pass=$((guard_pass + 1))
   return 0
 }
 
+guard_pass=0
 assert_dead_tree_absent "internal/file" "$SELF_DIR/../internal/file"
 assert_dead_tree_absent "internal/message" "$SELF_DIR/../internal/message"
 assert_dead_tree_absent "internal/notification" "$SELF_DIR/../internal/notification"
 assert_dead_tree_absent "internal/audit" "$SELF_DIR/../internal/audit"
+
+# ── self-test (ADR-012, guard-PASS counter): the four main FM-12 guards must
+# ── actually EXECUTE — a text-preserving neutralization (commenting out an
+# ── invocation, wrapping it in `if false; then … fi`) previously satisfied
+# ── the substring invocation pin while the guard never ran (BYPASS 1,
+# ── verified 2026-08-12: benign internal/file reintroduction landed exit 0).
+# ── The counter is incremented only by the function's PASS branch, so fewer
+# ── than four PASSes means an invocation was removed from execution.
+if [ "$guard_pass" -ne 4 ]; then
+  echo "SELF-TEST FAIL: FM-12 main guard produced $guard_pass/4 PASS lines (guard invocation neutralized?)"
+  fail=1
+fi
 
 # ── self-test: the gate must flag its own positive fixtures ──────────────
 pos_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/positive" --include='*.go' 2>/dev/null | wc -l)"
@@ -218,11 +232,13 @@ else
   fail=1
 fi
 
-# ── self-test: each new guard invocation must stay in the script (deleting
-# ── one silently weakens the quarantine to the P1/P2 scan alone).
+# ── self-test: each new guard invocation must stay in the script, ANCHORED
+# ── at line start (ADR-012): a commented-out or dead-code invocation no
+# ── longer satisfies the pin (BYPASS 1). The guard-PASS counter above is the
+# ── execution proof; this pin is the text-presence proof.
 for pkg in file message notification audit; do
-  if ! grep -q "assert_dead_tree_absent \"internal/$pkg\" \"\$SELF_DIR/../internal/$pkg\"" "$0"; then
-    echo "SELF-TEST FAIL: FM-12 guard invocation for internal/$pkg missing from $0"
+  if ! grep -qE "^[[:space:]]*assert_dead_tree_absent \"internal/$pkg\" \"\\\$SELF_DIR/../internal/$pkg\"[[:space:]]*$" "$0"; then
+    echo "SELF-TEST FAIL: FM-12 guard invocation for internal/$pkg missing or not line-anchored in $0"
     fail=1
   fi
 done
@@ -244,6 +260,58 @@ if [ "$#" -gt 0 ]; then
       fail=1
     fi
   done
+fi
+
+# ── adjacent-path guard (ADR-012, 2026-08-12): case-insensitive exact-name
+# ── basename match over internal/ + cmd/ at any depth (find -L: symlinked
+# ── variants included). Reintroducing the dead-tree harm class at a case or
+# ── wrapper variant (internal/FILE, internal/legacy/file) previously landed
+# ── green with zero script edits (BYPASS 2, verified 2026-08-12). Near-var-
+# ── iant names (internal/filex) remain a documented deliberate-evasion
+# ── residual: prefix matching would false-positive on live
+# ── internal/connector/auditgovernance, internal/sso/auditpb, cmd/audit-replay.
+for base in file message notification audit; do
+  adjacent="$(find -L "$SELF_DIR/../internal" "$SELF_DIR/../cmd" -type d -iname "$base" 2>/dev/null)"
+  if [ -n "$adjacent" ]; then
+    echo "QUARANTINE VIOLATION: adjacent-path reintroduction of dead-tree name '$base' (ADR-012):"
+    echo "$adjacent"
+    fail=1
+  fi
+done
+
+# ── self-test (ADR-012): the adjacent-path guard must flag its own positive
+# ── fixtures — case-variant dirs under scripts/testdata/audit-swallow/
+# ── adjacent_positive/ (outside internal/ + cmd/, so build-safe and never
+# ── scanned). A missing fixture dir fails the gate: fixtures are gate parts.
+for base in file message notification audit; do
+  if ( find -L "$FIXTURES/adjacent_positive" -type d -iname "$base" 2>/dev/null | grep -q . ); then
+    echo "✓ fixture-mode self-test: adjacent-path guard flags $base variant (ADR-012)"
+  else
+    echo "SELF-TEST FAIL: adjacent_positive fixture for '$base' missing or did not trip the ADR-012 guard"
+    fail=1
+  fi
+done
+
+# ── self-test (FM-16, X-5/F1): no present-tense dead-type reference. The
+# ── dead-tree AuditLogger interface was deleted in the 2026-08-10
+# ── quarantine; AGENTS.md must never describe it in the present tense or
+# ── mislabel the live service.AuditLogger adapter as best-effort/legacy.
+# ── Corrected form [`]?AuditLogger[`]? matches an optional literal backtick
+# ── (grep cannot escape a backtick with a backslash — the historical
+# ── `\`AuditLogger` pin was vacuous and matched nothing, verified 2026-08-12).
+# ── The banned carve-out phrasings are spelled hyphenated here so this
+# ── comment itself cannot satisfy the pins below.
+if grep -nE '[`]?AuditLogger[`]? (is|are|remains|carries|holds|provides|writes|records|emits|stores|serves|has|supports|maintains|logs)' "$SELF_DIR/../AGENTS.md" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL (FM-16): AGENTS.md describes AuditLogger in the present tense (dead type) or mislabels the live adapter"
+  fail=1
+fi
+if grep -nF 'carve-out'" does not apply" "$SELF_DIR/../AGENTS.md" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL (FM-16): AGENTS.md present-tense carve-out dead-type reference"
+  fail=1
+fi
+if grep -nF 'carve-out'" refers to" "$0" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL (FM-16): check-audit-swallow.sh present-tense carve-out dead-type reference"
+  fail=1
 fi
 
 # ── self-test: the gate must accept its own negative fixtures ────────────
