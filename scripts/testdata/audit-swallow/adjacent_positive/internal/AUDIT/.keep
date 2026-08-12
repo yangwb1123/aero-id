@@ -1,0 +1,1 @@
+# ADR-012 adjacent-path guard fixture: a case-variant reintroduction of the dead-tree name "audit" that the guard must flag (dir-name check only; content irrelevant).
