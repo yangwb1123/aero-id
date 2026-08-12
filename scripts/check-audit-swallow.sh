@@ -30,10 +30,12 @@
 #   like the historical swallow it replaces.
 #
 # Exclusions (documented):
-#   - only the live layer is scanned (default root internal/service; the
-#     gate adds internal/repository, internal/app, internal/storage,
-#     internal/block, internal/comment, cmd and the four absent quarantine
-#     tripwire roots internal/{file,message,notification,audit}).
+#   - only the live layer is scanned (default: the full gate surface —
+#     internal/service internal/repository internal/app internal/storage
+#     internal/block internal/comment cmd and the four absent quarantine
+#     tripwire roots internal/{file,message,notification,audit}; ADR-012
+#     Option B — the no-arg default equals the Makefile gate line, so a
+#     tampered CI no-arg invocation cannot shrink the scan).
 #     internal/block, internal/comment and internal/search were deleted in
 #     the 2026-08-08 dead-tree quarantine; internal/{file,message,
 #     notification,audit} in the 2026-08-10 quarantine. All seven are
@@ -62,7 +64,12 @@
 # (`Record` or `Log`) propagates its error via `if err :=` and the gate is
 # only green at 0.
 #
-# Usage: scripts/check-audit-swallow.sh [ROOT...]   (default: internal/service)
+# Usage: scripts/check-audit-swallow.sh [ROOT...]   (no-arg default: the full
+# gate surface — internal/service internal/repository internal/app
+# internal/storage internal/block internal/comment cmd internal/file
+# internal/message internal/notification internal/audit; ADR-012 Option B: a
+# no-arg invocation must scan exactly what the done-gate scans, so a tampered
+# CI body cannot shrink the scan)
 # Multiple roots are scanned; the Makefile gate scans the whole live layer:
 #   internal/service internal/repository internal/app internal/storage
 #   internal/block internal/comment cmd internal/file internal/message
@@ -76,9 +83,17 @@
 
 set -u
 
+# ADR-012 Option B (security_engineer Ruling 2): the no-arg default is the
+# FULL live-layer gate surface (identical to the Makefile invocation), not
+# internal/service alone — a no-arg invocation (e.g. a tampered CI job body
+# `bash scripts/check-audit-swallow.sh`) must scan exactly what the done-gate
+# scans and must trip the membership tripwires. The membership tripwires
+# below are therefore UNCONDITIONAL (no `$# -gt 0` gate): dropping a
+# quarantine root from the default OR from an explicit-root invocation is
+# red either way.
 ROOTS=("$@")
 if [ "${#ROOTS[@]}" -eq 0 ]; then
-  ROOTS=(internal/service)
+  ROOTS=(internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd internal/file internal/message internal/notification internal/audit)
 fi
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SELF_DIR/testdata/audit-swallow"
@@ -190,26 +205,24 @@ fi
 # ── excluded swallow site must match (pattern-regression tripwire), and ─────
 # ── internal/comment must stay in the ROOTS list (root-removal tripwire: ────
 # ── dropping it from the Makefile gate would silently shrink the scan back ──
-# ── to the historical blind spot). The membership assertion applies to ──────
-# ── explicit-root invocations — the Makefile gate always passes explicit ────
-# ── roots — while the no-arg default (internal/service only) is the ─────────
-# ── documented single-service shortcut and is exempt. ───────────────────────
+# ── to the historical blind spot). UNCONDITIONAL since ADR-012 Option B: ────
+# ── the no-arg default equals the Makefile gate line (includes ──────────────
+# ── internal/comment), so a tampered no-arg CI invocation cannot skip the ───
+# ── membership assertion either. ────────────────────────────────────────────
 comment_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/comment_positive" --include='*.go' 2>/dev/null | wc -l)"
 if [ "$comment_hits" -lt 1 ]; then
   echo "SELF-TEST FAIL: comment fixture under $FIXTURES/comment_positive matched nothing"
   fail=1
 fi
-if [ "$#" -gt 0 ]; then
-  root_has_comment=false
-  for root in "${ROOTS[@]}"; do
-    if [ "$root" = "internal/comment" ]; then
-      root_has_comment=true
-    fi
-  done
-  if [ "$root_has_comment" = false ]; then
-    echo "SELF-TEST FAIL: internal/comment missing from scan ROOTS (tripwire root removed)"
-    fail=1
+root_has_comment=false
+for root in "${ROOTS[@]}"; do
+  if [ "$root" = "internal/comment" ]; then
+    root_has_comment=true
   fi
+done
+if [ "$root_has_comment" = false ]; then
+  echo "SELF-TEST FAIL: internal/comment missing from scan ROOTS (tripwire root removed)"
+  fail=1
 fi
 
 # ── self-test (REQ-3): fixture-mode totality proof — each dead_tree_positive
@@ -245,22 +258,23 @@ done
 
 # ── self-test (REQ-2.4): the four quarantine roots must stay in the ROOTS
 # ── list (root-removal tripwire: dropping one from the Makefile gate would
-# ── silently shrink the scan back toward the historical blind spot). Same
-# ── semantics as the internal/comment membership assertion above.
-if [ "$#" -gt 0 ]; then
-  for pkg in file message notification audit; do
-    root_has=false
-    for root in "${ROOTS[@]}"; do
-      if [ "$root" = "internal/$pkg" ]; then
-        root_has=true
-      fi
-    done
-    if [ "$root_has" = false ]; then
-      echo "SELF-TEST FAIL: internal/$pkg missing from scan ROOTS (tripwire root removed)"
-      fail=1
+# ── silently shrink the scan back toward the historical blind spot).
+# ── UNCONDITIONAL since ADR-012 Option B (security_engineer Ruling 2): the
+# ── no-arg default equals the Makefile gate line and includes all four
+# ── roots, so a tampered no-arg CI invocation cannot skip this assertion;
+# ── an explicit invocation missing a root is red too.
+for pkg in file message notification audit; do
+  root_has=false
+  for root in "${ROOTS[@]}"; do
+    if [ "$root" = "internal/$pkg" ]; then
+      root_has=true
     fi
   done
-fi
+  if [ "$root_has" = false ]; then
+    echo "SELF-TEST FAIL: internal/$pkg missing from scan ROOTS (tripwire root removed)"
+    fail=1
+  fi
+done
 
 # ── adjacent-path guard (ADR-012, 2026-08-12): case-insensitive exact-name
 # ── basename match over internal/ + cmd/ at any depth (find -L: symlinked
