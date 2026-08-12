@@ -1,0 +1,126 @@
+# aero-id B3 批次实施 campaign（隔离完成 + 门禁盲区关闭 + 契约同步）
+# 前置：B2（2026-08-08，commit 2ec2383/b005409）已隔离 internal/{block,comment,search}
+#       死树并落地 in-tx 审计、composition-root 门禁、check-audit-swallow FM-12 tripwire。
+# 门禁基线（2026-08-10 实证，全部绿灯）：
+#   make test / lint / lint-strict / check-file-sizes / check-audit-swallow /
+#   check-anchored-event-ids / check-audit-manifest / check-composition-root /
+#   check-integration-compile / build
+# 用法（aero-id 仓库内）：
+#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b3.yaml --dry-run
+#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b3.yaml \
+#     --jobs 4 --max-directions 3 --validate gobuild,gotest,pyquality
+
+name: aero-id-b3-quarantine-gates-contracts
+
+discovery:
+  roots:
+    - internal
+    - cmd
+    - configs
+    - scripts
+  exclude:
+    - testdata
+    - gen
+    - generated
+    - mock
+    - mocks
+    - tests
+    - docs
+    - examples
+    - logs
+    - vendor
+    - .git
+    - .github
+    - .pi-batch
+    - __pycache__
+    - ai-dev
+    - pbatch
+    - worktrees
+  max_depth: 2
+  fallback_top_level: true
+
+analysis:
+  jobs: 4
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze module '{module}' at {module_path} of aero-id (Go control plane
+    for account aggregation/audit/operations). Repo state (verified 2026-08-10):
+    B2 batch landed and ALL gates are green (test/lint/lint-strict/
+    check-file-sizes/check-audit-swallow/check-anchored-event-ids/
+    check-audit-manifest/check-composition-root/check-integration-compile/build).
+    Dead trees internal/{block,comment,search} were quarantined (deleted +
+    gate tripwires). Target architecture: docs/plans/2026-08-04-distributed-account-aggregation.md.
+    The live runtime is wired only from internal/app/new.go (internal/service +
+    internal/repository); docs/AGENTS.md 'gotchas' section documents known debt.
+
+    PRE-VERIFIED gap inventory (re-check each claim against the current tree
+    before proposing; mark PROPOSED when you cannot verify from code):
+    1. Unwired dead trees remain: internal/file (12 files), internal/message
+       (9), internal/notification (11), internal/audit (2). Verified: zero
+       non-test importers in the repo (only their own _test.go files import
+       them). B3 candidate: quarantine them like block/comment/search
+       (delete, extend the check-architecture/check-audit-swallow tripwires,
+       update AGENTS.md + Makefile + check scripts, re-run all gates).
+    2. check-audit-swallow scans only internal/service internal/repository
+       internal/app internal/storage internal/block internal/comment cmd
+       (Makefile). Verified: no swallowed `_ =` audit-ish sites in
+       internal/{connector,outbox,event,hub,region,sso,idempotency,
+       middleware,config} today, so extending the roots is cheap and closes
+       the B2-2 blind spot permanently (breaker.Record in internal/sso and
+       generated *_pb.go must be exempted mechanically).
+    3. No deterministic proto-stub sync gate exists: api/proto/**/*.proto ->
+       internal/handler/grpc/aeropb + internal/sso/*pb generated stubs are
+       committed, hand-editing *.pb.go is forbidden, but nothing fails when
+       they drift from the .proto sources (protoc 3.21.12 + plugins are
+       available). B3 candidate: scripts/check-proto-sync.sh + Makefile gate
+       (baseline must be green with no drift today).
+    4. AGENTS.md legacy audit-exemption list ('file create/delete/update,
+       message send/edit/react, comment create/edit/report, preferences,
+       region promotion, projection replication emit zero audit facts') may
+       be stale: the audit manifest (scripts/check-audit-manifest.sh) shows
+       only 8 bare sites in internal/service (replay/account/operation_state/
+       message/legacy_cutover/event_ingest), and in-tx WithAudit wires exist
+       for file_share/message/comment/admin/ban/block. B3 candidate: per-op
+       verification and reconciliation of the exemption list vs actual
+       coverage (either prove each op emits a durable fact, or keep the
+       exemption with code evidence).
+    5. Plan §8 proto split: aero_id.proto is still monolithic (~120 RPCs in
+       one file); the plan proposes account/aggregation/audit/operation/
+       callback/source protos. High churn (generated stubs committed, make
+       proto target enumerates only sso.proto + aero_id.proto). Score
+       honestly: only propose if the value clearly outweighs the regen risk.
+    6. check-architecture currently polices the (mostly deleted) dead tree
+       rather than the live layered runtime; after B3-1 lands, realign it to
+       guard the live dependency flow (handler -> service -> repository,
+       no domain -> infra leaks) or document why the current shape is kept.
+
+    For each direction you propose, map acceptance checks to concrete
+    existing gates (make test / lint / check-* names) plus at least one new
+    regression test. Return ONLY a JSON array with at most {candidate_limit}
+    high-value directions, sorted by value. Each object must contain:
+    title, problem, value (1-10), risk_reduction (1-10), effort (1-10),
+    confidence (1-10), evidence (existing file/symbol paths), acceptance
+    (testable checks). Do not modify code. Claims without repository
+    evidence must be marked proposed, not verified.
+
+selection:
+  max_directions: 3
+  minimum_score: 0
+
+implementation:
+  pipeline: examples/repository-campaign-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  timeout: 14400
+  worktree_root: .pi-batch/worktrees
+
+state:
+  output_dir: docs/auto
+  state_file: docs/auto/state.jsonl
+  summary_file: docs/auto/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 3
+  pipeline_minutes: 25

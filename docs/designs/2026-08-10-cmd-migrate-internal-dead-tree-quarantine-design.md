@@ -18,7 +18,7 @@ Status: **Every requirements claim re-verified against HEAD `1001002` (2026-08-1
 | C8 | `auditMessageDelete` at `internal/service/message.go:369-376`, call site :356; manifest row at `scripts/check-audit-manifest.sh:42` | ✅ exact |
 | C9 | Retained exemptions emit zero `Record`/`Log` sites in live `internal/service` (file.go, file_presign.go, file_share.go, preference.go, region_fencing.go, projection_replication.go, projection_replay.go, sync_projection.go all 0); file **share** audited in-tx via `buildLegacyAuditFact` (file_share.go:116,152) | ✅ exact |
 | C10 | Design doc §6: compound target = repo-wide-zero; FM-12 M-only ruling ("guard is red while the package legitimately exists — deletion and guards are one atomic change") | ✅ exact |
-| C11 | `domain.AuditLogger` used only by `internal/file/file.go` and `internal/message/message.go`; `AuditEvent`/constants are live | ✅ exact (`grep -rln 'domain\.AuditLogger'` → exactly those two files; `AuditEvent`/`Audit*` constants used by live `internal/service` and `internal/repository`) |
+| C11 | `domain.AuditLogger` used only by `internal/file/file.go` and `internal/message/message.go`; `AuditEvent`/constants are live | ✅ exact for the qualified form (`grep -rln 'domain\.AuditLogger'` → exactly those two files; `AuditEvent`/`Audit*` constants used by live `internal/service` and `internal/repository`). **Drift correction (found by the REQ-1e empirical probe, 2026-08-10):** the interface has a third, same-package user invisible to the qualified grep — `internal/domain/access_test.go:47-53` pins `var _ AuditLogger = (*mockAuditor)(nil)` with a `Log(ctx, *AuditEvent) error` mock. `go build ./...` is blind to it (test files); `go vet ./...` (REQ-1e) reddens. The compile-time pin must be deleted with the interface (§3.5b) |
 | R5.4 | No other living citations in Makefile / check-architecture.sh / check-audit-manifest.sh | ✅ exact (grep returns zero hits) |
 
 **Drift corrections (vs. the requirements text):**
@@ -30,6 +30,7 @@ Status: **Every requirements claim re-verified against HEAD `1001002` (2026-08-1
 - **X-2** `AGENTS.md:267` "The dead-tree `AuditLogger` carve-out does not apply to the live `service.AuditLogger` adapter" references a type deleted by REQ-1.3. Reword to historical (§3.6c).
 - **X-3** `scripts/check-audit-swallow.sh:62-67` usage header documents the Makefile gate roots without the four new roots; leaving it stale would contradict the extended Makefile line (the sibling block-quarantine design's DA-1 lesson). Extend (§3.2a).
 - **X-4** `internal/domain/audit.go`'s fail-closed doc comment currently lives on the deleted interface; REQ-1.3 requires it to survive on the constants block (§3.5).
+- **X-5** `AGENTS.md:216-217` "The compliance audit ledger is append-only and durable. The current best-effort `AuditLogger` is suitable for legacy diagnostics only; it is not the target ledger and must not be advertised as complete audit evidence." — the unqualified `AuditLogger` (deleted by REQ-1.3) is described in the present tense; post-deletion it resolves to nothing, or worse, to the live `service.AuditLogger` adapter, making "best-effort"/"legacy diagnostics only" false against the fail-closed contract at :265-270. Reword to historical (§3.6d) and pin in REQ-5.
 
 ## 1. Problem statement (confirmed)
 
@@ -44,10 +45,10 @@ Four unwired packages (34 `.go` files, zero non-test importers) still exist afte
 | D-3 | Guard self-tests: (i) fixture-mode totality proof (REQ-3.2/3.3), (ii) invocation pin (FM-3), (iii) root-membership tripwire for the four new roots (REQ-2.4), mirroring the `internal/comment` precedent (:157-168) | Totality must be empirically pinned, not asserted; a deleted guard invocation or Makefile root silently weakens the quarantine to the P1/P2 scan alone |
 | D-4 | Fixtures at `scripts/testdata/audit-swallow/dead_tree_positive/internal/<pkg>/fixture.go` — benign reintroductions (compilable, **propagated** audit error, zero P1/P2 shapes) | `testdata` is ignored by go tooling (build-safe) and never a scan ROOT; `check-architecture` scans only `internal/` + `cmd/`. `dead_tree_negative` is an intentionally absent path (no files) |
 | D-5 | Extend `Makefile:78` with `internal/file internal/message internal/notification internal/audit` | Absent-path roots scan to 0 matches (N-4 safe by construction; the scan loop already suppresses "No such file" via `2>/dev/null`); dropping a root becomes a gate violation (REQ-2.3/2.4) |
-| D-6 | REQ-1.3: delete `domain.AuditLogger` **and** its QUARANTINED note; move the fail-closed doc to the constants block; explicitly mark `AuditEvent` live in a comment | Zero users after deletion (C11). The note enumerates deleted files and would be a false citation (D-4). The "AuditEvent is live" marker prevents a future wrongful prune (the sibling design's C1/FM-11 correction) |
-| D-7 | Citation sweep per REQ-5 **plus** X-1…X-4: check-audit-swallow exclusion comment + dead-type sentence + usage header, AGENTS.md gotcha + carve-out sentence, HARNESS.md feature rules, check-architecture EX-3 justification, domain/audit.go | D-4 ruling: living, undated files whose claims become false must be updated in the same commit; dated records (`docs/designs/`, `docs/auto/**`, analysis JSONs) stay as historical evidence |
+| D-6 | REQ-1.3: delete `domain.AuditLogger` **and** its QUARANTINED note; move the fail-closed doc to the constants block; explicitly mark `AuditEvent` live in a comment; delete the interface's same-package compile-time test pin in `internal/domain/access_test.go` (§3.5b — found by the REQ-1e probe: a qualified-form grep cannot see bare-identifier test references) | Zero users after deletion (C11, incl. the test pin); `go vet ./...` compiles test files, so a surviving pin breaks REQ-1e. The note enumerates deleted files and would be a false citation (D-4). The "AuditEvent is live" marker prevents a future wrongful prune (the sibling design's C1/FM-11 correction) |
+| D-7 | Citation sweep per REQ-5 **plus** X-1…X-5: check-audit-swallow exclusion comment + dead-type sentence + usage header, AGENTS.md gotcha + carve-out sentence + best-effort sentence, HARNESS.md feature rules, check-architecture EX-3 justification, domain/audit.go | D-4 ruling: living, undated files whose claims become false must be updated in the same commit; dated records (`docs/designs/`, `docs/auto/**`, analysis JSONs) stay as historical evidence |
 | D-8 | `check-architecture.sh`: **zero logic changes** (REQ-4 — the realignment landed in `1001002`); regression-pin via acceptance only (X-1 doc reword is the sole byte change) | The header is the canonical rule definition; rule (a)'s own-tree exclusion is already documented as "inert once the dead trees are deleted" — verified inert by code reading |
-| D-9 | Wire both gates into `.github/workflows/ci.yml` as one pure-bash `check-gates` job (`make check-audit-swallow` + `make check-architecture`), mirroring the sibling B3-1 design's D8 | Today **no workflow invokes either gate** (verified: zero hits in ci.yml/docker.yml/release.yml). A tripwire enforced only by the local done-gate does not turn a PR red on merge. The Makefile invocation is load-bearing: CI runs the exact done-gate surface including the four quarantine roots. If the sibling campaign lands the identical job first, this step becomes a presence-verification no-op |
+| D-9 | Wire both gates into `.github/workflows/ci.yml` as one pure-bash `check-gates` job (`make check-audit-swallow` + `make check-architecture`), mirroring the sibling B3-1 design's D8 | Today **no workflow invokes either gate** (verified: zero hits in ci.yml/docker.yml/release.yml). A tripwire enforced only by the local done-gate does not turn a PR red on merge. The Makefile invocation is load-bearing: CI runs the exact done-gate **invocation surface for these two targets** (the four quarantine roots + membership tripwires live in the `check-audit-swallow` Makefile line). Scope note (reviewer suggestion explicitly rejected): the other pure-bash done-gate commands (`check-file-sizes`, `check-anchored-event-ids`, `check-audit-manifest`, `check-composition-root`) are out of this direction's scope — this job closes C5 (zero workflow invocations of these two gates), and extending CI coverage of the remaining gates is a separate follow-up, not a silent scope expansion. If the sibling campaign lands the identical job first, this step becomes a content-verification no-op (Step 9) |
 | D-10 | One atomic commit: deletion + guards + fixtures + roots + citations + CI + AGENTS.md together | FM-12 M-only ruling (C10): a must-not-exist guard is red while the tree exists; guards without deletion = permanently red, deletion without guards = quarantine gap. Rollback = `git revert` of the single commit |
 
 ## 3. Concrete change set
@@ -276,6 +277,8 @@ type AuditEvent struct {
 }
 ```
 
+**(b) `internal/domain/access_test.go` (interface compile-time pin — found by the REQ-1e probe)** — delete `TestAuditLoggerInterface` (:47-50) and its `mockAuditor` (:51-53), plus the now-unused `context` import. This same-package test pins `var _ AuditLogger = (*mockAuditor)(nil)` against the interface deleted by (a); the qualified-form `domain.AuditLogger` grep (C11) cannot see bare-identifier test references, but `go vet ./...` compiles test files and reddens (REQ-1e). `File`/`Message`/`CanReadFile`/`CanReadMessage`/`ErrNotFound`/`ErrDuplicate` assertions stay.
+
 ### 3.6 `AGENTS.md`
 
 **(a) Gotcha bullet (:334)** — replace the "unwired parallel tree" sentence with the quarantine statement, mirroring the block/comment/search sentence in the same bullet:
@@ -317,6 +320,14 @@ type AuditEvent struct {
   adapter; the legacy fail-open carve-out for Ban and other middleware
   must never be re-applied to audit writes: the fail-closed `audit.ingest_failed`/503 contract
   stands for every live-layer audit site.
+```
+
+**(d) Best-effort sentence (:216-217, X-5)** — the unqualified `AuditLogger` is deleted by REQ-1.3; reword the present-tense description to history:
+
+```markdown
+- The compliance audit ledger is append-only and durable. The dead-tree best-effort `AuditLogger`
+  (`internal/audit`, deleted in the 2026-08-10 quarantine) was suitable for legacy diagnostics only;
+  it is not the target ledger and must not be advertised as complete audit evidence.
 ```
 
 ### 3.7 `HARNESS.md` (:15-33, REQ-5.3)
@@ -392,7 +403,7 @@ Append one job (existing jobs byte-identical; no `setup-go`, no network, no Dock
 7. **Absent roots are safe**: the four new Makefile roots do not exist on the green tree; the scan loop's `2>/dev/null` makes absent paths N-4-safe (block/comment precedent).
 8. **check-audit-manifest.sh unchanged**: the `auditMessageDelete|standalone-fact|-` row at :42 stays; no live audit site moves.
 9. **EX-3 stays**: `AuditEvent.ID` remains `uuid.UUID`, so the exact-string `github.com/google/uuid` exception remains load-bearing; only its justification text changes.
-10. **Deletion cannot break `go build`/`go vet`/`check-integration-compile`**: zero importers (C2) and zero live refs to the two removed integration-tagged tests — verified by construction and by the baseline gate.
+10. **Deletion cannot break `go build`/`go vet`/`check-integration-compile`**: zero importers (C2) and zero live refs to the two removed integration-tagged tests — verified by construction and by the baseline gate. **Exception (probe-verified 2026-08-10):** `go vet` compiles `*_test.go`, so *same-package* references to a deleted type are also breakers; `domain.AuditLogger` had one (the `access_test.go` compile-time pin, §3.5b), which must be deleted in the same commit (REQ-1e catches a survivor).
 11. **No `make test-integration` requirement**: no SQL, migrations, storage, connectors, event ingestion, or callback-delivery changes (live surfaces untouched).
 12. **Historical records untouched**: `docs/designs/**`, `docs/auto/**`, analysis JSONs, and the campaign YAML keep their pre-change citations as evidence.
 
@@ -410,11 +421,12 @@ Append one job (existing jobs byte-identical; no `setup-go`, no network, no Dock
 | FM-8 | check-architecture stale tokens resurrected (`FEATURES=`/`notification:block`/`ALLOWED_SHARED`) | One-time acceptance grep (REQ-4), not a standing check; standing backstop = rule (a) import ban + the new dir guards | Documented residual |
 | FM-9 | `domain.AuditLogger` wrongly kept or reintroduced | `grep -rn 'domain\.AuditLogger'` acceptance → 0; `go vet` | Red at done-gate |
 | FM-10 | `domain.AuditEvent` wrongly pruned later ("the interface was dead, so the struct must be too") | Rewritten audit.go comment marks it live; `go build` fails (dozens of live refs) | Build-red by construction |
-| FM-11 | Deletion breaks build/vet/integration-compile | Zero importers (C2); full done-gate runs post-change | Impossible by construction; gate verifies |
+| FM-11 | Deletion breaks build/vet/integration-compile | Zero importers (C2); full done-gate runs post-change | Impossible by construction; gate verifies. **Probe-verified exception:** `go vet` compiles test files — a same-package reference to a deleted type (bare identifier) survives every import-based check; REQ-1e reddens on it (the `access_test.go` pin, §3.5b, must be deleted with the interface) |
 | FM-12 | Guard function returns 1 in the main path (under `set -u`) | Expected: script has no `set -e`; `fail=1` propagates in the current shell | Red as designed; no abort; fixture-mode uses subshell `if` form |
 | FM-13 | `check-gates` job removed from ci.yml (D-9) | Workflow files are not self-pinned | Documented residual (FM-7 class); workflow diffs are human-reviewed |
 | FM-14 | Non-atomic landing: guards before deletion | Guards are red on the pre-deletion tree by design (C10 M-only ruling) | Forces the one-commit sequence (intended) |
 | FM-15 | Deletion without guards | Quarantine gap returns (FM-1 unguarded) | Prevented by D-10 + review; CI job would not exist yet |
+| FM-16 | Present-tense `AuditLogger` reference reintroduced in AGENTS.md or check-audit-swallow.sh (the dead type described as if it still exists — the pre-amendment "current best-effort `AuditLogger` is suitable", "carve-out does not apply to the live", or "carve-out refers to the dead-tree" forms) | REQ-5 citation pins: `grep 'current best-effort' AGENTS.md`, backticked `AuditLogger` + present-tense verb shape, `carve-out does not apply` (AGENTS.md), `carve-out refers to` (check-audit-swallow.sh) | Red at done-gate |
 
 ## 7. Migration steps (one atomic commit)
 
@@ -428,15 +440,15 @@ Append one job (existing jobs byte-identical; no `setup-go`, no network, no Dock
 
 **Step 4 — `Makefile:78`:** append the four roots (§3.4).
 
-**Step 5 — `internal/domain/audit.go`:** apply §3.5 (interface + note deleted; fail-closed doc moved).
+**Step 5 — `internal/domain/audit.go` + `access_test.go`:** apply §3.5 (a) interface + note deleted; fail-closed doc moved; `AuditEvent` marked live) and §3.5 (b) the interface's compile-time test pin deleted.
 
-**Step 6 — `AGENTS.md`:** apply §3.6 (a) gotcha bullet, (b) exemption list, (c) carve-out sentence.
+**Step 6 — `AGENTS.md`:** apply §3.6 (a) gotcha bullet, (b) exemption list, (c) carve-out sentence, (d) best-effort sentence.
 
 **Step 7 — `HARNESS.md`:** apply §3.7.
 
 **Step 8 — `scripts/check-architecture.sh`:** apply §3.8 (EX-3 doc reword only).
 
-**Step 9 — `.github/workflows/ci.yml`:** append the `check-gates` job (§3.9); if the sibling campaign already landed it, verify presence and skip.
+**Step 9 — `.github/workflows/ci.yml`:** append the `check-gates` job (§3.9). If the sibling campaign already landed a `check-gates` job, run a **content check**, not a key-existence check: the job must exist AND its run block must contain both `make check-audit-swallow` and `make check-architecture` (the §8 D-9 acceptance row is the exact-surface definition). If present with the exact surface, skip (no duplicate job key, no divergent body). If a divergent body landed, append only the missing `make` command — never add a second `check-gates` job key and never re-apply this design's body over the landed one.
 
 **Step 10 — verification in a throwaway worktree (never in the working tree):** full done-gate (§8 REQ-7) + every mutation probe (§8 REQ-2/REQ-3/REQ-4) + `bash scripts/check-audit-swallow.sh` with no args + explicit Makefile roots. Red-proof probes run in the scratch copy and are restored afterward.
 
@@ -452,7 +464,7 @@ Append one job (existing jobs byte-identical; no `setup-go`, no network, no Dock
 | REQ-2 guards + roots | `bash scripts/check-audit-swallow.sh internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd internal/file internal/message internal/notification internal/audit` exits 0 and prints exactly four `✓ quarantine guard: internal/<pkg> absent (FM-12)` lines. **Mutation probe** (throwaway worktree, restore after): `mkdir -p internal/file && printf 'package file\n' > internal/file/x.go` → exit 1 + `QUARANTINE VIOLATION: internal/file must not exist (dead-tree quarantine, FM-12)` (no swallow shape present); `rm -rf internal/file` → exit 0. `grep -n 'internal/file' Makefile` shows all four roots in the `check-audit-swallow` target |
 | REQ-3 fixtures + self-tests | `bash scripts/check-audit-swallow.sh` (no args) and the Makefile target both exit 0 and print the four `✓ fixture-mode self-test: internal/<pkg> reintroduction reddens the FM-12 guard` lines + the absent-path PASS line. **Mutation probes**: delete one fixture dir → exit 1 + `SELF-TEST FAIL: dead_tree_positive fixture …`; delete one guard invocation line → exit 1 + `SELF-TEST FAIL: FM-12 guard invocation …`; `grep -rnE '^[[:space:]]*(_ = |_, _ = )|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\(' scripts/testdata/audit-swallow/dead_tree_positive` → no output |
 | REQ-4 check-architecture regression pin | `make check-architecture` exits 0 and prints `✓ Architecture check passed (rules a-e: …)` plus all six `✓ self-test rule (…)` lines; `grep -nE 'notification:block|ALLOWED_SHARED|FEATURES=' scripts/check-architecture.sh` → no output; the `dead_tree_import` positive fixture still fires rule (a) in fixture mode (no `SELF-TEST FAIL: rule (a) positive fixture matched nothing`); `git diff scripts/check-architecture.sh` shows only the EX-3 comment reword |
-| REQ-5 citation sweep | `grep -rn 'unwired parallel tree internal/{file,message,notification,audit}' scripts/check-audit-swallow.sh` → no output; `grep -n 'internal/audit' HARNESS.md` → no output; `grep -n 'unwired parallel tree' AGENTS.md` → no output; `grep -n 'internal/file/service_share.go\|internal/message/service.go:289' internal/domain/audit.go` → no output; `grep -n 'quarantined-tree audit types' scripts/check-architecture.sh` → no output (X-1); the usage header lists the four roots (X-3) |
+| REQ-5 citation sweep | `grep -rn 'unwired parallel tree internal/{file,message,notification,audit}' scripts/check-audit-swallow.sh` → no output; `grep -n 'internal/audit' HARNESS.md` → no output; `grep -n 'unwired parallel tree' AGENTS.md` → no output; `grep -n 'internal/file/service_share.go\|internal/message/service.go:289' internal/domain/audit.go` → no output; `grep -n 'quarantined-tree audit types' scripts/check-architecture.sh` → no output (X-1); the usage header lists the four roots (X-3). **X-5 pins (present-tense dead-type references banned):** `grep -n 'current best-effort' AGENTS.md` → no output; `grep -nE '\`AuditLogger\`? (is|are|remains|carries|holds|provides|writes|records|emits|stores|serves|has|supports|maintains|logs)' AGENTS.md` → no output; `grep -n 'carve-out does not apply' AGENTS.md` → no output; `grep -n 'carve-out refers to' scripts/check-audit-swallow.sh` → no output |
 | REQ-6 exemption reconciliation | `grep -n 'comment create/edit/report' AGENTS.md` → no output; `sed -n '268,280p' AGENTS.md` lists exactly `file create/delete/update, message send/edit/react, preferences, region promotion, projection replication` with per-op file evidence; `make check-audit-swallow` and `make check-audit-manifest` exit 0 (manifest row `internal/service/message.go|auditMessageDelete|standalone-fact|-` unchanged) |
 | REQ-7 full gate | `make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-composition-root && make check-proto-sync && make check-integration-compile && make build` — every command exits 0 on the post-change tree; `make check-audit-swallow` prints the four new guard lines + five fixture-mode PASS lines + the existing block/comment/search lines; CI `check-gates` job's two commands exit 0 (D-9) |
 | D-9 CI job | `.github/workflows/ci.yml` contains job `check-gates` whose run block is exactly `make check-audit-swallow` + `make check-architecture`; `git diff .github/workflows/ci.yml` shows 0 removed lines; both commands exit 0 in a throwaway worktree with no `setup-go`, no network, no Docker |
