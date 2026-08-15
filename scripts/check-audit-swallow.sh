@@ -31,9 +31,12 @@
 #
 # Exclusions (documented):
 #   - only the live layer is scanned (default: the full gate surface —
-#     internal/service internal/repository internal/app internal/storage
-#     internal/block internal/comment cmd and the four absent quarantine
-#     tripwire roots internal/{file,message,notification,audit}; ADR-012
+#     the 21-root list: internal/service internal/repository internal/app
+#     internal/storage internal/block internal/comment cmd, the four absent
+#     quarantine tripwire roots internal/{file,message,notification,audit},
+#     and the ten extended live control-plane roots internal/{connector,
+#     outbox,event,hub,region,sso,idempotency,middleware,config,handler}
+#     (G2, 2026-08-14 — the B2-2 blind spot); ADR-012
 #     Option B — the no-arg default equals the Makefile gate line, so a
 #     tampered CI no-arg invocation cannot shrink the scan).
 #     internal/block, internal/comment and internal/search were deleted in
@@ -47,6 +50,20 @@
 #     `t.Log(` at statement start in a test would be a false positive; test-
 #     file audit correctness is enforced by the audit-coverage integration
 #     tests, which assert ledger/publication row counts.
+#   - *.pb.go files are excluded from the ROOT scan (G2 mechanical
+#     exclusion): committed generated protobuf stubs under
+#     internal/sso/{auditpb,authzpb,ssopb} and internal/handler/grpc/aeropb
+#     are never hand-edited and drift-pinned by check-proto-sync. The dot
+#     glob is load-bearing: the underscore form *_pb.go matches nothing in
+#     this repo (a silent vacuous no-op that would re-expose the stubs —
+#     FM-5, pinned by the pb_exclude liveness self-test).
+#   - a narrow breaker-observation exemption (G2): bare statement-start
+#     `c.breaker.Record(...)` lines (internal/sso/client.go:299,306,310) are
+#     circuit-breaker outcome observations (breaker.Record is void), not
+#     audit writes. BREAKER_EXEMPT_PATTERN is a statement-anchored,
+#     receiver-exact post-filter (grep -vE) — d.breaker, c.breaker2,
+#     s.audit.*, and the P1 `_ = c.breaker.Record(` form stay red. Do not
+#     loosen it to a substring filter.
 #   - the self-test fixtures under scripts/testdata/audit-swallow/ live
 #     outside the scanned tree and are never scanned.
 #
@@ -62,24 +79,37 @@
 #
 # Baseline on today's tree: 0 matches — every live-layer audit write
 # (`Record` or `Log`) propagates its error via `if err :=` and the gate is
-# only green at 0.
+# only green at 0. Post-G2 extended baseline (21 roots): 0 matches — the
+# three c.breaker.Record( observations are exempted, the ten committed
+# *.pb.go stubs are excluded, nothing else matches.
 #
 # Usage: scripts/check-audit-swallow.sh [ROOT...]   (no-arg default: the full
 # gate surface — internal/service internal/repository internal/app
 # internal/storage internal/block internal/comment cmd internal/file
-# internal/message internal/notification internal/audit; ADR-012 Option B: a
-# no-arg invocation must scan exactly what the done-gate scans, so a tampered
-# CI body cannot shrink the scan)
+# internal/message internal/notification internal/audit internal/connector
+# internal/outbox internal/event internal/hub internal/region internal/sso
+# internal/idempotency internal/middleware internal/config internal/handler;
+# ADR-012 Option B: a no-arg invocation must scan exactly what the done-gate
+# scans, so a tampered CI body cannot shrink the scan)
 # Multiple roots are scanned; the Makefile gate scans the whole live layer:
 #   internal/service internal/repository internal/app internal/storage
 #   internal/block internal/comment cmd internal/file internal/message
-#   internal/notification internal/audit
+#   internal/notification internal/audit internal/connector internal/outbox
+#   internal/event internal/hub internal/region internal/sso
+#   internal/idempotency internal/middleware internal/config internal/handler
 # (internal/block, internal/comment, internal/search and
 # internal/{file,message,notification,audit} are absent quarantine tripwires —
 # the directories were deleted; the FM-12 guards below are the total
-# tripwires.) Never add internal/sso without excluding its circuit-breaker
-# calls: sso's bare `c.breaker.Record(...)` is a breaker observation, not an
-# audit write, and would be a false positive for P2.
+# tripwires.) G2 (2026-08-14) implemented the sso breaker exclusion as the
+# BREAKER_EXEMPT_PATTERN post-filter: sso's bare `c.breaker.Record(...)` is a
+# breaker observation, not an audit write, and would be a P2 false positive.
+# The filter is statement-anchored and receiver-exact — only the bare
+# statement-start `c.breaker.Record(` line is exempted; the P1 `_ =` form,
+# other receivers (d.breaker, c.breaker2), and every canonical audit
+# receiver (s.audit, s.publications, s.repo, publisher) stay fully scanned.
+# The *.pb.go mechanical exclusion keeps committed generated protobuf stubs
+# (internal/sso/*/ and internal/handler/grpc/aeropb/) out of the scan; the
+# dot glob is load-bearing (the underscore form matches nothing here).
 
 set -u
 
@@ -93,13 +123,34 @@ set -u
 # red either way.
 ROOTS=("$@")
 if [ "${#ROOTS[@]}" -eq 0 ]; then
-  ROOTS=(internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd internal/file internal/message internal/notification internal/audit)
+  # G2 (2026-08-14): extended to the ten unscanned live control-plane dirs
+  # (connector/outbox/event/hub/region/sso/idempotency/middleware/config/
+  # handler), appended after the historical 11 in the Makefile order.
+  # ADR-012 Option B byte-equivalence with the Makefile recipe line is
+  # machine-checked below (REQ-G2-3).
+  ROOTS=(internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd internal/file internal/message internal/notification internal/audit internal/connector internal/outbox internal/event internal/hub internal/region internal/sso internal/idempotency internal/middleware internal/config internal/handler)
 fi
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SELF_DIR/testdata/audit-swallow"
 
 P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publish|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\('
 P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\('
+# G2 breaker-observation exemption (2026-08-14): internal/sso/client.go
+# calls `c.breaker.Record(...)` bare (lines 299,306,310) as circuit-breaker
+# outcome observations; breaker.Record is VOID (internal/sso/breaker.go), so
+# the call discards nothing and the P1 `_ =` form cannot even compile. The
+# exemption is a POST-FILTER on grep output (grep -vE), not a change to
+# P1/P2. Mandated properties:
+#   - statement-anchored: `c.breaker.Record(` only at statement start after
+#     optional whitespace within the grep output line;
+#   - receiver-exact: only the identifier chain c.breaker — d.breaker,
+#     c.breaker2, and any other receiver stay red;
+#   - P1 form NOT exempted: `_ = c.breaker.Record(` stays red;
+#   - tolerates both grep output formats: path:line:content (directory
+#     scans) and line:content (single-file fixture greps).
+# Do NOT loosen this to a substring filter (FM-3): p1_anchor.go pins the
+# statement anchoring and near_miss.go pins receiver exactness.
+BREAKER_EXEMPT_PATTERN='^([^:]*:)?[0-9]*:[[:space:]]*c\.breaker\.Record\('
 
 fail=0
 
@@ -336,10 +387,107 @@ if [ "$neg_hits" -ne 0 ]; then
   fail=1
 fi
 
+# ── self-test (REQ-G2-2): the ten extended live roots must stay in the ROOTS
+# ── list (root-removal tripwire, unconditional — ADR-012 Option B: the
+# ── no-arg default equals the Makefile gate line and includes all ten, so a
+# ── tampered no-arg CI invocation cannot skip this; explicit invocations
+# ── missing a root are red too).
+for pkg in connector outbox event hub region sso idempotency middleware config handler; do
+  root_has=false
+  for root in "${ROOTS[@]}"; do
+    if [ "$root" = "internal/$pkg" ]; then
+      root_has=true
+    fi
+  done
+  if [ "$root_has" = false ]; then
+    echo "SELF-TEST FAIL: internal/$pkg missing from scan ROOTS (tripwire root removed)"
+    fail=1
+  fi
+done
+
+# ── self-test (REQ-G2-3): the Makefile check-audit-swallow recipe line must
+# ── carry the FULL 21-root list. Anchored on the recipe line (the
+# ── `@bash scripts/check-audit-swallow.sh …` line), NOT the target-name
+# ── line — a shrunk Makefile line is red even when the script default is
+# ── still correct.
+if ! grep -qE '^[[:space:]]*@bash scripts/check-audit-swallow\.sh internal/service internal/repository internal/app internal/storage internal/block internal/comment cmd internal/file internal/message internal/notification internal/audit internal/connector internal/outbox internal/event internal/hub internal/region internal/sso internal/idempotency internal/middleware internal/config internal/handler[[:space:]]*$' "$SELF_DIR/../Makefile"; then
+  echo "SELF-TEST FAIL: Makefile check-audit-swallow recipe line missing or does not carry the full extended root list"
+  fail=1
+fi
+
+# ── self-test (REQ-G2-4): the breaker exemption must be LIVE and NARROW ──
+# ── breaker_ok.go (bare c.breaker.Record(...) lines) must match the raw ────
+# ── patterns yet yield ZERO residuals after the BREAKER_EXEMPT_PATTERN ─────
+# ── post-filter. ───────────────────────────────────────────────────────────
+breaker_raw="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/breaker_exempt/breaker_ok.go" 2>/dev/null)"
+if [ -z "$breaker_raw" ]; then
+  echo "SELF-TEST FAIL: breaker_ok.go fixture matched nothing (exemption not exercised)"
+  fail=1
+elif [ "$(printf '%s\n' "$breaker_raw" | grep -cvE "$BREAKER_EXEMPT_PATTERN" || true)" -ne 0 ]; then
+  echo "SELF-TEST FAIL: breaker exemption left residual matches in breaker_ok.go:"
+  printf '%s\n' "$breaker_raw" | grep -vE "$BREAKER_EXEMPT_PATTERN"
+  fail=1
+fi
+
+# ── self-test (REQ-G2-5): the exemption must NEVER hide a real audit ───────
+# ── swallow — the mandatory no-hiding regression. audit_red.go (s.audit ────
+# ── bare calls), near_miss.go (d.breaker / c.breaker2) and p1_anchor.go ─────
+# ── (`_ = c.breaker.Record(`) must each stay ≥1 match after the exemption ──
+# ── filter; a missing fixture file fails the gate (fixture-mode totality). ──
+for file in audit_red near_miss p1_anchor; do
+  if [ ! -f "$FIXTURES/breaker_exempt/$file.go" ]; then
+    echo "SELF-TEST FAIL: fixture $FIXTURES/breaker_exempt/$file.go missing (fixtures are gate parts)"
+    fail=1
+    continue
+  fi
+  red_hits="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/breaker_exempt/$file.go" 2>/dev/null | grep -vE "$BREAKER_EXEMPT_PATTERN" | wc -l)"
+  if [ "$red_hits" -lt 1 ]; then
+    echo "SELF-TEST FAIL: $file.go must stay red under the breaker exemption (exemption too broad?)"
+    fail=1
+  fi
+done
+
+# ── self-test (REQ-G2-6): the *.pb.go exclusion must be LIVE — the ─────────
+# ── pb_exclude fixture (a P2-shaped line in a file actually named *.pb.go) ──
+# ── must match raw yet be invisible to the scan-loop grep shape; a ──────────
+# ── regression to the vacuous *_pb.go glob reddens the gate. ────────────────
+pb_raw="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/pb_exclude" --include='*.go' 2>/dev/null)"
+if [ -z "$pb_raw" ]; then
+  echo "SELF-TEST FAIL: pb_exclude fixture matched nothing (exclusion not exercised)"
+  fail=1
+fi
+pb_scanned="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$FIXTURES/pb_exclude" --include='*.go' --exclude='*.pb.go' 2>/dev/null)"
+if [ -n "$pb_scanned" ]; then
+  echo "SELF-TEST FAIL: --exclude='*.pb.go' did not exclude the pb_exclude fixture:"
+  echo "$pb_scanned"
+  fail=1
+fi
+
+# ── self-test (REQ-G2-7): text-presence pins (line-anchored, ADR-012 ───────
+# ── style) — the exemption definition, its application in the scan loop, ───
+# ── the *.pb.go exclusion, and the extended membership loop header must ────
+# ── all stay in this script. ───────────────────────────────────────────────
+if ! grep -qE '^BREAKER_EXEMPT_PATTERN=' "$0"; then
+  echo "SELF-TEST FAIL: BREAKER_EXEMPT_PATTERN definition missing from $0"
+  fail=1
+fi
+if ! grep -qF -- "--exclude='*.pb.go'" "$0"; then
+  echo "SELF-TEST FAIL: --exclude='*.pb.go' missing from $0"
+  fail=1
+fi
+if ! grep -qF 'grep -vE "$BREAKER_EXEMPT_PATTERN"' "$0"; then
+  echo "SELF-TEST FAIL: BREAKER_EXEMPT_PATTERN post-filter application missing from $0"
+  fail=1
+fi
+if ! grep -qE '^# ── self-test \(REQ-G2-2\): the ten extended live roots must stay in the ROOTS' "$0"; then
+  echo "SELF-TEST FAIL: extended membership loop header missing from $0"
+  fail=1
+fi
+
 # ── scan the live tree ────────────────────────────────────────────────────
 matches=""
 for root in "${ROOTS[@]}"; do
-  found="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$root" --include='*.go' --exclude='*_test.go' 2>/dev/null)"
+  found="$(grep -rnE "$P1_PATTERN|$P2_PATTERN" "$root" --include='*.go' --exclude='*_test.go' --exclude='*.pb.go' 2>/dev/null | grep -vE "$BREAKER_EXEMPT_PATTERN")"
   if [ -n "$found" ]; then
     matches+="$found"$'\n'
   fi
