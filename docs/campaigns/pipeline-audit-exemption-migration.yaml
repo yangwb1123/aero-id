@@ -191,7 +191,7 @@ stages:
           naming files/symbols, tests, command results, and any
           evidence-backed deviation from the design.
           {input_content}
-        timeout: 1800
+        timeout: 3600
         output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/implement-auditex/task-1-implementation.md
     cwd: /home/u1/aero-id
 
@@ -218,7 +218,11 @@ stages:
           with one reasoned line:
           VERDICT: PASS - <why all acceptance checks are satisfied>
           or VERDICT: FAIL - <missing or failing checks>.
+          Be efficient: the full done-gate is the ground truth — run it once
+          and inspect, do not re-verify every claim by hand if the gates and
+          greps already prove it.
           {input_content}
+        timeout: 2700
         output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/acceptance-auditex/task-1-acceptance.md
     cwd: /home/u1/aero-id
 
