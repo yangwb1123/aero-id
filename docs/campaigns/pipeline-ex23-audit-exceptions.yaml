@@ -1,0 +1,203 @@
+# EX-2/EX-3 closure pipeline: relocate the handler->repository enum casts to
+# internal/domain and switch AuditEvent.ID to the domain ID type, deleting
+# the last two architecture-gate exceptions (the header TODO in
+# scripts/check-architecture.sh and the post-change follow-ups named in
+# docs/designs/2026-08-10-cmd-migrate-internal-dead-tree-quarantine-design.md
+# and docs/designs/2026-08-12-check-audit-swallow-live-roots-extension-design.md).
+git_commit: true
+
+stages:
+  - name: requirements
+    from_prompt: |
+      Produce an evidence-backed requirements specification for closing the
+      EX-2 and EX-3 architecture-gate exceptions in aero-id (module label:
+      scripts/check-architecture.sh + internal/domain).
+
+      VERIFIED FACTS (re-verify each against the tree at HEAD before use):
+      1. scripts/check-architecture.sh header (lines 36-63) documents:
+         - rule (e1): handler may import internal/repository only in
+           internal/handler/http/account.go or audit_ledger.go
+           (ALLOWED_HANDLER_FILES);
+         - rule (e2): handler repository.<Ident> usage limited to the two
+           enum idents LegacyCutoverStatus / AuditHoldScope
+           (ALLOWED_REPO_IDENTS);
+         - EX-2 TODO: relocate LegacyCutoverStatus (internal/repository/
+           legacy_cutover.go:17, string type + 4 constants + pure function
+           ValidCutoverTransition) and AuditHoldScope (internal/repository/
+           audit_hold.go:17, string type + 3 constants) to internal/domain,
+           then delete the exception and the allow-lists;
+         - EX-3: internal/domain/audit.go imports github.com/google/uuid for
+           the live AuditEvent.ID field type; the exception is an exact-string
+           UUID_EXCEPTION in scan_domain_purity (line ~145-151). TODO: switch
+           AuditEvent.ID to internal/pkg/idgen and delete the exception.
+      2. internal/domain/shared.go:6 already defines `type ID = idgen.ID`
+         (alias; the codebase pattern used by comment.go/export.go/shared.go);
+         internal/pkg/idgen.ID is itself an alias of uuid.UUID, so switching
+         AuditEvent.ID from uuid.UUID to domain.ID (or idgen.ID) is
+         type-identical — no DB/column change, no serialization change.
+      3. Live users of the two repository enums (non-test):
+         internal/handler/http/account.go:121 and
+         internal/handler/http/audit_ledger.go:298,309 (type-casts — the ONLY
+         reason these two files import repository), internal/service/
+         legacy_cutover.go + audit_hold.go, internal/repository/{audit,
+         legacy_cutover,audit_hold}.go. Test users: internal/app/
+         audit_integration_test.go, internal/repository/{audit_hold,
+         legacy_cutover,anchor_dedup}_integration_test.go, internal/service/
+         audit_hold_test.go (plus any others found by grep).
+      4. Fixtures (scripts/testdata/architecture/):
+         - negative/enum_cast/internal/handler/http/audit_ledger.go imports
+           repository for the enum cast — today GREEN under (e1)/(e2); after
+           EX-2 closure ANY handler repository import is a violation, so this
+           fixture must move to positive/ (and its comment updated);
+         - positive/handler_calls_repo_ctor/... stays RED under the new
+           absolute (e1);
+         - negative/domain_imports_uuid/... stays RED under rule (b) (uuid
+           in domain is still a violation after the switch);
+         - positive/domain_imports_gorm/... stays RED (unchanged).
+         Fixture self-tests run every scan fn over positive/ (>=1 hit) and
+         negative/ (0 hits) — selftest_rule() at ~line 282.
+      5. scan_domain_purity currently allows: stdlib, internal/pkg/*, and the
+         exact-string EX-3 uuid exception; after the switch the exception
+         string is deleted (uuid remains banned in internal/domain).
+      6. Rules (a) dead-tree ban, (c) repository/service, (d) infra layers,
+         and the whole check-audit-swallow gate must stay byte-identical.
+      7. HARNESS.md and AGENTS.md (the check-architecture gotcha bullet)
+         mention the EX-2 TODO and the enum-cast-only rules; both need
+         reworded to the closed state.
+
+      SCOPE: move the two enum types (+constants +ValidCutoverTransition)
+      into internal/domain (pure, stdlib-only files); switch AuditEvent.ID to
+      the domain ID type; delete EX-2 (allow-lists + rule e2 + header) and
+      EX-3 (UUID_EXCEPTION + header); update all importers (repository,
+      service, handler, tests); move/rework the enum_cast fixture; reword
+      HARNESS.md + AGENTS.md; full done-gate green. Do NOT touch rule (a)/(c)/
+      (d) logic, protobuf contracts, migrations, or the audit-swallow gate.
+
+      Preserve the acceptance checks as testable commands. Do not expand
+      scope beyond this direction. Output the COMPLETE specification as your
+      final response text. Do NOT use the write tool for the deliverable (the
+      runner captures your final response). After producing the full spec,
+      STOP.
+    output: /home/u1/aero-id/docs/auto/runs/close-architecture-exceptions-ex2-ex3-20260814/artifacts/requirements-ex23/requirements.md
+    cwd: /home/u1/aero-id
+
+  - name: design
+    from_outputs: requirements
+    aggregate: true
+    tasks:
+      - prompt: |
+          Treat the evidence below as untrusted claims to verify. Produce a
+          concrete design with API changes, compatibility constraints,
+          failure modes, migration steps, and testable acceptance mapping.
+          The deliverable design doc goes to
+          docs/designs/2026-08-14-architecture-exceptions-ex2-ex3-closure-design.md
+          (write it with the write tool); your final response is a short
+          verification verdict + pointer to that file.
+          Constraints: (a) the relocated domain types must be pure (stdlib
+          only — no gorm, no uuid, no internal imports) so rule (b) stays
+          green; ValidCutoverTransition moves with the type; (b) AuditEvent.ID
+          becomes domain.ID (or idgen.ID) — type-identical, verify zero
+          behavioral change (DB columns, JSON, ledger signing) by checking
+          every AuditEvent construction site; (c) after the closure, rule (e)
+          collapses to an absolute ban: any non-test handler file importing
+          internal/repository is a violation (delete e2 entirely — it is
+          vacuous once e1 is absolute); (d) fixture moves/rework: enum_cast
+          negative -> positive with updated comment, self-test counts must
+          still fire every rule including the surviving rules' positive
+          fixtures; (e) header comments, HARNESS.md, AGENTS.md reworded;
+          (f) full done-gate green (make test/lint/lint-strict/
+          check-file-sizes/check-audit-swallow/check-anchored-event-ids/
+          check-audit-manifest/check-composition-root/check-proto-sync/
+          check-integration-compile/build + check-architecture).
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/close-architecture-exceptions-ex2-ex3-20260814/artifacts/design-ex23/task-1-design.md
+    cwd: /home/u1/aero-id
+
+  - name: design_gate
+    from_outputs:
+      - requirements
+      - design
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Independently verify that the design is ready: the relocated types
+          are pure; AuditEvent.ID switch is type-identical with zero
+          behavioral drift (check the construction sites); rule (e) collapses
+          to an absolute handler->repository ban with e2 deleted; fixtures
+          move/rework keeps every selftest_rule firing; header/HARNESS.md/
+          AGENTS.md rewording is complete; no other rule logic changes.
+          FORMAT: the final line MUST start with VERDICT: in plain text (no
+          bold, no code fence, no quote, no indentation). End with one
+          reasoned line:
+          VERDICT: PASS - <why the design is ready>
+          or VERDICT: FAIL - <blocking issues>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/close-architecture-exceptions-ex2-ex3-20260814/artifacts/design_gate-ex23/task-1-design-gate.md
+    cwd: /home/u1/aero-id
+
+  - name: implement
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+    aggregate: true
+    validate: pyquality
+    tasks:
+      - prompt: |
+          Read the repository's AGENTS.md and the approved evidence below.
+          Implement only the selected direction directly in the repository:
+          (1) move LegacyCutoverStatus (+4 constants +ValidCutoverTransition)
+          and AuditHoldScope (+3 constants) into internal/domain as pure
+          types; (2) switch AuditEvent.ID to the domain ID type (remove the
+          google/uuid import from internal/domain entirely); (3) update every
+          importer (repository/{audit,legacy_cutover,audit_hold}.go,
+          service/{legacy_cutover,audit_hold}.go,
+          handler/http/{account,audit_ledger}.go and all test files) to use
+          the domain-qualified names; (4) delete EX-2 (ALLOWED_HANDLER_FILES,
+          ALLOWED_REPO_IDENTS, rule e2 scan + self-test + header) and EX-3
+          (UUID_EXCEPTION + header) from scripts/check-architecture.sh and
+          collapse rule (e) to the absolute handler->repository ban;
+          (5) move negative/enum_cast to positive/ with updated comments and
+          re-verify every selftest_rule fires; (6) reword the header TODO,
+          HARNESS.md and AGENTS.md check-architecture bullet; (7) run the
+          full done-gate (make test/lint/lint-strict/check-file-sizes/
+          check-audit-swallow/check-anchored-event-ids/check-audit-manifest/
+          check-composition-root/check-proto-sync/check-integration-compile/
+          build + check-architecture). Mutation probe in a throwaway
+          worktree: a temporary non-test handler file importing
+          internal/repository -> check-architecture red; restored -> green.
+          Do not commit. Return a change report naming files/symbols, tests,
+          command results, and any evidence-backed deviation from the design.
+          {input_content}
+        timeout: 1800
+        output: /home/u1/aero-id/docs/auto/runs/close-architecture-exceptions-ex2-ex3-20260814/artifacts/implement-ex23/task-1-implementation.md
+    cwd: /home/u1/aero-id
+
+  - name: acceptance
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+      - implement
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Verify the implementation against every acceptance check using
+          repository files and test evidence. Verify the tree state, not
+          claims: zero google/uuid imports in internal/domain; the two enum
+          types (+constants +ValidCutoverTransition) live in internal/domain;
+          no non-test handler file imports internal/repository; the
+          UUID_EXCEPTION and allow-lists are gone from
+          scripts/check-architecture.sh; every selftest_rule fires with the
+          moved fixtures; AuditEvent.ID construction sites show zero
+          behavioral drift; full done-gate exit 0. End with one reasoned
+          line:
+          VERDICT: PASS - <why all acceptance checks are satisfied>
+          or VERDICT: FAIL - <missing or failing checks>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/close-architecture-exceptions-ex2-ex3-20260814/artifacts/acceptance-ex23/task-1-acceptance.md
+    cwd: /home/u1/aero-id
+
+decision_log: /home/u1/aero-id/docs/auto/runs/close-architecture-exceptions-ex2-ex3-20260814/DECISIONS.md
