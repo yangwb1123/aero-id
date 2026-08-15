@@ -1,10 +1,11 @@
 # aero-id B3 批次实施 campaign（隔离完成 + 门禁盲区关闭 + 契约同步）
 # 前置：B2（2026-08-08，commit 2ec2383/b005409）已隔离 internal/{block,comment,search}
 #       死树并落地 in-tx 审计、composition-root 门禁、check-audit-swallow FM-12 tripwire。
-# 门禁基线（2026-08-10 实证，全部绿灯）：
-#   make test / lint / lint-strict / check-file-sizes / check-audit-swallow /
-#   check-anchored-event-ids / check-audit-manifest / check-composition-root /
-#   check-integration-compile / build
+# B3 落地（2026-08-12 实证，全部绿灯）：
+#   - B3-1/B3-2：internal/{file,message,notification,audit} 隔离落地（0df296f）+
+#     ADR-012 加固（f7bb878/27d9c68/60fb785：锚定 pin、guard-PASS 计数器、相邻路径守卫、
+#     FM-16 常驻 pin、Option B no-arg 全量默认）；check-architecture 实层对齐（1001002）
+#   - B3-3：check-proto-sync 确定性门禁 + CI（c8acd14）
 # 用法（aero-id 仓库内）：
 #   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b3.yaml --dry-run
 #   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b3.yaml \
@@ -56,44 +57,34 @@ analysis:
 
     PRE-VERIFIED gap inventory (re-check each claim against the current tree
     before proposing; mark PROPOSED when you cannot verify from code):
-    1. Unwired dead trees remain: internal/file (12 files), internal/message
-       (9), internal/notification (11), internal/audit (2). Verified: zero
-       non-test importers in the repo (only their own _test.go files import
-       them). B3 candidate: quarantine them like block/comment/search
-       (delete, extend the check-architecture/check-audit-swallow tripwires,
-       update AGENTS.md + Makefile + check scripts, re-run all gates).
-    2. check-audit-swallow scans only internal/service internal/repository
-       internal/app internal/storage internal/block internal/comment cmd
-       (Makefile). Verified: no swallowed `_ =` audit-ish sites in
-       internal/{connector,outbox,event,hub,region,sso,idempotency,
-       middleware,config} today, so extending the roots is cheap and closes
-       the B2-2 blind spot permanently (breaker.Record in internal/sso and
-       generated *_pb.go must be exempted mechanically).
-    3. No deterministic proto-stub sync gate exists: api/proto/**/*.proto ->
-       internal/handler/grpc/aeropb + internal/sso/*pb generated stubs are
-       committed, hand-editing *.pb.go is forbidden, but nothing fails when
-       they drift from the .proto sources (protoc 3.21.12 + plugins are
-       available). B3 candidate: scripts/check-proto-sync.sh + Makefile gate
-       (baseline must be green with no drift today).
-    4. AGENTS.md legacy audit-exemption list ('file create/delete/update,
-       message send/edit/react, comment create/edit/report, preferences,
-       region promotion, projection replication emit zero audit facts') may
-       be stale: the audit manifest (scripts/check-audit-manifest.sh) shows
-       only 8 bare sites in internal/service (replay/account/operation_state/
-       message/legacy_cutover/event_ingest), and in-tx WithAudit wires exist
-       for file_share/message/comment/admin/ban/block. B3 candidate: per-op
-       verification and reconciliation of the exemption list vs actual
-       coverage (either prove each op emits a durable fact, or keep the
-       exemption with code evidence).
-    5. Plan §8 proto split: aero_id.proto is still monolithic (~120 RPCs in
-       one file); the plan proposes account/aggregation/audit/operation/
-       callback/source protos. High churn (generated stubs committed, make
-       proto target enumerates only sso.proto + aero_id.proto). Score
-       honestly: only propose if the value clearly outweighs the regen risk.
-    6. check-architecture currently polices the (mostly deleted) dead tree
-       rather than the live layered runtime; after B3-1 lands, realign it to
-       guard the live dependency flow (handler -> service -> repository,
-       no domain -> infra leaks) or document why the current shape is kept.
+    1. [LANDED 2026-08-12, 0df296f + f7bb878/27d9c68/60fb785] Dead-tree
+       quarantine internal/{file,message,notification,audit} + FM-12 guards +
+       ADR-012 hardening. Do not re-propose.
+    2. [OPEN — top remaining B3 gap] check-audit-swallow scans only
+       internal/{service,repository,app,storage,block,comment,cmd} + the four
+       quarantine roots; internal/{connector,outbox,event,hub,region,sso,
+       idempotency,middleware,config,handler} are unscanned (the B2-2 blind
+       spot). Verified 2026-08-12: P1 hits = 0; P2 hits = exactly 3
+       `c.breaker.Record(` at internal/sso/client.go:299,306,310 (circuit-
+       breaker observations, not audit writes; the script header already
+       documents the needed exemption); generated `*_pb.go` (auditpb, aeropb,
+       ssopb) must be excluded mechanically. Candidate: extend Makefile roots
+       + no-arg default + membership tripwires, add a narrow `c.breaker.Record(`
+       line filter + `--exclude='*_pb.go'`, add a fixture proving the breaker
+       exemption cannot hide a real audit swallow, update usage header/
+       comments, full done-gate green.
+    3. [LANDED c8acd14] check-proto-sync deterministic stub sync gate + CI.
+       Do not re-propose.
+    4. [PARTIALLY LANDED] AGENTS.md audit-exemption list: quarantine commit
+       reconciled comment ops + best-effort sentence; remaining live
+       exemptions (file create/delete/update, message send/edit/react,
+       preferences, region promotion, projection replication) are documented
+       with per-op evidence. Only propose per-op re-verification if you find
+       drift.
+    5. [REJECTED] proto split of aero_id.proto (~120 RPCs) — high churn, low
+       value. Do not propose unless the value clearly outweighs regen risk.
+    6. [LANDED 1001002] check-architecture realignment to the live layered
+       runtime. Do not re-propose.
 
     For each direction you propose, map acceptance checks to concrete
     existing gates (make test / lint / check-* names) plus at least one new

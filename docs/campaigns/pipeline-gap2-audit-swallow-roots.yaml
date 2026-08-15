@@ -1,0 +1,183 @@
+# Gap-2 pipeline: extend check-audit-swallow scan roots to the unscanned
+# live dirs (B3-2 follow-up, closes the B2-2 blind spot permanently).
+# Structure: requirements -> design -> design_gate -> implement -> acceptance.
+# No meta adversarial stage: the review for the sibling quarantine direction
+# showed meta roles can mutate the working tree destructively; the design_gate
+# performs the independent verification instead (reviews from the B3-2 run are
+# available on disk for context).
+git_commit: true
+
+stages:
+  - name: requirements
+    from_prompt: |
+      Produce an evidence-backed requirements specification for extending
+      the check-audit-swallow gate to the unscanned live directories of
+      aero-id (module label: scripts/check-audit-swallow.sh; the B3-2
+      follow-up "Gap 2" from docs/campaigns/campaign-aero-id-b3.yaml).
+
+      VERIFIED FACTS (re-verify each against the tree at HEAD before use;
+      do not trust this list blindly):
+      1. The Makefile check-audit-swallow target scans:
+         internal/service internal/repository internal/app internal/storage
+         internal/block internal/comment cmd internal/file internal/message
+         internal/notification internal/audit (the last four are absent
+         quarantine tripwire roots; internal/block|comment are absent too).
+      2. Unscanned live directories: internal/{connector,outbox,event,hub,
+         region,sso,idempotency,middleware,config,handler}.
+      3. Verified 2026-08-12 with the script's own P1/P2 patterns: zero P1
+         hits in those dirs; P2 hits are EXACTLY three `c.breaker.Record(`
+         statements at internal/sso/client.go:299,306,310 — circuit-breaker
+         observations (false positives), not audit writes. The script header
+         already documents: "Never add internal/sso without excluding its
+         circuit-breaker calls: sso's bare `c.breaker.Record(...)` is a
+         breaker observation, not an audit write, and would be a false
+         positive for P2."
+      4. Generated stubs must be excluded mechanically from scans:
+         internal/sso/auditpb/*.pb.go, internal/sso/*pb.go,
+         internal/handler/grpc/aeropb/*.pb.go (committed generated
+         protobuf; never hand-edited; check-proto-sync gate enforces
+         drift).
+      5. internal/event/nats_publisher.go:37 `if _, err := js.Publish(...)`
+         is a propagated NATS publish — does not match P1/P2 — no
+         exemption needed.
+      6. internal/handler audit references are read paths
+         (audit_ledger.go, replay.go, admin.go) — no write sites.
+      7. The script already has (2026-08-12 hardening): no-arg default =
+         the full Makefile gate line (Option B, ADR-012); UNCONDITIONAL
+         membership tripwires for internal/comment and the four quarantine
+         roots; line-anchored invocation pins; guard-PASS counter;
+         adjacent-path guard (ADR-012); standing FM-16 self-test.
+      8. AGENTS.md gotcha documents the audit-coverage invariant and the
+         fail-closed contract; the gate's usage header is the documented
+         surface.
+
+      SCOPE: extend the scan surface to the unscanned live dirs with a
+      NARROW mechanical breaker exemption and a generated-stub exclusion;
+      keep every existing self-test/fixture/tripwire green; add at least
+      one new regression fixture proving the breaker exemption cannot hide
+      a real audit swallow (a fixture whose `s.audit.Log(`-shaped line must
+      still redden while a `c.breaker.Record(`-shaped line stays green).
+      Do NOT touch live Go code, protobuf contracts, or the four quarantine
+      roots' tripwires.
+
+      Preserve the acceptance checks as testable commands. Do not expand
+      scope beyond this direction. Output the COMPLETE specification as
+      your final response text — the entire spec body, not a summary or
+      pointer. Do NOT use the write tool for the deliverable (the runner
+      captures your final response). After producing the full spec, STOP.
+    output: /home/u1/aero-id/docs/auto/runs/extend-check-audit-swallow-to-unscanned-live-dirs-20260812/artifacts/requirements-gap2/requirements.md
+    cwd: /home/u1/aero-id
+
+  - name: design
+    from_outputs: requirements
+    aggregate: true
+    tasks:
+      - prompt: |
+          Treat the evidence below as untrusted claims to verify. Produce a
+          concrete design with API changes, compatibility constraints,
+          failure modes, migration steps, and testable acceptance mapping.
+          The deliverable design doc goes to
+          docs/designs/2026-08-12-check-audit-swallow-live-roots-extension-design.md
+          (write it with the write tool), and your final response is a
+          short verification verdict + pointer to that file.
+          Constraints: (a) the breaker exemption must be NARROW — filter
+          only lines containing `c.breaker.Record(` (grep -v), never
+          blanket-exclude internal/sso; (b) exclude generated stubs with
+          `--exclude='*_pb.go'` in the scan greps; (c) Option B consistency:
+          the no-arg default AND the unconditional membership tripwires
+          must cover the new roots too (dropping a root from the Makefile
+          line must be red); (d) the sso-shaped fixture must prove both
+          directions — real audit swallow reddens, breaker shape stays
+          green; (e) the existing quarantine tripwires, fixture-mode
+          self-tests, FM-16 standing pin and adjacent-path guard stay
+          byte-identical where possible; (f) full done-gate must stay
+          green (make test/lint/lint-strict/check-file-sizes/
+          check-audit-swallow/check-anchored-event-ids/check-audit-manifest/
+          check-composition-root/check-proto-sync/check-integration-compile/
+          build + check-architecture).
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/extend-check-audit-swallow-to-unscanned-live-dirs-20260812/artifacts/design-gap2/task-1-design.md
+    cwd: /home/u1/aero-id
+
+  - name: design_gate
+    from_outputs:
+      - requirements
+      - design
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Independently verify that the design is ready: every requirement
+          has a testable acceptance mapping, the breaker exemption is
+          narrow (never a blanket internal/sso exclusion), the generated
+          stub exclusion is mechanical, the Option B default/membership
+          invariants are preserved, and no existing quarantine tripwire is
+          weakened. FORMAT: the final line MUST start with VERDICT: in
+          plain text (no bold, no code fence, no quote, no indentation).
+          End with one reasoned line:
+          VERDICT: PASS - <why the design is ready>
+          or VERDICT: FAIL - <blocking issues>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/extend-check-audit-swallow-to-unscanned-live-dirs-20260812/artifacts/design_gate-gap2/task-1-design-gate.md
+    cwd: /home/u1/aero-id
+
+  - name: implement
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+    aggregate: true
+    validate: pyquality
+    tasks:
+      - prompt: |
+          Read the repository's AGENTS.md and the approved evidence below.
+          Implement only the selected direction directly in the repository:
+          extend check-audit-swallow to the unscanned live dirs
+          (internal/{connector,outbox,event,hub,region,sso,idempotency,
+          middleware,config,handler}) with the narrow `c.breaker.Record(`
+          line filter and `--exclude='*_pb.go'`, extend the Makefile roots
+          + no-arg default + unconditional membership tripwires, add the
+          sso-shaped fixture (real audit swallow reddens; breaker shape
+          green), update the usage header/exclusion comments and any
+          AGENTS.md/HARNESS.md wording that describes the scan surface.
+          Add focused regression tests/self-tests and run the project's
+          documented gates (make test/lint/lint-strict/check-file-sizes/
+          check-audit-swallow/check-anchored-event-ids/check-audit-manifest/
+          check-composition-root/check-proto-sync/check-integration-compile/
+          build + check-architecture). Mutation probes in a throwaway
+          worktree: (i) a real statement-start `s.audit.Log(` swallow in a
+          NEWLY scanned dir reddens; (ii) an added `c.breaker.Record(` line
+          stays green; (iii) dropping a new root from the Makefile line is
+          red. Do not commit. Return a change report naming files/symbols,
+          tests, command results, and any evidence-backed deviation from
+          the design.
+          {input_content}
+        timeout: 1800
+        output: /home/u1/aero-id/docs/auto/runs/extend-check-audit-swallow-to-unscanned-live-dirs-20260812/artifacts/implement-gap2/task-1-implementation.md
+    cwd: /home/u1/aero-id
+
+  - name: acceptance
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+      - implement
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Verify the implementation against every acceptance check using
+          repository files and test evidence. Verify the tree state, not
+          claims: the new roots are in the Makefile line AND the no-arg
+          default; the breaker exemption is a narrow line filter (no
+          blanket internal/sso exclusion, no `*_pb.go` scan hits); the
+          new fixture proves both directions; all existing quarantine
+          tripwires still print green; full done-gate exit 0. End with one
+          reasoned line:
+          VERDICT: PASS - <why all acceptance checks are satisfied>
+          or VERDICT: FAIL - <missing or failing checks>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/extend-check-audit-swallow-to-unscanned-live-dirs-20260812/artifacts/acceptance-gap2/task-1-acceptance.md
+    cwd: /home/u1/aero-id
+
+decision_log: /home/u1/aero-id/docs/auto/runs/extend-check-audit-swallow-to-unscanned-live-dirs-20260812/DECISIONS.md
