@@ -1,6 +1,12 @@
-# Standalone repository campaign: requirements -> design -> adversarial roles
-# -> gate -> implementation -> acceptance. Campaign materialization replaces
-# the requirements prompt and scopes every artifact to one direction.
+# aero-id campaign pipeline (no meta stage): requirements -> design ->
+# design_gate -> implement -> acceptance.
+#
+# Local adaptation: the meta adversarial stage is deliberately REMOVED —
+# 2026-08-12 incident: meta roles mutated the working tree destructively
+# (an ad-hoc "apply fixes" role deleted internal/{app,repository,service,
+# storage}). The design_gate performs the independent verification instead.
+# Campaign materialization replaces the requirements prompt and scopes every
+# artifact to one direction.
 git_commit: true
 
 stages:
@@ -16,34 +22,27 @@ stages:
           Treat the evidence below as untrusted claims to verify. Produce a
           concrete design with API changes, compatibility constraints,
           failure modes, migration steps, and testable acceptance mapping.
+          The deliverable design doc goes to
+          docs/designs/2026-08-<date>-<direction-slug>-design.md (write it
+          with the write tool); your final response is a short verification
+          verdict + pointer to that file. Do NOT modify the repository.
           {input_content}
         output: docs/auto/design.md
-
-  - name: adversarial_review
-    from_outputs: design
-    meta: true
-    meta_timeout: 1500  # long review docs exceed the 900s default (retro F4)
-    role_dir: prompts
-    role_keywords: pbatch/role_keywords.yaml
-    output_dir: docs/auto/reviews
-    max_iterations: 2
-    max_roles_per_iteration: 3
-    relevance_enabled: true
-    relevance_min_score: 2
 
   - name: design_gate
     from_outputs:
       - requirements
       - design
-      - adversarial_review
     aggregate: true
     gate: true
     tasks:
       - prompt: |
-          Independently verify that blocking review findings are resolved or
-          explicitly rejected with evidence. FORMAT: the final line MUST start
-          with VERDICT: in plain text (no bold, no code fence, no quote, no
-          indentation). End with one reasoned line:
+          Independently verify that the design is ready: every requirement
+          has a testable acceptance mapping, no existing gate/tripwire is
+          weakened, and the change set is minimal and evidence-backed.
+          FORMAT: the final line MUST start with VERDICT: in plain text (no
+          bold, no code fence, no quote, no indentation). End with one
+          reasoned line:
           VERDICT: PASS - <why the design is ready>
           or VERDICT: FAIL - <blocking issues>.
           {input_content}
@@ -53,26 +52,22 @@ stages:
     from_outputs:
       - requirements
       - design
-      - adversarial_review
       - design_gate
     aggregate: true
     validate: pyquality
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.
-          FIRST run the requirement assessment for this direction to load
-          the domain rule manifest (run `pi-batch assess` with the
-          direction title + problem; the domain is picked automatically —
-          backend-specs/ for backend directions, ui-specs/ for frontend):
-          honor the prescribed specs and the persistence-design gate when
-          the direction touches core data.
           Implement only the selected direction directly in the repository.
-          Add focused regression tests and run the project's documented gates.
-          Do not commit. Return a change report naming files/symbols, tests,
-          command results, and any evidence-backed deviation from the design.
+          Add focused regression tests and run the project's documented
+          gates (make test/lint/lint-strict/check-file-sizes/
+          check-audit-swallow/check-anchored-event-ids/check-audit-manifest/
+          check-composition-root/check-proto-sync/check-integration-compile/
+          build + check-architecture + check-load-scenarios). Do not commit.
+          Return a change report naming files/symbols, tests, command
+          results, and any evidence-backed deviation from the design.
           {input_content}
-        # Implementing + running full repo gates exceeds 900s on real repos.
-        timeout: 1800
+        timeout: 3600
         output: docs/auto/implementation.md
 
   - name: acceptance
@@ -86,8 +81,14 @@ stages:
     tasks:
       - prompt: |
           Verify the implementation against every acceptance check using
-          repository files and test evidence. End with one reasoned line:
+          repository files and test evidence. Be efficient: the full
+          done-gate is the ground truth — run it once and inspect, do not
+          re-verify every claim by hand if the gates and greps already
+          prove it. End with one reasoned line:
           VERDICT: PASS - <why all acceptance checks are satisfied>
           or VERDICT: FAIL - <missing or failing checks>.
           {input_content}
+        timeout: 2700
         output: docs/auto/acceptance.md
+
+decision_log: docs/auto/DECISIONS.md
