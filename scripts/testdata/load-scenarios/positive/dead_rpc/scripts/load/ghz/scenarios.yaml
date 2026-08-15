@@ -1,0 +1,18 @@
+# Fixture scenarios (clean): two scenarios, all 7 fields, calls resolve in
+# the fixture proto.
+scenarios:
+  - name: fixture-getme
+    call: aeropb.AccountService.GetMe
+    data: '{}'
+    concurrency: 10
+    duration: 1m
+    p95: 100ms
+    p99: 250ms
+
+  - name: fixture-audit-facts
+    call: aeropb.AuditLedgerService.ListEvents
+    data: '{"page":{"limit":20}}'
+    concurrency: 5
+    duration: 1m
+    p95: 100ms
+    p99: 250ms

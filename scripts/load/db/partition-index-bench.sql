@@ -5,7 +5,12 @@
 -- Run against a seeded regional cell database; never against production.
 --
 -- Usage:
---   psql "$PG_DSN" -f scripts/load/db/partition-index-bench.sql
+--   make load-test-db-seed PG_DSN_BENCH=<bench-dsn>   # once per bench cell
+--   make load-test-db PG_DSN_BENCH=<bench-dsn>        # run this benchmark
+--
+-- PG_DSN_BENCH must be set explicitly (never the app DSN); load-test-db
+-- refuses unseeded databases — see scripts/load/README.md and the Makefile
+-- guard chain.
 --
 -- Interpretation: each block prints the plan and wall time. Watch for:
 --   * Index Scan on idx_audit_ledger_query / idx_notifications_recipient_unread
@@ -14,8 +19,9 @@
 --   * the outbox drain query must use idx_outbox_unpublished and never sort
 --     the full table.
 --
--- Seed first (adjust counts to your cell):
---   INSERT INTO audit_ledger (...) SELECT ... FROM generate_series(1, 1000000);
+-- Seed the bench database first (idempotent; volumes and override syntax in
+-- scripts/load/db/seed-bench.sql):
+--   make load-test-db-seed PG_DSN_BENCH=<bench-dsn>
 
 -- Query parameters (override on the command line, e.g.
 -- psql -v ACCOUNT_ID=<uuid> -f scripts/load/db/partition-index-bench.sql):
@@ -56,7 +62,7 @@ SELECT chain_sequence, record_hash, signature, previous_hash
 
 \echo '=== 4. Notifications: unread feed (partial index) ==='
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT id, created_at, action
+SELECT id, created_at, type
   FROM notifications
  WHERE recipient_uid = :'RECIPIENT' AND read_at IS NULL
  ORDER BY created_at DESC, id DESC
@@ -78,7 +84,7 @@ SELECT id, event_type, payload
 
 \echo '=== 7. Audit publications: due deliveries (callback worker) ==='
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT p.id, p.fact_id, p.subscription_id, p.next_attempt_at
+SELECT p.id, p.fact_id, p.next_attempt_at
   FROM audit_publications p
  WHERE p.status IN ('pending', 'delivering')
    AND p.next_attempt_at <= now()

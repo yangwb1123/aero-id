@@ -1,14 +1,27 @@
-# ghz gRPC load scenario for the aero-id control plane.
+# ghz gRPC load scenarios for the aero-id control plane.
 #
-# Usage:
-#   ghz --insecure --proto api/proto/aero_id/v1/aero_id.proto \
-#       --call aeropb.AccountService.GetMe \
-#       -d '{}' --metadata 'authorization=Bearer <token>' \
-#       --concurrency 100 --duration 3m --rps 500 \
-#       --out scripts/load/results/ghz-account.json --format json \
-#       localhost:9090
+# THIS FILE IS THE SINGLE CANONICAL SOURCE of ghz scenarios (P6-08). The
+# runner (scripts/load/run-ghz.sh) is a pure executor: it parses this file
+# and runs one ghz campaign per entry — there is deliberately no inline
+# scenario definition anywhere else. scripts/check-load-scenarios.sh (R2)
+# reddens if the runner ever diverges from this file.
 #
-# The scenarios below mirror the HTTP k6 plan (control plane heavy, legacy light).
+# Schema (flat list; every entry has exactly these 7 fields):
+#   name:         slug; the results file is scripts/load/results/ghz-<name>.json
+#   call:         aeropb.<Service>.<Method> — must resolve in the proto
+#                 (api/proto/aero_id/v1/aero_id.proto); R1 reddens dead calls
+#   data:         request body JSON
+#   concurrency:  ghz --concurrency (integer)
+#   duration:     ghz --duration (Go duration string)
+#   p95 / p99:    SLO latency targets, [0-9]+(ms|s); the runner fails the
+#                 load-test-grpc target on breach. Per-run overrides for ALL
+#                 scenarios: GZ_SLO_P95_MS / GZ_SLO_P99_MS (integer ms).
+#
+# SLO defaults are calibrated from docs/plans/2026-08-04-distributed-account-
+# aggregation.md §5 (regional snapshot read p95 <= 100ms, p99 <= 250ms) for
+# control-plane reads, and the README k6 global thresholds (p95 < 250ms,
+# p99 < 1000ms) for the legacy compat surface. Concurrency/duration reflect
+# the original documented intent (100/50/50/20/10 for 3m each).
 
 scenarios:
   - name: account-getme
@@ -16,27 +29,37 @@ scenarios:
     data: '{}'
     concurrency: 100
     duration: 3m
+    p95: 100ms
+    p99: 250ms
 
   - name: aggregation-overview
     call: aeropb.AggregationService.GetMeOverview
     data: '{}'
     concurrency: 50
     duration: 3m
+    p95: 100ms
+    p99: 250ms
 
   - name: account-list-sources
     call: aeropb.AccountService.ListSources
     data: '{"page":{"limit":50}}'
     concurrency: 50
     duration: 3m
+    p95: 100ms
+    p99: 250ms
 
   - name: legacy-file-list
     call: aeropb.FileService.ListFiles
     data: '{"page":{"limit":20}}'
     concurrency: 20
     duration: 3m
+    p95: 250ms
+    p99: 1000ms
 
-  - name: audit-list-events
-    call: aeropb.AuditLedgerService.ListEvents
+  - name: audit-list-facts
+    call: aeropb.AuditLedgerService.ListAuditFacts
     data: '{"page":{"limit":20}}'
     concurrency: 10
     duration: 3m
+    p95: 100ms
+    p99: 250ms

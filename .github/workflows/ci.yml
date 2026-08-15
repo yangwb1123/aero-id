@@ -97,3 +97,11 @@ jobs:
         run: make check-audit-swallow
       - name: Architecture gate (live-layer boundaries)
         run: make check-architecture
+      # Load-test tooling drift gate (P6-08): canonical ghz scenario source
+      # (calls resolve in the proto, runner == scenarios.yaml), bench SQL
+      # relations exist in migrations, Makefile-referenced load assets are
+      # live. Pure bash + grep, self-testing fixtures — no Go toolchain, no
+      # network, no Docker. No paths filter: a filter would recreate the
+      # blind spot this gate closes.
+      - name: Load-scenario drift gate (single-source ghz scenarios, bench schema, load liveness)
+        run: make check-load-scenarios

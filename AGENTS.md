@@ -50,8 +50,14 @@ make proto             # regenerate stubs only after editing api/proto/**/*.prot
 Done-gate:
 
 ```bash
-make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-composition-root && make check-proto-sync && make check-integration-compile && make build
+make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-load-scenarios && make check-composition-root && make check-proto-sync && make check-integration-compile && make build
 ```
+
+`make check-load-scenarios` guards the load-test tooling single-source contract (ghz
+scenarios resolve in the proto, the runner consumes the canonical `scenarios.yaml` with
+no inline arrays, bench SQL relations exist in migrations, Makefile-referenced load
+assets are live). It is pure bash + grep with self-testing fixtures — CI-safe (no Go,
+Docker, network, or new binaries), which is why it runs in the `check-gates` CI job.
 
 Run `make test-integration` after changing repository SQL, migrations, storage, source connectors, event
 ingestion, callback delivery, or multi-service transaction boundaries. Cross-data-center and load tests are

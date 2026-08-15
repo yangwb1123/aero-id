@@ -3,7 +3,7 @@ MODULE := github.com/aero/aero-id
 BIN    := bin/aero-id
 PG_DSN ?= postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
 
-.PHONY: tidy build build-audit-replay run test test-integration lint clean proto load-test-http load-test-grpc load-test-event load-test-callback load-test-db check-integration-compile
+.PHONY: tidy build build-audit-replay run test test-integration lint clean proto load-test-http load-test-grpc load-test-event load-test-callback load-test-db load-test-db-seed check-integration-compile check-load-scenarios
 tidy:        ; go mod tidy
 build:       ; go build -o $(BIN) ./cmd/server
 	@$(MAKE) --no-print-directory build-audit-replay
@@ -41,6 +41,15 @@ check-integration-compile:
 .PHONY: check-architecture
 check-architecture:
 	@bash scripts/check-architecture.sh
+
+# Load-test tooling drift gate (P6-08): canonical ghz scenario source (calls
+# resolve in the proto, runner == scenarios.yaml), bench SQL relations exist
+# in migrations, Makefile-referenced load assets are live. Pure bash + grep;
+# self-testing fixtures; CI-safe (no Go/Docker/network). The script header is
+# the canonical rule definition.
+.PHONY: check-load-scenarios
+check-load-scenarios:
+	@bash scripts/check-load-scenarios.sh
 
 # Fail if any non-generated, non-test .go file exceeds 500 lines.
 MAX_FILE_LINES ?= 500
@@ -192,10 +201,36 @@ load-test-callback:
 	  --out json=scripts/load/results/k6-callback-$$(date +%Y%m%d-%H%M%S).json \
 	  scripts/load/k6/callback-soak.js
 
-# DB partition/index benchmark: EXPLAIN ANALYZE over the hot control-plane and
-# worker queries. Requires psql and a seeded regional database.
-PG_DSN_BENCH ?= $(PG_DSN)
-
+# DB partition/index benchmark: EXPLAIN ANALYZE over the hot control-plane
+# and worker queries. Requires psql and a SEEDED bench database.
+# PG_DSN_BENCH must be set explicitly — there is deliberately NO fallback to
+# the app DSN (PG_DSN): running EXPLAIN ANALYZE against the live app DB is
+# the hazard this guard chain exists to prevent. Guards:
+#   1. explicit DSN (no default);
+#   2. app-DSN refusal when PG_DSN_BENCH equals PG_DSN, unless
+#      BENCH_ALLOW_APP_DSN=1 (dangerous — deliberate operator action only;
+#      string equality is imperfect, which is why guard 3 is the substantive
+#      protection);
+#   3. seed-sanity probe on the aero_load_bench_seed marker (created only by
+#      make load-test-db-seed; the app DB never contains it), unless
+#      BENCH_SKIP_SEED_CHECK=1 (explicit escape hatch).
+# Seed the bench cell first:
+#   make load-test-db-seed PG_DSN_BENCH=<bench-dsn>
 load-test-db:
+	@test -n "$(PG_DSN_BENCH)" || { echo "ERROR: PG_DSN_BENCH must be set explicitly (bench DB; never the app DB). See make load-test-db-seed / scripts/load/README.md"; exit 1; }
 	@command -v psql >/dev/null 2>&1 || { echo "ERROR: psql not found (postgresql-client) — install it or set PG_DSN_BENCH"; exit 1; }
+	@test "$(PG_DSN_BENCH)" != "$(PG_DSN)" || test "$(BENCH_ALLOW_APP_DSN)" = "1" || { echo "ERROR: PG_DSN_BENCH equals the app DSN (PG_DSN) — refusing. Set BENCH_ALLOW_APP_DSN=1 only for a deliberately isolated app-schema bench cell."; exit 1; }
+	@test "$(BENCH_SKIP_SEED_CHECK)" = "1" || { marker=$$(psql "$(PG_DSN_BENCH)" -v ON_ERROR_STOP=1 -tA -c "SELECT schema_version FROM aero_load_bench_seed LIMIT 1" 2>/dev/null || true); test -n "$$marker" || { echo "ERROR: $(PG_DSN_BENCH) is not a seeded bench database — run: make load-test-db-seed PG_DSN_BENCH=$(PG_DSN_BENCH)"; exit 1; }; test "$$marker" -ge 1 || echo "WARNING: aero_load_bench_seed schema_version=$$marker (< 1) — stale seed; consider make load-test-db-seed"; }
 	psql "$(PG_DSN_BENCH)" -v ON_ERROR_STOP=1 -f scripts/load/db/partition-index-bench.sql
+
+# Idempotent seed of the bench database: creates the aero_load_bench_seed
+# marker (schema_version, seeded_at, per-table row counts) and populates the
+# hot tables at the volumes documented in scripts/load/db/seed-bench.sql
+# (override per-cell with psql variables, e.g. AUDIT_LEDGER_ROWS=2000000).
+# Same explicit-DSN + app-DSN-refusal guards as load-test-db (no seed check —
+# this target creates the marker).
+load-test-db-seed:
+	@test -n "$(PG_DSN_BENCH)" || { echo "ERROR: PG_DSN_BENCH must be set explicitly (bench DB; never the app DB). See scripts/load/README.md"; exit 1; }
+	@command -v psql >/dev/null 2>&1 || { echo "ERROR: psql not found (postgresql-client) — install it or set PG_DSN_BENCH"; exit 1; }
+	@test "$(PG_DSN_BENCH)" != "$(PG_DSN)" || test "$(BENCH_ALLOW_APP_DSN)" = "1" || { echo "ERROR: PG_DSN_BENCH equals the app DSN (PG_DSN) — refusing. Set BENCH_ALLOW_APP_DSN=1 only for a deliberately isolated app-schema bench cell."; exit 1; }
+	psql "$(PG_DSN_BENCH)" -v ON_ERROR_STOP=1 -f scripts/load/db/seed-bench.sql
