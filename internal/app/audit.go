@@ -263,14 +263,15 @@ type auditWiredService struct {
 	svc  any
 }
 
-// assertAuditWiring fails fast at startup if any of the six legacy services
-// that own the `if s.audit != nil` audit-write skip guards (the 10 fail-closed
-// Log sites) was constructed without a non-nil audit logger. Those guards exist
-// only so unit tests may build the services auditor-free; in a production
-// composition root they must be unreachable. Like wireAuditServices, the
-// shipped concrete types always satisfy this — the panic is unreachable
-// insurance against a future composition-root regression that forgets an
-// audit option.
+// assertAuditWiring fails fast at startup if any service that owns the
+// `if s.audit != nil` audit-write skip guards (the legacy six, the hold/
+// cutover pair, and the migrated preference, region-fencing, projection
+// replication, and projection replay services) was constructed without a
+// non-nil audit logger. Those guards exist only so unit tests may build the
+// services auditor-free; in a production composition root they must be
+// unreachable. Like wireAuditServices, the shipped concrete types always
+// satisfy this — the panic is unreachable insurance against a future
+// composition-root regression that forgets an audit option.
 func assertAuditWiring(services ...auditWiredService) {
 	for _, ws := range services {
 		w, ok := ws.svc.(interface{ AuditLoggerWired() bool })

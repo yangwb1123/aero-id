@@ -152,28 +152,63 @@ func (r *accountSnapshotRepo) UpsertSnapshot(ctx context.Context, snapshot *doma
 	}).Create(row).Error
 }
 
+// replicableSnapshotScan is the explicit-column scan target for
+// ListReplicableSnapshots. Named fields + explicit columns: the historical
+// embedded-struct scan with `Select("account_snapshots.*, ...")` returned a
+// fully zeroed snapshot row (GORM did not map the embedded struct), which
+// would publish degenerate envelopes and zero-account audit facts.
+type replicableSnapshotScan struct {
+	ID           uuid.UUID         `gorm:"column:id"`
+	AccountID    uuid.UUID         `gorm:"column:account_id"`
+	Source       string            `gorm:"column:source"`
+	SourceRegion string            `gorm:"column:source_region"`
+	Dataset      string            `gorm:"column:dataset"`
+	Status       string            `gorm:"column:status"`
+	Version      int64             `gorm:"column:version"`
+	GeneratedAt  time.Time         `gorm:"column:generated_at"`
+	LastSyncedAt *time.Time        `gorm:"column:last_synced_at"`
+	ExpiresAt    *time.Time        `gorm:"column:expires_at"`
+	ErrorCode    string            `gorm:"column:error_code"`
+	Data         datatypes.JSONMap `gorm:"column:data"`
+	CreatedAt    time.Time         `gorm:"column:created_at"`
+	UpdatedAt    time.Time         `gorm:"column:updated_at"`
+	TenantID     string            `gorm:"column:tenant_id"`
+}
+
+// replicableSnapshotColumns is the explicit column list for the join scan
+// (same pattern as the audit_publication_replay/callback_audit join scans).
+const replicableSnapshotColumns = "account_snapshots.id, account_snapshots.account_id, account_snapshots.source, " +
+	"account_snapshots.source_region, account_snapshots.dataset, account_snapshots.status, " +
+	"account_snapshots.version, account_snapshots.generated_at, account_snapshots.last_synced_at, " +
+	"account_snapshots.expires_at, account_snapshots.error_code, account_snapshots.data, " +
+	"account_snapshots.created_at, account_snapshots.updated_at, accounts.tenant_id"
+
 func (r *accountSnapshotRepo) ListReplicableSnapshots(ctx context.Context, homeRegion string, afterID domain.ID, limit int) ([]ReplicableSnapshot, error) {
 	if limit <= 0 || limit > 10000 {
 		limit = 1000
 	}
-	var rows []struct {
-		accountSnapshotRow
-		TenantID string `gorm:"column:tenant_id"`
-	}
+	var rows []replicableSnapshotScan
 	query := r.db.WithContext(ctx).
 		Table("account_snapshots").
-		Select("account_snapshots.*, accounts.tenant_id").
+		Select(replicableSnapshotColumns).
 		Joins("JOIN accounts ON accounts.id = account_snapshots.account_id AND accounts.home_region = ?", homeRegion).
 		Where("account_snapshots.status IN ?", []string{string(domain.SnapshotFresh), string(domain.SnapshotStale)})
 	if afterID != (domain.ID{}) {
 		query = query.Where("account_snapshots.id > ?", afterID)
 	}
-	if err := query.Order("account_snapshots.id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := query.Order("account_snapshots.id ASC").Limit(limit).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]ReplicableSnapshot, 0, len(rows))
 	for i := range rows {
-		out = append(out, ReplicableSnapshot{Snapshot: snapshotRowToDomain(&rows[i].accountSnapshotRow), TenantID: rows[i].TenantID})
+		row := rows[i]
+		out = append(out, ReplicableSnapshot{Snapshot: &domain.AccountSnapshot{
+			ID: row.ID, AccountID: row.AccountID, Source: row.Source, SourceRegion: row.SourceRegion,
+			Dataset: domain.AccountDataset(row.Dataset), Status: domain.SnapshotStatus(row.Status),
+			Version: row.Version, GeneratedAt: row.GeneratedAt, LastSyncedAt: row.LastSyncedAt,
+			ExpiresAt: row.ExpiresAt, ErrorCode: row.ErrorCode, Data: map[string]any(row.Data),
+			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		}, TenantID: row.TenantID})
 	}
 	return out, nil
 }

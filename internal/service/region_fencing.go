@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 )
 
@@ -24,10 +26,21 @@ type RegionFencingService interface {
 
 type regionFencingService struct {
 	directory repository.RegionDirectoryRepository
+	audit     AuditLogger // nil => audit inactive
 }
 
-func NewRegionFencingService(directory repository.RegionDirectoryRepository) RegionFencingService {
-	return &regionFencingService{directory: directory}
+func NewRegionFencingService(directory repository.RegionDirectoryRepository, opts ...func(*regionFencingService)) RegionFencingService {
+	s := &regionFencingService{directory: directory}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// WithRegionFencingAuditLogger wires an AuditLogger into the region fencing
+// service; when wired, Promote routes through the in-tx audited repository arm.
+func WithRegionFencingAuditLogger(a AuditLogger) func(*regionFencingService) {
+	return func(s *regionFencingService) { s.audit = a }
 }
 
 func (s *regionFencingService) Directory(ctx context.Context, tenantID string, accountID domain.ID) (*repository.RegionDirectory, error) {
@@ -43,20 +56,59 @@ func (s *regionFencingService) Directory(ctx context.Context, tenantID string, a
 
 func (s *regionFencingService) Promote(ctx context.Context, tenantID string, accountID domain.ID,
 	targetRegion string, expectedEpoch int64) (int64, error) {
-	if strings.TrimSpace(targetRegion) == "" {
+	targetRegion = strings.TrimSpace(targetRegion)
+	if targetRegion == "" {
 		return 0, apperr.BadRequest("region.invalid_target", "target region is required")
 	}
-	newEpoch, err := s.directory.PromoteWithFencing(ctx, tenantID, accountID, strings.TrimSpace(targetRegion), expectedEpoch)
+	// Security-relevant admin op: with an auditor wired, the promotion CAS and
+	// its fact commit in ONE transaction (in-tx model, ban/file-share
+	// precedent). A post-commit standalone audit would leave an unrecoverable
+	// residual — the fencing epoch is consumed by the CAS, so a retry would
+	// Conflict. On audit failure the promotion rolls back and a retry with the
+	// same expectedEpoch is safe.
+	if s.audit != nil {
+		repo, ok := s.directory.(repository.RegionDirectoryAuditRepository)
+		if !ok {
+			return 0, apperr.Internal("region.audit_unavailable", "region promotion audit persistence is unavailable")
+		}
+		newEpoch, err := repo.PromoteWithFencingWithAudit(ctx, tenantID, accountID, targetRegion, expectedEpoch,
+			buildLegacyAuditFact(ctx, actorFromContext(ctx), domain.AuditRegionPromote, "region_directory",
+				accountID.String(), "", map[string]any{"target_region": targetRegion, "expected_epoch": expectedEpoch},
+				regionPromoteEventID(tenantID, accountID, targetRegion, expectedEpoch)))
+		if err != nil {
+			return 0, mapRegionPromotionError(err)
+		}
+		return newEpoch, nil
+	}
+	newEpoch, err := s.directory.PromoteWithFencing(ctx, tenantID, accountID, targetRegion, expectedEpoch)
 	if err != nil {
-		if errors.Is(err, repository.ErrRegionEpochConflict) {
-			return 0, apperr.Conflict("region.epoch_conflict", "expected epoch is stale; another promotion won")
-		}
-		if errors.Is(err, repository.ErrNotFound) {
-			return 0, apperr.NotFound("region.directory_not_found", "account has no home-region directory entry")
-		}
-		return 0, apperr.Internal("region.promotion_failed", "failed to promote the home-region writer").Wrap(err)
+		return 0, mapRegionPromotionError(err)
 	}
 	return newEpoch, nil
+}
+
+// mapRegionPromotionError translates repository promotion errors to the
+// Conflict/NotFound/Internal AppErrors shared by both the audited and the
+// plain promotion arms. The in-tx audit append failure surfaces as Internal
+// "region.promotion_failed" (the tx rolled back, so the promotion genuinely
+// failed — ban/file-share precedent).
+func mapRegionPromotionError(err error) error {
+	if errors.Is(err, repository.ErrRegionEpochConflict) {
+		return apperr.Conflict("region.epoch_conflict", "expected epoch is stale; another promotion won")
+	}
+	if errors.Is(err, repository.ErrNotFound) {
+		return apperr.NotFound("region.directory_not_found", "account has no home-region directory entry")
+	}
+	return apperr.Internal("region.promotion_failed", "failed to promote the home-region writer").Wrap(err)
+}
+
+// regionPromoteEventID derives the deterministic EventID of one promotion
+// attempt: the CAS guarantees each expectedEpoch is consumed at most once, so
+// successive promotions never collide, while a retry of the same attempt
+// re-derives the same ID (ledger dedup via (tenant, source, event_id)).
+func regionPromoteEventID(tenantID string, accountID domain.ID, targetRegion string, expectedEpoch int64) domain.ID {
+	return idgen.Anchor("audit", "region.promote", tenantID, accountID.String(), targetRegion,
+		strconv.FormatInt(expectedEpoch, 10))
 }
 
 func (s *regionFencingService) RegionEpoch(ctx context.Context, region string) (int64, error) {

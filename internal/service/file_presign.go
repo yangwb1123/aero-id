@@ -110,5 +110,12 @@ func (s *fileService) CompleteUpload(ctx context.Context, in CompleteUploadInput
 		_ = s.store.Delete(ctx, in.StorageKey) // direct uploads aren't deduped, so this blob is exclusively ours
 		return nil, apperr.Internal("file.create_failed", "failed to persist file").Wrap(err)
 	}
+	if s.audit != nil {
+		// audit-site: standalone-fact — file.create (presigned materialization) anchored on the presigned FileID (retry dedup).
+		if err := s.audit.Log(ctx, &domain.AuditEvent{ID: f.ID, ActorUID: actor,
+			Action: domain.AuditFileCreate, SubjectType: "file", SubjectID: f.ID.String()}); err != nil {
+			return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
+	}
 	return f, nil
 }

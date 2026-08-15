@@ -37,6 +37,7 @@ type projectionReplicationService struct {
 	snapshots repository.SnapshotRepository
 	cursors   repository.ReplicationCursorRepository
 	publisher event.EventPublisher
+	audit     AuditLedgerService // nil => audit inactive
 	batch     int
 	metrics   ControlPlaneMetrics
 }
@@ -59,6 +60,13 @@ func WithProjectionReplicationMetrics(metrics ControlPlaneMetrics) func(*project
 			s.metrics = metrics
 		}
 	}
+}
+
+// WithProjectionReplicationAudit wires the ledger service into the replication
+// worker; when wired, every published snapshot records a per-item
+// projection.replication.publish fact (deterministic envelope EventID).
+func WithProjectionReplicationAudit(a AuditLedgerService) func(*projectionReplicationService) {
+	return func(s *projectionReplicationService) { s.audit = a }
 }
 
 func (s *projectionReplicationService) ReplicateOnce(ctx context.Context) (int, error) {
@@ -85,6 +93,21 @@ func (s *projectionReplicationService) ReplicateOnce(ctx context.Context) (int, 
 			return count, fmt.Errorf("publish projection: %w", err)
 		}
 		count++
+		if s.audit != nil {
+			// audit-site: standalone-fact — per-published-projection fact; the
+			// deterministic envelope EventID makes a re-publish dedup at the
+			// ledger (consistent with the at-least-once contract). On audit
+			// failure the run errors and the cursor stays behind; the next run
+			// re-publishes and the fact dedups.
+			if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", SourceRegion: s.region,
+				EventID: envelope.EventID, AccountID: item.Snapshot.AccountID, TenantID: item.TenantID,
+				ActorUID: "system", Action: domain.AuditProjectionReplicationPublish,
+				ResourceType: "projection", ResourceID: item.Snapshot.AccountID.String() + ":" + string(item.Snapshot.Dataset),
+				Payload: map[string]any{"target": s.publisher.Target(), "dataset": string(item.Snapshot.Dataset),
+					"version": item.Snapshot.Version}}); err != nil {
+				return count, fmt.Errorf("record replication audit: %w", err)
+			}
+		}
 		if err := s.cursors.SaveCursor(ctx, s.region, s.publisher.Target(), item.Snapshot.ID, published+int64(count)); err != nil {
 			return count, fmt.Errorf("save replication cursor: %w", err)
 		}

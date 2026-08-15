@@ -4,7 +4,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,10 +14,12 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/event"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/repository/testpg"
 	"github.com/aero/aero-id/internal/sso"
+	"github.com/aero/aero-id/internal/storage"
 )
 
 // reconcilerNoOp keeps the operation reconciler loop inert (no remote calls).
@@ -213,3 +217,250 @@ func TestStandaloneSiteAccountViewedAndListed(t *testing.T) {
 type mocksUserDir struct{}
 
 func (mocksUserDir) GetUsers(context.Context, []string) (map[string]sso.User, error) { return nil, nil }
+
+// failingLedgerRepo delegates every ledger operation to the wrapped repo but
+// fails AppendInTx, so an in-tx audit append failure can be exercised against
+// the real transaction machinery (region promotion rollback).
+type failingLedgerRepo struct {
+	repository.FullAuditLedgerRepository
+}
+
+func (failingLedgerRepo) AppendInTx(context.Context, *gorm.DB, *domain.AuditFact) error {
+	return errors.New("append region promotion audit: ledger down")
+}
+
+// TestStandaloneSiteFileCreateFacts: both file materialization paths emit
+// exactly one anchored file.create fact. A presigned retry with the same
+// FileID conflicts on the row insert before the audit site, so the anchored
+// count stays exactly one (never a duplicate row).
+func TestStandaloneSiteFileCreateFacts(t *testing.T) {
+	ctx := context.Background()
+	h := startStandaloneHarness(t)
+	store := storage.NewLocal(storage.LocalConfig{Root: t.TempDir()})
+	fileRepo := repository.NewFileRepository(h.db, h.repo)
+	svc := NewFileService(fileRepo, store, "local", WithFileAuditLogger(h.ledger))
+	actorCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "owner", Issuer: "snaplink", Subject: "owner", TenantID: "tenant-a"})
+
+	f, err := svc.Create(actorCtx, CreateFileInput{Name: "a.txt", Reader: strings.NewReader("hello world")})
+	if err != nil {
+		t.Fatalf("direct create: %v", err)
+	}
+	if n := standaloneFactCount(t, h, f.ID); n != 1 {
+		t.Fatalf("direct-create rows for file id = %d, want exactly 1 (anchored)", n)
+	}
+
+	key, _, err := store.Put(ctx, "owner", "b.txt", strings.NewReader("direct upload bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileID := idgen.NewID()
+	if _, err := svc.CompleteUpload(actorCtx, CompleteUploadInput{FileID: fileID, Name: "b.txt", StorageKey: key}); err != nil {
+		t.Fatalf("complete upload: %v", err)
+	}
+	if n := standaloneFactCount(t, h, fileID); n != 1 {
+		t.Fatalf("presigned rows for file id = %d, want exactly 1 (anchored on the presigned FileID)", n)
+	}
+
+	if _, err := svc.CompleteUpload(actorCtx, CompleteUploadInput{FileID: fileID, Name: "b.txt", StorageKey: key}); err == nil {
+		t.Fatal("re-materializing the same FileID must fail (row already exists)")
+	}
+	if n := standaloneFactCount(t, h, fileID); n != 1 {
+		t.Fatalf("presigned rows after retry = %d, want exactly 1", n)
+	}
+	var fileFacts int64
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'file.create'`).Scan(&fileFacts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fileFacts != 2 {
+		t.Fatalf("file.create rows = %d, want exactly 2 (one per materialized file)", fileFacts)
+	}
+}
+
+// TestStandaloneSiteMessageSendFacts: message.send is anchored on the message
+// ID — two sends produce two rows with distinct anchors.
+func TestStandaloneSiteMessageSendFacts(t *testing.T) {
+	ctx := context.Background()
+	h := startStandaloneHarness(t)
+	msgRepo := repository.NewMessageRepository(h.db, nil, h.repo)
+	svc := NewMessageService(msgRepo, nil, &mocksUserDir{}, WithMessageAuditLogger(h.ledger))
+	actorCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "u-1", Issuer: "snaplink", Subject: "u-1", TenantID: "tenant-a"})
+
+	m1, err := svc.Send(actorCtx, SendMessageInput{ToUID: "u-2", Content: "first"})
+	if err != nil {
+		t.Fatalf("send #1: %v", err)
+	}
+	m2, err := svc.Send(actorCtx, SendMessageInput{ToUID: "u-2", Content: "second"})
+	if err != nil {
+		t.Fatalf("send #2: %v", err)
+	}
+	if n := standaloneFactCount(t, h, m1.ID); n != 1 {
+		t.Fatalf("rows for message %s = %d, want exactly 1 (anchored)", m1.ID, n)
+	}
+	if n := standaloneFactCount(t, h, m2.ID); n != 1 {
+		t.Fatalf("rows for message %s = %d, want exactly 1 (anchored)", m2.ID, n)
+	}
+	var sendFacts int64
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'message.send'`).Scan(&sendFacts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sendFacts != 2 {
+		t.Fatalf("message.send rows = %d, want 2 (distinct anchors)", sendFacts)
+	}
+}
+
+// TestStandaloneSitePreferenceDedup: the digest anchor makes a same-payload
+// retry dedup to one row while a distinct payload appends a second row (no
+// silent drop of a later legitimate Set).
+func TestStandaloneSitePreferenceDedup(t *testing.T) {
+	ctx := context.Background()
+	h := startStandaloneHarness(t)
+	prefRepo := repository.NewPreferenceRepository(h.db)
+	svc := NewPreferenceService(prefRepo, WithPreferenceAuditLogger(h.ledger))
+	actorCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "u-1", Issuer: "snaplink", Subject: "u-1", TenantID: "tenant-a"})
+
+	same := []*domain.NotificationPreference{{NotificationType: "message.sent", Enabled: true, Timezone: "UTC"}}
+	for i := 0; i < 2; i++ {
+		if err := svc.Set(actorCtx, same); err != nil {
+			t.Fatalf("set #%d: %v", i, err)
+		}
+	}
+	var n int64
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'preference.set'`).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("same-payload preference.set rows = %d, want exactly 1 (anchored retry dedup)", n)
+	}
+	different := []*domain.NotificationPreference{{NotificationType: "message.sent", Enabled: false, Timezone: "UTC"}}
+	if err := svc.Set(actorCtx, different); err != nil {
+		t.Fatalf("distinct set: %v", err)
+	}
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'preference.set'`).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("distinct-payload preference.set rows = %d, want 2 (no silent drop)", n)
+	}
+}
+
+// TestStandaloneSiteRegionPromoteInTx: the promotion CAS and its fact commit
+// in ONE transaction; a forced append failure rolls the promotion back
+// (directory and epoch untouched, zero new rows).
+func TestStandaloneSiteRegionPromoteInTx(t *testing.T) {
+	ctx := context.Background()
+	h := startStandaloneHarness(t)
+	accounts := repository.NewAccountRepository(h.db, h.repo)
+	account, err := accounts.EnsureByIdentity(ctx, "tenant-a", "snaplink", "u-promote", "u-promote", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := repository.NewRegionDirectoryRepository(h.db, h.repo)
+	if err := directory.EnsureDirectory(ctx, "tenant-a", account.ID, "local", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewRegionFencingService(directory, WithRegionFencingAuditLogger(h.ledger))
+	actorCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
+
+	newEpoch, err := svc.Promote(actorCtx, "tenant-a", account.ID, "us-east", 0)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if newEpoch != 1 {
+		t.Fatalf("epoch = %d, want 1", newEpoch)
+	}
+	var n int64
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'region.promote'`).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("region.promote rows = %d, want exactly 1 (in-tx with the CAS)", n)
+	}
+
+	// Forced append failure: the CAS rolls back — directory untouched, no row.
+	failing := &failingLedgerRepo{FullAuditLedgerRepository: h.repo}
+	svc2 := NewRegionFencingService(repository.NewRegionDirectoryRepository(h.db, failing),
+		WithRegionFencingAuditLogger(h.ledger))
+	_, err = svc2.Promote(actorCtx, "tenant-a", account.ID, "eu-west", 1)
+	var ae *apperr.AppError
+	if !errors.As(err, &ae) || ae.Code != "region.promotion_failed" {
+		t.Fatalf("promote with failing append = %v, want region.promotion_failed", err)
+	}
+	entry, gerr := directory.GetDirectory(ctx, "tenant-a", account.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if entry.HomeRegion != "us-east" || entry.FencedEpoch != 1 {
+		t.Fatalf("rolled-back promotion must leave the directory untouched: %+v", entry)
+	}
+	if epoch, eerr := directory.RegionEpoch(ctx, "eu-west"); eerr != nil || epoch != 0 {
+		t.Fatalf("eu-west epoch = %d, %v; want 0 (rollback)", epoch, eerr)
+	}
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'region.promote'`).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("region.promote rows after failed attempt = %d, want exactly 1 (rollback appended nothing)", n)
+	}
+}
+
+// TestStandaloneSiteReplicationDedup: two runs publishing the same snapshot
+// version derive the same deterministic envelope EventID, so the ledger
+// dedups to exactly one projection.replication.publish row.
+func TestStandaloneSiteReplicationDedup(t *testing.T) {
+	ctx := context.Background()
+	h := startStandaloneHarness(t)
+	accounts := repository.NewAccountRepository(h.db, h.repo)
+	account, err := accounts.EnsureByIdentity(ctx, "tenant-a", "snaplink", "u-repl", "u-repl", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &domain.AccountSnapshot{ID: idgen.NewID(), AccountID: account.ID, Source: "aero-vault",
+		SourceRegion: "us-west", Dataset: "aero-vault.buckets", Status: domain.SnapshotFresh, Version: 1,
+		GeneratedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Data: map[string]any{"usage_bytes": float64(10)}}
+	snapshots := repository.NewAccountSnapshotRepository(h.db)
+	if err := snapshots.UpsertSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	envelope := replicationEnvelope("local", "tenant-a", snapshot)
+	for i := 0; i < 2; i++ {
+		// A fresh cursor each run so both runs publish the same snapshot.
+		svc := NewProjectionReplicationService("local", snapshots, repository.NewReplicationCursorRepository(h.db),
+			&fakeReplicationPublisher{}, WithProjectionReplicationAudit(h.ledger))
+		if _, err := svc.ReplicateOnce(ctx); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	if n := standaloneFactCount(t, h, envelope.EventID); n != 1 {
+		t.Fatalf("ledger rows for deterministic envelope id = %d, want exactly 1 (dedup)", n)
+	}
+	var pub int64
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'projection.replication.publish'`).Scan(&pub).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pub != 1 {
+		t.Fatalf("projection.replication.publish rows = %d, want exactly 1 (deterministic EventID dedup)", pub)
+	}
+}
+
+// TestStandaloneSiteReplayRun: projection.replay.run is fresh per-execution —
+// two runs produce two rows (no retry-dedup contract).
+func TestStandaloneSiteReplayRun(t *testing.T) {
+	ctx := context.Background()
+	h := startStandaloneHarness(t)
+	svc := NewProjectionReplayService(repository.NewEventStoreRepository(h.db),
+		repository.NewAccountSnapshotRepository(h.db), WithProjectionReplayAudit(h.ledger))
+	actorCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
+	accountID := idgen.NewID()
+	for i := 0; i < 2; i++ {
+		if _, err := svc.ReplayProjection(actorCtx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"}); err != nil {
+			t.Fatalf("replay run %d: %v", i, err)
+		}
+	}
+	var n int64
+	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'projection.replay.run'`).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("projection.replay.run rows = %d, want 2 (fresh per-execution)", n)
+	}
+}

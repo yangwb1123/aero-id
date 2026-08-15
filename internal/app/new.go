@@ -195,7 +195,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	)
 	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
 	blockSvc := service.NewBlockService(blockRepo)
-	prefSvc := service.NewPreferenceService(prefRepo)
+	prefSvc := service.NewPreferenceService(prefRepo, service.WithPreferenceAuditLogger(auditLedger))
 	searchSvc := service.NewSearchService(msgRepo, commentRepo, fileRepo)
 	adminSvc := service.NewAdminService(adminRepo,
 		service.WithAdminAuditLogger(auditLedger),
@@ -212,9 +212,10 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithAccountIssuer(cfg.Account.Issuer),
 		service.WithAccountRegion(cfg.Account.Region),
 		service.WithAccountHomeRegionResolver(region.NewResolver(cfg.Account.HomeRegionVersion, cfg.Account.Regions)),
-		service.WithAccountRegionDirectory(repository.NewRegionDirectoryRepository(gdb), cfg.Account.HomeRegionVersion),
+		service.WithAccountRegionDirectory(repository.NewRegionDirectoryRepository(gdb, auditLedgerRepo), cfg.Account.HomeRegionVersion),
 	)
-	regionFencingSvc := service.NewRegionFencingService(repository.NewRegionDirectoryRepository(gdb))
+	regionFencingSvc := service.NewRegionFencingService(repository.NewRegionDirectoryRepository(gdb, auditLedgerRepo),
+		service.WithRegionFencingAuditLogger(auditLedger))
 	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb, auditLedgerRepo),
 		repository.NewLegacyCleanupRepository(gdb), auditLedger)
 	aggregationSvc := service.NewAggregationService(accountSvc, snapshotRepo, sourceConnectors...)
@@ -230,7 +231,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	}
 
 	// P6-03: optional cross-region projection replication worker.
-	stopReplication, err := buildProjectionReplication(cfg, gdb, log, metricsReg)
+	replicationSvc, stopReplication, err := buildProjectionReplication(cfg, gdb, log, metricsReg, auditLedger)
 	if err != nil {
 		return nil, err
 	}
@@ -245,6 +246,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	replaySvc := service.NewReplayService(auditLedger, operationSvc,
 		service.WithReplayAccountRepository(accountRepo), service.WithReplaySnapshotRepository(snapshotRepo),
 		service.WithReplayPermission(permissionChecker))
+	projectionReplaySvc := service.NewProjectionReplayService(repository.NewEventStoreRepository(gdb), snapshotRepo,
+		service.WithProjectionReplayAudit(auditLedger))
 	syncJobSvc := service.NewSyncJobServiceWithOptions(syncJobRepo, accountSvc, accountRepo, snapshotRepo, store, sourceConnectors,
 		service.WithSyncJobPermission(permissionChecker), service.WithSyncJobAudit(auditLedger),
 		service.WithSyncJobAuditLedger(repository.NewAuditLedgerRepository(gdb, repository.AuditLedgerConfig{SigningKey: cfg.AuditLedger.SigningKey})),
@@ -255,8 +258,10 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		service.WithBanAuditLogger(auditLedger),
 	)
 
-	// FM-8 wiring assertion: the six legacy services own the `if s.audit != nil`
-	// skip guards at the 10 fail-closed Log sites; assert all six are wired.
+	// FM-8 wiring assertion: every service that owns an `if s.audit != nil`
+	// skip guard must be constructed with a non-nil audit logger — the legacy
+	// six, the migrated preference/region-fencing/projection-replay services,
+	// and (when enabled) the projection replication worker.
 	assertAuditWiring(
 		auditWiredService{name: "file", svc: fileSvc},
 		auditWiredService{name: "message", svc: msgSvc},
@@ -265,7 +270,14 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		auditWiredService{name: "admin", svc: adminSvc},
 		auditWiredService{name: "ban", svc: banSvc},
 		auditWiredService{name: "account", svc: accountSvc},
+		auditWiredService{name: "preference", svc: prefSvc},
+		auditWiredService{name: "region_fencing", svc: regionFencingSvc},
+		auditWiredService{name: "projection_replay", svc: projectionReplaySvc},
 	)
+	// The replication worker is nil when replication is disabled; assert only when wired.
+	if replicationSvc != nil {
+		assertAuditWiring(auditWiredService{name: "projection_replication", svc: replicationSvc})
+	}
 
 	// Redis client for shared state (idempotency store, SSO cache, leader election,
 	// rate limiter back-end, etc.). OPT-IN: when redis.endpoint is empty every Redis
@@ -405,7 +417,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpapi.NewOperationHandler(operationSvc),
 		httpapi.NewSyncJobHandler(syncJobSvc, permissionChecker),
 		httpapi.NewReplayHandlerWithProjection(replaySvc,
-			service.NewProjectionReplayService(repository.NewEventStoreRepository(gdb), snapshotRepo), permissionChecker),
+			projectionReplaySvc, permissionChecker),
 	)
 	httpServer := buildHTTPServer(cfg, router)
 

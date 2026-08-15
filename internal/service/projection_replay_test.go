@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/event"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 )
@@ -191,5 +193,76 @@ func TestReplayProjection_RequiresValidInput(t *testing.T) {
 		AccountID: idgen.NewID(), TenantID: "", Source: "aero-vault",
 	}); err == nil {
 		t.Fatal("empty tenant must be rejected")
+	}
+}
+
+// ── B3 Gap-4 audit site (projection.replay.run) ─────────────────────────────
+
+func TestReplayProjectionAuditFactCommitted(t *testing.T) {
+	accountID := idgen.NewID()
+	now := time.Now().UTC()
+	events := []*event.Envelope{
+		replayEnvelope(accountID, "aero-vault.buckets", 1, 10, now.Add(-time.Hour)),
+	}
+	spy := &recordingLedgerSpy{}
+	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{},
+		WithProjectionReplayAudit(NewAuditLedgerService(spy)))
+	ctx := WithIdentity(context.Background(), &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
+	result, err := svc.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReplayedEvents != 1 {
+		t.Fatalf("replayed = %d, want 1", result.ReplayedEvents)
+	}
+	if len(spy.facts) != 1 {
+		t.Fatalf("audit facts = %d, want 1 (one per run)", len(spy.facts))
+	}
+	fact := spy.facts[0]
+	if fact.Action != domain.AuditProjectionReplay {
+		t.Fatalf("action = %q, want %q", fact.Action, domain.AuditProjectionReplay)
+	}
+	if fact.TenantID != "tenant-a" || fact.AccountID != accountID {
+		t.Fatalf("tenant/account = (%q,%v), want (tenant-a,%v)", fact.TenantID, fact.AccountID, accountID)
+	}
+	if fact.ActorUID != "admin-1" {
+		t.Fatalf("actor = %q, want admin-1 (ctx actor)", fact.ActorUID)
+	}
+	if fact.EventID != (domain.ID{}) {
+		t.Fatalf("event ID = %v, want zero (fresh per-execution — no retry-dedup contract)", fact.EventID)
+	}
+	if fact.Payload["completed"] != true {
+		t.Fatalf("payload completed = %v, want true", fact.Payload["completed"])
+	}
+
+	// A zero-event run records its fact through the same helper (single bare site).
+	spy2 := &recordingLedgerSpy{}
+	svc2 := NewProjectionReplayService(&fakeEventStore{}, &fakeSnapshotStore{},
+		WithProjectionReplayAudit(NewAuditLedgerService(spy2)))
+	if _, err := svc2.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(spy2.facts) != 1 {
+		t.Fatalf("zero-event run facts = %d, want 1 (the run is still an audited sensitive-read)", len(spy2.facts))
+	}
+}
+
+func TestReplayProjectionAuditFailureFailsClosed(t *testing.T) {
+	accountID := idgen.NewID()
+	now := time.Now().UTC()
+	events := []*event.Envelope{
+		replayEnvelope(accountID, "aero-vault.buckets", 1, 10, now.Add(-time.Hour)),
+	}
+	spy := &recordingLedgerSpy{err: errors.New("ledger down")}
+	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{},
+		WithProjectionReplayAudit(NewAuditLedgerService(spy)))
+	ctx := WithIdentity(context.Background(), &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
+	_, err := svc.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"})
+	var ae *apperr.AppError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *AppError, got %v", err)
+	}
+	if ae.Code != "audit.ingest_failed" {
+		t.Fatalf("code = %q, want audit.ingest_failed (fail-closed)", ae.Code)
 	}
 }

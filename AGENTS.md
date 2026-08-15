@@ -276,18 +276,26 @@ Until explicitly migrated, current live APIs keep their existing behavior:
   must never be re-applied to audit writes: the fail-closed `audit.ingest_failed`/503 contract
   stands for every live-layer audit site.
 - The audit-coverage invariant covers every operation that emits an audit fact, not every mutation.
-  These legacy compatibility surfaces currently emit zero audit facts (before and after the
-  fail-closed conversion) and are exempt only until migration — verified per op: file
-  create/delete/update (`internal/service/file.go`, `file_presign.go`, `file_share.go` — zero
-  `Record`/`Log` sites; file *share* is audited in-tx via `buildLegacyAuditFact` and is not exempt),
-  message send/edit/react (`internal/service/message.go` — audit sites exist only on the delete
-  path, `auditMessageDelete`), preferences (`internal/service/preference.go` — zero sites), region
-  promotion (`internal/service/region_fencing.go` — zero sites), projection replication
-  (`internal/service/projection_replication.go`, `projection_replay.go`, `sync_projection.go` —
-  zero sites). The comment tree was quarantined on 2026-08-08 and live comment report is audited
-  in-tx (`ResolveReportWithAudit`, `internal/service/comment.go`), so comment ops are no longer
-  exempt. `make check-audit-manifest` enumerates every bare site; `make check-audit-swallow` bans
-  swallowed/bare writes.
+  Until the 2026-08-15 B3 Gap-4 migration, the former legacy compatibility surfaces were exempt
+  (verified per op: zero `Record`/`Log` sites) but are now fully audited with durable facts: file
+  create/delete/update (`internal/service/file.go`, `file_presign.go`, `file_share.go`; file *share*
+  has been audited in-tx since B2-1 via `buildLegacyAuditFact`), message send/edit/react/unreact
+  (`internal/service/message.go`, `message_audit.go`; delete has been audited since B2-1,
+  `auditMessageDelete`), preferences (`internal/service/preference.go`), region promotion
+  (`internal/service/region_fencing.go`, in-tx with the fencing CAS), projection replication
+  publishes and projection replay runs (`internal/service/projection_replication.go`,
+  `projection_replay.go`). Create/send/delete facts anchor their EventID on the resource ID so
+  retries dedup at the ledger; preference.set and region.promote derive a deterministic
+  `idgen.Anchor` EventID; replication publishes reuse the deterministic snapshot-envelope EventID.
+  Multi-occurrence ops (update/edit/react/unreact/replay) record fresh per-execution rows with no
+  retry-dedup contract — a retry may append a duplicate row distinguishable by `occurred_at`, never
+  a silently dropped fact. Two documented carve-outs remain: `SendSystem` (server-internal emit path
+  with no tenant or actor attribution — the ledger rejects tenant-less facts — and no production
+  callers) and per-job sync projection summaries (`persistSyncSummary`; disposable replayable
+  projection writes whose lifecycle is already audited at the job layer). The comment tree was
+  quarantined on 2026-08-08 and live comment report is audited in-tx (`ResolveReportWithAudit`,
+  `internal/service/comment.go`), so comment ops are not exempt. `make check-audit-manifest`
+  enumerates every bare site; `make check-audit-swallow` bans swallowed/bare writes.
 
 Do not add new canonical file/chat authority to aero-id while Aero Vault/Aero IM are the target authorities.
 Treat the current file/message/comment surface as a compatibility source until a migration/deprecation decision

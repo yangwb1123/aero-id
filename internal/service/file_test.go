@@ -758,3 +758,240 @@ func TestFileService_CreateDedupesIdenticalContent(t *testing.T) {
 		t.Error("a content checksum must be persisted on the new row")
 	}
 }
+
+// ── B3 Gap-4 audit sites (standalone-fact) ──────────────────────────────────
+
+func TestFileService_CreateAuditFactCommitted(t *testing.T) {
+	var logged *domain.AuditEvent
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		return nil
+	}}
+	repo := &mocks.FileRepo{CreateFn: func(_ context.Context, f *domain.File) error { return nil }}
+	store := &mocks.Storage{
+		PutFn: func(_ context.Context, _, _ string, _ io.Reader) (string, int64, error) {
+			return "owner/2026/05/key", 11, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	f, err := svc.Create(ctx, service.CreateFileInput{Name: "a.txt", Reader: strings.NewReader("hello world")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logged == nil {
+		t.Fatal("file.create audit fact was not emitted")
+	}
+	if logged.ID != f.ID {
+		t.Fatalf("event ID = %v, want %v (anchored on the file ID)", logged.ID, f.ID)
+	}
+	if logged.Action != domain.AuditFileCreate {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditFileCreate)
+	}
+	if logged.SubjectType != "file" || logged.SubjectID != f.ID.String() {
+		t.Fatalf("subject = (%q,%q), want (file,%s)", logged.SubjectType, logged.SubjectID, f.ID.String())
+	}
+	if logged.ActorUID != "owner" {
+		t.Fatalf("actor = %q, want owner", logged.ActorUID)
+	}
+}
+
+func TestFileService_CreateAuditFailureFailsClosed(t *testing.T) {
+	audit := &mocks.Auditor{LogFn: func(context.Context, *domain.AuditEvent) error {
+		return stderrors.New("ledger down")
+	}}
+	repo := &mocks.FileRepo{CreateFn: func(_ context.Context, f *domain.File) error { return nil }}
+	store := &mocks.Storage{
+		PutFn: func(_ context.Context, _, _ string, _ io.Reader) (string, int64, error) {
+			return "owner/2026/05/key", 11, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	_, err := svc.Create(ctx, service.CreateFileInput{Name: "a.txt", Reader: strings.NewReader("hello world")})
+	assertAuditIngestFailed(t, err)
+}
+
+func TestFileService_DeleteAuditFactCommitted(t *testing.T) {
+	id := idgen.NewID()
+	var logged *domain.AuditEvent
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		return nil
+	}}
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", StorageKey: "owner/k"}, nil
+		},
+		DeleteFn: func(_ context.Context, _ domain.ID) error { return nil },
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{
+		DeleteFn: func(_ context.Context, _ string) error { return nil },
+	}, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	if err := svc.Delete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if logged == nil {
+		t.Fatal("file.delete audit fact was not emitted")
+	}
+	if logged.ID != id {
+		t.Fatalf("event ID = %v, want %v (anchored on the file ID)", logged.ID, id)
+	}
+	if logged.Action != domain.AuditFileDelete {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditFileDelete)
+	}
+	if logged.SubjectType != "file" || logged.SubjectID != id.String() {
+		t.Fatalf("subject = (%q,%q), want (file,%s)", logged.SubjectType, logged.SubjectID, id.String())
+	}
+	if logged.ActorUID != "owner" {
+		t.Fatalf("actor = %q, want owner", logged.ActorUID)
+	}
+}
+
+func TestFileService_DeleteAuditFailureFailsClosed(t *testing.T) {
+	id := idgen.NewID()
+	audit := &mocks.Auditor{LogFn: func(context.Context, *domain.AuditEvent) error {
+		return stderrors.New("ledger down")
+	}}
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", StorageKey: "owner/k"}, nil
+		},
+		DeleteFn: func(_ context.Context, _ domain.ID) error { return nil },
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{
+		DeleteFn: func(_ context.Context, _ string) error { return nil },
+	}, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	assertAuditIngestFailed(t, svc.Delete(ctx, id))
+}
+
+func TestFileService_UpdateMetadataAuditFactCommitted(t *testing.T) {
+	id := idgen.NewID()
+	var logged *domain.AuditEvent
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		return nil
+	}}
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Name: "old.txt"}, nil
+		},
+		UpdateMetadataFn: func(_ context.Context, _ domain.ID, _ map[string]any) error { return nil },
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	name := "new.txt"
+	if _, err := svc.UpdateMetadata(ctx, id, service.UpdateFileMetadataInput{Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+	if logged == nil {
+		t.Fatal("file.update audit fact was not emitted")
+	}
+	if logged.Action != domain.AuditFileUpdate {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditFileUpdate)
+	}
+	if logged.ID != (domain.ID{}) {
+		t.Fatalf("event ID = %v, want zero (fresh per-execution — multi-occurrence op)", logged.ID)
+	}
+	if logged.SubjectType != "file" || logged.SubjectID != id.String() || logged.ActorUID != "owner" {
+		t.Fatalf("unexpected update fact: %+v", logged)
+	}
+}
+
+func TestFileService_UpdateMetadataAuditFailureFailsClosed(t *testing.T) {
+	id := idgen.NewID()
+	audit := &mocks.Auditor{LogFn: func(context.Context, *domain.AuditEvent) error {
+		return stderrors.New("ledger down")
+	}}
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Name: "old.txt"}, nil
+		},
+		UpdateMetadataFn: func(_ context.Context, _ domain.ID, _ map[string]any) error { return nil },
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	name := "new.txt"
+	_, err := svc.UpdateMetadata(ctx, id, service.UpdateFileMetadataInput{Name: &name})
+	assertAuditIngestFailed(t, err)
+}
+
+func TestFileService_UpdateMetadataNoOpEmitsNoFact(t *testing.T) {
+	calls := 0
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, _ *domain.AuditEvent) error {
+		calls++
+		return nil
+	}}
+	id := idgen.NewID()
+	repo := &mocks.FileRepo{
+		GetFn: func(_ context.Context, _ domain.ID) (*domain.File, error) {
+			return &domain.File{ID: id, OwnerUID: "owner", Name: "old.txt"}, nil
+		},
+		UpdateMetadataFn: func(_ context.Context, _ domain.ID, _ map[string]any) error {
+			t.Fatal("empty-mask update must not reach the repository")
+			return nil
+		},
+	}
+	svc := service.NewFileService(repo, &mocks.Storage{}, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	if _, err := svc.UpdateMetadata(ctx, id, service.UpdateFileMetadataInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("empty-mask update must emit no audit fact (nothing changed), called %d times", calls)
+	}
+}
+
+func TestFilePresign_CompleteUploadAuditFactCommitted(t *testing.T) {
+	fileID := idgen.NewID()
+	var logged *domain.AuditEvent
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, e *domain.AuditEvent) error {
+		logged = e
+		return nil
+	}}
+	repo := &mocks.FileRepo{CreateFn: func(_ context.Context, f *domain.File) error { return nil }}
+	store := &mocks.Storage{
+		StatFn: func(_ context.Context, _ string) (*storage.ObjectInfo, error) {
+			return &storage.ObjectInfo{Key: "owner/up/k", Size: 11}, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	in := service.CompleteUploadInput{FileID: fileID, Name: "a.txt", StorageKey: "owner/up/k"}
+	f, err := svc.CompleteUpload(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logged == nil {
+		t.Fatal("file.create (presigned materialization) audit fact was not emitted")
+	}
+	if logged.ID != f.ID || f.ID != fileID {
+		t.Fatalf("event ID = %v, want %v (anchored on the presigned FileID — retry dedup)", logged.ID, fileID)
+	}
+	if logged.Action != domain.AuditFileCreate {
+		t.Fatalf("action = %q, want %q", logged.Action, domain.AuditFileCreate)
+	}
+	if logged.SubjectType != "file" || logged.SubjectID != fileID.String() || logged.ActorUID != "owner" {
+		t.Fatalf("unexpected presigned-create fact: %+v", logged)
+	}
+}
+
+func TestFilePresign_CompleteUploadAuditFailureFailsClosed(t *testing.T) {
+	fileID := idgen.NewID()
+	audit := &mocks.Auditor{LogFn: func(context.Context, *domain.AuditEvent) error {
+		return stderrors.New("ledger down")
+	}}
+	repo := &mocks.FileRepo{CreateFn: func(_ context.Context, f *domain.File) error { return nil }}
+	store := &mocks.Storage{
+		StatFn: func(_ context.Context, _ string) (*storage.ObjectInfo, error) {
+			return &storage.ObjectInfo{Key: "owner/up/k", Size: 11}, nil
+		},
+	}
+	svc := service.NewFileService(repo, store, "local", service.WithFileAuditLogger(audit))
+	ctx := service.WithActor(context.Background(), "owner")
+	in := service.CompleteUploadInput{FileID: fileID, Name: "a.txt", StorageKey: "owner/up/k"}
+	_, err := svc.CompleteUpload(ctx, in)
+	assertAuditIngestFailed(t, err)
+}

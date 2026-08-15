@@ -69,6 +69,13 @@ func (s *fileService) UpdateMetadata(ctx context.Context, id domain.ID, in Updat
 		return nil, apperr.Internal("file.update_failed", "failed to update file").Wrap(err)
 	}
 	f.UpdatedAt = now
+	if s.audit != nil {
+		// audit-site: standalone-fact — file.update, multi-occurrence, fresh per-execution.
+		if err := s.audit.Log(ctx, &domain.AuditEvent{ActorUID: actor,
+			Action: domain.AuditFileUpdate, SubjectType: "file", SubjectID: id.String()}); err != nil {
+			return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
+	}
 	return f, nil
 }
 

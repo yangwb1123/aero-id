@@ -40,6 +40,17 @@ MANIFEST=(
   "internal/service/event_ingest.go|eventAuditInput|standalone-fact|-"
   "internal/service/legacy_cutover.go|legacy.cutover.set|with-audit-fallback|SetCutoverWithAudit"
   "internal/service/message.go|auditMessageDelete|standalone-fact|-"
+  "internal/service/file.go|AuditFileCreate|standalone-fact|-"
+  "internal/service/file.go|AuditFileDelete|standalone-fact|-"
+  "internal/service/file_presign.go|AuditFileCreate|standalone-fact|-"
+  "internal/service/file_share.go|AuditFileUpdate|standalone-fact|-"
+  "internal/service/message_audit.go|auditMessageSend|standalone-fact|-"
+  "internal/service/message_audit.go|auditMessageEdit|standalone-fact|-"
+  "internal/service/message_audit.go|auditMessageReact|standalone-fact|-"
+  "internal/service/message_audit.go|auditMessageUnreact|standalone-fact|-"
+  "internal/service/preference.go|AuditPreferenceSet|standalone-fact|-"
+  "internal/service/projection_replication.go|AuditProjectionReplicationPublish|standalone-fact|-"
+  "internal/service/projection_replay.go|auditProjectionReplay|standalone-fact|-"
 )
 
 fail=0

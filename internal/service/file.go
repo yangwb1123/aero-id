@@ -163,6 +163,13 @@ func (s *fileService) Create(ctx context.Context, in CreateFileInput) (*domain.F
 	if s.refs != nil {
 		_, _ = s.refs.Increment(ctx, f.StorageKey)
 	}
+	if s.audit != nil {
+		// audit-site: standalone-fact — file.create anchored on the file ID (retry dedup).
+		if err := s.audit.Log(ctx, &domain.AuditEvent{ID: f.ID, ActorUID: actor,
+			Action: domain.AuditFileCreate, SubjectType: "file", SubjectID: f.ID.String()}); err != nil {
+			return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
+	}
 	return f, nil
 }
 
@@ -260,6 +267,13 @@ func (s *fileService) Delete(ctx context.Context, id domain.ID) error {
 	}
 	if shouldDelete {
 		_ = s.store.Delete(ctx, f.StorageKey)
+	}
+	if s.audit != nil {
+		// audit-site: standalone-fact — file.delete anchored on the file ID (retry dedup).
+		if err := s.audit.Log(ctx, &domain.AuditEvent{ID: id, ActorUID: actor,
+			Action: domain.AuditFileDelete, SubjectType: "file", SubjectID: id.String()}); err != nil {
+			return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
 	}
 	return nil
 }

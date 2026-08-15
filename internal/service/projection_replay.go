@@ -55,15 +55,29 @@ const DefaultProjectionReplayBatch = 1000
 type projectionReplayService struct {
 	events    repository.EventStoreRepository
 	snapshots repository.SnapshotRepository
+	audit     AuditLedgerService // nil => audit inactive
 }
 
 func NewProjectionReplayService(events repository.EventStoreRepository,
-	snapshots repository.SnapshotRepository) ReplayProjectionService {
-	return &projectionReplayService{events: events, snapshots: snapshots}
+	snapshots repository.SnapshotRepository, opts ...func(*projectionReplayService)) ReplayProjectionService {
+	s := &projectionReplayService{events: events, snapshots: snapshots}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// WithProjectionReplayAudit wires the ledger service into the replay tool;
+// when wired, every run records one projection.replay.run fact (fresh
+// per-execution — the tool has no retry-dedup contract).
+func WithProjectionReplayAudit(a AuditLedgerService) func(*projectionReplayService) {
+	return func(s *projectionReplayService) { s.audit = a }
 }
 
 func (s *projectionReplayService) ReplayProjection(ctx context.Context, input ReplayProjectionInput) (*ProjectionReplayResult, error) {
-	if input.AccountID == (domain.ID{}) || strings.TrimSpace(input.Source) == "" || strings.TrimSpace(input.TenantID) == "" {
+	input.Source = strings.TrimSpace(input.Source)
+	input.TenantID = strings.TrimSpace(input.TenantID)
+	if input.AccountID == (domain.ID{}) || input.Source == "" || input.TenantID == "" {
 		return nil, apperr.BadRequest("replay.invalid_input", "account_id, tenant and source are required")
 	}
 	if input.Limit <= 0 {
@@ -76,7 +90,7 @@ func (s *projectionReplayService) ReplayProjection(ctx context.Context, input Re
 	result := &ProjectionReplayResult{AccountID: input.AccountID.String(), Source: input.Source}
 	if len(envelopes) == 0 {
 		result.Completed = true
-		return result, nil
+		return s.replayProjectionFinish(ctx, input, result)
 	}
 	shadow, err := rebuildShadowProjection(envelopes)
 	if err != nil {
@@ -92,7 +106,36 @@ func (s *projectionReplayService) ReplayProjection(ctx context.Context, input Re
 		result.NextCursor = next.String()
 	}
 	compareProjections(result, shadow, live)
+	return s.replayProjectionFinish(ctx, input, result)
+}
+
+// replayProjectionFinish records the per-run fact (shared by the zero-event
+// branch and the normal path) and returns the result, failing closed on an
+// audit error.
+func (s *projectionReplayService) replayProjectionFinish(ctx context.Context, input ReplayProjectionInput,
+	result *ProjectionReplayResult) (*ProjectionReplayResult, error) {
+	if err := s.auditProjectionReplay(ctx, input, result); err != nil {
+		return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+	}
 	return result, nil
+}
+
+// auditProjectionReplay records one projection.replay.run fact per run (the
+// single shared bare site for both the zero-event branch and the normal path;
+// admin-invoked sensitive-read tool). Fresh per-execution (zero EventID): two
+// runs produce two rows — no retry-dedup contract. Returns nil when no audit
+// service is wired (nil => audit inactive).
+//
+// audit-site: standalone-fact — projection.replay.run, fresh per-execution.
+func (s *projectionReplayService) auditProjectionReplay(ctx context.Context, input ReplayProjectionInput, result *ProjectionReplayResult) error {
+	if s.audit == nil {
+		return nil
+	}
+	return s.audit.Record(ctx, AuditFactInput{Source: "aero-id", SourceRegion: "local",
+		AccountID: input.AccountID, TenantID: input.TenantID, ActorUID: actorFromContext(ctx),
+		Action: domain.AuditProjectionReplay, ResourceType: "projection", ResourceID: input.AccountID.String(),
+		Payload: map[string]any{"source": input.Source, "limit": input.Limit,
+			"replayed_events": result.ReplayedEvents, "completed": result.Completed}})
 }
 
 // rebuildShadowProjection folds events in received order, keeping the highest

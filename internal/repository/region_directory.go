@@ -47,6 +47,16 @@ type RegionDirectoryRepository interface {
 	PromoteWithFencing(ctx context.Context, tenantID string, accountID domain.ID, targetRegion string, expectedEpoch int64) (int64, error)
 }
 
+// RegionDirectoryAuditRepository is the in-transaction audit surface for
+// home-region promotion: the fencing CAS and its audit fact commit in ONE gorm
+// transaction, so a promotion can never consume the epoch without its durable
+// fact (region.promote). On an append failure the promotion rolls back and a
+// retry with the same expectedEpoch is safe.
+type RegionDirectoryAuditRepository interface {
+	PromoteWithFencingWithAudit(ctx context.Context, tenantID string, accountID domain.ID,
+		targetRegion string, expectedEpoch int64, fact *domain.AuditFact) (int64, error)
+}
+
 type regionDirectoryRow struct {
 	ID              domain.ID  `gorm:"column:id;primaryKey"`
 	AccountID       domain.ID  `gorm:"column:account_id"`
@@ -70,11 +80,12 @@ type regionEpochRow struct {
 func (regionEpochRow) TableName() string { return "region_epochs" }
 
 type regionDirectoryRepo struct {
-	db *gorm.DB
+	db    *gorm.DB
+	audit AuditLedgerTransactionalRepository
 }
 
-func NewRegionDirectoryRepository(db *gorm.DB) RegionDirectoryRepository {
-	return &regionDirectoryRepo{db: db}
+func NewRegionDirectoryRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) RegionDirectoryRepository {
+	return &regionDirectoryRepo{db: db, audit: audit}
 }
 
 func (r *regionDirectoryRepo) EnsureDirectory(ctx context.Context, tenantID string, accountID domain.ID,
@@ -128,49 +139,84 @@ func (r *regionDirectoryRepo) PromoteWithFencing(ctx context.Context, tenantID s
 	targetRegion string, expectedEpoch int64) (int64, error) {
 	var newEpoch int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Lock the directory row so concurrent promotions serialize.
-		var row regionDirectoryRow
-		query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
-			Where("tenant_id = ? AND account_id = ?", tenantID, accountID).First(&row)
-		if query.Error != nil {
-			if errors.Is(query.Error, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return query.Error
-		}
-		if row.FencedEpoch != expectedEpoch {
-			return ErrRegionEpochConflict
-		}
-		// Bump the target region's durable epoch — the fencing proof.
-		var target regionEpochRow
-		err := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
-			Where("region = ?", targetRegion).First(&target).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		var err error
+		newEpoch, err = promoteWithFencingTx(tx, tenantID, accountID, targetRegion, expectedEpoch)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return newEpoch, nil
+}
+
+// PromoteWithFencingWithAudit runs the same promotion CAS and appends the fact
+// in the SAME transaction (region.promote, in-tx WithAudit model). The fact is
+// unconditional for a committed promotion; a duplicate append (identical
+// derived EventID) is folded to success like the ban/file-share precedent.
+func (r *regionDirectoryRepo) PromoteWithFencingWithAudit(ctx context.Context, tenantID string, accountID domain.ID,
+	targetRegion string, expectedEpoch int64, fact *domain.AuditFact) (int64, error) {
+	var newEpoch int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		newEpoch, err = promoteWithFencingTx(tx, tenantID, accountID, targetRegion, expectedEpoch)
+		if err != nil {
 			return err
 		}
-		// The region epoch row is shared by every account in the region; a
-		// promotion must never lower it (that would fence out current writers
-		// and could re-admit a fenced-out generation). Bump from the higher
-		// of the row's current value and the account's observed epoch.
-		newEpoch = max(target.Epoch, expectedEpoch) + 1
-		now := time.Now().UTC()
-		if err := upsertRegionEpoch(tx, targetRegion, newEpoch, now); err != nil {
-			return err
-		}
-		// Point the directory at the new writer with the new epoch.
-		update := tx.Model(&regionDirectoryRow{}).Where("tenant_id = ? AND account_id = ?", tenantID, accountID).
-			Updates(map[string]any{"home_region": targetRegion, "fenced_epoch": newEpoch,
-				"promoted_at": now, "updated_at": now})
-		if update.Error != nil {
-			return update.Error
-		}
-		if update.RowsAffected != 1 {
-			return ErrRegionEpochConflict
+		if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+			return fmt.Errorf("append region promotion audit: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
 		return 0, err
+	}
+	return newEpoch, nil
+}
+
+// promoteWithFencingTx runs the promotion CAS body inside a caller-owned
+// transaction: lock the directory row, verify the expected epoch, bump the
+// target region's durable epoch (never downgrade), and point the directory at
+// the new writer with the new epoch.
+func promoteWithFencingTx(tx *gorm.DB, tenantID string, accountID domain.ID,
+	targetRegion string, expectedEpoch int64) (int64, error) {
+	// Lock the directory row so concurrent promotions serialize.
+	var row regionDirectoryRow
+	query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
+		Where("tenant_id = ? AND account_id = ?", tenantID, accountID).First(&row)
+	if query.Error != nil {
+		if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+			return 0, ErrNotFound
+		}
+		return 0, query.Error
+	}
+	if row.FencedEpoch != expectedEpoch {
+		return 0, ErrRegionEpochConflict
+	}
+	// Bump the target region's durable epoch — the fencing proof.
+	var target regionEpochRow
+	err := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
+		Where("region = ?", targetRegion).First(&target).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+	// The region epoch row is shared by every account in the region; a
+	// promotion must never lower it (that would fence out current writers
+	// and could re-admit a fenced-out generation). Bump from the higher
+	// of the row's current value and the account's observed epoch.
+	newEpoch := max(target.Epoch, expectedEpoch) + 1
+	now := time.Now().UTC()
+	if err := upsertRegionEpoch(tx, targetRegion, newEpoch, now); err != nil {
+		return 0, err
+	}
+	// Point the directory at the new writer with the new epoch.
+	update := tx.Model(&regionDirectoryRow{}).Where("tenant_id = ? AND account_id = ?", tenantID, accountID).
+		Updates(map[string]any{"home_region": targetRegion, "fenced_epoch": newEpoch,
+			"promoted_at": now, "updated_at": now})
+	if update.Error != nil {
+		return 0, update.Error
+	}
+	if update.RowsAffected != 1 {
+		return 0, ErrRegionEpochConflict
 	}
 	return newEpoch, nil
 }

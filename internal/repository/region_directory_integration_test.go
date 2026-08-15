@@ -23,7 +23,7 @@ func TestRegionDirectoryPromotionWithFencing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	directory := repository.NewRegionDirectoryRepository(db)
+	directory := repository.NewRegionDirectoryRepository(db, ledger)
 
 	if err := directory.EnsureDirectory(t.Context(), "tenant-a", account.ID, "local", "v1"); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -86,7 +86,7 @@ func TestRegionDirectoryRegionEpochsNeverDowngrade(t *testing.T) {
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
 	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
 	accounts := repository.NewAccountRepository(db, ledger)
-	directory := repository.NewRegionDirectoryRepository(db)
+	directory := repository.NewRegionDirectoryRepository(db, ledger)
 
 	first, err := accounts.EnsureByIdentity(t.Context(), "tenant-a", "snaplink", "u-first", "u-first", "local")
 	if err != nil {

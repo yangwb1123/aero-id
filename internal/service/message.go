@@ -111,6 +111,9 @@ func (s *messageService) Send(ctx context.Context, in SendMessageInput) (*domain
 	if err := s.messages.Create(ctx, m, evt); err != nil {
 		return nil, apperr.Internal("message.send_failed", "failed to send message").Wrap(err)
 	}
+	if err := s.auditMessageSend(ctx, m); err != nil {
+		return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+	}
 	return m, nil
 }
 
@@ -275,6 +278,9 @@ func (s *messageService) Edit(ctx context.Context, id domain.ID, content string)
 	now := time.Now().UTC()
 	if err := s.messages.UpdateContent(ctx, id, content, now); err != nil {
 		return nil, apperr.Internal("message.edit_failed", "failed to edit message").Wrap(err)
+	}
+	if err := s.auditMessageEdit(ctx, m); err != nil {
+		return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
 	}
 	m.Content = content
 	m.EditedAt = &now
@@ -441,12 +447,12 @@ func (s *messageService) ReactToMessage(ctx context.Context, messageID domain.ID
 		}
 		return apperr.Internal("message.react_failed", "failed to react to message").Wrap(err)
 	}
+	if err := s.auditMessageReact(ctx, actorUID, messageID, m); err != nil {
+		return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+	}
 	// Emit a "message.reacted" domain event to notify the peer participant.
 	// Best-effort: a failed outbox write must not fail the reaction itself.
-	peerUID := m.FromUID
-	if actorUID == m.FromUID {
-		peerUID = m.ToUID
-	}
+	peerUID := peerOf(actorUID, m)
 	if peerUID != "" && peerUID != actorUID {
 		evt := newEvent("message", messageID.String(), "message.reacted", map[string]any{
 			"message_id": messageID.String(),
@@ -472,6 +478,9 @@ func (s *messageService) UnreactMessage(ctx context.Context, messageID domain.ID
 	}
 	if err := s.messages.UnreactMessage(ctx, messageID, actorUID); err != nil {
 		return apperr.Internal("message.unreact_failed", "failed to remove reaction").Wrap(err)
+	}
+	if err := s.auditMessageUnreact(ctx, actorUID, messageID, m); err != nil {
+		return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
 	}
 	return nil
 }

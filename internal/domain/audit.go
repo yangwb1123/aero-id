@@ -14,16 +14,27 @@ import (
 // 2026-08-10 quarantine; the live layer uses service.AuditLogger, policed by
 // make check-audit-swallow.
 const (
-	AuditFileShareGrant  = "file.share.grant"
-	AuditFileShareRevoke = "file.share.revoke"
-	AuditReportResolve   = "comment.report.resolve"
-	AuditUserBlock       = "user.block"
-	AuditUserUnblock     = "user.unblock"
-	AuditMessageDelete   = "message.delete"
-	AuditAdminGrantRole  = "admin.role.grant"
-	AuditAdminRevokeRole = "admin.role.revoke"
-	AuditUserBan         = "user.ban"
-	AuditUserUnban       = "user.unban"
+	AuditFileShareGrant               = "file.share.grant"
+	AuditFileShareRevoke              = "file.share.revoke"
+	AuditReportResolve                = "comment.report.resolve"
+	AuditUserBlock                    = "user.block"
+	AuditUserUnblock                  = "user.unblock"
+	AuditMessageDelete                = "message.delete"
+	AuditAdminGrantRole               = "admin.role.grant"
+	AuditAdminRevokeRole              = "admin.role.revoke"
+	AuditUserBan                      = "user.ban"
+	AuditUserUnban                    = "user.unban"
+	AuditFileCreate                   = "file.create"
+	AuditFileDelete                   = "file.delete"
+	AuditFileUpdate                   = "file.update"
+	AuditMessageSend                  = "message.send"
+	AuditMessageEdit                  = "message.edit"
+	AuditMessageReact                 = "message.react"
+	AuditMessageUnreact               = "message.unreact"
+	AuditPreferenceSet                = "preference.set"
+	AuditRegionPromote                = "region.promote"
+	AuditProjectionReplicationPublish = "projection.replication.publish"
+	AuditProjectionReplay             = "projection.replay.run"
 )
 
 // AuditEvent records who did what to which resource and when. Live: consumed

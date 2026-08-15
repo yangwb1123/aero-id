@@ -2,11 +2,15 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 )
 
@@ -42,10 +46,20 @@ type PreferenceChecker interface {
 
 type preferenceService struct {
 	prefs repository.PreferenceRepository
+	audit AuditLogger // nil => audit inactive
 }
 
-func NewPreferenceService(prefs repository.PreferenceRepository) PreferenceService {
-	return &preferenceService{prefs: prefs}
+func NewPreferenceService(prefs repository.PreferenceRepository, opts ...func(*preferenceService)) PreferenceService {
+	s := &preferenceService{prefs: prefs}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// WithPreferenceAuditLogger wires an AuditLogger into the preference service.
+func WithPreferenceAuditLogger(a AuditLogger) func(*preferenceService) {
+	return func(s *preferenceService) { s.audit = a }
 }
 
 // compile-time assertions
@@ -86,7 +100,61 @@ func (s *preferenceService) Set(ctx context.Context, prefs []*domain.Notificatio
 	if err := s.prefs.Upsert(ctx, prefs); err != nil {
 		return apperr.Internal("preference.upsert_failed", "failed to save notification preferences").Wrap(err)
 	}
+	return s.auditPreferenceSet(ctx, uid, prefs)
+}
+
+// auditPreferenceSet records the preference.set fact with a deterministic
+// anchor (retry dedup; distinct payloads stay distinct). Returns nil when no
+// audit logger is wired (nil => audit inactive).
+//
+// audit-site: standalone-fact — preference.set, deterministic anchor.
+func (s *preferenceService) auditPreferenceSet(ctx context.Context, uid string, prefs []*domain.NotificationPreference) error {
+	if s.audit == nil {
+		return nil
+	}
+	if err := s.audit.Log(ctx, &domain.AuditEvent{ID: preferenceSetEventID(TenantFrom(ctx), uid, prefs),
+		ActorUID: uid, Action: domain.AuditPreferenceSet, SubjectType: "preference", SubjectID: uid,
+		Meta: map[string]any{"count": len(prefs)}}); err != nil {
+		return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+	}
 	return nil
+}
+
+// preferenceSetEventID derives the deterministic EventID of a preference.set
+// fact: a retry of the same payload re-derives the same ID (ledger dedup via
+// (tenant, source, event_id)), while a distinct payload derives a distinct ID
+// so a later legitimate Set is never silently dropped (the multi-occurrence
+// compliance invariant). A 4-part (action, tenant, uid) anchor without the
+// digest was rejected: it would dedup every later Set by the same user
+// regardless of content.
+func preferenceSetEventID(tenantID, uid string, prefs []*domain.NotificationPreference) domain.ID {
+	return idgen.Anchor("audit", "preference.set", tenantID, uid, preferenceSetDigest(prefs))
+}
+
+// preferenceSetDigest is a sha256 over the canonical JSON of the settable
+// preference fields (stable struct field order). UID is excluded (it is
+// already an anchor part) and CreatedAt/UpdatedAt are excluded so a retry of
+// the same payload stays byte-identical. Any change to a settable field
+// changes the digest.
+func preferenceSetDigest(prefs []*domain.NotificationPreference) string {
+	type digestRow struct {
+		NotificationType string
+		ScopeType        string
+		ScopeID          string
+		Enabled          bool
+		QuietHoursStart  string
+		QuietHoursEnd    string
+		Timezone         string
+	}
+	rows := make([]digestRow, 0, len(prefs))
+	for _, p := range prefs {
+		rows = append(rows, digestRow{NotificationType: p.NotificationType, ScopeType: p.ScopeType,
+			ScopeID: p.ScopeID, Enabled: p.Enabled, QuietHoursStart: p.QuietHoursStart,
+			QuietHoursEnd: p.QuietHoursEnd, Timezone: p.Timezone})
+	}
+	raw, _ := json.Marshal(rows)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // prefChecker wraps a PreferenceRepository to implement PreferenceChecker.
