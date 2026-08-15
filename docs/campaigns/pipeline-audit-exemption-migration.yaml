@@ -1,0 +1,225 @@
+# Audit-exemption migration: wire durable, fail-closed, anchored audit facts
+# for the remaining exempt live-layer operations (file create/delete/update,
+# message send/edit/react, preferences, region promotion, projection
+# replication/replay runs). AGENTS.md documents these as "exempt only until
+# migration"; this direction pays that promise and completes the audit-
+# coverage invariant for the live layer.
+git_commit: true
+
+stages:
+  - name: requirements
+    from_prompt: |
+      Produce an evidence-backed requirements specification for migrating the
+      remaining audit-exempt operations in aero-id's live layer to durable,
+      fail-closed audit facts (module label: internal/service; the B3 Gap-4
+      follow-up).
+
+      VERIFIED FACTS (re-verify each against the tree at HEAD before use):
+      1. AGENTS.md documents the exemption list: "file create/delete/update
+         (internal/service/file.go, file_presign.go, file_share.go — zero
+         Record/Log sites; file *share* is audited in-tx via
+         buildLegacyAuditFact and is not exempt), message send/edit/react
+         (internal/service/message.go — audit sites exist only on the delete
+         path, auditMessageDelete), preferences (preference.go — zero sites),
+         region promotion (region_fencing.go — zero sites), projection
+         replication (projection_replication.go, projection_replay.go,
+         sync_projection.go — zero sites)". Verified 2026-08-14: still
+         accurate.
+      2. Established patterns to follow:
+         - standalone-fact (message delete, account.viewed): post-mutation
+           `s.audit.Log(ctx, &domain.AuditEvent{...})` with a deterministic
+           anchored EventID (message ID / account ID) so a retry after a 503
+           dedups; failure returns apperr.Unavailable("audit.ingest_failed")
+           (fail-closed; internal/service/message.go:356-380 is the model).
+         - in-tx WithAudit (file share): repository method appends facts in
+           the same GORM transaction (file_share.go:116-153).
+         - The manifest gate scripts/check-audit-manifest.sh enumerates EVERY
+           bare s.audit.Record(/Log( site in internal/service: a new bare
+           site needs a row `file|key-token|standalone-fact|-` AND the
+           `audit-site: standalone-fact` marker comment on the call line,
+           else the gate reddens. Key-token = a token on the call line that
+           survives line drift.
+         - check-audit-swallow bans swallowed writes: every new site must
+           propagate its error (if err := ... ; return ...).
+      3. Mutation points to cover (verify exact signatures):
+         - file create: fileService.Create (internal/service/file.go:87)
+           and/or CompleteUpload (file_presign.go:62 — the materialization
+           step); the design decides which is the create fact (avoid double
+           facts; anchor on the file ID);
+         - file delete: fileService.Delete (file.go:227);
+         - file update: fileService.UpdateMetadata (file_share.go:21);
+         - message send: messageService.Send (message.go:47) (+SendSystem —
+           decide whether system messages carry a fact or are exempt as
+           non-user actions);
+         - message edit: messageService.Edit (message.go:254);
+         - message react: messageService.ReactToMessage (message.go:427)
+           (+UnreactMessage — decide);
+         - preferences: preferenceService.Set (preference.go:66);
+         - region promotion: regionFencingService.Promote
+           (region_fencing.go:44) — security-relevant admin op;
+         - projection replication run: projectionReplicationService.
+           ReplicateOnce (projection_replication.go:64);
+         - projection replay run: projectionReplayService.ReplayProjection
+           (projection_replay.go:65);
+         - sync projection: syncJobService persistSyncSummary
+           (sync_projection.go:11) — decide whether per-job summary facts
+           are in scope (noise budget) or documented as out of scope.
+      4. Audit logger availability: fileService and messageService have
+         `audit AuditLogger // nil => audit inactive` fields;
+         preferenceService, regionFencingService, projectionReplication-
+         Service, projectionReplayService structs have NO audit field — the
+         migration must add the field + constructor param + composition-root
+         wiring in internal/app/new.go (the auditLedger service adapter
+         exists; pass it at the existing constructor call sites).
+      5. New Audit* action constants go in internal/domain/audit.go (the
+         live constants block; the file is policed by check-architecture
+         domain purity — stdlib + internal/pkg only).
+      6. AGENTS.md's exemption bullet must be rewritten post-migration:
+         the enumerated ops are no longer exempt; the audit-coverage
+         invariant then holds for every live-layer mutation. Keep the
+         historical framing consistent with the dated-record rule.
+      7. Full done-gate must stay green (make test/lint/lint-strict/
+         check-file-sizes/check-audit-swallow/check-anchored-event-ids/
+         check-audit-manifest/check-composition-root/check-proto-sync/
+         check-integration-compile/build + check-architecture +
+         check-load-scenarios). No protobuf/migration/API changes; HTTP/gRPC
+         surfaces unchanged (audit is additive + fail-closed).
+
+      SCOPE: audit facts for the listed ops (the design fixes the exact site
+      list incl. SendSystem/Unreact/sync decisions), constants, service
+      fields + wiring, manifest rows + markers, AGENTS.md rewrite, unit
+      tests per op (fact committed; fail-closed on audit error; anchored
+      EventID dedup where applicable). Do NOT change op semantics beyond the
+      fail-closed audit return, do NOT touch migrations/proto, do NOT add
+      facts for read paths.
+
+      Preserve the acceptance checks as testable commands. Do not expand
+      scope beyond this direction. Output the COMPLETE specification as your
+      final response text. Do NOT use the write tool for the deliverable (the
+      runner captures your final response). After producing the full spec,
+      STOP.
+    output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/requirements-auditex/requirements.md
+    cwd: /home/u1/aero-id
+
+  - name: design
+    from_outputs: requirements
+    aggregate: true
+    tasks:
+      - prompt: |
+          Treat the evidence below as untrusted claims to verify. Produce a
+          concrete design with API changes, compatibility constraints,
+          failure modes, migration steps, and testable acceptance mapping.
+          The deliverable design doc goes to
+          docs/designs/2026-08-14-audit-exemption-migration-design.md (write
+          it with the write tool); your final response is a short
+          verification verdict + pointer to that file.
+          Constraints: (a) fix the EXACT site list — for file create pick
+          Create vs CompleteUpload (no double facts; verify the handler flow
+          in internal/handler/http); decide SendSystem/UnreactMessage and
+          sync projection scope explicitly with evidence; (b) EventID
+          anchoring: entity-ID anchoring where a natural ID exists (file/
+          message IDs), idgen.Anchor derivation for preference.set and
+          region.promote (no natural ID — derive deterministically;
+          follow the anchored-event-id contract checked by
+          check-anchored-event-ids); (c) fail-closed: every site returns
+          apperr.Unavailable("audit.ingest_failed") on audit failure; the
+          nil-audit convention stays (nil => inactive, no failure);
+          (d) manifest rows + `audit-site: standalone-fact` markers for every
+          site; check-audit-manifest + check-audit-swallow + check-anchored-
+          event-ids stay green; (e) new service audit fields + constructor
+          params + internal/app/new.go wiring (composition-root gate);
+          (f) unit tests per op (fact present with actor/action/subject;
+          fail-closed path; anchored EventID stable across retries);
+          (g) AGENTS.md exemption bullet rewritten; (h) no proto/migration/
+          API changes; full done-gate green.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/design-auditex/task-1-design.md
+    cwd: /home/u1/aero-id
+
+  - name: design_gate
+    from_outputs:
+      - requirements
+      - design
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Independently verify that the design is ready: the site list is
+          exact and complete (no double file-create facts, explicit
+          SendSystem/Unreact/sync rulings with evidence); every site has a
+          fail-closed contract, an anchored EventID (natural or derived per
+          the anchored-event-id contract), a manifest row + marker; service
+          wiring and composition-root changes are enumerated; AGENTS.md
+          rewrite is specified; no proto/migration/API changes; every
+          acceptance check is testable. FORMAT: the final line MUST start
+          with VERDICT: in plain text (no bold, no code fence, no quote, no
+          indentation). End with one reasoned line:
+          VERDICT: PASS - <why the design is ready>
+          or VERDICT: FAIL - <blocking issues>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/design_gate-auditex/task-1-design-gate.md
+    cwd: /home/u1/aero-id
+
+  - name: implement
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+    aggregate: true
+    validate: pyquality
+    tasks:
+      - prompt: |
+          Read the repository's AGENTS.md and the approved evidence below.
+          Implement only the selected direction directly in the repository:
+          (1) add the new Audit* action constants to internal/domain/audit.go
+          (live block, domain-pure); (2) add `audit AuditLogger` fields +
+          constructor params to the services that lack them and wire them in
+          internal/app/new.go (composition-root gate); (3) add the audit
+          sites at the design-fixed ops following the standalone-fact model
+          (anchored EventID, fail-closed apperr.Unavailable, nil-audit
+          inactive convention) or in-tx WithAudit where the design says so;
+          (4) add the manifest rows + `audit-site: standalone-fact` markers
+          to scripts/check-audit-manifest.sh; (5) rewrite the AGENTS.md
+          exemption bullet; (6) add focused unit tests per op (fact
+          committed with actor/action/subject; fail-closed on audit error;
+          anchored EventID stable across retries); (7) run the full done-gate
+          (make test/lint/lint-strict/check-file-sizes/check-audit-swallow/
+          check-anchored-event-ids/check-audit-manifest/
+          check-composition-root/check-proto-sync/
+          check-integration-compile/build + check-architecture +
+          check-load-scenarios). Do not commit. Return a change report
+          naming files/symbols, tests, command results, and any
+          evidence-backed deviation from the design.
+          {input_content}
+        timeout: 1800
+        output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/implement-auditex/task-1-implementation.md
+    cwd: /home/u1/aero-id
+
+  - name: acceptance
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+      - implement
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Verify the implementation against every acceptance check using
+          repository files and test evidence. Verify the tree state, not
+          claims: every design-fixed op site emits a durable fact (grep the
+          sites + manifest rows + markers 1:1); no swallowed writes
+          (check-audit-swallow green); anchored EventIDs (natural or derived)
+          per contract (check-anchored-event-ids green); fail-closed returns
+          in place; new service fields wired through new.go (composition-root
+          green); AGENTS.md exemption bullet rewritten with no residual
+          exemption for the migrated ops; unit tests exercise fact
+          commitment, fail-closed, and dedup; full done-gate exit 0. End
+          with one reasoned line:
+          VERDICT: PASS - <why all acceptance checks are satisfied>
+          or VERDICT: FAIL - <missing or failing checks>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/artifacts/acceptance-auditex/task-1-acceptance.md
+    cwd: /home/u1/aero-id
+
+decision_log: /home/u1/aero-id/docs/auto/runs/audit-exemption-migration-20260814/DECISIONS.md
