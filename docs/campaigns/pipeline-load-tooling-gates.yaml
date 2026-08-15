@@ -1,0 +1,199 @@
+# P6-08 load-tooling hardening: single source of truth for ghz scenarios,
+# deterministic drift gates (proto/scenarios/run-ghz/bench-schema), and
+# load-test-db safety guardrails. All gates pure bash + grep (CI-safe, no
+# Docker/network/Go toolchain), enforced in the check-gates CI job.
+git_commit: true
+
+stages:
+  - name: requirements
+    from_prompt: |
+      Produce an evidence-backed requirements specification for hardening the
+      aero-id load-test tooling under scripts/load/ (P6-08; module label:
+      scripts/load).
+
+      VERIFIED FACTS (re-verify each against the tree at HEAD before use):
+      1. TWO divergent ghz scenario sources exist:
+         - scripts/load/ghz/scenarios.yaml lists `call: aeropb.AuditLedgerService.ListEvents`
+           — but api/proto/aero_id/v1/aero_id.proto has NO `rpc ListEvents(`;
+           the service's only list RPC is `rpc ListAuditFacts(` (line 548+).
+           The other four scenario calls (AccountService.GetMe,
+           AggregationService.GetMeOverview, AccountService.ListSources,
+           FileService.ListFiles) DO exist.
+         - scripts/load/run-ghz.sh (the executable; invoked by the Makefile
+           load-test-grpc target) carries its own inline SCENARIOS array with
+           the CORRECT `ListAuditFacts` — so scenarios.yaml is dead
+           documentation that has drifted from the proto AND from the tool.
+      2. No deterministic gate validates any of this: nothing in the done-
+         gate or ci.yml fails when a scenario RPC dies or when the two
+         sources diverge. The ci.yml check-gates job currently runs only
+         check-audit-swallow + check-architecture (pure bash + grep, no
+         setup-go, no network, no Docker — that isolation property must be
+         preserved for any new gate).
+      3. scripts/load/db/partition-index-bench.sql references tables
+         account_snapshots, audit_ledger, audit_publications, files,
+         messages, notifications, outbox_events — verified 2026-08-14: all
+         exist in migrations/*.up.sql today (no drift), but nothing detects
+         future drift (e.g. a renamed table or a new hot table added to the
+         bench without a migration).
+      4. Makefile load-test-db: `PG_DSN_BENCH ?= $(PG_DSN)` — the benchmark
+         silently falls back to the application database DSN. A bench run
+         (EXPLAIN ANALYZE over hot control-plane queries) against the live
+         app DB is a real hazard; the earlier analysis direction demanded an
+         explicit PG_DSN_BENCH + seed target + seed-sanity guard.
+      5. scripts/load/k6/{account,event-soak,callback-soak}.js are the k6
+         loads; scripts/load/sink is the callback receiver. k6 script paths
+         were spot-verified against live handlers
+         (/v1/admin/callback-subscriptions exists in
+         internal/handler/http/callback.go) — no dead path confirmed, so k6
+         content repair is OUT of scope unless the implementer finds concrete
+         drift.
+      6. ghz SLO thresholds: scenarios.yaml and run-ghz.sh have none (fixed
+         --concurrency 50 --duration 2m, no latency assertions). The direction
+         adds per-scenario p95/p99 SLO targets and enforcement in run-ghz.sh
+         (ghz JSON output + python3, which is available in the repo env and
+         the ubuntu CI base image; do NOT require jq or any new binary).
+      7. scripts/load/README.md documents the targets (may need updating to
+         the single-source-of-truth flow).
+
+      SCOPE: (a) make ONE canonical ghz scenario definition — recommended:
+      scenarios.yaml stays the canonical flat YAML (name/call/data/
+      concurrency/duration/p95/p99) and run-ghz.sh parses it (python3 ok in
+      run-ghz.sh; the CI gate stays bash+grep); fix the dead ListEvents call;
+      (b) new `make check-load-scenarios` gate, pure bash + grep: every
+      `call: Service.Method` in scenarios.yaml exists in the proto (service
+      block + rpc line); run-ghz.sh scenario set equals scenarios.yaml set;
+      every table name in partition-index-bench.sql appears in
+      migrations/*.up.sql; liveness (the k6 scripts and sink referenced by
+      the Makefile targets exist); (c) load-test-db safety: PG_DSN_BENCH
+      explicit (no silent fallback to PG_DSN) + seed-sanity guard;
+      (d) wire check-load-scenarios into the ci.yml check-gates job and the
+      documented done-gate chain; (e) README update. Do NOT change load
+      binaries' semantics (k6/ghz calls, endpoints, durations) beyond the
+      canonical-source refactor, do NOT touch live Go code or migrations.
+
+      Preserve the acceptance checks as testable commands. Do not expand
+      scope beyond this direction. Output the COMPLETE specification as your
+      final response text. Do NOT use the write tool for the deliverable (the
+      runner captures your final response). After producing the full spec,
+      STOP.
+    output: /home/u1/aero-id/docs/auto/runs/load-tooling-single-source-truth-gates-20260814/artifacts/requirements-load/requirements.md
+    cwd: /home/u1/aero-id
+
+  - name: design
+    from_outputs: requirements
+    aggregate: true
+    tasks:
+      - prompt: |
+          Treat the evidence below as untrusted claims to verify. Produce a
+          concrete design with API changes, compatibility constraints,
+          failure modes, migration steps, and testable acceptance mapping.
+          The deliverable design doc goes to
+          docs/designs/2026-08-14-load-tooling-single-source-truth-design.md
+          (write it with the write tool); your final response is a short
+          verification verdict + pointer to that file.
+          Constraints: (a) scenarios.yaml is the single canonical source;
+          run-ghz.sh reads it (python3 allowed there; keep the script's
+          public CLI: run-ghz.sh <bearer-token> [grpc-addr]); (b) the new
+          check-load-scenarios gate is pure bash + grep (same isolation
+          class as check-architecture: no go, no docker, no network, no
+          python in the gate itself) and self-tests via green/red fixtures
+          or mutation probes (dead RPC in yaml -> red; run-ghz divergence ->
+          red; bench table missing from migrations -> red); (c) ghz
+          threshold enforcement uses python3 on the ghz JSON output (no jq);
+          thresholds default sensibly (e.g. p95/p99 latency per scenario)
+          and are overridable via env; (d) PG_DSN_BENCH becomes explicit
+          with a seed-sanity guard (refuse to run against the app DSN
+          unless an explicit override marker is set; document the seed
+          target); (e) wire into ci.yml check-gates job (append one step)
+          and the done-gate; (f) no live Go code, migrations, k6 semantics,
+          or existing gate logic changes; full done-gate green afterwards.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/load-tooling-single-source-truth-gates-20260814/artifacts/design-load/task-1-design.md
+    cwd: /home/u1/aero-id
+
+  - name: design_gate
+    from_outputs:
+      - requirements
+      - design
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Independently verify that the design is ready: scenarios.yaml is
+          the single source with the dead RPC fixed; run-ghz.sh consumes it
+          without breaking its CLI; check-load-scenarios is pure bash+grep
+          with self-test coverage (every violation class reddens); ghz
+          thresholds are enforced without jq; PG_DSN_BENCH safety guard is
+          concrete; CI wiring is one additive step; no unrelated logic
+          changes. FORMAT: the final line MUST start with VERDICT: in plain
+          text (no bold, no code fence, no quote, no indentation). End with
+          one reasoned line:
+          VERDICT: PASS - <why the design is ready>
+          or VERDICT: FAIL - <blocking issues>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/load-tooling-single-source-truth-gates-20260814/artifacts/design_gate-load/task-1-design-gate.md
+    cwd: /home/u1/aero-id
+
+  - name: implement
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+    aggregate: true
+    validate: pyquality
+    tasks:
+      - prompt: |
+          Read the repository's AGENTS.md and the approved evidence below.
+          Implement only the selected direction directly in the repository:
+          (1) canonicalize scripts/load/ghz/scenarios.yaml (fix the dead
+          ListEvents call; add p95/p99 SLO fields) and refactor
+          scripts/load/run-ghz.sh to consume it (same CLI, python3 ok,
+          thresholds enforced on the ghz JSON output, no jq); (2) add
+          scripts/check-load-scenarios.sh + a Makefile target (pure bash +
+          grep): yaml call RPCs exist in the proto, run-ghz scenario set
+          equals the yaml set, bench tables exist in migrations, k6/sink
+          liveness; self-test via mutation probes in a throwaway worktree
+          (dead RPC -> red, divergence -> red, missing bench table -> red;
+          restore each); (3) load-test-db: explicit PG_DSN_BENCH with a
+          seed-sanity guard (no silent PG_DSN fallback without an explicit
+          override marker), document the seed target; (4) append the gate
+          to ci.yml check-gates job and the done-gate chain; (5) update
+          scripts/load/README.md; (6) run the full done-gate (make
+          test/lint/lint-strict/check-file-sizes/check-audit-swallow/
+          check-anchored-event-ids/check-audit-manifest/
+          check-composition-root/check-proto-sync/
+          check-integration-compile/build + check-architecture +
+          check-load-scenarios). Do not commit. Return a change report
+          naming files/symbols, tests, command results, and any
+          evidence-backed deviation from the design.
+          {input_content}
+        timeout: 1800
+        output: /home/u1/aero-id/docs/auto/runs/load-tooling-single-source-truth-gates-20260814/artifacts/implement-load/task-1-implementation.md
+    cwd: /home/u1/aero-id
+
+  - name: acceptance
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+      - implement
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Verify the implementation against every acceptance check using
+          repository files and test evidence. Verify the tree state, not
+          claims: scenarios.yaml is the single source consumed by
+          run-ghz.sh; zero dead RPCs (every call: resolves in the proto);
+          check-load-scenarios is pure bash+grep, self-tests redden on each
+          violation class and passes green on the clean tree; PG_DSN_BENCH
+          no longer silently falls back to PG_DSN; ci.yml check-gates job
+          gained the additive step; full done-gate exit 0. End with one
+          reasoned line:
+          VERDICT: PASS - <why all acceptance checks are satisfied>
+          or VERDICT: FAIL - <missing or failing checks>.
+          {input_content}
+        output: /home/u1/aero-id/docs/auto/runs/load-tooling-single-source-truth-gates-20260814/artifacts/acceptance-load/task-1-acceptance.md
+    cwd: /home/u1/aero-id
+
+decision_log: /home/u1/aero-id/docs/auto/runs/load-tooling-single-source-truth-gates-20260814/DECISIONS.md
