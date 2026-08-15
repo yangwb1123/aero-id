@@ -13,20 +13,12 @@ import (
 	"github.com/aero/aero-id/internal/pkg/idgen"
 )
 
-// AuditHoldScope is the legal-hold target kind (P4-07).
-type AuditHoldScope string
-
-const (
-	AuditHoldScopeTenant  AuditHoldScope = "tenant"
-	AuditHoldScopeAccount AuditHoldScope = "account"
-	AuditHoldScopeActor   AuditHoldScope = "actor" // legacy audit_events exemption
-)
-
 // AuditHold is one evidence-preservation order.
+// (AuditHoldScope + constants live in internal/domain as pure types.)
 type AuditHold struct {
 	ID        domain.ID
 	TenantID  string
-	ScopeType AuditHoldScope
+	ScopeType domain.AuditHoldScope
 	ScopeID   string
 	Reason    string
 	CreatedBy string
@@ -39,12 +31,12 @@ type AuditHoldRepository interface {
 	// PutHold creates or refreshes a hold (upsert on the unique triple).
 	PutHold(ctx context.Context, hold *AuditHold) error
 	// RemoveHold lifts an active hold.
-	RemoveHold(ctx context.Context, tenantID string, scopeType AuditHoldScope, scopeID string) error
+	RemoveHold(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string) error
 	// ListActiveHolds returns holds that are not expired.
 	ListActiveHolds(ctx context.Context, tenantID string) ([]*AuditHold, error)
 	// HoldScopeIDs returns the active scope ids of one kind (used by the
 	// legacy cleaner to exempt actors under hold).
-	HoldScopeIDs(ctx context.Context, scopeType AuditHoldScope) ([]string, error)
+	HoldScopeIDs(ctx context.Context, scopeType domain.AuditHoldScope) ([]string, error)
 }
 
 // AuditHoldAuditRepository is the in-transaction audit surface for legal
@@ -55,7 +47,7 @@ type AuditHoldRepository interface {
 // CallbackAuditRepository).
 type AuditHoldAuditRepository interface {
 	PutHoldWithAudit(ctx context.Context, hold *AuditHold, fact *domain.AuditFact) error
-	RemoveHoldWithAudit(ctx context.Context, tenantID string, scopeType AuditHoldScope, scopeID string, fact *domain.AuditFact) error
+	RemoveHoldWithAudit(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string, fact *domain.AuditFact) error
 }
 
 type auditHoldRow struct {
@@ -141,7 +133,7 @@ func (r *auditHoldRepo) PutHoldWithAudit(ctx context.Context, hold *AuditHold, f
 	})
 }
 
-func (r *auditHoldRepo) RemoveHold(ctx context.Context, tenantID string, scopeType AuditHoldScope, scopeID string) error {
+func (r *auditHoldRepo) RemoveHold(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string) error {
 	return r.db.WithContext(ctx).Where("tenant_id = ? AND scope_type = ? AND scope_id = ?",
 		tenantID, string(scopeType), scopeID).Delete(&auditHoldRow{}).Error
 }
@@ -151,7 +143,8 @@ func (r *auditHoldRepo) RemoveHold(ctx context.Context, tenantID string, scopeTy
 // the plain Remove path (REQ-4.4): lifting an already-lifted hold still
 // evidences the attempted lift, and the append runs after the delete inside
 // the same tx, so a failed append rolls the delete back.
-func (r *auditHoldRepo) RemoveHoldWithAudit(ctx context.Context, tenantID string, scopeType AuditHoldScope, scopeID string, fact *domain.AuditFact) error {
+func (r *auditHoldRepo) RemoveHoldWithAudit(ctx context.Context, tenantID string,
+	scopeType domain.AuditHoldScope, scopeID string, fact *domain.AuditFact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("tenant_id = ? AND scope_type = ? AND scope_id = ?",
 			tenantID, string(scopeType), scopeID).Delete(&auditHoldRow{}).Error; err != nil {
@@ -178,7 +171,7 @@ func (r *auditHoldRepo) ListActiveHolds(ctx context.Context, tenantID string) ([
 	return out, nil
 }
 
-func (r *auditHoldRepo) HoldScopeIDs(ctx context.Context, scopeType AuditHoldScope) ([]string, error) {
+func (r *auditHoldRepo) HoldScopeIDs(ctx context.Context, scopeType domain.AuditHoldScope) ([]string, error) {
 	var ids []string
 	err := r.db.WithContext(ctx).Model(&auditHoldRow{}).
 		Where("scope_type = ? AND (expires_at IS NULL OR expires_at > ?)", string(scopeType), time.Now().UTC()).
@@ -187,6 +180,6 @@ func (r *auditHoldRepo) HoldScopeIDs(ctx context.Context, scopeType AuditHoldSco
 }
 
 func auditHoldRowToDomain(row *auditHoldRow) *AuditHold {
-	return &AuditHold{ID: row.ID, TenantID: row.TenantID, ScopeType: AuditHoldScope(row.ScopeType),
+	return &AuditHold{ID: row.ID, TenantID: row.TenantID, ScopeType: domain.AuditHoldScope(row.ScopeType),
 		ScopeID: row.ScopeID, Reason: row.Reason, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt}
 }

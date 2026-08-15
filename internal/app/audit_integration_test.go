@@ -947,12 +947,12 @@ func TestFirstEventGovernanceAnchorDerivationE2E(t *testing.T) {
 	fixture := newAuditGovernanceFixture(t, false, 0)
 	expiresAt := time.Date(2026, 6, 30, 23, 59, 59, 987654000, time.UTC)
 	holdSvc := service.NewAuditHoldService(repository.NewAuditHoldRepository(fixture.db, fixture.ledgerRepo), fixture.auditLedger)
-	if _, err := holdSvc.Put(t.Context(), "tenant-one", repository.AuditHoldScopeTenant,
+	if _, err := holdSvc.Put(t.Context(), "tenant-one", domain.AuditHoldScopeTenant,
 		"scope-1", "reason-1", &expiresAt); err != nil {
 		t.Fatalf("hold Put: %v", err)
 	}
 
-	wantID := idgen.Anchor("audit_hold.set", "tenant-one", string(repository.AuditHoldScopeTenant),
+	wantID := idgen.Anchor("audit_hold.set", "tenant-one", string(domain.AuditHoldScopeTenant),
 		"scope-1", "reason-1", idgen.RenderAnchorTime(&expiresAt))
 	var gotID string
 	if err := fixture.db.Raw(`SELECT event_id::text FROM audit_ledger WHERE event_id = ?`, wantID.String()).Scan(&gotID).Error; err != nil {

@@ -13,36 +13,12 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 )
 
-// LegacyCutoverStatus is the per-tenant cutover state machine (P8-04).
-type LegacyCutoverStatus string
-
-const (
-	LegacyCutoverStatusLegacy     LegacyCutoverStatus = "legacy"      // default: compatibility surface live
-	LegacyCutoverStatusShadow     LegacyCutoverStatus = "shadow"      // dual-read in progress; legacy still serves
-	LegacyCutoverStatusCutOver    LegacyCutoverStatus = "cut_over"    // facade answers "moved" for this tenant
-	LegacyCutoverStatusRolledBack LegacyCutoverStatus = "rolled_back" // explicit rollback; legacy serves again
-)
-
-// ValidCutoverTransition reports whether from -> to is allowed.
-func ValidCutoverTransition(from, to LegacyCutoverStatus) bool {
-	switch to {
-	case LegacyCutoverStatusShadow:
-		return from == LegacyCutoverStatusLegacy || from == LegacyCutoverStatusRolledBack
-	case LegacyCutoverStatusCutOver:
-		return from == LegacyCutoverStatusShadow || from == LegacyCutoverStatusCutOver
-	case LegacyCutoverStatusRolledBack:
-		return from == LegacyCutoverStatusCutOver
-	case LegacyCutoverStatusLegacy:
-		return from == LegacyCutoverStatusLegacy || from == LegacyCutoverStatusRolledBack
-	default:
-		return false
-	}
-}
-
 // LegacyCutover is one tenant's cutover decision.
+// (LegacyCutoverStatus + constants + ValidCutoverTransition live in
+// internal/domain as pure types.)
 type LegacyCutover struct {
 	TenantID  string
-	Status    LegacyCutoverStatus
+	Status    domain.LegacyCutoverStatus
 	DecidedAt time.Time
 	DecidedBy string
 	Note      string
@@ -152,7 +128,7 @@ func (r *legacyCutoverRepo) SetCutoverWithAudit(ctx context.Context, cutover *Le
 }
 
 func legacyCutoverRowToDomain(row *legacyCutoverRow) *LegacyCutover {
-	return &LegacyCutover{TenantID: row.TenantID, Status: LegacyCutoverStatus(row.Status),
+	return &LegacyCutover{TenantID: row.TenantID, Status: domain.LegacyCutoverStatus(row.Status),
 		DecidedAt: row.DecidedAt, DecidedBy: row.DecidedBy, Note: row.Note, UpdatedAt: row.UpdatedAt}
 }
 

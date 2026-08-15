@@ -165,7 +165,7 @@ func RunAuditCleanerWithHolds(repo AuditRepository, holds AuditHoldRepository, l
 				cutoff := time.Now().UTC().Add(-retention)
 				var exempt []string
 				if holds != nil {
-					exempt, _ = holds.HoldScopeIDs(ctx, AuditHoldScopeActor)
+					exempt, _ = holds.HoldScopeIDs(ctx, domain.AuditHoldScopeActor)
 				}
 				deleted, err := purgeAuditWithExempt(repo, ctx, cutoff, exempt)
 				if err != nil {

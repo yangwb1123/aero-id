@@ -8,7 +8,6 @@ import (
 	"github.com/aero/aero-id/internal/middleware"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
-	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -118,7 +117,7 @@ func (h *AccountHandler) SetCutover(c *gin.Context) {
 		httpx.WriteError(c, apperr.BadRequest("cutover.invalid_request", "tenant_id and status are required"))
 		return
 	}
-	entry, err := h.cutover.Set(c.Request.Context(), body.TenantID, repository.LegacyCutoverStatus(body.Status), body.Note)
+	entry, err := h.cutover.Set(c.Request.Context(), body.TenantID, domain.LegacyCutoverStatus(body.Status), body.Note)
 	if err != nil {
 		httpx.WriteError(c, err)
 		return

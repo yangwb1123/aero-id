@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
@@ -16,9 +17,9 @@ import (
 // compatibility surface keeps serving until an admin explicitly flips a tenant.
 type LegacyCutoverService interface {
 	// Get returns the tenant's status; tenants with no decision are 'legacy'.
-	Get(ctx context.Context, tenantID string) (repository.LegacyCutoverStatus, error)
+	Get(ctx context.Context, tenantID string) (domain.LegacyCutoverStatus, error)
 	// Set applies a validated transition (shadow -> cut_over -> rolled_back).
-	Set(ctx context.Context, tenantID string, status repository.LegacyCutoverStatus, note string) (*repository.LegacyCutover, error)
+	Set(ctx context.Context, tenantID string, status domain.LegacyCutoverStatus, note string) (*repository.LegacyCutover, error)
 	// CleanupReadiness returns the P8-05 checklist for removing the legacy
 	// write path. Read-only; never deletes.
 	CleanupReadiness(ctx context.Context, tenantID string) ([]repository.CleanupReadinessItem, bool, error)
@@ -53,14 +54,14 @@ func (s *legacyCutoverService) IsCutOver(ctx context.Context, tenantID string) (
 	if err != nil {
 		return false, err
 	}
-	return status == repository.LegacyCutoverStatusCutOver, nil
+	return status == domain.LegacyCutoverStatusCutOver, nil
 }
 
-func (s *legacyCutoverService) Get(ctx context.Context, tenantID string) (repository.LegacyCutoverStatus, error) {
+func (s *legacyCutoverService) Get(ctx context.Context, tenantID string) (domain.LegacyCutoverStatus, error) {
 	entry, err := s.cutover.GetCutover(ctx, tenantID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return repository.LegacyCutoverStatusLegacy, nil
+			return domain.LegacyCutoverStatusLegacy, nil
 		}
 		return "", apperr.Internal("cutover.lookup_failed", "failed to read the cutover registry").Wrap(err)
 	}
@@ -68,7 +69,7 @@ func (s *legacyCutoverService) Get(ctx context.Context, tenantID string) (reposi
 }
 
 func (s *legacyCutoverService) Set(ctx context.Context, tenantID string,
-	status repository.LegacyCutoverStatus, note string) (*repository.LegacyCutover, error) {
+	status domain.LegacyCutoverStatus, note string) (*repository.LegacyCutover, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return nil, apperr.BadRequest("cutover.tenant_required", "tenant_id is required")
 	}
@@ -76,7 +77,7 @@ func (s *legacyCutoverService) Set(ctx context.Context, tenantID string,
 	if err != nil {
 		return nil, err
 	}
-	if !repository.ValidCutoverTransition(current, status) {
+	if !domain.ValidCutoverTransition(current, status) {
 		return nil, apperr.Conflict("cutover.invalid_transition",
 			"cannot move tenant from "+string(current)+" to "+string(status))
 	}
@@ -133,7 +134,7 @@ func (s *legacyCutoverService) setWithAudit(ctx context.Context, entry *reposito
 // executions that read the same previous dedup exactly. Every input is known
 // before the transaction starts, so the in-tx append is byte-identical to the
 // post-commit Record it replaces.
-func cutoverSetFactInput(ctx context.Context, tenantID string, status, previous repository.LegacyCutoverStatus,
+func cutoverSetFactInput(ctx context.Context, tenantID string, status, previous domain.LegacyCutoverStatus,
 	decidedBy, note string) AuditFactInput {
 	tenant := tenantID
 	if fromCtx := TenantFrom(ctx); fromCtx != "" {
@@ -189,7 +190,7 @@ func (s *legacyCutoverService) CleanupReadiness(ctx context.Context, tenantID st
 // decision never satisfy the window (they have nothing to roll back from).
 func (s *legacyCutoverService) evaluateRollbackWindow(ctx context.Context, tenantID string) (bool, string) {
 	entry, getErr := s.cutover.GetCutover(ctx, tenantID)
-	if getErr == nil && entry != nil && entry.Status == repository.LegacyCutoverStatusCutOver {
+	if getErr == nil && entry != nil && entry.Status == domain.LegacyCutoverStatusCutOver {
 		elapsed := time.Since(entry.DecidedAt)
 		return elapsed >= s.rollbackWindow,
 			"cut_over " + elapsed.Round(time.Hour).String() + " ago; window " + s.rollbackWindow.String()

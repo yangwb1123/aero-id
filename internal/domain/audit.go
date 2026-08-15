@@ -2,8 +2,6 @@ package domain
 
 import (
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Audit action constants for sensitive operations. A failed audit write is a
@@ -31,7 +29,7 @@ const (
 // AuditEvent records who did what to which resource and when. Live: consumed
 // by the repository/ledger and admin read paths — do not prune.
 type AuditEvent struct {
-	ID          uuid.UUID
+	ID          ID
 	ActorUID    string
 	Action      string
 	SubjectType string

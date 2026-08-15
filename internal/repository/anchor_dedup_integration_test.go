@@ -368,7 +368,7 @@ func TestPutHoldCopyBack(t *testing.T) {
 	holds := repository.NewAuditHoldRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{SigningKey: "integration-anchor-key-0123456789abcdef"}))
 	expiry := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Microsecond)
 
-	first := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	first := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order #1", CreatedBy: "admin-1", ExpiresAt: &expiry}
 	if err := holds.PutHold(t.Context(), first); err != nil {
 		t.Fatalf("first PutHold: %v", err)
@@ -381,7 +381,7 @@ func TestPutHoldCopyBack(t *testing.T) {
 	}
 
 	time.Sleep(5 * time.Millisecond)
-	second := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	second := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "renewed", CreatedBy: "admin-2", ExpiresAt: nil}
 	if err := holds.PutHold(t.Context(), second); err != nil {
 		t.Fatalf("second PutHold: %v", err)

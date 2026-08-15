@@ -11,7 +11,6 @@ import (
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/pkg/idgen"
-	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -295,7 +294,7 @@ func (h *AuditLedgerHandler) PutHold(c *gin.Context) {
 		expiresAt = &parsed
 	}
 	tenantID := service.TenantFrom(c.Request.Context())
-	hold, err := h.holds.Put(c.Request.Context(), tenantID, repository.AuditHoldScope(body.ScopeType), body.ScopeID, body.Reason, expiresAt)
+	hold, err := h.holds.Put(c.Request.Context(), tenantID, domain.AuditHoldScope(body.ScopeType), body.ScopeID, body.Reason, expiresAt)
 	if err != nil {
 		httpx.WriteError(c, err)
 		return
@@ -306,7 +305,7 @@ func (h *AuditLedgerHandler) PutHold(c *gin.Context) {
 func (h *AuditLedgerHandler) RemoveHold(c *gin.Context) {
 	tenantID := service.TenantFrom(c.Request.Context())
 	if err := h.holds.Remove(c.Request.Context(), tenantID,
-		repository.AuditHoldScope(c.Param("scope_type")), c.Param("scope_id")); err != nil {
+		domain.AuditHoldScope(c.Param("scope_type")), c.Param("scope_id")); err != nil {
 		httpx.WriteError(c, err)
 		return
 	}

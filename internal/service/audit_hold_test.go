@@ -33,7 +33,7 @@ func (f *fakeHoldRepo) PutHold(ctx context.Context, hold *repository.AuditHold) 
 		CreatedAt: time.Now().UTC(), ExpiresAt: hold.ExpiresAt}
 	return nil
 }
-func (f *fakeHoldRepo) RemoveHold(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope, scopeID string) error {
+func (f *fakeHoldRepo) RemoveHold(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string) error {
 	delete(f.holds, string(scopeType)+"|"+scopeID)
 	return nil
 }
@@ -47,7 +47,7 @@ func (f *fakeHoldRepo) ListActiveHolds(ctx context.Context, tenantID string) ([]
 	}
 	return out, nil
 }
-func (f *fakeHoldRepo) HoldScopeIDs(ctx context.Context, scopeType repository.AuditHoldScope) ([]string, error) {
+func (f *fakeHoldRepo) HoldScopeIDs(ctx context.Context, scopeType domain.AuditHoldScope) ([]string, error) {
 	ids := []string{}
 	for _, hold := range f.holds {
 		if hold.ScopeType != scopeType {
@@ -70,21 +70,21 @@ func TestAuditHold_Lifecycle(t *testing.T) {
 	repo := newFakeHoldRepo()
 	svc := NewAuditHoldService(repo, nil)
 
-	if _, err := svc.Put(holdContext(), "tenant-a", repository.AuditHoldScopeActor, "u-held", "evidence order #1", nil); err != nil {
+	if _, err := svc.Put(holdContext(), "tenant-a", domain.AuditHoldScopeActor, "u-held", "evidence order #1", nil); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	holds, err := svc.List(holdContext(), "tenant-a")
 	if err != nil || len(holds) != 1 {
 		t.Fatalf("list = %d, %v", len(holds), err)
 	}
-	ids, err := svc.ActiveScopeIDs(context.Background(), repository.AuditHoldScopeActor)
+	ids, err := svc.ActiveScopeIDs(context.Background(), domain.AuditHoldScopeActor)
 	if err != nil || len(ids) != 1 || ids[0] != "u-held" {
 		t.Fatalf("actor scope ids = %v, %v", ids, err)
 	}
-	if err := svc.Remove(holdContext(), "tenant-a", repository.AuditHoldScopeActor, "u-held"); err != nil {
+	if err := svc.Remove(holdContext(), "tenant-a", domain.AuditHoldScopeActor, "u-held"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if ids, _ := svc.ActiveScopeIDs(context.Background(), repository.AuditHoldScopeActor); len(ids) != 0 {
+	if ids, _ := svc.ActiveScopeIDs(context.Background(), domain.AuditHoldScopeActor); len(ids) != 0 {
 		t.Fatal("hold must be lifted")
 	}
 }
@@ -95,17 +95,17 @@ func TestAuditHold_Validation(t *testing.T) {
 	repo := newFakeHoldRepo()
 	svc := NewAuditHoldService(repo, nil)
 
-	if _, err := svc.Put(holdContext(), "tenant-a", repository.AuditHoldScope("bogus"), "x", "", nil); err == nil {
+	if _, err := svc.Put(holdContext(), "tenant-a", domain.AuditHoldScope("bogus"), "x", "", nil); err == nil {
 		t.Fatal("invalid scope must be rejected")
 	}
-	if _, err := svc.Put(holdContext(), "tenant-a", repository.AuditHoldScopeActor, "  ", "", nil); err == nil {
+	if _, err := svc.Put(holdContext(), "tenant-a", domain.AuditHoldScopeActor, "  ", "", nil); err == nil {
 		t.Fatal("blank scope_id must be rejected")
 	}
 	past := time.Now().UTC().Add(-time.Hour)
-	if _, err := svc.Put(holdContext(), "tenant-a", repository.AuditHoldScopeActor, "u-expired", "", &past); err != nil {
+	if _, err := svc.Put(holdContext(), "tenant-a", domain.AuditHoldScopeActor, "u-expired", "", &past); err != nil {
 		t.Fatal(err)
 	}
-	if ids, _ := svc.ActiveScopeIDs(context.Background(), repository.AuditHoldScopeActor); len(ids) != 0 {
+	if ids, _ := svc.ActiveScopeIDs(context.Background(), domain.AuditHoldScopeActor); len(ids) != 0 {
 		t.Fatal("expired hold must not be active")
 	}
 }
@@ -129,7 +129,7 @@ func (f *auditHoldAuditFakeRepo) PutHoldWithAudit(ctx context.Context, hold *rep
 	return f.fakeHoldRepo.PutHold(ctx, hold)
 }
 
-func (f *auditHoldAuditFakeRepo) RemoveHoldWithAudit(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope, scopeID string, fact *domain.AuditFact) error {
+func (f *auditHoldAuditFakeRepo) RemoveHoldWithAudit(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string, fact *domain.AuditFact) error {
 	f.removeFact = fact
 	if f.removeErr != nil {
 		return f.removeErr
@@ -147,7 +147,7 @@ func TestAuditHoldAtomicAuditFailureFailsClosed(t *testing.T) {
 	ledger := &auditLedgerRepoSpy{}
 	svc := NewAuditHoldService(repo, NewAuditLedgerService(ledger))
 
-	if _, err := svc.Put(t.Context(), "tenant-a", repository.AuditHoldScopeAccount, "acc-1", "evidence", nil); err == nil {
+	if _, err := svc.Put(t.Context(), "tenant-a", domain.AuditHoldScopeAccount, "acc-1", "evidence", nil); err == nil {
 		t.Fatal("Put must fail when the in-tx audit append fails")
 	} else if !apperrIs(err, "audit_hold.save_failed") {
 		t.Fatalf("Put error = %v, want audit_hold.save_failed (atomic failure)", err)
@@ -157,7 +157,7 @@ func TestAuditHoldAtomicAuditFailureFailsClosed(t *testing.T) {
 	}
 
 	repo.removeErr = errors.New("ledger down")
-	if err := svc.Remove(t.Context(), "tenant-a", repository.AuditHoldScopeAccount, "acc-1"); err == nil {
+	if err := svc.Remove(t.Context(), "tenant-a", domain.AuditHoldScopeAccount, "acc-1"); err == nil {
 		t.Fatal("Remove must fail when the in-tx audit append fails")
 	} else if !apperrIs(err, "audit_hold.remove_failed") {
 		t.Fatalf("Remove error = %v, want audit_hold.remove_failed (atomic failure)", err)
@@ -180,7 +180,7 @@ func TestAuditHoldAtomicFactPathAndUnavailableFailFast(t *testing.T) {
 	atomicRepo := &auditHoldAuditFakeRepo{fakeHoldRepo: *newFakeHoldRepo()}
 	atomicLedger := &auditLedgerRepoSpy{}
 	atomicSvc := NewAuditHoldService(atomicRepo, NewAuditLedgerService(atomicLedger))
-	if _, err := atomicSvc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "  acct-1024  ", "litigation hold", nil); err != nil {
+	if _, err := atomicSvc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "  acct-1024  ", "litigation hold", nil); err != nil {
 		t.Fatalf("atomic put: %v", err)
 	}
 	if atomicRepo.putFact == nil || atomicLedger.appended != nil {
@@ -201,7 +201,7 @@ func TestAuditHoldAtomicFactPathAndUnavailableFailFast(t *testing.T) {
 	fallbackRepo := newFakeHoldRepo()
 	fallbackLedger := &auditLedgerRepoSpy{}
 	fallbackSvc := NewAuditHoldService(fallbackRepo, NewAuditLedgerService(fallbackLedger))
-	if _, err := fallbackSvc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "  acct-1024  ", "litigation hold", nil); err == nil {
+	if _, err := fallbackSvc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "  acct-1024  ", "litigation hold", nil); err == nil {
 		t.Fatal("Put with a non-WithAudit repo and a non-nil audit must fail fast")
 	} else if !apperrIs(err, "audit_hold.audit_unavailable") {
 		t.Fatalf("Put error = %v, want audit_hold.audit_unavailable", err)
@@ -212,7 +212,7 @@ func TestAuditHoldAtomicFactPathAndUnavailableFailFast(t *testing.T) {
 	if fallbackLedger.appended != nil {
 		t.Fatal("fail-fast must not append any fact")
 	}
-	if err := fallbackSvc.Remove(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "acct-1024"); err == nil {
+	if err := fallbackSvc.Remove(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "acct-1024"); err == nil {
 		t.Fatal("Remove with a non-WithAudit repo and a non-nil audit must fail fast")
 	} else if !apperrIs(err, "audit_hold.audit_unavailable") {
 		t.Fatalf("Remove error = %v, want audit_hold.audit_unavailable", err)
@@ -228,7 +228,7 @@ func TestAuditHoldAtomicFactRedactionSafe(t *testing.T) {
 	svc := NewAuditHoldService(repo, NewAuditLedgerService(ledger))
 	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-alpha"})
 
-	if _, err := svc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "acct-1024", "secret", nil); err != nil {
+	if _, err := svc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "acct-1024", "secret", nil); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	// The payload keys are allow-listed (reason/expires_at): they pass through
@@ -249,13 +249,13 @@ func TestAuditHoldAuditFailureFailsClosed(t *testing.T) {
 	repo := &auditHoldAuditFakeRepo{fakeHoldRepo: *newFakeHoldRepo(), putErr: errors.New("ledger down")}
 	svc := NewAuditHoldService(repo, NewAuditLedgerService(&auditLedgerRepoSpy{}))
 
-	if _, err := svc.Put(t.Context(), "tenant-a", repository.AuditHoldScopeAccount, "acc-1", "evidence", nil); err == nil {
+	if _, err := svc.Put(t.Context(), "tenant-a", domain.AuditHoldScopeAccount, "acc-1", "evidence", nil); err == nil {
 		t.Fatal("Put must fail when the in-tx audit append fails")
 	} else if !apperrIs(err, "audit_hold.save_failed") {
 		t.Fatalf("Put error = %v, want audit_hold.save_failed", err)
 	}
 	repo.removeErr = errors.New("ledger down")
-	if err := svc.Remove(t.Context(), "tenant-a", repository.AuditHoldScopeAccount, "acc-1"); err == nil {
+	if err := svc.Remove(t.Context(), "tenant-a", domain.AuditHoldScopeAccount, "acc-1"); err == nil {
 		t.Fatal("Remove must fail when the in-tx audit append fails")
 	} else if !apperrIs(err, "audit_hold.remove_failed") {
 		t.Fatalf("Remove error = %v, want audit_hold.remove_failed", err)
@@ -279,7 +279,7 @@ func TestHoldActionDiscriminator(t *testing.T) {
 	svc := NewAuditHoldService(repo, NewAuditLedgerService(&auditLedgerRepoSpy{}))
 	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-alpha"})
 
-	if _, err := svc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "acct-1024", "", nil); err != nil {
+	if _, err := svc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "acct-1024", "", nil); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	if repo.putFact == nil {
@@ -296,7 +296,7 @@ func TestHoldActionDiscriminator(t *testing.T) {
 		t.Fatalf("put fact tenant = %q, want tenant-alpha (anchor-from-fact, R3)", repo.putFact.TenantID)
 	}
 
-	if err := svc.Remove(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "acct-1024"); err != nil {
+	if err := svc.Remove(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "acct-1024"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	const wantRemoved = "5d349dda-a820-5abf-a9f0-efe421a58f0f" // G10
@@ -319,7 +319,7 @@ func TestHoldSetAnchoredGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "acct-1024", "litigation hold", &expiry); err != nil {
+	if _, err := svc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "acct-1024", "litigation hold", &expiry); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	const want = "411ae5c5-efc1-5f16-a381-fd3afd445816" // G9
@@ -340,7 +340,7 @@ func TestHoldSetRetryDedup(t *testing.T) {
 
 	var firstEventID domain.ID
 	for i := 0; i < 2; i++ {
-		if _, err := svc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "acct-1024", "litigation hold", nil); err != nil {
+		if _, err := svc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "acct-1024", "litigation hold", nil); err != nil {
 			t.Fatalf("put %d: %v", i, err)
 		}
 		if repo.putFact == nil {
@@ -364,7 +364,7 @@ func TestHoldTrimmedScopeIDInAudit(t *testing.T) {
 	svc := NewAuditHoldService(repo, NewAuditLedgerService(&auditLedgerRepoSpy{}))
 	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-alpha"})
 
-	if _, err := svc.Put(ctx, "tenant-alpha", repository.AuditHoldScopeAccount, "  acct-1024  ", "x", nil); err != nil {
+	if _, err := svc.Put(ctx, "tenant-alpha", domain.AuditHoldScopeAccount, "  acct-1024  ", "x", nil); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	if repo.putFact.ResourceID != "acct-1024" {

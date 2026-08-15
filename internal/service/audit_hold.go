@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
@@ -18,11 +19,11 @@ type AuditHoldService interface {
 	// List returns active holds for the tenant.
 	List(ctx context.Context, tenantID string) ([]*repository.AuditHold, error)
 	// Put creates or refreshes a hold.
-	Put(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope, scopeID, reason string, expiresAt *time.Time) (*repository.AuditHold, error)
+	Put(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID, reason string, expiresAt *time.Time) (*repository.AuditHold, error)
 	// Remove lifts a hold.
-	Remove(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope, scopeID string) error
+	Remove(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string) error
 	// ActiveScopeIDs returns the held scope ids of one kind (cleaner hook).
-	ActiveScopeIDs(ctx context.Context, scopeType repository.AuditHoldScope) ([]string, error)
+	ActiveScopeIDs(ctx context.Context, scopeType domain.AuditHoldScope) ([]string, error)
 }
 
 // errAuditHoldAuditUnavailable is the sentinel for a hold repository without
@@ -48,7 +49,7 @@ func (s *auditHoldService) List(ctx context.Context, tenantID string) ([]*reposi
 	return holds, nil
 }
 
-func (s *auditHoldService) Put(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope,
+func (s *auditHoldService) Put(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope,
 	scopeID, reason string, expiresAt *time.Time) (*repository.AuditHold, error) {
 	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(scopeID) == "" {
 		return nil, apperr.BadRequest("audit_hold.invalid_input", "tenant_id and scope_id are required")
@@ -96,7 +97,7 @@ func (s *auditHoldService) putWithAudit(ctx context.Context, hold *repository.Au
 	return repo.PutHoldWithAudit(ctx, hold, buildAuditFact(ctx, input))
 }
 
-func (s *auditHoldService) Remove(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope, scopeID string) error {
+func (s *auditHoldService) Remove(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string) error {
 	scopeID = strings.TrimSpace(scopeID)
 	if scopeID == "" {
 		return apperr.BadRequest("audit_hold.invalid_input", "scope_id is required")
@@ -116,7 +117,7 @@ func (s *auditHoldService) Remove(ctx context.Context, tenantID string, scopeTyp
 }
 
 // removeWithAudit mirrors putWithAudit for the lift path.
-func (s *auditHoldService) removeWithAudit(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope,
+func (s *auditHoldService) removeWithAudit(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope,
 	scopeID string, input AuditFactInput) error {
 	if s.audit == nil {
 		return s.holds.RemoveHold(ctx, tenantID, scopeType, scopeID) // 0 = disabled convention
@@ -128,7 +129,7 @@ func (s *auditHoldService) removeWithAudit(ctx context.Context, tenantID string,
 	return repo.RemoveHoldWithAudit(ctx, tenantID, scopeType, scopeID, buildAuditFact(ctx, input))
 }
 
-func (s *auditHoldService) ActiveScopeIDs(ctx context.Context, scopeType repository.AuditHoldScope) ([]string, error) {
+func (s *auditHoldService) ActiveScopeIDs(ctx context.Context, scopeType domain.AuditHoldScope) ([]string, error) {
 	ids, err := s.holds.HoldScopeIDs(ctx, scopeType)
 	if err != nil {
 		return nil, apperr.Internal("audit_hold.list_failed", "failed to read legal holds").Wrap(err)
@@ -136,9 +137,9 @@ func (s *auditHoldService) ActiveScopeIDs(ctx context.Context, scopeType reposit
 	return ids, nil
 }
 
-func validHoldScope(scope repository.AuditHoldScope) bool {
+func validHoldScope(scope domain.AuditHoldScope) bool {
 	switch scope {
-	case repository.AuditHoldScopeTenant, repository.AuditHoldScopeAccount, repository.AuditHoldScopeActor:
+	case domain.AuditHoldScopeTenant, domain.AuditHoldScopeAccount, domain.AuditHoldScopeActor:
 		return true
 	default:
 		return false
@@ -154,7 +155,7 @@ func validHoldScope(scope repository.AuditHoldScope) bool {
 // event_id and the ledger dedup swallows it. Every input is known before the
 // transaction starts (the RETURNING copy-back never feeds the fact), so the
 // in-tx append is byte-identical to the post-commit Record it replaces.
-func auditHoldSetFactInput(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope,
+func auditHoldSetFactInput(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope,
 	scopeID, reason string, actor string, expiresAt *time.Time) AuditFactInput {
 	tenant := tenantID
 	if fromCtx := TenantFrom(ctx); fromCtx != "" {
@@ -175,7 +176,7 @@ func auditHoldSetFactInput(ctx context.Context, tenantID string, scopeType repos
 // [audit_hold.removed, tenant, scope_type, scope_id-trimmed]. The action
 // discriminator keeps put("", nil) (6-part) from ever colliding with removed
 // (G9b ≠ G10).
-func auditHoldRemovedFactInput(ctx context.Context, tenantID string, scopeType repository.AuditHoldScope, scopeID string) AuditFactInput {
+func auditHoldRemovedFactInput(ctx context.Context, tenantID string, scopeType domain.AuditHoldScope, scopeID string) AuditFactInput {
 	tenant := tenantID
 	if fromCtx := TenantFrom(ctx); fromCtx != "" {
 		tenant = fromCtx

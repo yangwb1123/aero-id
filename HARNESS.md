@@ -22,10 +22,10 @@ handler  →  service  →  repository  →  Postgres (GORM)
 ```
 
 Rules (canonical definitions live in `scripts/check-architecture.sh`):
-- `internal/domain/` must import nothing from `internal/` (only stdlib + `internal/pkg/*`; documented `google/uuid` exception)
+- `internal/domain/` must import nothing from `internal/` (only stdlib + `internal/pkg/*`)
 - `internal/repository/` must not import `internal/service`
 - `internal/{connector,event,outbox,region,sso}/` must not import service or repository (`internal/hub` is the documented EX-1 exception)
-- `internal/handler/` may import `internal/repository` only for the two documented enum casts (EX-2)
+- `internal/handler/` must not import `internal/repository`
 - The dead trees `internal/{file,message,notification,audit,block,comment,search}` are quarantined: deletion + `check-audit-swallow` FM-12 must-not-exist guards + Makefile tripwire roots
 - `internal/app/` is the composition root; nothing imports it.
 - `internal/pkg/` packages must not import from feature packages.

@@ -31,15 +31,11 @@
 #       "github.com/aero/aero-id/internal/service" or
 #       "github.com/aero/aero-id/internal/repository". internal/hub is
 #       deliberately NOT in this list (EX-1).
-#   (e) Handler <-> repository ban. Two assertions on non-test files under
-#       internal/handler/:
-#       (e1) a file may import "github.com/aero/aero-id/internal/repository"
-#            only if it is exactly internal/handler/http/account.go or
-#            internal/handler/http/audit_ledger.go;
-#       (e2) every repository.<Ident> usage must be one of the two enum
-#            idents LegacyCutoverStatus or AuditHoldScope (type-casts only —
-#            no constructors, methods, or other symbols). Implemented as an
-#            ident allow-list (not line-number pinning, to survive drift).
+#   (e) Handler <-> repository ban. Non-test files under internal/handler/
+#       may not import "github.com/aero/aero-id/internal/repository" at all.
+#       (Was: allow-listed enum casts from http/account.go +
+#       http/audit_ledger.go; deleted when LegacyCutoverStatus and
+#       AuditHoldScope moved to internal/domain.)
 #
 # Exceptions (each with justification; review periodically):
 #   EX-1 hub -> service: internal/hub/adapter.go imports internal/service
@@ -47,21 +43,6 @@
 #        `var _ service.NotificationPusher = (*Hub)(nil)`; the in-file
 #        comment states the invariant "hub may import service; service must
 #        NOT import hub". hub is excluded from rule (d) by design.
-#   EX-2 handler -> repository enum casts: internal/handler/http/account.go
-#        and internal/handler/http/audit_ledger.go import internal/repository
-#        only for LegacyCutoverStatus/AuditHoldScope type-casts.
-#        TODO: relocate LegacyCutoverStatus (internal/repository/
-#        legacy_cutover.go) and AuditHoldScope (internal/repository/
-#        audit_hold.go) to internal/domain, then delete this exception and
-#        rule (e)'s allow-lists.
-#   EX-3 domain -> github.com/google/uuid: internal/domain/audit.go imports
-#        github.com/google/uuid v1.6.0 for the live AuditEvent.ID field type
-#        (the dead-tree AuditLogger interface was deleted in the 2026-08-10
-#        quarantine; AuditEvent itself is live). The exception is exact-string
-#        (not a prefix), so gorm.io/gorm and any other third-party import
-#        still trips rule (b).
-#        TODO: switch AuditEvent.ID to internal/pkg/idgen (the pattern used
-#        by comment.go/export.go/shared.go) and delete this exception.
 #
 # Test asymmetry: rules (b)-(e) exclude *_test.go (required for
 # internal/repository/account_backfill_integration_test.go and
@@ -81,12 +62,6 @@ set -euo pipefail
 INTERNAL="github.com/aero/aero-id/internal"
 DEAD_TREES=(file message notification audit)
 INFRA_LAYERS=(connector event outbox region sso)
-ALLOWED_HANDLER_FILES=(
-  "*/internal/handler/http/account.go"
-  "*/internal/handler/http/audit_ledger.go"
-)
-ALLOWED_REPO_IDENTS=(LegacyCutoverStatus AuditHoldScope)
-UUID_EXCEPTION="github.com/google/uuid"
 FIXTURES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/testdata/architecture"
 
 violations=0
@@ -142,13 +117,11 @@ extract_import_paths() {
 }
 
 # classification order matters (DD-3): internal/pkg/* first (its first
-# segment is github.com), then the exact-string EX-3 exception, then the
-# dot-segment heuristic.
+# segment is github.com), then the dot-segment heuristic.
 classify_domain_import() {
   local path="$1"
   case "$path" in
     "$INTERNAL/pkg/"*) return 0 ;;
-    "$UUID_EXCEPTION") return 0 ;; # EX-3
   esac
   case "${path%%/*}" in
     *.*) return 1 ;; # third-party
@@ -167,7 +140,7 @@ scan_domain_purity() {
       esac
       while IFS= read -r path; do
         if ! classify_domain_import "$path"; then
-          echo "VIOLATION: $f imports $path (domain must be stdlib + internal/pkg/* only; see EX-3)"
+          echo "VIOLATION: $f imports $path (domain must be stdlib + internal/pkg/* only)"
           violations=$((violations + 1))
         fi
       done < <(extract_import_paths < "$f")
@@ -217,9 +190,13 @@ scan_infra_service_repo() {
   done
 }
 
-# ── rule (e1): handler may import repository only in the two files ──────────
+# ── rule (e): handler must not import repository ───────────────────────────
+# Absolute ban: any non-test file under internal/handler/ that imports
+# "github.com/aero/aero-id/internal/repository" is a violation. (Was: two
+# allow-listed files + two enum idents; deleted when
+# LegacyCutoverStatus and AuditHoldScope moved to internal/domain.)
 scan_handler_repo_import() {
-  local root f pat allowed
+  local root f
   for root in "$@"; do
     [ -d "$root" ] || continue
     while IFS= read -r f; do
@@ -227,48 +204,10 @@ scan_handler_repo_import() {
         */internal/handler/*) ;;
         *) continue ;;
       esac
-      if ! grep -q "\"$INTERNAL/repository\"" "$f"; then
-        continue
-      fi
-      allowed=false
-      for pat in "${ALLOWED_HANDLER_FILES[@]}"; do
-        case "/$f" in
-          $pat) allowed=true ;;
-        esac
-      done
-      if [ "$allowed" = false ]; then
-        echo "VIOLATION: $f imports internal/repository (handler may import repository only in http/account.go or http/audit_ledger.go; see EX-2)"
+      if grep -q "\"$INTERNAL/repository\"" "$f"; then
+        echo "VIOLATION: $f imports internal/repository (handler may not import internal/repository)"
         violations=$((violations + 1))
       fi
-    done < <(find "$root" -name '*.go' ! -name '*_test.go' 2>/dev/null | sort)
-  done
-}
-
-# ── rule (e2): handler repository access limited to the two enum casts ──────
-scan_handler_repo_idents() {
-  local root f usage ident a allowed
-  for root in "$@"; do
-    [ -d "$root" ] || continue
-    while IFS= read -r f; do
-      case "/$f" in
-        */internal/handler/*) ;;
-        *) continue ;;
-      esac
-      while IFS= read -r usage; do
-        # anchored so field access (s.repository.Put() and myrepository.X
-        # cannot false-positive
-        ident="$(sed 's/.*repository\.//' <<< "$usage")"
-        allowed=false
-        for a in "${ALLOWED_REPO_IDENTS[@]}"; do
-          if [ "$ident" = "$a" ]; then
-            allowed=true
-          fi
-        done
-        if [ "$allowed" = false ]; then
-          echo "VIOLATION: $f uses repository.$ident (handler repository access limited to LegacyCutoverStatus/AuditHoldScope casts; see EX-2)"
-          violations=$((violations + 1))
-        fi
-      done < <(grep -oE '(^|[^A-Za-z0-9_.])repository\.[A-Za-z_][A-Za-z0-9_]*' "$f" || true)
     done < <(find "$root" -name '*.go' ! -name '*_test.go' 2>/dev/null | sort)
   done
 }
@@ -317,7 +256,6 @@ else
   selftest_rule "(c) repository/service"       scan_repository_service
   selftest_rule "(d) infra layers"             scan_infra_service_repo
   selftest_rule "(e1) handler repo import"     scan_handler_repo_import
-  selftest_rule "(e2) handler repo idents"     scan_handler_repo_idents
 fi
 
 # ── real-tree scan: internal/ and cmd/ only (fixtures are never scanned) ────
@@ -327,7 +265,6 @@ scan_domain_purity internal cmd
 scan_repository_service internal cmd
 scan_infra_service_repo internal cmd
 scan_handler_repo_import internal cmd
-scan_handler_repo_idents internal cmd
 
 if [ "$fail" -ne 0 ] || [ "$violations" -gt 0 ]; then
   echo ""

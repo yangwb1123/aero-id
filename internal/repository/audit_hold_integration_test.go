@@ -31,10 +31,10 @@ func TestLegalHoldExemptsActorsFromPurge(t *testing.T) {
 
 	// Hold u-held, purge, verify only u-free rows were removed.
 	if err := holds.PutHold(t.Context(), &repository.AuditHold{TenantID: "tenant-a",
-		ScopeType: repository.AuditHoldScopeActor, ScopeID: "u-held", CreatedBy: "admin"}); err != nil {
+		ScopeType: domain.AuditHoldScopeActor, ScopeID: "u-held", CreatedBy: "admin"}); err != nil {
 		t.Fatal(err)
 	}
-	exempt, err := holds.HoldScopeIDs(t.Context(), repository.AuditHoldScopeActor)
+	exempt, err := holds.HoldScopeIDs(t.Context(), domain.AuditHoldScopeActor)
 	if err != nil || len(exempt) != 1 || exempt[0] != "u-held" {
 		t.Fatalf("exempt = %v, %v", exempt, err)
 	}
@@ -58,10 +58,10 @@ func TestLegalHoldExemptsActorsFromPurge(t *testing.T) {
 	}
 
 	// Lifting the hold makes the rows eligible again.
-	if err := holds.RemoveHold(t.Context(), "tenant-a", repository.AuditHoldScopeActor, "u-held"); err != nil {
+	if err := holds.RemoveHold(t.Context(), "tenant-a", domain.AuditHoldScopeActor, "u-held"); err != nil {
 		t.Fatal(err)
 	}
-	exempt, _ = holds.HoldScopeIDs(t.Context(), repository.AuditHoldScopeActor)
+	exempt, _ = holds.HoldScopeIDs(t.Context(), domain.AuditHoldScopeActor)
 	deleted, err = purger.PurgeOlderThanExcluding(t.Context(), time.Now().UTC(), 0, exempt)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestAuditHoldPutWithAuditHappyPath(t *testing.T) {
 	ctx := context.Background()
 	db, auditRepo := startAuditHoldAuditRepo(t, auditHoldTestKey)
 	eventID := idgen.Anchor("audit_hold.set", "tenant-a", "account", "acct-1", "evidence order", "")
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1"}
 	if err := auditRepo.PutHoldWithAudit(ctx, hold, holdFact(eventID, "tenant-a", "audit_hold.set")); err != nil {
 		t.Fatalf("PutHoldWithAudit: %v", err)
@@ -134,7 +134,7 @@ func TestAuditHoldPutWithAuditRollbackWithoutSigningKey(t *testing.T) {
 	ctx := context.Background()
 	db, auditRepo := startAuditHoldAuditRepo(t, "")
 	eventID := idgen.Anchor("audit_hold.set", "tenant-a", "account", "acct-1", "evidence order", "")
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1"}
 	if err := auditRepo.PutHoldWithAudit(ctx, hold, holdFact(eventID, "tenant-a", "audit_hold.set")); err == nil {
 		t.Fatal("PutHoldWithAudit with a keyless ledger must fail")
@@ -156,7 +156,7 @@ func TestAuditHoldPutWithAuditDuplicateFold(t *testing.T) {
 	db, auditRepo := startAuditHoldAuditRepo(t, auditHoldTestKey)
 	eventID := idgen.Anchor("audit_hold.set", "tenant-a", "account", "acct-1", "evidence order", "")
 	for i := 0; i < 2; i++ {
-		hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+		hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 			ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1"}
 		if err := auditRepo.PutHoldWithAudit(ctx, hold, holdFact(eventID, "tenant-a", "audit_hold.set")); err != nil {
 			t.Fatalf("PutHoldWithAudit %d: %v", i, err)
@@ -176,14 +176,14 @@ func TestAuditHoldPutWithAuditDuplicateFold(t *testing.T) {
 func TestAuditHoldRemoveWithAuditHappyPath(t *testing.T) {
 	ctx := context.Background()
 	db, auditRepo := startAuditHoldAuditRepo(t, auditHoldTestKey)
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1"}
 	setEvent := idgen.Anchor("audit_hold.set", "tenant-a", "account", "acct-1", "evidence order", "")
 	if err := auditRepo.PutHoldWithAudit(ctx, hold, holdFact(setEvent, "tenant-a", "audit_hold.set")); err != nil {
 		t.Fatal(err)
 	}
 	removedEvent := idgen.Anchor("audit_hold.removed", "tenant-a", "account", "acct-1")
-	if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", repository.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err != nil {
+	if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", domain.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err != nil {
 		t.Fatalf("RemoveHoldWithAudit: %v", err)
 	}
 	ledgerRows, publicationRows := countCallbackAuditRows(t, db, removedEvent)
@@ -204,13 +204,13 @@ func TestAuditHoldRemoveWithAuditRollbackWithoutSigningKey(t *testing.T) {
 	db, auditRepo := startAuditHoldAuditRepo(t, "")
 	expiry := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Microsecond)
 	plain := repository.NewAuditHoldRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1", ExpiresAt: &expiry}
 	if err := plain.PutHold(ctx, hold); err != nil {
 		t.Fatal(err)
 	}
 	removedEvent := idgen.Anchor("audit_hold.removed", "tenant-a", "account", "acct-1")
-	if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", repository.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err == nil {
+	if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", domain.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err == nil {
 		t.Fatal("RemoveHoldWithAudit with a keyless ledger must fail")
 	}
 	var stored struct {
@@ -240,7 +240,7 @@ func TestAuditHoldPutWithAuditPublicationInsertRollsBack(t *testing.T) {
 	db, auditRepo := startAuditHoldAuditRepo(t, auditHoldTestKey)
 	installFailPublicationInsertTrigger(t, db)
 	eventID := idgen.Anchor("audit_hold.set", "tenant-a", "account", "acct-1", "evidence order", "")
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1"}
 	if err := auditRepo.PutHoldWithAudit(ctx, hold, holdFact(eventID, "tenant-a", "audit_hold.set")); err == nil {
 		t.Fatal("PutHoldWithAudit must fail when the publication insert fails")
@@ -264,14 +264,14 @@ func TestAuditHoldRemoveWithAuditPublicationInsertRollsBack(t *testing.T) {
 	db, auditRepo := startAuditHoldAuditRepo(t, auditHoldTestKey)
 	expiry := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Microsecond)
 	plain := repository.NewAuditHoldRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1", ExpiresAt: &expiry}
 	if err := plain.PutHold(ctx, hold); err != nil {
 		t.Fatal(err)
 	}
 	installFailPublicationInsertTrigger(t, db)
 	removedEvent := idgen.Anchor("audit_hold.removed", "tenant-a", "account", "acct-1")
-	if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", repository.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err == nil {
+	if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", domain.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err == nil {
 		t.Fatal("RemoveHoldWithAudit must fail when the publication insert fails")
 	}
 	var stored struct {
@@ -309,14 +309,14 @@ func TestAuditHoldRemoveWithAuditDuplicateFold(t *testing.T) {
 	ctx := context.Background()
 	db, auditRepo := startAuditHoldAuditRepo(t, auditHoldTestKey)
 	setEvent := idgen.Anchor("audit_hold.set", "tenant-a", "account", "acct-1", "evidence order", "")
-	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: repository.AuditHoldScopeAccount,
+	hold := &repository.AuditHold{TenantID: "tenant-a", ScopeType: domain.AuditHoldScopeAccount,
 		ScopeID: "acct-1", Reason: "evidence order", CreatedBy: "admin-1"}
 	if err := auditRepo.PutHoldWithAudit(ctx, hold, holdFact(setEvent, "tenant-a", "audit_hold.set")); err != nil {
 		t.Fatal(err)
 	}
 	removedEvent := idgen.Anchor("audit_hold.removed", "tenant-a", "account", "acct-1")
 	for i := 0; i < 2; i++ {
-		if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", repository.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err != nil {
+		if err := auditRepo.RemoveHoldWithAudit(ctx, "tenant-a", domain.AuditHoldScopeAccount, "acct-1", holdFact(removedEvent, "tenant-a", "audit_hold.removed")); err != nil {
 			t.Fatalf("RemoveHoldWithAudit %d: %v", i, err)
 		}
 	}
