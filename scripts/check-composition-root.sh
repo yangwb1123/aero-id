@@ -20,6 +20,11 @@
 #   C-4  cmd/server/main.go must contain exactly one `app.New(ctx, cfg, log)`
 #        and zero `AuditGovernance` tokens — no Load-bypass or cfg-mutation
 #        vector between config.Load and app.New.
+#   C-5  cmd/migrate/main.go must contain exactly one `config.Load(` — the
+#        shared validation seam that fires the audit-governance activation
+#        gate and the F3 anchor-scheme boot coverage for the production
+#        migration binary — and exactly one `migrate.New(` dispatch call.
+#        No load-bypass vector for migrate (e.g. "migrate before governance").
 #
 # The semantic floor (refusal byte-exactness, kill switch, delivery) lives in
 # the integration boot e2e (internal/app/composition_root_integration_test.go);
@@ -84,29 +89,50 @@ scan_main_go() { # <path> — C-4
   return 0
 }
 
+scan_migrate_main_go() { # <path> — C-5
+  local file="$1" violations=""
+  if [ ! -f "$file" ]; then echo "cmd/migrate/main.go missing — re-anchor check-composition-root"; return 1; fi
+  local n
+  n="$(grep -cF -- 'config.Load(' "$file")"
+  [ "$n" = "1" ] || violations="${violations}C-5 config.Load seam: found $n, want exactly 1 (migrate must keep the shared config validation gate)
+"
+  n="$(grep -cF -- 'migrate.New(' "$file")"
+  [ "$n" = "1" ] || violations="${violations}C-5 migrate.New dispatch seam: found $n, want exactly 1
+"
+  if [ -n "$violations" ]; then printf '%s' "$violations"; return 1; fi
+  return 0
+}
+
 # ── self-tests: positive fixtures must be flagged; negative must pass ─────
 scan_new_go "$FIXTURES/positive/new.go" >/dev/null 2>&1; r1=$?
 scan_audit_go "$FIXTURES/positive/audit.go" >/dev/null 2>&1; r2=$?
 scan_main_go "$FIXTURES/positive/main.go" >/dev/null 2>&1; r3=$?
+scan_migrate_main_go "$FIXTURES/positive/migrate_main.go" >/dev/null 2>&1; r5=$?
 [ "$r1" = "0" ] && { echo "SELF-TEST FAIL: positive/new.go matched nothing"; fail=1; }
 [ "$r2" = "0" ] && { echo "SELF-TEST FAIL: positive/audit.go matched nothing"; fail=1; }
 [ "$r3" = "0" ] && { echo "SELF-TEST FAIL: positive/main.go matched nothing"; fail=1; }
+[ "$r5" = "0" ] && { echo "SELF-TEST FAIL: positive/migrate_main.go matched nothing (config.Load bypass must redden C-5)"; fail=1; }
 scan_new_go "$FIXTURES/negative/new.go" >/dev/null 2>&1; rn=$?
 scan_audit_go "$FIXTURES/negative/audit.go" >/dev/null 2>&1; ra=$?
 scan_main_go "$FIXTURES/negative/main.go" >/dev/null 2>&1; rm=$?
+scan_migrate_main_go "$FIXTURES/negative/migrate_main.go" >/dev/null 2>&1; rn5=$?
 { [ "$rn" != "0" ] || [ "$ra" != "0" ] || [ "$rm" != "0" ]; } && { echo "SELF-TEST FAIL: a negative fixture matched"; fail=1; }
+[ "$rn5" != "0" ] && { echo "SELF-TEST FAIL: negative/migrate_main.go matched (C-5) — must pass with one seam of each"; fail=1; }
 scan_new_go "$FIXTURES/positive/missing.go" >/dev/null 2>&1; rmiss=$?
 [ "$rmiss" = "0" ] && { echo "SELF-TEST FAIL: missing-file fixture did not fail loud"; fail=1; }
+scan_migrate_main_go "$FIXTURES/positive/missing.go" >/dev/null 2>&1; rmiss5=$?
+[ "$rmiss5" = "0" ] && { echo "SELF-TEST FAIL: missing-file fixture did not fail loud (C-5)"; fail=1; }
 
 # ── live-tree scan ────────────────────────────────────────────────────────
 ROOT="${1:-$(cd "$SELF_DIR/.." && pwd)}"
 scan_new_go "$ROOT/internal/app/new.go" || fail=1
 scan_audit_go "$ROOT/internal/app/audit.go" || fail=1
 scan_main_go "$ROOT/cmd/server/main.go" || fail=1
+scan_migrate_main_go "$ROOT/cmd/migrate/main.go" || fail=1
 
 if [ "$fail" -ne 0 ]; then
   echo ""
-  echo "check-composition-root FAILED — audit stack call and drain Start must stay in the server composition root."
+  echo "check-composition-root FAILED — audit stack call and drain Start must stay in the server composition root, and cmd/migrate must keep the shared config.Load/migrate.New seams."
   exit 1
 fi
-echo "✓ check-composition-root: buildAuditStack + drain Start wired in the server root (self-test ok)"
+echo "✓ check-composition-root: buildAuditStack + drain Start wired in the server root, config.Load/migrate.New seams pinned in cmd/migrate (self-test ok)"
