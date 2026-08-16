@@ -154,3 +154,110 @@ func TestHub_Close(t *testing.T) {
 		t.Fatal("timed out waiting for post-close channel")
 	}
 }
+
+func TestHub_Disconnect(t *testing.T) {
+	h := hub.New()
+	ch, unsub := h.Subscribe("alice")
+
+	// Disconnect force-closes every subscriber channel for the uid and removes
+	// the uid from the registry (the admin ban path).
+	h.Disconnect("alice")
+
+	// The pre-disconnect channel must be closed.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected pre-disconnect channel to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pre-disconnect channel to close")
+	}
+
+	// The pre-disconnect unsubscribe must be safe: the map-membership guard
+	// skips the already-closed channel, so there is no double-close panic.
+	unsub()
+
+	// Disconnect deleted the uid entry, so a fresh Subscribe must yield an
+	// open channel that delivers events (a closed-but-present entry could not).
+	ch2, unsub2 := h.Subscribe("alice")
+	defer unsub2()
+
+	h.Publish("alice", "msg", "hello", 0)
+
+	select {
+	case evt := <-ch2:
+		if evt.Type != "msg" || evt.Data != "hello" {
+			t.Fatalf("unexpected event: %+v", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event on post-Disconnect channel")
+	}
+
+	h.Close()
+}
+
+func TestHub_DisconnectNoSubscriber(t *testing.T) {
+	h := hub.New()
+
+	// Disconnecting a uid with no active subscribers is a no-op (no panic).
+	h.Disconnect("nobody")
+	h.Disconnect("")
+
+	// The registry must still function afterwards.
+	h.Publish("nobody", "evt", "data", 0)
+}
+
+func TestHub_CloseTwice(t *testing.T) {
+	h := hub.New()
+	ch, unsub := h.Subscribe("dave")
+	defer unsub()
+
+	h.Close()
+
+	// The pre-close channel must be closed by the first Close.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected pre-close channel to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pre-close channel to close")
+	}
+
+	// Close is idempotent: the registry is already drained and closed is
+	// already true, so the second call must not panic.
+	h.Close()
+}
+
+func TestHub_UnsubAfterClose(t *testing.T) {
+	h := hub.New()
+	_, unsub := h.Subscribe("dave")
+
+	h.Close()
+
+	// Unsubscribing after Close must not double-close the channel.
+	unsub()
+}
+
+func TestHub_PublishAfterClose(t *testing.T) {
+	h := hub.New()
+	ch, _ := h.Subscribe("frank")
+
+	h.Close()
+
+	// Publishing after Close must not panic (the registry is drained, so pub
+	// iterates nothing) and must deliver to no one.
+	h.Publish("frank", "evt", "data", 1)
+	h.Publish("other-uid", "evt", "data", 1)
+
+	// The pre-close channel is closed: a receive yields the zero value with
+	// ok == false, never a live event.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected closed channel, but received a live event after Close")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for channel close")
+	}
+}
