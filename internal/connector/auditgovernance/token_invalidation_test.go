@@ -4,7 +4,8 @@ package auditgovernance
 // docs/plans/2026-08-07-internal-pkg-bulkhead-tokensource-invalidate-on-401-design.md
 // §6): epoch-fenced singleflight refetch (T-10.1, T-10.2.1, T-10.2.2),
 // events-401 scope classification (T-10.2.3), token-endpoint classification
-// and scope-claim validation (REQ-4), hook safety (T-10.1e/f, scope_hook_test.go),
+// and scope-claim validation (REQ-4), hook safety (T-10.1e/f — panic
+// containment + re-entrancy guard, scope_hook_test.go),
 // Invalidate contract (FM-8), C-B propagation, and transport sanitization (F1).
 // All tests are in-package httptest loopback fixtures with counting handlers
 // (atomic.Int32 — handlers run on server goroutines).
