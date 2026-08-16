@@ -22,9 +22,25 @@ func RedactSummaryData(value map[string]any) map[string]any {
 
 const maxSummaryDataBytes = 64 * 1024
 
+// sensitiveSummaryParts lists credential shapes in human-readable snake_case.
+// Every part is canonicalized before matching, so camelCase and separator-free
+// spellings (accessKey, api_key, signing-key) resolve to the same shape.
 var sensitiveSummaryParts = []string{
 	"password", "token", "secret", "cookie", "mfa", "recovery", "credential", "private_key",
 	"access_key", "refresh", "authorization", "object_bytes", "blob", "message_body",
+	"api_key", "signing_key",
+}
+
+// sensitiveSummaryCanonicalParts is sensitiveSummaryParts canonicalized once so
+// per-key matching never re-canonicalizes the constant set.
+var sensitiveSummaryCanonicalParts = canonicalSummaryParts()
+
+func canonicalSummaryParts() []string {
+	parts := make([]string, len(sensitiveSummaryParts))
+	for i, part := range sensitiveSummaryParts {
+		parts[i] = canonicalSummaryKey(part)
+	}
+	return parts
 }
 
 func redactSummaryMap(value map[string]any, depth int) map[string]any {
@@ -56,12 +72,20 @@ func redactSummaryMap(value map[string]any, depth int) map[string]any {
 	return result
 }
 
+// canonicalSummaryKey lowercases a key and strips every separator so that
+// camelCase, snake_case, kebab-case, dotted, and space-separated spellings of
+// the same credential shape collapse to one canonical form (accessKey,
+// access_key, access-key, access.key, and "access key" all -> "accesskey").
+func canonicalSummaryKey(key string) string {
+	return strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(key))
+}
+
 func sensitiveSummaryKey(key string) bool {
-	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-	for _, part := range sensitiveSummaryParts {
-		if strings.Contains(key, part) {
+	canonical := canonicalSummaryKey(key)
+	for _, part := range sensitiveSummaryCanonicalParts {
+		if strings.Contains(canonical, part) {
 			return true
 		}
 	}
-	return key == "body" || key == "content" || key == "raw" || key == "messages" || key == "message"
+	return canonical == "body" || canonical == "content" || canonical == "raw" || canonical == "messages" || canonical == "message"
 }

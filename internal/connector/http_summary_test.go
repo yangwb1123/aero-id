@@ -36,6 +36,34 @@ func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 	}
 }
 
+func TestJSONSummaryConnectorRedactsCamelCaseCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.DatasetAeroVaultTenants) {
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"aero-vault.tenants":{"display_name":"Ada","owner":{"accessKey":"AKIA…","privateKey":"-----BEGIN…"}}}}`))
+	}))
+	defer server.Close()
+	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{4}, RequestID: "request-vault", Datasets: []domain.AccountDataset{domain.DatasetAeroVaultTenants}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1: %#v", len(summary.Snapshots), summary.Snapshots)
+	}
+	data := summary.Snapshots[0].Data
+	if data["display_name"] != "Ada" {
+		t.Fatalf("safe source data was removed: %#v", data)
+	}
+	if containsSensitiveSummaryKey(data) {
+		t.Fatalf("credential keys leaked into summary data: %#v", data)
+	}
+}
+
 func TestJSONSummaryConnectorEraseUsesIdempotency(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Idempotency-Key") != "erase-1" || r.Header.Get("X-Aero-Operation-ID") != "op-1" || r.Header.Get("X-Request-ID") != "request-2" {
