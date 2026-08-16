@@ -36,6 +36,41 @@ func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 	}
 }
 
+func TestJSONSummaryConnectorRedactsSnaplinkIdentityCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.DatasetSnaplinkIdentity) {
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"snaplink.identity":{
+			"display_name":"Ada","email":"ada@example.com","verified":true,
+			"identity":{"api_key":"sk-1","apikey":"sk-2","jwt":"eyJhbGciOi…","passcode":"123456",
+			"otp":"654321","verification_code":"abc-123","access_token":"tok-1","mfa_secret":"mfa-1"}}}}`))
+	}))
+	defer server.Close()
+	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{5}, RequestID: "request-snaplink", Datasets: []domain.AccountDataset{domain.DatasetSnaplinkIdentity}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1: %#v", len(summary.Snapshots), summary.Snapshots)
+	}
+	data := summary.Snapshots[0].Data
+	if data["display_name"] != "Ada" || data["email"] != "ada@example.com" || data["verified"] != true {
+		t.Fatalf("safe fields were dropped or rewritten: %#v", data)
+	}
+	if containsSensitiveSummaryKey(data) {
+		t.Fatalf("credential keys leaked into snaplink summary data: %#v", data)
+	}
+	identity, ok := data["identity"].(map[string]any)
+	if !ok || len(identity) != 0 {
+		t.Fatalf("nested identity map not emptied: %#v", data["identity"])
+	}
+}
+
 func TestJSONSummaryConnectorRedactsCamelCaseCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.DatasetAeroVaultTenants) {

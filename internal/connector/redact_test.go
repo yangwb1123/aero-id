@@ -1,6 +1,12 @@
 package connector
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 // containsSensitiveSummaryKey walks a redacted map and reports whether any key
 // still matches the sensitive-shape matcher. It reuses the production matcher,
@@ -183,5 +189,73 @@ func TestRedactStillBlocksExactMessageKeys(t *testing.T) {
 				t.Fatalf("exact key %q survived redaction: %#v", key, got)
 			}
 		})
+	}
+}
+
+// TestRedactSummaryDataDropsSnaplinkIdentityShapes pins the canonicalization
+// claim for the snaplink credential/verification shapes: jwt, passcode, otp
+// (incl. totp*/hotp* spellings) and verification_code in every separator/case
+// spelling collapse to a sensitive canonical form and are dropped while a
+// companion safe key survives.
+func TestRedactSummaryDataDropsSnaplinkIdentityShapes(t *testing.T) {
+	variants := []string{"jwt", "JWT", "passCode", "pass-code", "OTP_secret", "totp_secret",
+		"hotpSecret", "verificationCode", "verification-code", "verification.code", "verification code"}
+	for _, key := range variants {
+		t.Run(key, func(t *testing.T) {
+			got := RedactSummaryData(map[string]any{key: "credential-value", "display_name": "Ada"})
+			if got[key] != nil {
+				t.Fatalf("credential key %q survived redaction: %#v", key, got)
+			}
+			if got["display_name"] != "Ada" {
+				t.Fatalf("safe key display_name was dropped or rewritten: %#v", got)
+			}
+		})
+	}
+}
+
+// TestRedactSummaryDataRetainsApiCodeSessionKeys pins the false-positive guard:
+// standalone api/code/session keys (and api_version/session_id) contain no
+// sensitive part and are not in the exact-word fallback set, so they must be
+// retained with their original values.
+func TestRedactSummaryDataRetainsApiCodeSessionKeys(t *testing.T) {
+	input := map[string]any{"api": "v1", "code": "OK", "session": "s1",
+		"api_version": "2", "session_id": "s-42", "display_name": "Ada"}
+	got := RedactSummaryData(input)
+	for key, want := range input {
+		if got[key] != want {
+			t.Fatalf("safe key %q = %#v, want %#v (redacted: %#v)", key, got[key], want, got)
+		}
+	}
+}
+
+// TestRedactSummaryDataTruncatesOversizedPayload pins the sha256-truncated
+// fallback: a >64KB redacted payload is replaced by {"truncated": true,
+// "sha256": <64-hex>} whose digest covers only the redacted content, because
+// sensitive keys are dropped before the size check.
+func TestRedactSummaryDataTruncatesOversizedPayload(t *testing.T) {
+	large := strings.Repeat("A", 70*1024)
+	got := RedactSummaryData(map[string]any{"token": "secret", "body": "message-body", "display_name": large})
+	if len(got) != 2 || got["truncated"] != true {
+		t.Fatalf("truncation fallback not returned: %#v", got)
+	}
+	sum, ok := got["sha256"].(string)
+	if !ok || len(sum) != 64 {
+		t.Fatalf("sha256 = %#v, want 64-char hex string", got["sha256"])
+	}
+	if _, err := hex.DecodeString(sum); err != nil {
+		t.Fatalf("sha256 is not hex: %q", sum)
+	}
+	// encoding/json sorts string map keys, so the marshaled redacted payload is
+	// deterministic: exactly the safe field, never the dropped credentials.
+	redacted, err := json.Marshal(map[string]any{"display_name": large})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256(redacted)
+	if sum != hex.EncodeToString(want[:]) {
+		t.Fatalf("sha256 = %q, want digest of redacted content %q", sum, hex.EncodeToString(want[:]))
+	}
+	if containsSensitiveSummaryKey(got) {
+		t.Fatalf("fallback contains sensitive data: %#v", got)
 	}
 }

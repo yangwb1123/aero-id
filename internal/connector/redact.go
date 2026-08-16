@@ -33,6 +33,8 @@ var sensitiveSummaryParts = []string{
 	"password", "token", "secret", "cookie", "mfa", "recovery", "credential", "private_key",
 	"access_key", "refresh", "authorization", "object_bytes", "blob", "message_body",
 	"api_key", "signing_key",
+	// verification/OTP shapes: jwt/passcode/otp/verification_code (incl. totp*/hotp* spellings via the otp substring)
+	"jwt", "passcode", "otp", "verification_code",
 	"message_text", "latest_message", "recent_message", "message_preview", "chat_history", "conversation",
 }
 
