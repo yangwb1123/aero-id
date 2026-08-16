@@ -18,15 +18,15 @@ type MessageKind int16
 
 const (
 	MessageKindText   MessageKind = 1
-	MessageKindImage  MessageKind = 2
-	MessageKindFile   MessageKind = 3
+	messageKindImage  MessageKind = 2 // persisted in rows; symbolic name is package-private
+	messageKindFile   MessageKind = 3 // persisted in rows; symbolic name is package-private
 	MessageKindSystem MessageKind = 4
 )
 
 // IsValid reports whether k is a known, supported message kind.
 func (k MessageKind) IsValid() bool {
 	switch k {
-	case MessageKindText, MessageKindImage, MessageKindFile, MessageKindSystem:
+	case MessageKindText, messageKindImage, messageKindFile, MessageKindSystem:
 		return true
 	default:
 		return false
@@ -41,9 +41,10 @@ func (k MessageKind) IsSystem() bool { return k == MessageKindSystem }
 type CommentStatus int16
 
 const (
-	CommentStatusNormal  CommentStatus = 1
-	CommentStatusDeleted CommentStatus = 2
-	CommentStatusHidden  CommentStatus = 3
+	CommentStatusNormal CommentStatus = 1
+	// Value 2 (CommentStatusDeleted) was retired: nothing writes or validates
+	// it, so the symbolic name was removed while the persisted value stays free.
+	CommentStatusHidden CommentStatus = 3
 )
 
 // ReportStatus tracks the triage lifecycle of a comment report.

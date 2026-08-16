@@ -111,7 +111,7 @@ func TestConnector_PartialSummaryAccepted(t *testing.T) {
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 1})
 	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1},
-		Datasets: []domain.AccountDataset{domain.DatasetAeroIMProfile}})
+		Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	if err != nil {
 		t.Fatalf("empty datasets must be a valid partial summary: %v", err)
 	}

@@ -30,7 +30,7 @@ func TestEventIngestServer_AppliesVerifiedSourceBinding(t *testing.T) {
 	}))
 	accountID := idgen.NewID()
 	payload, err := structpb.NewStruct(map[string]any{
-		"account_id": accountID.String(), "dataset": string(domain.DatasetAeroIMProfile), "data": map[string]any{},
+		"account_id": accountID.String(), "dataset": string(domain.AccountDataset("aero-im.profile")), "data": map[string]any{},
 	})
 	if err != nil {
 		t.Fatal(err)

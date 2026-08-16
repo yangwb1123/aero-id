@@ -102,7 +102,7 @@ func (service *billingService) ReserveAccount(ctx context.Context, tenantID, iss
 	if !ok {
 		return "", apperr.Forbidden("billing.entitlement_inactive", "tenant has no active user entitlement")
 	}
-	if !grant.Unlimited && grant.Hard == 0 {
+	if grantExhausted(grant) {
 		return "", apperr.Conflict("billing.quota_exceeded", "tenant user quota is exhausted")
 	}
 	stable := billingStableID(tenantID, issuer, subject)
@@ -129,6 +129,12 @@ func (service *billingService) ReleaseAccount(ctx context.Context, tenantID, res
 func billingStableID(tenantID, issuer, subject string) string {
 	digest := sha256.Sum256([]byte(tenantID + "\x00" + issuer + "\x00" + subject))
 	return hex.EncodeToString(digest[:])
+}
+
+// grantExhausted reports whether a limit grant admits no new capacity: a
+// finite grant whose hard cap is zero. Unlimited grants always admit capacity.
+func grantExhausted(grant domain.LimitGrant) bool {
+	return !grant.Unlimited && grant.Hard == 0
 }
 
 func mapBillingError(err error) error {

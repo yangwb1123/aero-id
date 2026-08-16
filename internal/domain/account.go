@@ -28,18 +28,6 @@ type Account struct {
 	UpdatedAt    time.Time
 }
 
-// AccountIdentity maps an external issuer/subject pair to the canonical account.
-type AccountIdentity struct {
-	ID           ID
-	AccountID    ID
-	TenantID     string
-	Issuer       string
-	Subject      string
-	CanonicalUID string
-	CreatedAt    time.Time
-	LastSeenAt   time.Time
-}
-
 // AccountProfile contains fields explicitly owned by aero-id. Verified identity
 // fields such as email, phone, and lifecycle status belong to Snaplink and are
 // represented only in source projections.
@@ -95,11 +83,6 @@ type AccountMembership struct {
 
 func (a *Account) Valid() bool {
 	return a != nil && a.ID != (ID{}) && strings.TrimSpace(a.TenantID) != "" && strings.TrimSpace(a.CanonicalUID) != ""
-}
-
-func (i *AccountIdentity) Valid() bool {
-	return i != nil && i.AccountID != (ID{}) && strings.TrimSpace(i.TenantID) != "" &&
-		strings.TrimSpace(i.Issuer) != "" && strings.TrimSpace(i.Subject) != ""
 }
 
 func (p *AccountProfile) Normalize() {

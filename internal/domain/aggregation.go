@@ -9,11 +9,11 @@ const (
 	SnapshotFresh       SnapshotStatus = "fresh"
 	SnapshotStale       SnapshotStatus = "stale"
 	SnapshotUnavailable SnapshotStatus = "unavailable"
-	SnapshotUnknown     SnapshotStatus = "unknown"
+	snapshotUnknown     SnapshotStatus = "unknown" // persisted/transmitted via SnapshotStatus casts
 )
 
 func (s SnapshotStatus) Valid() bool {
-	return s == SnapshotFresh || s == SnapshotStale || s == SnapshotUnavailable || s == SnapshotUnknown
+	return s == SnapshotFresh || s == SnapshotStale || s == SnapshotUnavailable || s == snapshotUnknown
 }
 
 // ConsistencyMode controls whether an aggregation reads local projections or
@@ -30,51 +30,56 @@ const (
 // must be added here deliberately; callers cannot proxy arbitrary source paths.
 type AccountDataset string
 
+// Dataset values are the registry's public contract: they are persisted in
+// rows, carried in event payloads, and converted from strings by callers. The
+// symbolic names are private because callers consume the values via casts and
+// the registry functions; only DatasetAeroIMActivitySummary is exported (it is
+// referenced directly by handlers).
 const (
-	DatasetSnaplinkIdentity      AccountDataset = "snaplink.identity"
-	DatasetSnaplinkTenants       AccountDataset = "snaplink.tenants"
-	DatasetSnaplinkPermissions   AccountDataset = "snaplink.permissions"
-	DatasetSnaplinkSecurity      AccountDataset = "snaplink.security"
-	DatasetAeroIMProfile         AccountDataset = "aero-im.profile"
-	DatasetAeroIMWorkspaces      AccountDataset = "aero-im.workspaces"
+	datasetSnaplinkIdentity      AccountDataset = "snaplink.identity"
+	datasetSnaplinkTenants       AccountDataset = "snaplink.tenants"
+	datasetSnaplinkPermissions   AccountDataset = "snaplink.permissions"
+	datasetSnaplinkSecurity      AccountDataset = "snaplink.security"
+	datasetAeroIMProfile         AccountDataset = "aero-im.profile"
+	datasetAeroIMWorkspaces      AccountDataset = "aero-im.workspaces"
 	DatasetAeroIMActivitySummary AccountDataset = "aero-im.activity_summary"
-	DatasetAeroVaultTenants      AccountDataset = "aero-vault.tenants"
-	DatasetAeroVaultBuckets      AccountDataset = "aero-vault.buckets"
-	DatasetAeroVaultUsage        AccountDataset = "aero-vault.usage"
+	datasetAeroVaultTenants      AccountDataset = "aero-vault.tenants"
+	datasetAeroVaultBuckets      AccountDataset = "aero-vault.buckets"
+	datasetAeroVaultUsage        AccountDataset = "aero-vault.usage"
 )
 
-type DatasetDescriptor struct {
+type datasetDescriptor struct {
 	Name   AccountDataset
 	Source string
 	PII    bool
 }
 
-var accountDatasetRegistry = []DatasetDescriptor{
-	{Name: DatasetSnaplinkIdentity, Source: "snaplink", PII: true},
-	{Name: DatasetSnaplinkTenants, Source: "snaplink"},
-	{Name: DatasetSnaplinkPermissions, Source: "snaplink"},
-	{Name: DatasetSnaplinkSecurity, Source: "snaplink", PII: true},
-	{Name: DatasetAeroIMProfile, Source: "aero-im"},
-	{Name: DatasetAeroIMWorkspaces, Source: "aero-im"},
+var accountDatasetRegistry = []datasetDescriptor{
+	{Name: datasetSnaplinkIdentity, Source: "snaplink", PII: true},
+	{Name: datasetSnaplinkTenants, Source: "snaplink"},
+	{Name: datasetSnaplinkPermissions, Source: "snaplink"},
+	{Name: datasetSnaplinkSecurity, Source: "snaplink", PII: true},
+	{Name: datasetAeroIMProfile, Source: "aero-im"},
+	{Name: datasetAeroIMWorkspaces, Source: "aero-im"},
 	{Name: DatasetAeroIMActivitySummary, Source: "aero-im"},
-	{Name: DatasetAeroVaultTenants, Source: "aero-vault"},
-	{Name: DatasetAeroVaultBuckets, Source: "aero-vault"},
-	{Name: DatasetAeroVaultUsage, Source: "aero-vault"},
+	{Name: datasetAeroVaultTenants, Source: "aero-vault"},
+	{Name: datasetAeroVaultBuckets, Source: "aero-vault"},
+	{Name: datasetAeroVaultUsage, Source: "aero-vault"},
 }
 
-func AccountDatasetRegistry() []DatasetDescriptor {
-	result := make([]DatasetDescriptor, len(accountDatasetRegistry))
+func AccountDatasetRegistry() []datasetDescriptor {
+	result := make([]datasetDescriptor, len(accountDatasetRegistry))
 	copy(result, accountDatasetRegistry)
 	return result
 }
 
-func DatasetDescriptorOf(dataset AccountDataset) (DatasetDescriptor, bool) {
+func DatasetDescriptorOf(dataset AccountDataset) (datasetDescriptor, bool) {
 	for _, descriptor := range accountDatasetRegistry {
 		if descriptor.Name == dataset {
 			return descriptor, true
 		}
 	}
-	return DatasetDescriptor{}, false
+	return datasetDescriptor{}, false
 }
 
 type AccountSnapshot struct {
@@ -102,7 +107,7 @@ func (s *AccountSnapshot) Normalize() {
 		s.Data = map[string]any{}
 	}
 	if s.Status == "" {
-		s.Status = SnapshotUnknown
+		s.Status = snapshotUnknown
 	}
 }
 

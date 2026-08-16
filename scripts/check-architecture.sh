@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-architecture.sh — guard the live layered runtime (rules a-e).
+# check-architecture.sh — guard the live layered runtime (rules a-f).
 #
 # Replaces the vacuous cross-feature gate over the dead features list
 # (`file message block notification`), whose every subject was either deleted
@@ -36,6 +36,18 @@
 #       (Was: allow-listed enum casts from http/account.go +
 #       http/audit_ledger.go; deleted when LegacyCutoverStatus and
 #       AuditHoldScope moved to internal/domain.)
+#   (f) Domain exported-symbol liveness. Every exported top-level identifier
+#       declared in non-test files under internal/domain/ — type X, var X,
+#       func X (methods are covered via their receiver type, not individually),
+#       every member of const ( … ) blocks, and single-line const X forms —
+#       must have at least one reference matching `domain.<Symbol>`
+#       (word-boundary, qualified form only) in a non-test *.go file outside
+#       internal/domain, within the scanned roots. One violation per
+#       unreferenced symbol. Qualified matching is required so struct-field
+#       and label names (e.g. `NotificationType:` in repository/handler
+#       preference structs) never count as references. Enumeration covers
+#       const-block members (internal/domain carries 60+ exported const-block
+#       members) and type aliases (`type ID = idgen.ID`).
 #
 # Exceptions (each with justification; review periodically):
 #   EX-1 hub -> service: internal/hub/adapter.go imports internal/service
@@ -44,10 +56,11 @@
 #        comment states the invariant "hub may import service; service must
 #        NOT import hub". hub is excluded from rule (d) by design.
 #
-# Test asymmetry: rules (b)-(e) exclude *_test.go (required for
+# Test asymmetry: rules (b)-(f) exclude *_test.go (required for
 # internal/repository/account_backfill_integration_test.go and
 # internal/event/nats_integration_test.go); rule (a) includes tests ("no
-# package anywhere").
+# package anywhere"). Rule (f) additionally requires its consumers to be
+# non-test files: a symbol referenced only by tests is dead in production.
 #
 # Self-tests: per-rule positive/negative fixture sweeps over
 # scripts/testdata/architecture/ run on every invocation. A positive fixture
@@ -212,6 +225,68 @@ scan_handler_repo_import() {
   done
 }
 
+# ── rule (f): domain exported-symbol liveness ─────────────────────────────
+# Enumerate exported top-level identifiers declared in one Go source file
+# (read from stdin): type X / var X / func X / single-line const X plus
+# members of const ( … ) blocks. Methods are skipped (covered via their
+# receiver type); unexported identifiers are skipped. POSIX awk only (mawk
+# has no gawk-style match(s, re, arr)).
+extract_domain_exports() {
+  awk '
+    function clean(line) {
+      sub(/\/\/.*$/, "", line)
+      sub(/\/\*.*\*\//, "", line)
+      return line
+    }
+    {
+      line = clean($0)
+      if (inblock) {
+        if (line ~ /^[[:space:]]*\)/) { inblock = 0; next }
+        if (line ~ /^[[:space:]]*$/) next
+        if (line ~ /^[[:space:]]*\//) next
+        if (match(line, /[A-Za-z_][A-Za-z0-9_]*/)) {
+          name = substr(line, RSTART, RLENGTH)
+          if (substr(name, 1, 1) ~ /[A-Z]/) print name
+        }
+        next
+      }
+      if (line ~ /^(const|type|var)[[:space:]]*\(/) { inblock = 1; next }
+      if (match(line, /^(const|type|var|func)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+        name = substr(line, RSTART, RLENGTH)
+        sub(/^[^[:space:]]+[[:space:]]+/, "", name)
+        if (substr(name, 1, 1) ~ /[A-Z]/) print name
+      }
+    }
+  '
+}
+
+scan_domain_liveness() {
+  local root domain_dir sym corpus symbols
+  for root in "$@"; do
+    [ -d "$root" ] || continue
+    while IFS= read -r domain_dir; do
+      # Reference corpus: all non-test .go files under the root except the
+      # domain package's own files (in-package use is unqualified and never
+      # matches the qualified scan anyway; the exclusion keeps the scan fast).
+      corpus="$(mktemp)"
+      find "$root" -name '*.go' ! -name '*_test.go' ! -path '*/internal/domain/*' \
+        -exec cat {} + 2>/dev/null > "$corpus" || true
+      symbols="$(mktemp)"
+      while IFS= read -r f; do
+        extract_domain_exports < "$f" >> "$symbols"
+      done < <(find "$domain_dir" -name '*.go' ! -name '*_test.go' 2>/dev/null | sort)
+      while IFS= read -r sym; do
+        [ -n "$sym" ] || continue
+        if ! grep -q "domain\.$sym\b" "$corpus"; then
+          echo "VIOLATION: $domain_dir declares exported $sym with no qualified non-test consumer (rule f)"
+          violations=$((violations + 1))
+        fi
+      done < "$symbols"
+      rm -f "$corpus" "$symbols"
+    done < <(find "$root" -type d -path '*/internal/domain' 2>/dev/null | sort)
+  done
+}
+
 # ── self-test sweep: fixtures are part of the gate ──────────────────────────
 # Each scan function is run in the current shell (redirect, not command
 # substitution) so the global counter is observable per rule.
@@ -256,6 +331,7 @@ else
   selftest_rule "(c) repository/service"       scan_repository_service
   selftest_rule "(d) infra layers"             scan_infra_service_repo
   selftest_rule "(e1) handler repo import"     scan_handler_repo_import
+  selftest_rule "(f) domain liveness"          scan_domain_liveness
 fi
 
 # ── real-tree scan: internal/ and cmd/ only (fixtures are never scanned) ────
@@ -265,6 +341,7 @@ scan_domain_purity internal cmd
 scan_repository_service internal cmd
 scan_infra_service_repo internal cmd
 scan_handler_repo_import internal cmd
+scan_domain_liveness internal cmd
 
 if [ "$fail" -ne 0 ] || [ "$violations" -gt 0 ]; then
   echo ""
@@ -273,4 +350,4 @@ if [ "$fail" -ne 0 ] || [ "$violations" -gt 0 ]; then
   exit 1
 fi
 
-echo "✓ Architecture check passed (rules a-e: dead-tree ban, domain purity, repository/service, infra layers, handler/repository)"
+echo "✓ Architecture check passed (rules a-f: dead-tree ban, domain purity, repository/service, infra layers, handler/repository, domain liveness)"

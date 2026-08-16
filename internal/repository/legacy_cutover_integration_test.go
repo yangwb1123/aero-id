@@ -45,7 +45,7 @@ func TestLegacyCutoverSetWithAuditHappyPath(t *testing.T) {
 	ctx := context.Background()
 	db, auditRepo := startCutoverAuditRepo(t, cutoverAuditTestKey)
 	eventID := idgen.Anchor("legacy.cutover.set", "tenant-a", "shadow", "legacy")
-	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatusShadow,
+	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("shadow"),
 		DecidedBy: "admin-1", Note: "dual read"}
 	if err := auditRepo.SetCutoverWithAudit(ctx, entry, cutoverFact(eventID, "tenant-a")); err != nil {
 		t.Fatalf("SetCutoverWithAudit: %v", err)
@@ -70,7 +70,7 @@ func TestLegacyCutoverSetWithAuditRollbackWithoutSigningKey(t *testing.T) {
 	ctx := context.Background()
 	db, auditRepo := startCutoverAuditRepo(t, "")
 	plain := repository.NewLegacyCutoverRepository(db, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{}))
-	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatusShadow,
+	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("shadow"),
 		DecidedBy: "admin-1", Note: "dual read"}
 	if err := plain.SetCutover(ctx, entry); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestLegacyCutoverSetWithAuditDuplicateFold(t *testing.T) {
 	db, auditRepo := startCutoverAuditRepo(t, cutoverAuditTestKey)
 	eventID := idgen.Anchor("legacy.cutover.set", "tenant-a", "shadow", "legacy")
 	for i := 0; i < 2; i++ {
-		entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatusShadow,
+		entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("shadow"),
 			DecidedBy: "admin-1", Note: "dual read"}
 		if err := auditRepo.SetCutoverWithAudit(ctx, entry, cutoverFact(eventID, "tenant-a")); err != nil {
 			t.Fatalf("SetCutoverWithAudit %d: %v", i, err)
@@ -136,7 +136,7 @@ func TestLegacyCutoverSetWithAuditPublicationInsertRollsBack(t *testing.T) {
 	db, auditRepo := startCutoverAuditRepo(t, cutoverAuditTestKey)
 	installFailPublicationInsertTrigger(t, db)
 	eventID := idgen.Anchor("legacy.cutover.set", "tenant-a", "shadow", "legacy")
-	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatusShadow,
+	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("shadow"),
 		DecidedBy: "admin-1", Note: "dual read"}
 	if err := auditRepo.SetCutoverWithAudit(ctx, entry, cutoverFact(eventID, "tenant-a")); err == nil {
 		t.Fatal("SetCutoverWithAudit must fail when the publication insert fails")
@@ -167,13 +167,13 @@ func TestLegacyCutoverRegistry(t *testing.T) {
 		t.Fatalf("get missing = %v, want not found", err)
 	}
 	now := time.Now().UTC()
-	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatusShadow,
+	entry := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("shadow"),
 		DecidedAt: now, DecidedBy: "admin-1", Note: "dual read"}
 	if err := cutover.SetCutover(t.Context(), entry); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	stored, err := cutover.GetCutover(t.Context(), "tenant-a")
-	if err != nil || stored.Status != domain.LegacyCutoverStatusShadow {
+	if err != nil || stored.Status != domain.LegacyCutoverStatus("shadow") {
 		t.Fatalf("stored = %+v, %v", stored, err)
 	}
 

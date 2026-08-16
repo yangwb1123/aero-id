@@ -58,7 +58,7 @@ func TestCutoverTransitions(t *testing.T) {
 	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusCutOver, "skip shadow"); err == nil {
 		t.Fatal("legacy -> cut_over must be rejected (shadow is mandatory)")
 	}
-	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusShadow, "dual read"); err != nil {
+	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatus("shadow"), "dual read"); err != nil {
 		t.Fatalf("legacy -> shadow: %v", err)
 	}
 	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusCutOver, "moved"); err != nil {
@@ -68,7 +68,7 @@ func TestCutoverTransitions(t *testing.T) {
 	if err != nil || !cutOver {
 		t.Fatalf("IsCutOver = %v, %v; want true", cutOver, err)
 	}
-	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusRolledBack, "rollback"); err != nil {
+	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatus("rolled_back"), "rollback"); err != nil {
 		t.Fatalf("cut_over -> rolled_back: %v", err)
 	}
 	if cutOver, _ := svc.IsCutOver(ctx, "tenant-a"); cutOver {
@@ -78,7 +78,7 @@ func TestCutoverTransitions(t *testing.T) {
 	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusCutOver, ""); err == nil {
 		t.Fatal("rolled_back -> cut_over must be rejected")
 	}
-	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusShadow, "retry"); err != nil {
+	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatus("shadow"), "retry"); err != nil {
 		t.Fatalf("rolled_back -> shadow: %v", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestCleanupReadiness(t *testing.T) {
 	}})
 	svc.rollbackWindow = 24 * time.Hour
 	// Complete a cutover and age it past the rollback window.
-	_, _ = svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusShadow, "")
+	_, _ = svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatus("shadow"), "")
 	_, _ = svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusCutOver, "")
 	cutover.entries["tenant-a"].DecidedAt = time.Now().UTC().Add(-48 * time.Hour)
 	items, ready, err := svc.CleanupReadiness(ctx, "tenant-a")
@@ -126,7 +126,7 @@ func TestCleanupReadinessRollbackWindow(t *testing.T) {
 		{Check: "audit_retained", Ready: true},
 	}})
 	svc.rollbackWindow = 24 * time.Hour
-	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusShadow, ""); err != nil {
+	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatus("shadow"), ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Set(ctx, "tenant-a", domain.LegacyCutoverStatusCutOver, ""); err != nil {
@@ -178,7 +178,7 @@ func TestCutoverAtomicAuditFailureFailsClosed(t *testing.T) {
 	svc := NewLegacyCutoverService(cutover, &fakeCleanupRepo{}, NewAuditLedgerService(ledger)).(*legacyCutoverService)
 	svc.actor = func(ctx context.Context) string { return "admin-1" }
 
-	if _, err := svc.Set(t.Context(), "tenant-a", domain.LegacyCutoverStatusShadow, "dual read"); err == nil {
+	if _, err := svc.Set(t.Context(), "tenant-a", domain.LegacyCutoverStatus("shadow"), "dual read"); err == nil {
 		t.Fatal("Set must fail when the in-tx audit append fails")
 	} else if !apperrIs(err, "cutover.save_failed") {
 		t.Fatalf("Set error = %v, want cutover.save_failed (atomic failure)", err)
@@ -199,7 +199,7 @@ func TestCutoverAtomicFactMatchesFallbackRecord(t *testing.T) {
 	atomicLedger := &auditLedgerRepoSpy{}
 	atomicSvc := NewLegacyCutoverService(atomicRepo, &fakeCleanupRepo{}, NewAuditLedgerService(atomicLedger)).(*legacyCutoverService)
 	atomicSvc.actor = func(ctx context.Context) string { return "admin-1" }
-	if _, err := atomicSvc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatusShadow, "dual read"); err != nil {
+	if _, err := atomicSvc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatus("shadow"), "dual read"); err != nil {
 		t.Fatalf("atomic set: %v", err)
 	}
 	if atomicRepo.setFact == nil || atomicLedger.appended != nil {
@@ -210,7 +210,7 @@ func TestCutoverAtomicFactMatchesFallbackRecord(t *testing.T) {
 	fallbackLedger := &auditLedgerRepoSpy{}
 	fallbackSvc := NewLegacyCutoverService(fallbackRepo, &fakeCleanupRepo{}, NewAuditLedgerService(fallbackLedger)).(*legacyCutoverService)
 	fallbackSvc.actor = func(ctx context.Context) string { return "admin-1" }
-	if _, err := fallbackSvc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatusShadow, "dual read"); err != nil {
+	if _, err := fallbackSvc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatus("shadow"), "dual read"); err != nil {
 		t.Fatalf("fallback set: %v", err)
 	}
 	if fallbackLedger.appended == nil {
@@ -236,7 +236,7 @@ func TestCutoverAuditFailureFailsClosed(t *testing.T) {
 	svc := NewLegacyCutoverService(cutover, &fakeCleanupRepo{}, NewAuditLedgerService(failing)).(*legacyCutoverService)
 	svc.actor = func(ctx context.Context) string { return "admin-1" }
 
-	if _, err := svc.Set(t.Context(), "tenant-a", domain.LegacyCutoverStatusShadow, "dual read"); err == nil {
+	if _, err := svc.Set(t.Context(), "tenant-a", domain.LegacyCutoverStatus("shadow"), "dual read"); err == nil {
 		t.Fatal("Set must fail when the audit append fails")
 	} else if !apperrIs(err, "cutover.audit_failed") {
 		t.Fatalf("Set error = %v, want cutover.audit_failed", err)
@@ -255,7 +255,7 @@ func TestCutoverAnchorTransitions(t *testing.T) {
 	svc.actor = func(ctx context.Context) string { return "admin-1" }
 
 	// legacy -> shadow (G11).
-	if _, err := svc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatusShadow, "dual read"); err != nil {
+	if _, err := svc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatus("shadow"), "dual read"); err != nil {
 		t.Fatalf("legacy->shadow: %v", err)
 	}
 	const g11 = "55090245-2231-5fc5-9671-5db846c5dd82"
@@ -283,7 +283,7 @@ func TestCutoverAnchorTransitions(t *testing.T) {
 	}
 
 	// Cycle return: cut_over -> rolled_back -> legacy (G13).
-	if _, err := svc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatusRolledBack, "rollback"); err != nil {
+	if _, err := svc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatus("rolled_back"), "rollback"); err != nil {
 		t.Fatalf("cut_over->rolled_back: %v", err)
 	}
 	if _, err := svc.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatusLegacy, "serve legacy"); err != nil {
@@ -306,7 +306,7 @@ func TestCutoverAnchorTransitions(t *testing.T) {
 	svcDup := NewLegacyCutoverService(racing, &fakeCleanupRepo{}, NewAuditLedgerService(dupAudit)).(*legacyCutoverService)
 	svcDup.actor = func(ctx context.Context) string { return "admin-1" }
 	for i := 0; i < 2; i++ {
-		if _, err := svcDup.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatusShadow, "dual read"); err != nil {
+		if _, err := svcDup.Set(ctx, "tenant-alpha", domain.LegacyCutoverStatus("shadow"), "dual read"); err != nil {
 			t.Fatalf("racing set %d: %v", i, err)
 		}
 	}

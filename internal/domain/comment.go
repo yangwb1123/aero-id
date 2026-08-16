@@ -3,8 +3,6 @@ package domain
 import (
 	"errors"
 	"time"
-
-	"github.com/aero/aero-id/internal/pkg/idgen"
 )
 
 type Comment struct {
@@ -38,9 +36,10 @@ type CommentReport struct {
 	ResolvedBy string
 }
 
-// ErrNestingTooDeep is returned by ValidateNewComment when a reply would create
-// a depth >= 3 chain (root → reply → reply-of-reply).
-var ErrNestingTooDeep = errors.New("comment nesting must not exceed two levels")
+// errNestingTooDeep is returned by ValidateNewComment when a reply would create
+// a depth >= 3 chain (root → reply → reply-of-reply). It is unexported because
+// callers only check for a non-nil error.
+var errNestingTooDeep = errors.New("comment nesting must not exceed two levels")
 
 // ValidateNewComment enforces the two-level nesting rule.
 //   - nil parent (top-level): always allowed.
@@ -51,7 +50,7 @@ func ValidateNewComment(parent *Comment) error {
 		return nil
 	}
 	if parent.ParentID != nil {
-		return ErrNestingTooDeep
+		return errNestingTooDeep
 	}
 	return nil
 }
@@ -76,6 +75,3 @@ func NewComment(id ID, ownerUID string, targetType TargetType, targetID ID, pare
 	c.RootID = parent.RootID
 	return c
 }
-
-// Make sure idgen is referenced so go vet does not strip it when only the type alias is used in tests.
-var _ = idgen.NewID

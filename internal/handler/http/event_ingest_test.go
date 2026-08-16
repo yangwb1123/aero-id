@@ -107,7 +107,7 @@ func validEventBody(t *testing.T, source string) []byte {
 	value := event.Envelope{EventID: idgen.NewID(), Source: source, SourceRegion: "west", EventType: "account.updated",
 		SchemaVersion: 1, AggregateType: "account", AggregateID: "source-account", AggregateVersion: 1,
 		TenantID: "tenant-1", OccurredAt: time.Now().UTC(), Payload: map[string]any{
-			"account_id": idgen.NewID().String(), "dataset": string(domain.DatasetAeroIMProfile), "data": map[string]any{},
+			"account_id": idgen.NewID().String(), "dataset": string(domain.AccountDataset("aero-im.profile")), "data": map[string]any{},
 		}}
 	data, err := json.Marshal(value)
 	if err != nil {

@@ -56,7 +56,7 @@ func TestMessageService_SendRejectsForeignFileAttachment(t *testing.T) {
 	}}
 	svc := service.NewMessageService(&mocks.MessageRepo{}, files, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "a")
-	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKindFile, FileID: &fid})
+	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKind(3), FileID: &fid})
 	assertAppCode(t, err, 403)
 }
 
@@ -67,7 +67,7 @@ func TestMessageService_SendRejectsMissingFile(t *testing.T) {
 	}}
 	svc := service.NewMessageService(&mocks.MessageRepo{}, files, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "a")
-	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKindFile, FileID: &fid})
+	_, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKind(3), FileID: &fid})
 	assertAppCode(t, err, 400)
 }
 
@@ -98,11 +98,11 @@ func TestMessageService_SendFileKindRequiresFileOwnership(t *testing.T) {
 	}}
 	svc := service.NewMessageService(repo, files, &mocks.UserDir{})
 	ctx := service.WithActor(context.Background(), "a")
-	m, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKindFile, FileID: &fid})
+	m, err := svc.Send(ctx, service.SendMessageInput{ToUID: "b", Kind: domain.MessageKind(3), FileID: &fid})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved == nil || m.Kind != domain.MessageKindFile || m.FileID == nil {
+	if saved == nil || m.Kind != domain.MessageKind(3) || m.FileID == nil {
 		t.Fatalf("unexpected file message: %+v", m)
 	}
 }

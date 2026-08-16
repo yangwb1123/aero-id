@@ -2,19 +2,21 @@ package domain
 
 import "time"
 
-// NotificationType enumerates the known notification types in the system.
+// notificationType enumerates the known notification types in the system.
 // These correspond to outbox event types the NotificationDispatcher maps.
-type NotificationType string
+// The type is unexported: callers consume the exported NotifType* constants
+// via string() conversions, never by naming the type.
+type notificationType string
 
 const (
-	NotifTypeMessageReceived  NotificationType = "message.received"
-	NotifTypeMessageRead      NotificationType = "message.read_receipt"
-	NotifTypeCommentReply     NotificationType = "comment.reply"
-	NotifTypeFileCommented    NotificationType = "file.commented"
-	NotifTypeMessageCommented NotificationType = "message.commented"
-	NotifTypeMessageReacted   NotificationType = "message.reacted"
-	NotifTypeCommentLiked     NotificationType = "comment.liked"
-	NotifTypeMessageDeleted   NotificationType = "message.deleted"
+	NotifTypeMessageReceived  notificationType = "message.received"
+	NotifTypeMessageRead      notificationType = "message.read_receipt"
+	NotifTypeCommentReply     notificationType = "comment.reply"
+	NotifTypeFileCommented    notificationType = "file.commented"
+	NotifTypeMessageCommented notificationType = "message.commented"
+	NotifTypeMessageReacted   notificationType = "message.reacted"
+	NotifTypeCommentLiked     notificationType = "comment.liked"
+	NotifTypeMessageDeleted   notificationType = "message.deleted"
 )
 
 // Notification is a per-recipient record of a domain event (a message received,

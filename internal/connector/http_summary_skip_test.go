@@ -24,7 +24,7 @@ func TestJSONSummaryConnectorSurfacesSkippedDatasets(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{7},
-		Datasets: []domain.AccountDataset{domain.DatasetAeroVaultTenants}})
+		Datasets: []domain.AccountDataset{domain.AccountDataset("aero-vault.tenants")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestJSONSummaryConnectorNoFalseDowngradeForRegisteredVaultDatasets(t *testi
 		t.Fatal(err)
 	}
 	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{8},
-		Datasets: []domain.AccountDataset{domain.DatasetAeroVaultTenants, domain.DatasetAeroVaultBuckets, domain.DatasetAeroVaultUsage}})
+		Datasets: []domain.AccountDataset{domain.AccountDataset("aero-vault.tenants"), domain.AccountDataset("aero-vault.buckets"), domain.AccountDataset("aero-vault.usage")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestJSONSummaryConnectorNoFalseDowngradeForRegisteredVaultDatasets(t *testi
 			t.Fatalf("snapshot source = %q, want %q", snapshot.Source, string(SourceAeroVault))
 		}
 		switch snapshot.Dataset {
-		case domain.DatasetAeroVaultTenants, domain.DatasetAeroVaultBuckets, domain.DatasetAeroVaultUsage:
+		case domain.AccountDataset("aero-vault.tenants"), domain.AccountDataset("aero-vault.buckets"), domain.AccountDataset("aero-vault.usage"):
 		default:
 			t.Fatalf("unexpected dataset %q", snapshot.Dataset)
 		}

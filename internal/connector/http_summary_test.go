@@ -11,7 +11,7 @@ import (
 
 func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.DatasetAeroIMProfile) {
+		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.AccountDataset("aero-im.profile")) {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
 		if got := r.Header.Get("X-Request-ID"); got != "request-1" {
@@ -24,7 +24,7 @@ func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, RequestID: "request-1", Datasets: []domain.AccountDataset{domain.DatasetAeroIMProfile}})
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, RequestID: "request-1", Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 
 func TestJSONSummaryConnectorRedactsSnaplinkIdentityCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.DatasetSnaplinkIdentity) {
+		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.AccountDataset("snaplink.identity")) {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
 		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"snaplink.identity":{
@@ -51,7 +51,7 @@ func TestJSONSummaryConnectorRedactsSnaplinkIdentityCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{5}, RequestID: "request-snaplink", Datasets: []domain.AccountDataset{domain.DatasetSnaplinkIdentity}})
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{5}, RequestID: "request-snaplink", Datasets: []domain.AccountDataset{domain.AccountDataset("snaplink.identity")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestJSONSummaryConnectorRedactsSnaplinkIdentityCredentials(t *testing.T) {
 
 func TestJSONSummaryConnectorRedactsCamelCaseCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.DatasetAeroVaultTenants) {
+		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.AccountDataset("aero-vault.tenants")) {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
 		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"aero-vault.tenants":{"display_name":"Ada","owner":{"accessKey":"AKIA…","privateKey":"-----BEGIN…"}}}}`))
@@ -83,7 +83,7 @@ func TestJSONSummaryConnectorRedactsCamelCaseCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{4}, RequestID: "request-vault", Datasets: []domain.AccountDataset{domain.DatasetAeroVaultTenants}})
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{4}, RequestID: "request-vault", Datasets: []domain.AccountDataset{domain.AccountDataset("aero-vault.tenants")}})
 	if err != nil {
 		t.Fatal(err)
 	}

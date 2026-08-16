@@ -3,7 +3,7 @@ package domain
 import "testing"
 
 func TestMessageKindIsValid(t *testing.T) {
-	valid := []MessageKind{MessageKindText, MessageKindImage, MessageKindFile, MessageKindSystem}
+	valid := []MessageKind{MessageKindText, messageKindImage, messageKindFile, MessageKindSystem}
 	for _, k := range valid {
 		if !k.IsValid() {
 			t.Errorf("%d should be valid", k)

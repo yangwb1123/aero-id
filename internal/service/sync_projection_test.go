@@ -50,8 +50,10 @@ type fakeAccountService struct {
 	AccountService
 }
 
-func (fakeAccountService) UpsertSource(context.Context, *domain.AccountSource) error          { return nil }
-func (fakeAccountService) UpsertMembership(context.Context, *domain.AccountMembership) error { return nil }
+func (fakeAccountService) UpsertSource(context.Context, *domain.AccountSource) error { return nil }
+func (fakeAccountService) UpsertMembership(context.Context, *domain.AccountMembership) error {
+	return nil
+}
 
 func newSyncProjectionHarness() (*syncJobService, *fakeSnapshotRepo, *fakeAccountRepo) {
 	snapshots := &fakeSnapshotRepo{}
@@ -65,9 +67,9 @@ func newSyncProjectionHarness() (*syncJobService, *fakeSnapshotRepo, *fakeAccoun
 }
 
 var vaultDatasets = []domain.AccountDataset{
-	domain.DatasetAeroVaultTenants,
-	domain.DatasetAeroVaultBuckets,
-	domain.DatasetAeroVaultUsage,
+	domain.AccountDataset("aero-vault.tenants"),
+	domain.AccountDataset("aero-vault.buckets"),
+	domain.AccountDataset("aero-vault.usage"),
 }
 
 // TestPersistSyncSummary_SkipsSuppressReconcileMarking: a summary downgraded
@@ -135,7 +137,7 @@ func TestPersistSyncSummary_CompleteSummaryRunsReconcileMarking(t *testing.T) {
 		Complete: true,
 		Version:  5,
 		Snapshots: []*domain.AccountSnapshot{
-			{Dataset: domain.DatasetAeroVaultTenants},
+			{Dataset: domain.AccountDataset("aero-vault.tenants")},
 		},
 	}
 
