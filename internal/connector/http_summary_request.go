@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -140,6 +141,10 @@ func (c *JSONSummaryConnector) summaryFromPayload(payload *summaryPayload) (*Sum
 	if err := c.appendDatasetSnapshots(result, payload.Datasets, region, payload.GeneratedAt); err != nil {
 		return nil, err
 	}
+	// Fail closed: a summary that dropped any received dataset is not complete
+	// from aero-id's perspective, regardless of the source's own flag. Downgrade
+	// only; a payload already marked incomplete stays incomplete.
+	result.Complete = payload.Complete && len(result.SkippedDatasets) == 0
 	result.Sources = sourceReferences(c.source, region, payload)
 	result.Memberships = membershipReferences(c.source, region, payload)
 	return result, nil
@@ -151,6 +156,10 @@ func (c *JSONSummaryConnector) appendDatasetSnapshots(result *Summary, datasets 
 		dataset := domain.AccountDataset(name)
 		descriptor, ok := domain.DatasetDescriptorOf(dataset)
 		if !ok || descriptor.Source != string(c.source) {
+			// Record the drop: the raw name is kept (including names not in the
+			// registry), so an incomplete source summary can never be marked
+			// reconciled. Zero snapshots are projected for skipped datasets.
+			result.SkippedDatasets = append(result.SkippedDatasets, name)
 			continue
 		}
 		var values map[string]any
@@ -161,6 +170,7 @@ func (c *JSONSummaryConnector) appendDatasetSnapshots(result *Summary, datasets 
 			Dataset: dataset, Status: domain.SnapshotFresh, Version: result.Version, GeneratedAt: generatedAt,
 			LastSyncedAt: timePtr(time.Now().UTC()), Data: RedactSummaryData(values)})
 	}
+	sort.Strings(result.SkippedDatasets)
 	return nil
 }
 

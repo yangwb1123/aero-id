@@ -37,6 +37,12 @@ type Summary struct {
 	Sources      []*domain.AccountSource
 	Memberships  []*domain.AccountMembership
 	Complete     bool
+	// SkippedDatasets lists dataset names received in a source payload that were
+	// not projected, because they are not in the account dataset registry or are
+	// registered to a different source. A non-empty list means the source summary
+	// is incomplete from aero-id's perspective regardless of the source's own
+	// "complete" flag.
+	SkippedDatasets []string
 }
 
 type Connector interface {
