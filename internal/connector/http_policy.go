@@ -18,10 +18,11 @@ func (c *JSONSummaryConnector) begin(ctx context.Context) (func(), error) {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.circuit_open", Temporary: true}
 	}
 	c.breakerMu.Unlock()
-	if err := c.acquire(ctx); err != nil {
+	token, err := c.bulkhead.AcquireToken(ctx)
+	if err != nil {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.bulkhead", Temporary: true, Cause: err}
 	}
-	return func() { <-c.sem }, nil
+	return token, nil
 }
 
 func (c *JSONSummaryConnector) finish(err error) {

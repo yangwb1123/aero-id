@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aero/aero-id/internal/pkg/bulkhead"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 )
 
@@ -43,7 +44,7 @@ type JSONSummaryConnector struct {
 	source         Source
 	cfg            HTTPConfig
 	client         *http.Client
-	sem            chan struct{}
+	bulkhead       *bulkhead.Bulkhead
 	breakerMu      sync.Mutex
 	consecutiveErr int
 	openedUntil    time.Time
@@ -79,7 +80,18 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 			return nil, err
 		}
 	}
-	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, sem: make(chan struct{}, cfg.MaxConcurrency)}, nil
+	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, bulkhead: bulkhead.New(clampedSummaryConcurrency(cfg.MaxConcurrency))}, nil
+}
+
+// clampedSummaryConcurrency preserves the connector's historical default:
+// MaxConcurrency <= 0 means 32, and any positive value passes through
+// unclamped. The clamp must happen here so the bulkhead module's New(0) ->
+// serial contract never silently serializes the connector.
+func clampedSummaryConcurrency(limit int) int {
+	if limit <= 0 {
+		return 32
+	}
+	return limit
 }
 
 func newSourceHTTPClient(cfg HTTPConfig) (*http.Client, error) {
@@ -301,15 +313,6 @@ type summaryMembershipPayload struct {
 }
 
 func (c Source) String() string { return string(c) }
-
-func (c *JSONSummaryConnector) acquire(ctx context.Context) error {
-	select {
-	case c.sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
 
 func remoteHTTPError(source Source, code int) *RemoteError {
 	kind := ErrorUnavailable

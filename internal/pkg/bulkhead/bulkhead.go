@@ -5,7 +5,10 @@
 // lives in PostgreSQL (leases, receipts, delivery rows).
 package bulkhead
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // Bulkhead limits concurrent in-flight work to Limit slots.
 type Bulkhead struct {
@@ -35,6 +38,21 @@ func (b *Bulkhead) Acquire(ctx context.Context) error {
 // Release returns one slot. Safe to call only after a successful Acquire.
 func (b *Bulkhead) Release() {
 	<-b.sem
+}
+
+// AcquireToken blocks until a slot is free or ctx is done. On success it
+// returns a release token; the caller must invoke it exactly once to return
+// the slot. On ctx cancellation it returns the context error and does NOT
+// consume a slot (no token is returned). The token is safe to call
+// multiple times (no-op after the first release).
+func (b *Bulkhead) AcquireToken(ctx context.Context) (func(), error) {
+	select {
+	case b.sem <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-b.sem }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Run acquires a slot, runs fn, and releases it. Returns ctx.Err() when the
