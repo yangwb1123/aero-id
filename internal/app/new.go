@@ -132,6 +132,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	if err != nil {
 		return nil, err
 	}
+	// P4-07: one shared hold registry for the audit TTL cleaner and the hold service.
+	holdRepo := repository.NewAuditHoldRepository(gdb, auditLedgerRepo)
 	// F-1 (storage GC audit): NewFileRepository gains the ledger for the
 	// HardDeleteWithAudit sweep surface, so it is constructed AFTER the audit
 	// stack (mirroring the fileShareRepo placement).
@@ -334,8 +336,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	// OPT-IN: only runs when data_retention.audit_clean_interval > 0.
 	var stopAuditClean func()
 	if cfg.DataRetention.AuditCleanInterval > 0 && cfg.DataRetention.AuditRetention > 0 {
-		stopAuditClean = repository.RunAuditCleaner(
-			auditRepo, log,
+		stopAuditClean = repository.RunAuditCleanerWithHolds(
+			auditRepo, holdRepo, log,
 			cfg.DataRetention.AuditRetention,
 			cfg.DataRetention.AuditCleanInterval,
 		)
@@ -372,7 +374,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	stopDegradation := degradationState.StartProbing(context.Background(), 30*time.Second, 3, 2)
 
 	health := buildHealthHandler(cfg, sqlDB, ssoClient, billingRuntime.probe)
-	holdSvc, anchorSvc, cutoverFacadeSvc := buildAuditComplianceServices(gdb, auditLedger, auditLedgerRepo, store)
+	holdSvc, anchorSvc, cutoverFacadeSvc := buildAuditComplianceServices(gdb, auditLedger, auditLedgerRepo, store, holdRepo)
 	// REQ-4/5 fail-closed wiring: hold/cutover services must not run with a nil audit service.
 	assertComplianceAuditWiring(holdSvc, cutoverSvc, cutoverFacadeSvc)
 	auditHandler := buildAuditLedgerHandler(auditLedger, holdSvc, anchorSvc, syncJobSvc, permissionChecker)

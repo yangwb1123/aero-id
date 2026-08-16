@@ -156,9 +156,11 @@ func RunAuditCleanerWithHolds(repo AuditRepository, holds AuditHoldRepository, l
 		return func() {}
 	}
 	t := time.NewTicker(interval)
-	done := make(chan struct{})
+	// Context cancel (not close(done)) so the stop function is idempotent: a
+	// second stop() must never panic (pattern: RunOutboxCleaner). Purge work
+	// shares the cancellable context, so a stop also aborts an in-flight tick.
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		ctx := context.Background()
 		for {
 			select {
 			case <-t.C:
@@ -175,13 +177,13 @@ func RunAuditCleanerWithHolds(repo AuditRepository, holds AuditHoldRepository, l
 						zap.Int64("deleted", deleted),
 						zap.Time("cutoff", cutoff))
 				}
-			case <-done:
+			case <-ctx.Done():
 				t.Stop()
 				return
 			}
 		}
 	}()
-	return func() { close(done) }
+	return func() { cancel() }
 }
 
 // purgeAuditWithExempt routes to the exclusion-aware purge when holds exist.

@@ -287,12 +287,15 @@ func assertAuditWiring(services ...auditWiredService) {
 
 // buildAuditComplianceServices constructs the legal-hold, WORM-anchor, and
 // cutover-facade services (P4-03/P4-07/P8-04) sharing the ledger, database and
-// export storage. The cutover facade is the instance wired into the account
-// handler's legacy-migration surface.
+// export storage. The hold repository is constructed exactly once, in the
+// composition root, and shared with the audit TTL cleaner (P4-07: the cleaner
+// must exempt held actors from the retention purge). The cutover facade is the
+// instance wired into the account handler's legacy-migration surface.
 func buildAuditComplianceServices(gdb *gorm.DB, auditLedger service.AuditLedgerService,
-	ledgerRepo repository.FullAuditLedgerRepository, store storage.FileStorage) (
+	ledgerRepo repository.FullAuditLedgerRepository, store storage.FileStorage,
+	holds repository.AuditHoldRepository) (
 	service.AuditHoldService, service.AuditAnchorService, service.LegacyCutoverService) {
-	holdSvc := service.NewAuditHoldService(repository.NewAuditHoldRepository(gdb, ledgerRepo), auditLedger)
+	holdSvc := service.NewAuditHoldService(holds, auditLedger)
 	return holdSvc, service.NewAuditAnchorService(ledgerRepo, store),
 		service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb, ledgerRepo),
 			repository.NewLegacyCleanupRepository(gdb), auditLedger)
