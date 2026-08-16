@@ -189,5 +189,15 @@ func (s *operationService) finishOperation(ctx context.Context, id domain.ID) (*
 		map[string]any{"status": status}); err != nil {
 		return nil, apperr.Internal("operation.finish_failed", "failed to finish operation").Wrap(err)
 	}
+	// Metrics: one terminal-outcome observation per genuine transition into a
+	// terminal status. terminalOperationStatus keeps a two-worker race that
+	// re-finishes an open operation as "waiting" out of the terminal-outcome
+	// counter; the status != operation.Status guard stops a reconcile pass on
+	// an already-unknown operation from re-counting the same outcome.
+	// Emission follows a durable setOperationStatus commit, so error paths
+	// emit nothing.
+	if terminalOperationStatus(status) && status != operation.Status {
+		s.metrics.ObserveOperationOutcome(string(status))
+	}
 	return s.repo.Get(ctx, id)
 }

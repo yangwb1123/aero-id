@@ -145,6 +145,12 @@ func (s *operationService) processOperations(ctx context.Context, ids []domain.I
 		if getErr != nil || operation == nil || !s.operationInRegion(ctx, operation) {
 			continue
 		}
+		// Metrics: one age observation per open operation that passed the load
+		// guards (Get success, non-nil, in-region). The zero-CreatedAt skip is
+		// defensive — time.Since(zero) would expose a ~5.4e13s gauge value.
+		if !operation.CreatedAt.IsZero() {
+			s.metrics.ObserveOperationAge(string(operation.Status), time.Since(operation.CreatedAt))
+		}
 		if reconcile {
 			reconciler, ok := s.runner.(OperationOutcomeReconciler)
 			if !ok {

@@ -140,8 +140,16 @@ type metricSpy struct {
 	ingestFailures    []string
 	scopeMissing      []string
 	standaloneActions []string
-	purged        []string // kind labels observed on the dead-letter purge metric
-	purgeFailures []string
+	purged            []string // kind labels observed on the dead-letter purge metric
+	purgeFailures     []string
+	operationOutcomes []string // ObserveOperationOutcome labels (terminal operation status)
+	operationAges     []operationAgeObservation
+}
+
+// operationAgeObservation records one ObserveOperationAge emission.
+type operationAgeObservation struct {
+	status string
+	age    time.Duration
 }
 
 func (m *metricSpy) ObserveEventApplied(string)     {}
@@ -174,14 +182,18 @@ func (m *metricSpy) ObserveAuditPublicationPurged(kind string, count int64) {
 func (m *metricSpy) ObserveAuditPublicationPurgeFailed(kind string, err error) {
 	m.purgeFailures = append(m.purgeFailures, kind)
 }
-func (m *metricSpy) ObserveOperationOutcome(string)                     {}
+func (m *metricSpy) ObserveOperationOutcome(status string) {
+	m.operationOutcomes = append(m.operationOutcomes, status)
+}
 func (m *metricSpy) ObserveCallbackOutcome(status string) {
 	m.callbackOutcomes = append(m.callbackOutcomes, status)
 }
 func (m *metricSpy) ObserveReconcileDrift(string)                       {}
 func (m *metricSpy) ObserveProjectionLag(string, string, time.Duration) {}
 func (m *metricSpy) ObserveConsumerLag(string, time.Duration)           {}
-func (m *metricSpy) ObserveOperationAge(string, time.Duration)          {}
+func (m *metricSpy) ObserveOperationAge(status string, age time.Duration) {
+	m.operationAges = append(m.operationAges, operationAgeObservation{status: status, age: age})
+}
 
 // claimingPublicationRepo models a ClaimPublication that errors outright
 // (FM-1): the claim transaction fails before any row is leased, so nothing is
