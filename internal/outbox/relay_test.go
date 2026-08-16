@@ -73,6 +73,9 @@ func (r *fakeRepo) ClaimBatch(_ context.Context, limit int) ([]*ClaimedEvent, er
 		if r.published[e.ID] {
 			continue
 		}
+		if e.DeadLetter {
+			continue // SQL ClaimBatch contract: only unpublished, non-dead-letter rows
+		}
 		if _, held := r.claims[e.ID]; held {
 			continue // claimed but not yet finalized (lease never expires in-memory)
 		}
@@ -443,6 +446,131 @@ func TestRelay_RenewsClaimsDuringLongDrain(t *testing.T) {
 	}
 	if !repo.isPublished(repo.events[0].ID) || !repo.isPublished(repo.events[1].ID) {
 		t.Fatal("both events must be published after the long drain")
+	}
+}
+
+// TestRelay_HandlerPanicDoesNotCrashLoop guards the crash-loop hardening: a
+// handler panic is recovered per-event and routed into the existing failure
+// path, so the poison event advances retry_count, backs off, and dead-letters
+// at maxRetries instead of escaping drain and killing the process. Before the
+// fix this test fails because the panic escapes drain and kills the test
+// binary (the regression proof).
+func TestRelay_HandlerPanicDoesNotCrashLoop(t *testing.T) {
+	good := &Event{ID: uuid.New(), EventType: "message.sent", CreatedAt: time.Now()}
+	bad := &Event{ID: uuid.New(), EventType: "comment.replied", CreatedAt: time.Now()}
+	repo := newFakeRepo(good, bad)
+	sink := newRecordingSink()
+
+	var mu sync.Mutex
+	var calls int
+	relay := NewRelay(repo, HandlerFunc(func(_ context.Context, e *Event) error {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		if e.ID == bad.ID {
+			panic("poison payload")
+		}
+		return nil
+	}), 2, nil, sink)
+
+	// AC-1 (R1, R3, R4): the panic must not crash the drain; the good event
+	// still publishes in the same pass, the poison event stays unpublished with
+	// its claim cleared, and the failure is observable via the failed gauge.
+	if n := relay.drain(context.Background()); n != 1 {
+		t.Fatalf("first drain handled %d, want 1 (good published, bad failed)", n)
+	}
+	if !repo.isPublished(good.ID) {
+		t.Fatal("good event should be published")
+	}
+	if repo.isPublished(bad.ID) {
+		t.Fatal("poison event must stay unpublished for retry")
+	}
+	if got := sink.failed[bad.EventType]; got != 1 {
+		t.Fatalf("failed[%s] = %d, want 1 (panic routed through the failure metrics)", bad.EventType, got)
+	}
+	if repo.claimsHeld() != 0 {
+		t.Fatal("poison event's claim must be cleared; no claims may remain held")
+	}
+	mu.Lock()
+	if calls != 2 {
+		t.Fatalf("handler called %d times, want 2 (good + poison)", calls)
+	}
+	mu.Unlock()
+	repo.mu.Lock()
+	if bad.RetryCount != 1 || bad.DeadLetter {
+		t.Fatalf("after first panic: retry_count=%d dead_letter=%v, want 1/false", bad.RetryCount, bad.DeadLetter)
+	}
+	repo.mu.Unlock()
+
+	// AC-3 (R1): a second drain must not re-panic. The poison event is inside
+	// its backoff(1) = 5s window, so it is claimed, skipped, and released
+	// without invoking the handler.
+	if n := relay.drain(context.Background()); n != 0 {
+		t.Fatalf("backoff drain handled %d, want 0", n)
+	}
+	mu.Lock()
+	if calls != 2 {
+		t.Fatalf("handler called %d times after backoff drain, want 2 (no re-delivery in window)", calls)
+	}
+	mu.Unlock()
+
+	// AC-2 (R2): once due, the poison event is retried, panics again, and
+	// dead-letters at maxRetries; the dead-lettered event is then no longer
+	// claimable (ClaimBatch excludes dead letters), so the handler is frozen.
+	due := time.Now().Add(-time.Hour)
+	repo.mu.Lock()
+	bad.LastRetryAt = &due
+	repo.mu.Unlock()
+	if n := relay.drain(context.Background()); n != 0 {
+		t.Fatalf("dead-letter drain handled %d, want 0", n)
+	}
+	repo.mu.Lock()
+	deadLettered := bad.DeadLetter && bad.RetryCount == 2
+	repo.mu.Unlock()
+	if !deadLettered {
+		t.Fatalf("poison event must dead-letter at maxRetries: retry_count=%d dead_letter=%v", bad.RetryCount, bad.DeadLetter)
+	}
+	if n := relay.drain(context.Background()); n != 0 {
+		t.Fatalf("post-dead-letter drain handled %d, want 0", n)
+	}
+	mu.Lock()
+	frozen := calls
+	mu.Unlock()
+	if frozen != 3 {
+		t.Fatalf("handler called %d times, want 3 (dead-lettered poison event never re-delivered)", frozen)
+	}
+	if repo.claimsHeld() != 0 {
+		t.Fatal("no claims may remain held after the dead-letter drain")
+	}
+
+	// AC-3 (R5): Start/stop (drain-on-stop) must complete without panic and
+	// without re-delivering the dead-lettered poison event.
+	sink.mu.Lock()
+	passes := sink.drainPasses
+	sink.mu.Unlock()
+	stop := relay.Start(24 * time.Hour)
+	stop()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sink.mu.Lock()
+		n := sink.drainPasses
+		sink.mu.Unlock()
+		if n > passes {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	sink.mu.Lock()
+	drainedOnStop := sink.drainPasses > passes
+	sink.mu.Unlock()
+	if !drainedOnStop {
+		t.Fatal("drain-on-stop never completed")
+	}
+	mu.Lock()
+	afterStop := calls
+	mu.Unlock()
+	if afterStop != frozen {
+		t.Fatalf("handler called %d times after stop, want %d (no poison re-delivery)", afterStop, frozen)
 	}
 }
 

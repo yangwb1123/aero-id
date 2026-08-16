@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -93,6 +94,24 @@ func NewRelay(repo Repository, handler Handler, maxRetries int, log *zap.Logger,
 		r.metrics = metrics[0]
 	}
 	return r
+}
+
+// handle invokes the handler, converting a handler panic into a handler error
+// so the poison event follows the MarkFailed/dead-letter path instead of
+// crashing the drain goroutine (crash-loop hardening). Infrastructure panics
+// (repo calls, renewal) are intentionally not recovered.
+func (r *Relay) handle(ctx context.Context, e *Event) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.log.Error("outbox: handler panic; treating as failure",
+				zap.String("event_id", e.ID.String()),
+				zap.String("event_type", e.EventType),
+				zap.Any("panic", rec),
+				zap.Stack("stack"))
+			err = fmt.Errorf("outbox: handler panic: %v", rec)
+		}
+	}()
+	return r.handler.Handle(ctx, e)
 }
 
 // drain handles one batch of unpublished events, returning the number handled.
@@ -188,7 +207,7 @@ func (r *Relay) drain(ctx context.Context) int {
 				continue
 			}
 		}
-		if err := r.handler.Handle(ctx, e); err != nil {
+		if err := r.handle(ctx, e); err != nil {
 			r.log.Warn("outbox: handler failed; will retry",
 				zap.String("event_id", e.ID.String()),
 				zap.String("event_type", e.EventType),
