@@ -1,0 +1,1 @@
+-- fixture: unpaired up-only migration 000060 (x) — G1 must fire

@@ -105,3 +105,11 @@ jobs:
       # blind spot this gate closes.
       - name: Load-scenario drift gate (single-source ghz scenarios, bench schema, load liveness)
         run: make check-load-scenarios
+      # Migration-set integrity gate (2026-08-16): up/down pair invariant, no
+      # duplicate versions, no malformed migration-like filenames — enforced
+      # by strict Discover() (internal/pkg/migrate) and this bash gate.
+      # Pure bash + grep, self-testing fixtures — no Go toolchain, no Docker,
+      # no network. No paths filter: a filter would recreate the blind spot
+      # this gate closes (a broken migration set must never ship).
+      - name: Migration-set integrity gate
+        run: make check-migration-set

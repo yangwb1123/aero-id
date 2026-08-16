@@ -1,0 +1,1 @@
+-- fixture: duplicate up version 000060 (y) — G2 must fire

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,22 @@ import (
 
 // migrationsTable is the bookkeeping table recording which versions are applied.
 const migrationsTable = "schema_migrations"
+
+// migrationFileRE is the canonical migration filename contract, shared with the
+// bash gate (scripts/check-migration-set.sh G1-G3) and migrations_test.go: a
+// zero-padded NNNNNN version, a non-empty name, and exactly ".up.sql" or
+// ".down.sql". Discover rejects any migration-like file that fails it.
+var migrationFileRE = regexp.MustCompile(`^[0-9]{6}_.+\.(up|down)\.sql$`)
+
+// migrationFilePattern is the human-readable form of migrationFileRE, used in
+// stable error messages.
+const migrationFilePattern = "NNNNNN_name.up.sql / NNNNNN_name.down.sql"
+
+// discoveredFile tracks one migration file during Discover's two-pass merge.
+type discoveredFile struct {
+	path string // absolute path to the file
+	name string // name component (the part after the version prefix)
+}
 
 // Migration is a single up/down pair discovered on disk.
 type Migration struct {
@@ -91,13 +108,15 @@ func (m *Migrator) Version() (uint64, error) {
 }
 
 // Up applies every pending up-migration in ascending version order. It returns
-// the list of versions it applied (empty if already up to date).
+// the list of versions it applied (empty if already up to date). The migration
+// set is validated before any database access so a broken set fails before
+// schema_migrations is created (fail-before-mutate).
 func (m *Migrator) Up() ([]uint64, error) {
-	if err := m.ensureTable(); err != nil {
-		return nil, err
-	}
 	migrations, err := Discover(m.dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := m.ensureTable(); err != nil {
 		return nil, err
 	}
 	applied, err := m.appliedVersions()
@@ -134,11 +153,13 @@ func (m *Migrator) Down(n int) ([]uint64, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("down count must be >= 1, got %d", n)
 	}
-	if err := m.ensureTable(); err != nil {
-		return nil, err
-	}
+	// Validate the migration set before touching the database (fail-before-mutate,
+	// symmetric with Up).
 	migrations, err := Discover(m.dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := m.ensureTable(); err != nil {
 		return nil, err
 	}
 	byVersion := make(map[uint64]Migration, len(migrations))
@@ -203,40 +224,192 @@ func (m *Migrator) applyTx(sqlText string, mig Migration, up bool) error {
 }
 
 // Discover scans dir for "<version>_<name>.up.sql" / ".down.sql" files and
-// returns the merged set sorted ascending by version.
+// returns the merged set sorted ascending by version. A broken migration set
+// errors, naming the offending file(s) and violation class:
+//   - D1 duplicate version (a version in more than one .up.sql or .down.sql);
+//   - D2 unpaired migration (an up without its down, or vice versa);
+//   - D3 name mismatch between a version's up and down files;
+//   - D4 malformed migration-like filename (fails the canonical contract);
+//   - D5 non-migration files (README.md, notes.txt, tests, dotfiles, dirs)
+//     are silently ignored.
 func Discover(dir string) ([]Migration, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read migrations dir %q: %w", dir, err)
 	}
-	byVersion := make(map[uint64]*Migration)
+	ups := make(map[uint64]discoveredFile)
+	downs := make(map[uint64]discoveredFile)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		version, name, direction, ok := parseFilename(e.Name())
+		version, migName, direction, ok := parseFilename(e.Name())
 		if !ok {
+			// Malformed migration-like files must error; everything else is a
+			// non-migration file and stays ignored.
+			if isMigrationLike(e.Name()) {
+				return nil, fmt.Errorf("malformed migration filename %q (want %s)", e.Name(), migrationFilePattern)
+			}
 			continue
 		}
-		mig := byVersion[version]
-		if mig == nil {
-			mig = &Migration{Version: version, Name: name}
-			byVersion[version] = mig
+		if !migrationFileRE.MatchString(e.Name()) {
+			return nil, fmt.Errorf("malformed migration filename %q (want %s)", e.Name(), migrationFilePattern)
 		}
 		full := filepath.Join(dir, e.Name())
+		file := discoveredFile{path: full, name: migName}
+		var target map[uint64]discoveredFile
 		switch direction {
 		case "up":
-			mig.UpFile = full
+			target = ups
 		case "down":
-			mig.DownFile = full
+			target = downs
+		}
+		if err := registerFile(target, version, file); err != nil {
+			return nil, err
 		}
 	}
-	out := make([]Migration, 0, len(byVersion))
-	for _, mig := range byVersion {
-		out = append(out, *mig)
+	return mergePairs(ups, downs)
+}
+
+// registerFile records one parsed migration file in the direction map, erroring
+// on a duplicate version (D1) and naming BOTH files.
+func registerFile(m map[uint64]discoveredFile, version uint64, file discoveredFile) error {
+	if prev, dup := m[version]; dup {
+		return fmt.Errorf("duplicate migration version %06d: %s and %s", version, prev.path, file.path)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	m[version] = file
+	return nil
+}
+
+// mergePairs combines the per-direction file maps into a Migration list sorted
+// ascending by version, enforcing the up/down pair invariant (D2) and up/down
+// name consistency (D3).
+func mergePairs(ups, downs map[uint64]discoveredFile) ([]Migration, error) {
+	versions := unionVersions(ups, downs)
+	out := make([]Migration, 0, len(versions))
+	for _, v := range versions {
+		up, hasUp := ups[v]
+		down, hasDown := downs[v]
+		if hasUp != hasDown {
+			if hasUp {
+				return nil, fmt.Errorf("migration %06d has no .down.sql file (%s)", v, up.path)
+			}
+			return nil, fmt.Errorf("migration %06d has no .up.sql file (%s)", v, down.path)
+		}
+		if up.name != down.name {
+			return nil, fmt.Errorf("migration %06d name mismatch: up name %q vs down name %q", v, up.name, down.name)
+		}
+		out = append(out, Migration{Version: v, Name: up.name, UpFile: up.path, DownFile: down.path})
+	}
 	return out, nil
+}
+
+// unionVersions returns the sorted union of the version keys of both maps.
+func unionVersions(ups, downs map[uint64]discoveredFile) []uint64 {
+	versions := make([]uint64, 0, len(ups)+len(downs))
+	seen := make(map[uint64]bool, len(ups)+len(downs))
+	for v := range ups {
+		if !seen[v] {
+			seen[v] = true
+			versions = append(versions, v)
+		}
+	}
+	for v := range downs {
+		if !seen[v] {
+			seen[v] = true
+			versions = append(versions, v)
+		}
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	return versions
+}
+
+// isMigrationLike reports whether name looks like a migration file but fails
+// the canonical contract: it either ends with ".up.sql"/".down.sql"
+// (case-insensitive) or carries a [0-9]{6}_ prefix and a ".sql" suffix
+// (case-insensitive). Such files are malformed and must error at Discover time;
+// anything else is a non-migration file and is ignored. The same predicate is
+// implemented in scripts/check-migration-set.sh (G3).
+func isMigrationLike(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".up.sql") || strings.HasSuffix(lower, ".down.sql") {
+		return true
+	}
+	if len(name) < 7 || !strings.HasSuffix(lower, ".sql") {
+		return false
+	}
+	for i := 0; i < 6; i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	return name[6] == '_'
+}
+
+// ValidateResult reports disk-vs-applied drift computed by ValidateSet.
+type ValidateResult struct {
+	Pairs          int      // complete up/down pairs on disk
+	Pending        []uint64 // on-disk versions not yet applied
+	AppliedNoFiles []uint64 // applied versions with no files on disk
+}
+
+// ValidateSet is the pure, DB-free core of Validate: it compares the on-disk
+// migration set against the set of applied versions. applied may be nil.
+func ValidateSet(migrations []Migration, applied map[uint64]bool) ValidateResult {
+	var res ValidateResult
+	onDisk := make(map[uint64]bool, len(migrations))
+	for _, mig := range migrations {
+		onDisk[mig.Version] = true
+		if mig.UpFile != "" && mig.DownFile != "" {
+			res.Pairs++
+		}
+		if !applied[mig.Version] {
+			res.Pending = append(res.Pending, mig.Version)
+		}
+	}
+	for v := range applied {
+		if !onDisk[v] {
+			res.AppliedNoFiles = append(res.AppliedNoFiles, v)
+		}
+	}
+	sort.Slice(res.Pending, func(i, j int) bool { return res.Pending[i] < res.Pending[j] })
+	sort.Slice(res.AppliedNoFiles, func(i, j int) bool { return res.AppliedNoFiles[i] < res.AppliedNoFiles[j] })
+	return res
+}
+
+// Validate reports migration-set integrity and disk-vs-applied drift without
+// mutating anything: it never creates schema_migrations and never executes
+// migration SQL. A fresh database without schema_migrations is reported as all
+// pending, not an error.
+func (m *Migrator) Validate() (ValidateResult, error) {
+	migrations, err := Discover(m.dir)
+	if err != nil {
+		return ValidateResult{}, err
+	}
+	applied := make(map[uint64]bool)
+	exists, err := m.schemaMigrationsExists()
+	if err != nil {
+		return ValidateResult{}, err
+	}
+	if exists {
+		if applied, err = m.appliedVersions(); err != nil {
+			return ValidateResult{}, err
+		}
+	}
+	return ValidateSet(migrations, applied), nil
+}
+
+// schemaMigrationsExists reports whether the bookkeeping table already exists,
+// reading information_schema without creating anything.
+func (m *Migrator) schemaMigrationsExists() (bool, error) {
+	var exists bool
+	if err := m.db.Raw(
+		`SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_schema='public' AND table_name=?)`,
+		migrationsTable,
+	).Scan(&exists).Error; err != nil {
+		return false, fmt.Errorf("check %s: %w", migrationsTable, err)
+	}
+	return exists, nil
 }
 
 // parseFilename extracts the numeric version, name, and direction ("up"/"down")

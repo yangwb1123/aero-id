@@ -1,0 +1,1 @@
+-- fixture: malformed migration-like filename 000060_x.UP.sql — G3 must fire

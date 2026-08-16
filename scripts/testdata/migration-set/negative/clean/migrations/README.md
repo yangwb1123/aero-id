@@ -1,0 +1,1 @@
+-- fixture: non-migration file must be ignored

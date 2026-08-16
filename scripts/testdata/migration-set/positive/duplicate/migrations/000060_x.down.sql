@@ -1,0 +1,1 @@
+-- fixture: paired down for 000060 (x)

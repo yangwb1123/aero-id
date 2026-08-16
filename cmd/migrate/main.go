@@ -13,6 +13,7 @@
 //	up            apply all pending migrations
 //	down [N]      roll back the most recent migration (or the most recent N)
 //	version       print the current schema version
+//	validate      report migration-set integrity and disk-vs-applied drift without mutating
 //
 //nolint:cyclop // the migration CLI intentionally dispatches all supported commands in one process.
 package main
@@ -40,7 +41,8 @@ func usage() string {
 commands:
   up            apply all pending migrations
   down [N]      roll back the most recent migration (or the most recent N)
-  version       print the current schema version`
+  version       print the current schema version
+  validate      report migration-set integrity and disk-vs-applied drift without mutating`
 }
 
 //nolint:cyclop,funlen // the migration CLI intentionally validates flags, opens the DB, and dispatches commands here.
@@ -132,7 +134,30 @@ func run(args []string) error {
 		fmt.Printf("%06d\n", v)
 		return nil
 
+	case "validate":
+		return validateCmd(m)
+
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", cmd, usage())
 	}
+}
+
+// validateCmd implements "migrate validate": strict Discover (any D-rule
+// violation fails the command), then disk-vs-applied drift reporting. It never
+// mutates the database — schema_migrations is read, never created, and no
+// migration SQL runs.
+func validateCmd(m *migrate.Migrator) error {
+	res, err := m.Validate()
+	if err != nil {
+		return err
+	}
+	if len(res.AppliedNoFiles) > 0 {
+		for _, v := range res.AppliedNoFiles {
+			fmt.Fprintf(os.Stderr, "migrate: applied version %06d has no migration files on disk\n", v)
+		}
+		return fmt.Errorf("validate: %d applied migration(s) missing from disk", len(res.AppliedNoFiles))
+	}
+	fmt.Printf("migration set: %d up/down pairs; applied: %d; pending: %d; applied-without-files: %d\n",
+		res.Pairs, res.Pairs-len(res.Pending), len(res.Pending), len(res.AppliedNoFiles))
+	return nil
 }

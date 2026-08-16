@@ -51,6 +51,16 @@ check-architecture:
 check-load-scenarios:
 	@bash scripts/check-load-scenarios.sh
 
+# Migration-set integrity gate (2026-08-16): up/down pair invariant (G1), no
+# duplicate versions (G2), no malformed migration-like filenames (G3) — the
+# AGENTS.md "Every zero-padded NNNNNN_name.up.sql has a matching .down.sql"
+# contract enforced by strict Discover() (internal/pkg/migrate) and this bash
+# gate. Pure bash + grep; self-testing fixtures; CI-safe (no Go/Docker/network).
+# The script header is the canonical rule definition.
+.PHONY: check-migration-set
+check-migration-set:
+	@bash scripts/check-migration-set.sh
+
 # Fail if any non-generated, non-test .go file exceeds 500 lines.
 MAX_FILE_LINES ?= 500
 check-file-sizes:
@@ -140,13 +150,15 @@ N              ?= 1
 
 # Migration tooling — runs the in-repo cmd/migrate against the configured DB
 # (reads the DSN from $(CONFIG); no external `migrate` binary required).
-.PHONY: migrate-up migrate-down migrate-version
+.PHONY: migrate-up migrate-down migrate-version migrate-validate
 migrate-up:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) up
 migrate-down:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) down $(N)
 migrate-version:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) version
+migrate-validate:
+	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) validate
 
 # ── Load tests (P6-08) —───────────────────────────────────────────────────
 # HTTP via k6; gRPC via ghz. See scripts/load/README.md.

@@ -40,6 +40,7 @@ make test-integration  # integration tag; Postgres + MinIO via testcontainers (n
 make lint              # go vet ./...
 make lint-strict       # golangci-lint (funlen 50, cyclop 10)
 make check-file-sizes  # non-test/non-generated Go files must be <= 500 lines
+make check-migration-set  # migration-set integrity gate: up/down pairs, no duplicate versions, no malformed migration filenames (bash+grep, CI-safe)
 make check-integration-compile  # compiles every integration-tagged _test.go file without running tests (go test -tags integration -run '^$' + go vet -tags integration) — no Docker; catches interface breaks that plain `go build -tags integration` misses
 make build             # -> bin/aero-id
 make run               # go run ./cmd/server -config configs/config.yaml
@@ -50,7 +51,7 @@ make proto             # regenerate stubs only after editing api/proto/**/*.prot
 Done-gate:
 
 ```bash
-make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-load-scenarios && make check-composition-root && make check-proto-sync && make check-integration-compile && make build
+make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-load-scenarios && make check-migration-set && make check-composition-root && make check-proto-sync && make check-integration-compile && make build
 ```
 
 `make check-load-scenarios` guards the load-test tooling single-source contract (ghz
@@ -364,7 +365,10 @@ Create a new package only for a real domain or infrastructure boundary. Tests fo
   account/audit work in an unwired tree.
 - `make check-architecture` guards the live layered runtime: dead-tree import ban (`internal/{file,message,notification,audit}`), domain purity (stdlib + `internal/pkg/*` only), repository-not-importing-service, infra-layer (`connector/event/outbox/region/sso`) isolation, and the handler→repository import ban — a green result is meaningful for those boundaries; the script header is the canonical rule definition.
 - Migrations are not auto-applied unless `database.auto_migrate: true`; production uses `cmd/migrate`. Every
-  zero-padded `NNNNNN_name.up.sql` has a matching `.down.sql`; never edit an applied migration.
+  zero-padded `NNNNNN_name.up.sql` has a matching `.down.sql`; never edit an applied migration. The
+  zero-padded-pair/duplicate/malformed invariants are mechanically enforced by `make check-migration-set`
+  (bash+grep, CI-safe) and by strict `Discover()` in `internal/pkg/migrate`; `migrate validate` reports
+  migration-set integrity and disk-vs-applied drift without mutating.
 - HTTP idempotency currently covers POST + `Idempotency-Key`; existing gRPC calls have no generic idempotency.
   New command RPCs must carry an explicit idempotency/operation key before enabling automatic retries.
 - `make proto` currently enumerates only `sso.proto` and `aero_id.proto`. Adding split account/audit/operation

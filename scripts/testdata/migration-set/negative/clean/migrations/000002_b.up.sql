@@ -1,0 +1,1 @@
+-- fixture: paired migration 000002 (b)
