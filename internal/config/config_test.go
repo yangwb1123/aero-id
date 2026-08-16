@@ -177,6 +177,53 @@ func TestLoadAuditGovernanceTokenURLGate(t *testing.T) {
 	}
 }
 
+// billingBadYAML mirrors the auditGovernanceBadYAML discipline: an enabled
+// billing block with a valid endpoint and valid tenant/scope/resources but an
+// invalid token_url (http non-loopback, loopback off). Secret env may be
+// unset: the URL check precedes credentials (D2), so a credential error can
+// never mask the URL error.
+const billingBadYAML = sample + `
+billing:
+  enabled: true
+  endpoint: "https://billing.example"
+  timeout: 5s
+  max_body_bytes: 262144
+  allow_insecure_loopback: false
+  bindings:
+    tenant-one:
+      token_url: "http://sso.example/token"
+      client_id: billing-client
+      client_secret_env: TEST_BILLING_SECRET
+      scope: "billing:entitlement:read metering:write"
+      resources: ["billing-api"]
+`
+
+// TestLoadBillingTokenURLGate: the billing URL gate fails at Load(), before
+// boot-wiring, with the stable non-disclosing message. The URL check precedes
+// credentials (D2), so an unset secret env can never mask the URL error; the
+// raw URL is never echoed (userinfo and raw query included).
+func TestLoadBillingTokenURLGate(t *testing.T) {
+	const wantErr = "billing binding contains an invalid token URL"
+	cells := map[string]string{
+		"http non-loopback": "http://sso.example/token",
+		"userinfo":          "https://u:p@sso.example/token",
+		"raw query":         "https://sso.example/token?x=1",
+	}
+	for name, raw := range cells {
+		t.Run(name, func(t *testing.T) {
+			yaml := strings.Replace(billingBadYAML,
+				`token_url: "http://sso.example/token"`, `token_url: "`+raw+`"`, 1)
+			_, err := Load(writeTemp(t, yaml))
+			if err == nil || !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("Load error = %v, want containing %q (fail at load, not boot-wiring)", err, wantErr)
+			}
+			if strings.Contains(err.Error(), raw) {
+				t.Fatalf("Load error disclosed the raw URL %q: %v", raw, err)
+			}
+		})
+	}
+}
+
 func TestValidateEventIngestRejectsNonCanonicalBindings(t *testing.T) {
 	tests := map[string]EventIngestConfig{
 		"client id": {
@@ -512,6 +559,7 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 	shipped := filepath.Join(repoRootConfigTest(t), "configs", "config.yaml")
 
 	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
+	t.Setenv("AERO_ID_BILLING_ENABLED", "false")
 	cfg, err := Load(shipped)
 	if err != nil {
 		t.Fatalf("shipped configs/config.yaml must load: %v", err)
@@ -522,6 +570,13 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 	}
 	if len(gov.Bindings) != 0 {
 		t.Fatalf("shipped file bindings = %d, want 0", len(gov.Bindings))
+	}
+	bill := cfg.Billing
+	if bill.Enabled {
+		t.Fatal("shipped file billing enabled = true, want false (disabled until bindings exist)")
+	}
+	if len(bill.Bindings) != 0 {
+		t.Fatalf("shipped file billing bindings = %d, want 0", len(bill.Bindings))
 	}
 	// File-derived knob values (configs/config.yaml:177-184) — the boot leg
 	// pins these on the wire; pin them at Load so file edits fail loudly.

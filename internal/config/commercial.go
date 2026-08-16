@@ -40,17 +40,30 @@ func validateBillingBindings(value BillingConfig, clients, secrets map[string]st
 	if strings.TrimSpace(value.Endpoint) == "" || len(value.Bindings) == 0 {
 		return fmt.Errorf("billing requires an endpoint and tenant bindings")
 	}
+	if !validBillingTokenURL(value.Endpoint, value.AllowInsecureLoopback) {
+		return fmt.Errorf("billing endpoint contains an invalid URL")
+	}
 	for tenant, binding := range value.Bindings {
-		if !canonicalIdentity(tenant, 256) ||
-			!exactScopes(binding.Scope, billingEntitlementScope, billingMeteringScope) ||
-			!exactResources(binding.Resources, billingResource) {
-			return fmt.Errorf("billing contains an invalid tenant, scope, or resource binding")
-		}
-		if err := registerCredential(binding.ClientID, binding.ClientSecretEnv, clients, secrets); err != nil {
+		if err := validateBillingBinding(tenant, binding, value.AllowInsecureLoopback, clients, secrets); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// validateBillingBinding runs the per-binding checks in D2 order: tenant/
+// scope/resource, then TokenURL shape, then credentials — a missing/short
+// secret env can never mask a URL error.
+func validateBillingBinding(tenant string, binding BillingBindingConfig, allowLoopback bool, clients, secrets map[string]struct{}) error {
+	if !canonicalIdentity(tenant, 256) ||
+		!exactScopes(binding.Scope, billingEntitlementScope, billingMeteringScope) ||
+		!exactResources(binding.Resources, billingResource) {
+		return fmt.Errorf("billing contains an invalid tenant, scope, or resource binding")
+	}
+	if !validBillingTokenURL(binding.TokenURL, allowLoopback) {
+		return fmt.Errorf("billing binding contains an invalid token URL")
+	}
+	return registerCredential(binding.ClientID, binding.ClientSecretEnv, clients, secrets)
 }
 
 func validateAuditBindings(value AuditGovernanceConfig, clients, secrets map[string]struct{}) error {
@@ -80,6 +93,22 @@ func validateAuditBindings(value AuditGovernanceConfig, clients, secrets map[str
 // instead of connector construction at boot-wiring. The error never echoes the
 // raw value; T-10.1.6 pins parity with the connector cross-layer.
 func validAuditTokenURL(raw string, allowLoopback bool) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" || endpoint.RawQuery != "" {
+		return false
+	}
+	return endpoint.Scheme == "https" || allowedLoopbackTokenURL(endpoint, allowLoopback)
+}
+
+// validBillingTokenURL mirrors billing.newTokenSource/NewClient's URL rules
+// (secureEndpoint + RawQuery, applied to both the token URL and the endpoint)
+// so a misconfigured enabled gate fails at Load() instead of connector
+// construction at boot-wiring. The error never echoes the raw value; parity
+// with the connector is pinned cross-layer like the audit gate.
+func validBillingTokenURL(raw string, allowLoopback bool) bool {
 	endpoint, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return false

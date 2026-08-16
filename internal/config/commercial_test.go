@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/connector/auditgovernance"
+	billingconnector "github.com/aero/aero-id/internal/connector/billing"
 )
 
 func TestCommercialCredentialsAreDistinctAcrossDestinations(t *testing.T) {
@@ -320,6 +321,94 @@ func TestAuditTokenURLGateParityWithConnector(t *testing.T) {
 			if (gateErr == nil) != (connectorErr == nil) {
 				t.Fatalf("parity drift for %q (loopback %v): gate accepts=%v connector accepts=%v",
 					tc.tokenURL, tc.allowLoopback, gateErr == nil, connectorErr == nil)
+			}
+		})
+	}
+}
+
+// TestBillingTokenURLGateParityWithConnector: for every cell of the shared
+// T-10.1.3 matrix at both AllowInsecureLoopback values, the config gate and
+// billingconnector.NewClient must agree on the TokenURL dimension — a config
+// that passes validate() can never fail connector construction on the
+// TokenURL dimension, and vice versa. The connector does not import config,
+// so the pin lives in the config test package without a cycle.
+func TestBillingTokenURLGateParityWithConnector(t *testing.T) {
+	setCommercialSecrets(t, "billing-secret-value-0000000000000001", "audit-secret-value-000000000000000001")
+	for _, tc := range auditTokenURLCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := commercialTestConfig()
+			cfg.Billing.AllowInsecureLoopback = tc.allowLoopback
+			binding := cfg.Billing.Bindings["tenant-one"]
+			binding.TokenURL = tc.tokenURL
+			cfg.Billing.Bindings["tenant-one"] = binding
+			gateErr := cfg.validateCommercialIntegrations()
+
+			_, connectorErr := billingconnector.NewClient(billingconnector.Config{
+				Endpoint: "https://billing.example", Timeout: 5 * time.Second, MaxBodyBytes: 256 << 10,
+				AllowInsecureLoopback: tc.allowLoopback,
+				Bindings: map[string]billingconnector.BindingConfig{
+					"tenant-one": {TokenURL: tc.tokenURL, ClientID: "billing-client",
+						ClientSecret: "billing-secret-value-0000000000000001",
+						Scope:        billingEntitlementScope + " " + billingMeteringScope,
+						Resources:    []string{billingResource}},
+				},
+			}, nil)
+			if (gateErr == nil) != (connectorErr == nil) {
+				t.Fatalf("parity drift for %q (loopback %v): gate accepts=%v connector accepts=%v",
+					tc.tokenURL, tc.allowLoopback, gateErr == nil, connectorErr == nil)
+			}
+		})
+	}
+}
+
+// TestBillingEndpointGateParityWithConnector: the Endpoint dimension of the
+// billing gate must agree with billingconnector.NewClient on every cell at
+// both AllowInsecureLoopback values, closing the second half of the
+// Load-vs-boot asymmetry. Empty/whitespace endpoints are rejected by the
+// existing envelope check on the gate side and by secureEndpoint on the
+// connector side; the bare-? row pins ForceQuery/RawQuery=="" parity.
+func TestBillingEndpointGateParityWithConnector(t *testing.T) {
+	setCommercialSecrets(t, "billing-secret-value-0000000000000001", "audit-secret-value-000000000000000001")
+	cells := []struct {
+		name          string
+		endpoint      string
+		allowLoopback bool
+	}{
+		{"https valid", "https://billing.example", false},
+		{"https valid loopback allowed", "https://billing.example", true},
+		{"http non-loopback", "http://billing.example/token", false},
+		{"http non-loopback loopback allowed", "http://billing.example/token", true},
+		{"http localhost", "http://localhost:9090", false},
+		{"http localhost loopback allowed", "http://localhost:9090", true},
+		{"http 127.0.0.1", "http://127.0.0.1:9090", false},
+		{"http 127.0.0.1 loopback allowed", "http://127.0.0.1:9090", true},
+		{"userinfo", "https://u:p@billing.example", false},
+		{"fragment", "https://billing.example#frag", false},
+		{"raw query", "https://billing.example?x=1", false},
+		{"bare query", "https://billing.example?", false},
+		{"empty", "", false},
+		{"whitespace", "   ", false},
+	}
+	for _, tc := range cells {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := commercialTestConfig()
+			cfg.Billing.AllowInsecureLoopback = tc.allowLoopback
+			cfg.Billing.Endpoint = tc.endpoint
+			gateErr := cfg.validateCommercialIntegrations()
+
+			_, connectorErr := billingconnector.NewClient(billingconnector.Config{
+				Endpoint: tc.endpoint, Timeout: 5 * time.Second, MaxBodyBytes: 256 << 10,
+				AllowInsecureLoopback: tc.allowLoopback,
+				Bindings: map[string]billingconnector.BindingConfig{
+					"tenant-one": {TokenURL: "https://sso.example/token", ClientID: "billing-client",
+						ClientSecret: "billing-secret-value-0000000000000001",
+						Scope:        billingEntitlementScope + " " + billingMeteringScope,
+						Resources:    []string{billingResource}},
+				},
+			}, nil)
+			if (gateErr == nil) != (connectorErr == nil) {
+				t.Fatalf("parity drift for endpoint %q (loopback %v): gate accepts=%v connector accepts=%v",
+					tc.endpoint, tc.allowLoopback, gateErr == nil, connectorErr == nil)
 			}
 		})
 	}
