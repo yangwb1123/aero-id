@@ -63,6 +63,9 @@ check-migration-set:
 
 # Fail if any non-generated, non-test .go file exceeds 500 lines.
 MAX_FILE_LINES ?= 500
+# Composition-root budget: internal/app/new.go must stay <= this many lines
+# (C-7 pin inside scripts/check-composition-root.sh; 400 passes, 401 trips).
+MAX_COMPOSITION_ROOT_LINES ?= 400
 check-file-sizes:
 	@violations=0; \
 	while IFS= read -r f; do \
@@ -121,7 +124,7 @@ check-audit-manifest:
 # (internal/app/composition_root_integration_test.go).
 .PHONY: check-composition-root
 check-composition-root:
-	@bash scripts/check-composition-root.sh
+	@MAX_COMPOSITION_ROOT_LINES=$(MAX_COMPOSITION_ROOT_LINES) bash scripts/check-composition-root.sh
 
 # Deterministic proto-stub sync gate: regenerates every committed *.pb.go from
 # api/proto/ with a PINNED toolchain (protoc-gen-go derived from go.mod,

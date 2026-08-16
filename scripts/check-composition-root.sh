@@ -33,6 +33,12 @@
 #        the fixed string `repository.RunAuditCleaner(` does NOT match the
 #        WithHolds form (the character after RunAuditCleaner is `W`, not `(`) —
 #        proven by the positive/negative cleaner.go fixtures.
+#   C-7  internal/app/new.go must stay <= MAX_COMPOSITION_ROOT_LINES lines
+#        (default 400, read from the environment; the Makefile exports the
+#        overridable ?= variable). Same wc -l counting and strict -gt
+#        semantics as check-file-sizes so both gates agree on the boundary
+#        (400 passes, 401 trips) — proven by the positive/negative size.go
+#        fixtures (401 vs 400 lines, otherwise C-1/C-2/C-3/C-6-satisfying).
 #
 # The semantic floor (refusal byte-exactness, kill switch, delivery) lives in
 # the integration boot e2e (internal/app/composition_root_integration_test.go);
@@ -54,10 +60,10 @@ C4='app.New(ctx, cfg, log)'
 
 fail=0
 
-scan_new_go() { # <path> — C-1, C-2, C-3, C-6
+scan_new_go() { # <path> — C-1, C-2, C-3, C-6, C-7
   local file="$1" violations=""
   if [ ! -f "$file" ]; then echo "new.go missing (composition root moved?) — re-anchor check-composition-root"; return 1; fi
-  local n1 n2 l1 l2 n6 n6b
+  local n1 n2 l1 l2 n6 n6b nlines budget
   n1="$(grep -cF -- "$C1" "$file")"
   [ "$n1" = "1" ] || violations="${violations}C-1 buildAuditStack call: found $n1, want exactly 1
 "
@@ -75,6 +81,10 @@ scan_new_go() { # <path> — C-1, C-2, C-3, C-6
 "
   n6b="$(grep -cF -- 'repository.RunAuditCleaner(' "$file")"
   [ "$n6b" = "0" ] || violations="${violations}C-6 plain audit cleaner (nil hold registry): found $n6b, want 0 — held actors would be purged
+"
+  budget="${MAX_COMPOSITION_ROOT_LINES:-400}"
+  nlines="$(wc -l < "$file")"
+  [ "$nlines" -le "$budget" ] || violations="${violations}C-7 composition root size: $nlines lines > $budget (MAX_COMPOSITION_ROOT_LINES) — split into sibling builders
 "
   if [ -n "$violations" ]; then printf '%s' "$violations"; return 1; fi
   return 0
@@ -140,6 +150,10 @@ scan_new_go "$FIXTURES/positive/missing.go" >/dev/null 2>&1; rmiss=$?
 [ "$rmiss" = "0" ] && { echo "SELF-TEST FAIL: missing-file fixture did not fail loud"; fail=1; }
 scan_migrate_main_go "$FIXTURES/positive/missing.go" >/dev/null 2>&1; rmiss5=$?
 [ "$rmiss5" = "0" ] && { echo "SELF-TEST FAIL: missing-file fixture did not fail loud (C-5)"; fail=1; }
+scan_new_go "$FIXTURES/positive/size.go" >/dev/null 2>&1; rsize=$?
+[ "$rsize" = "0" ] && { echo "SELF-TEST FAIL: positive/size.go (401 lines) passed — C-7 size pin not reddening"; fail=1; }
+scan_new_go "$FIXTURES/negative/size.go" >/dev/null 2>&1; rnsize=$?
+[ "$rnsize" != "0" ] && { echo "SELF-TEST FAIL: negative/size.go (400 lines) reddened — C-7 boundary off by one"; fail=1; }
 
 # ── live-tree scan ────────────────────────────────────────────────────────
 ROOT="${1:-$(cd "$SELF_DIR/.." && pwd)}"
@@ -153,4 +167,4 @@ if [ "$fail" -ne 0 ]; then
   echo "check-composition-root FAILED — audit stack call and drain Start must stay in the server composition root, and cmd/migrate must keep the shared config.Load/migrate.New seams."
   exit 1
 fi
-echo "✓ check-composition-root: buildAuditStack + drain Start wired in the server root, hold-aware audit cleaner pinned (C-6), config.Load/migrate.New seams pinned in cmd/migrate (self-test ok)"
+echo "✓ check-composition-root: buildAuditStack + drain Start wired in the server root, hold-aware audit cleaner pinned (C-6), new.go within ${MAX_COMPOSITION_ROOT_LINES:-400} lines (C-7), config.Load/migrate.New seams pinned in cmd/migrate (self-test ok)"

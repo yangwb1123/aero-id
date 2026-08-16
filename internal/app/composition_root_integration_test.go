@@ -118,7 +118,7 @@ func insertPendingPublication(t *testing.T, db *gorm.DB, tenant string) domain.I
 // TestCompositionRootBootsGovernanceE2E (REQ-1/REQ-2, T-5, L5.6, Leg A): the
 // boot e2e drives the REAL composition root — config.Load of the shipped
 // file → surgical test-runtime overrides → app.New → the drain started at
-// new.go:168 claims a SQL-inserted pending publication and delivers exactly
+// new.go:163 claims a SQL-inserted pending publication and delivers exactly
 // one POST. The body carries the four file-derived envelope fields
 // (schema_id/data_classification/retention_class/actor_id from
 // configs/config.yaml) plus schema_version 99 — the copy-liveness override:
@@ -145,7 +145,7 @@ func TestCompositionRootBootsGovernanceE2E(t *testing.T) {
 		t.Fatalf("app.New on the loaded shipped config: %v", err)
 	}
 	if application.stopCallbacks == nil {
-		t.Fatal("drain was not started by the composition root (stopCallbacks nil — new.go:168 missing)")
+		t.Fatal("drain was not started by the composition root (stopCallbacks nil — new.go:163 missing)")
 	}
 	t.Cleanup(application.shutdown)
 	t.Cleanup(application.Close)
@@ -154,7 +154,7 @@ func TestCompositionRootBootsGovernanceE2E(t *testing.T) {
 	// Poll the authoritative DB state first, side-effect counters second.
 	pollPublication(t, db, eventID, "completed", 15*time.Second)
 	if got := endpoint.postCount(); got != 1 {
-		t.Fatalf("events POSTs = %d, want exactly 1 (drain started at new.go:168)", got)
+		t.Fatalf("events POSTs = %d, want exactly 1 (drain started at new.go:163)", got)
 	}
 	rowID := ledgerRowID(t, db, eventID)
 	body := endpoint.recordedBodies()[0]

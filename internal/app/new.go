@@ -4,24 +4,17 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/aero/aero-id/internal/config"
 	grpcsrv "github.com/aero/aero-id/internal/handler/grpc"
-	httpapi "github.com/aero/aero-id/internal/handler/http"
 	"github.com/aero/aero-id/internal/hub"
-	"github.com/aero/aero-id/internal/idempotency"
-	"github.com/aero/aero-id/internal/middleware"
 	"github.com/aero/aero-id/internal/outbox"
 	"github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/pkg/migrate"
-	"github.com/aero/aero-id/internal/pkg/ratelimit"
-	redislib "github.com/aero/aero-id/internal/pkg/redis"
 	"github.com/aero/aero-id/internal/pkg/tracing"
-	"github.com/aero/aero-id/internal/region"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 	"github.com/aero/aero-id/internal/sso"
@@ -181,155 +174,40 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 			zap.String("storage_type", cfg.Storage.Type))
 	}
 
-	fileSvc := service.NewFileService(fileRepo, store, cfg.Storage.Type,
-		service.WithMaxUploadBytes(cfg.Storage.MaxUploadBytes),
-		service.WithAllowedMimeTypes(cfg.Storage.AllowedMimeTypes),
-		service.WithFileShareRepo(fileShareRepo),
-		service.WithFileAuditLogger(auditLedger),
-		service.WithStorageRefs(storageRefRepo),
-	)
-	msgSvc := service.NewMessageService(msgRepo, fileRepo, ssoClient,
-		service.WithBlockChecker(blockRepo),
-		service.WithMessageAuditLogger(auditLedger),
-	)
-	commentSvc := service.NewCommentService(commentRepo, fileRepo, msgRepo, ssoClient,
-		service.WithCommentAuditLogger(auditLedger),
-	)
-	notifSvc := service.NewNotificationService(notifRepo, ssoClient)
-	blockSvc := service.NewBlockService(blockRepo)
-	prefSvc := service.NewPreferenceService(prefRepo, service.WithPreferenceAuditLogger(auditLedger))
-	searchSvc := service.NewSearchService(msgRepo, commentRepo, fileRepo)
-	adminSvc := service.NewAdminService(adminRepo,
-		service.WithAdminAuditLogger(auditLedger),
-		service.WithAdminAuditLedger(auditLedger),
-	)
-	var permissionChecker middleware.PermissionChecker = adminSvc
-	if cfg.SSO.AuthZRequired || cfg.SSO.AuthZLegacyFallback {
-		permissionChecker = service.NewDelegatingPermissionChecker(ssoClient, adminSvc, cfg.SSO.AuthZLegacyFallback)
-	}
-	accountSvc := service.NewAccountService(accountRepo,
-		service.WithAccountPermissionChecker(permissionChecker),
-		service.WithAccountAudit(auditLedger),
-		service.WithAccountQuota(billingRuntime.quota),
-		service.WithAccountIssuer(cfg.Account.Issuer),
-		service.WithAccountRegion(cfg.Account.Region),
-		service.WithAccountHomeRegionResolver(region.NewResolver(cfg.Account.HomeRegionVersion, cfg.Account.Regions)),
-		service.WithAccountRegionDirectory(repository.NewRegionDirectoryRepository(gdb, auditLedgerRepo), cfg.Account.HomeRegionVersion),
-	)
-	regionFencingSvc := service.NewRegionFencingService(repository.NewRegionDirectoryRepository(gdb, auditLedgerRepo),
-		service.WithRegionFencingAuditLogger(auditLedger))
-	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb, auditLedgerRepo),
-		repository.NewLegacyCleanupRepository(gdb), auditLedger)
-	aggregationSvc := service.NewAggregationService(accountSvc, snapshotRepo, sourceConnectors...)
-	eventIngestSvc := service.NewEventIngestService(eventReceiptRepo,
-		service.WithEventAllowedRegions(cfg.EventIngest.AllowedRegions),
-		service.WithEventIngestAudit(auditLedger),
-		service.WithEventIngestMetrics(controlMetrics))
-
-	// P3-04: optional NATS JetStream consumer feeding the same ingest service.
-	stopEventBus, err := buildEventBusConsumer(cfg, log, eventIngestSvc)
+	// Service construction: every domain service, the permission checker
+	// selection, and the fail-closed audit-wiring asserts. Extracted to
+	// services.go so the composition root stays under the file-size gate (C-7).
+	svcs, err := buildServices(serviceDependencies{
+		cfg: cfg, log: log, gdb: gdb, store: store,
+		ssoClient: ssoClient, sourceConnectors: sourceConnectors,
+		controlMetrics: controlMetrics, metricsReg: metricsReg,
+		billingRuntime: billingRuntime,
+		auditLedger: auditLedger, auditLedgerRepo: auditLedgerRepo,
+		fileRepo: fileRepo, fileShareRepo: fileShareRepo,
+		msgRepo: msgRepo, commentRepo: commentRepo, notifRepo: notifRepo,
+		blockRepo: blockRepo, banRepo: banRepo, prefRepo: prefRepo,
+		storageRefRepo: storageRefRepo, adminRepo: adminRepo, accountRepo: accountRepo,
+		snapshotRepo: snapshotRepo, eventReceiptRepo: eventReceiptRepo,
+		operationRepo: operationRepo, syncJobRepo: syncJobRepo,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// P6-03: optional cross-region projection replication worker.
-	replicationSvc, stopReplication, err := buildProjectionReplication(cfg, gdb, log, metricsReg, auditLedger)
+	// Shared state and worker setup: Redis, edge/distributed rate limiting,
+	// idempotency store, notification/outbox TTL cleaners, degradation state,
+	// health handler, and the audit compliance services. Extracted to
+	// workers.go so the composition root stays under the file-size gate (C-7).
+	workers, err := buildWorkers(workerDependencies{
+		cfg: cfg, log: log, gdb: gdb, sqlDB: sqlDB,
+		ssoClient: ssoClient, notifRepo: notifRepo,
+		outboxRepo: outboxRepo, holdRepo: holdRepo,
+		auditLedger: auditLedger, auditLedgerRepo: auditLedgerRepo,
+		store: store, billingRuntime: billingRuntime,
+		cutoverSvc: svcs.cutoverSvc,
+	})
 	if err != nil {
 		return nil, err
-	}
-	operationRunner := service.NewConnectorOperationRunner(accountRepo, snapshotRepo, sourceConnectors...)
-	operationSvc := service.NewOperationService(operationRepo, service.WithOperationAudit(auditLedger), service.WithOperationRegion(cfg.Account.Region),
-		service.WithOperationRunner(operationRunner), service.WithOperationAccountRepository(accountRepo), service.WithOperationPermission(permissionChecker),
-		service.WithOperationMetrics(controlMetrics))
-	var stopOperations func()
-	if worker, ok := operationSvc.(service.OperationWorkerService); ok {
-		stopOperations = worker.Start(context.Background(), time.Second)
-	}
-	replaySvc := service.NewReplayService(auditLedger, operationSvc,
-		service.WithReplayAccountRepository(accountRepo), service.WithReplaySnapshotRepository(snapshotRepo),
-		service.WithReplayPermission(permissionChecker))
-	projectionReplaySvc := service.NewProjectionReplayService(repository.NewEventStoreRepository(gdb), snapshotRepo,
-		service.WithProjectionReplayAudit(auditLedger))
-	syncJobSvc := service.NewSyncJobServiceWithOptions(syncJobRepo, accountSvc, accountRepo, snapshotRepo, store, sourceConnectors,
-		service.WithSyncJobPermission(permissionChecker), service.WithSyncJobAudit(auditLedger),
-		service.WithSyncJobAuditLedger(repository.NewAuditLedgerRepository(gdb, repository.AuditLedgerConfig{SigningKey: cfg.AuditLedger.SigningKey})),
-		service.WithSyncExportConfig(cfg.Export.EncryptionKey, cfg.Export.MaxBytes, cfg.Export.ArtifactTTL),
-		service.WithSyncJobRegion(cfg.Account.Region), service.WithSyncJobMetrics(controlMetrics))
-	stopSyncJobs := syncJobSvc.Start(context.Background(), time.Second)
-	banSvc := service.NewBanService(banRepo, adminSvc,
-		service.WithBanAuditLogger(auditLedger),
-	)
-
-	// FM-8 wiring assertion: every service that owns an `if s.audit != nil`
-	// skip guard must be constructed with a non-nil audit logger — the legacy
-	// six, the migrated preference/region-fencing/projection-replay services,
-	// and (when enabled) the projection replication worker.
-	assertAuditWiring(
-		auditWiredService{name: "file", svc: fileSvc},
-		auditWiredService{name: "message", svc: msgSvc},
-		auditWiredService{name: "comment", svc: commentSvc},
-		auditWiredService{name: "block", svc: blockSvc},
-		auditWiredService{name: "admin", svc: adminSvc},
-		auditWiredService{name: "ban", svc: banSvc},
-		auditWiredService{name: "account", svc: accountSvc},
-		auditWiredService{name: "preference", svc: prefSvc},
-		auditWiredService{name: "region_fencing", svc: regionFencingSvc},
-		auditWiredService{name: "projection_replay", svc: projectionReplaySvc},
-	)
-	// The replication worker is nil when replication is disabled; assert only when wired.
-	if replicationSvc != nil {
-		assertAuditWiring(auditWiredService{name: "projection_replication", svc: replicationSvc})
-	}
-
-	// Redis client for shared state (idempotency store, SSO cache, leader election,
-	// rate limiter back-end, etc.). OPT-IN: when redis.endpoint is empty every Redis
-	// feature falls back to its GORM / in-memory alternative.
-	redisClient, err := redislib.NewClient(&cfg.Redis)
-	if err != nil {
-		return nil, fmt.Errorf("redis client: %w", err)
-	}
-	if redisClient != nil {
-		log.Info("redis client enabled", zap.String("endpoint", cfg.Redis.Endpoint))
-	}
-
-	// Edge rate limiter, shared by HTTP middleware and the gRPC interceptor. OPT-IN
-	// and disabled by default; Redis provides the cross-instance decision while the
-	// local bucket remains a bounded fallback. When on, a background cleaner evicts
-	// idle local buckets to bound memory.
-	var limiter *ratelimit.Limiter
-	var stopRateLimit func()
-	if cfg.RateLimit.Enabled {
-		idleTTL := cfg.RateLimit.IdleTTL
-		if idleTTL <= 0 {
-			idleTTL = defaultRateLimitIdleTTL
-		}
-		cleanupEvery := cfg.RateLimit.CleanupEvery
-		if cleanupEvery <= 0 {
-			cleanupEvery = defaultRateLimitCleanupEvery
-		}
-		limiter = ratelimit.New(cfg.RateLimit.RPS, cfg.RateLimit.Burst, idleTTL)
-		stopRateLimit = limiter.RunCleaner(cleanupEvery)
-		log.Info("rate limiting enabled",
-			zap.Float64("rps", cfg.RateLimit.RPS),
-			zap.Int("burst", cfg.RateLimit.Burst),
-			zap.Duration("idle_ttl", idleTTL))
-	}
-	distributedRateLimiter := buildDistributedRateLimiter(cfg, redisClient, log)
-
-	// HTTP transport. Readiness probes the DB (critical) and SSO (criticality is
-	// configurable so an SSO-less dev stack stays "ready" rather than 503-ing).
-	// Idempotency store: use Redis when available, fall back to GORM.
-	var idemStore idempotency.Store
-	var stopIdemClean func()
-	if redisClient != nil {
-		idemStore = idempotency.NewRedisStore(redisClient)
-		stopIdemClean = func() {} // Redis keys auto-expire; no background cleaner needed
-		log.Info("idempotency store: redis")
-	} else {
-		gormStore := idempotency.NewGormStore(gdb)
-		idemStore = gormStore
-		stopIdemClean = gormStore.RunCleaner(time.Hour)
-		log.Info("idempotency store: gorm (no redis configured)")
 	}
 
 	// Audit events TTL cleaner: prevents unbounded growth of the audit_events table.
@@ -343,91 +221,22 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		)
 	}
 
-	// Notifications TTL cleaner: purges read notifications past retention and
-	// unread notifications past unread retention. OPT-IN.
-	var stopNotifClean func()
-	if cfg.DataRetention.NotificationCleanInterval > 0 && cfg.DataRetention.NotificationRetention > 0 {
-		stopNotifClean = repository.RunNotificationCleaner(
-			notifRepo, log,
-			cfg.DataRetention.NotificationRetention,
-			cfg.DataRetention.NotificationUnreadRetention,
-			cfg.DataRetention.NotificationCleanInterval,
-		)
-	}
-
-	// Outbox events TTL cleaner: purges dead letters and published events past
-	// their respective retentions. OPT-IN.
-	var stopOutboxClean func()
-	if cfg.DataRetention.OutboxCleanInterval > 0 && cfg.DataRetention.OutboxDeadLetterRetention > 0 {
-		stopOutboxClean = buildOutboxCleaner(cfg, log, outboxRepo)
-	}
-
-	// Degradation state manager — tracks upstream dependency health for the
-	// X-Aero-Degraded response header and handler adaptation.
-	// Probes DB and SSO on a 30s interval, marking degraded after 3 consecutive
-	// failures and restored after 2 consecutive successes.
-	degradationState := middleware.NewDegradationState()
-	degradationState.SetProber(middleware.DepDB, sqlDB.PingContext)
-	if ssoClient != nil {
-		degradationState.SetProber(middleware.DepSSO, ssoClient.HealthCheck)
-	}
-	stopDegradation := degradationState.StartProbing(context.Background(), 30*time.Second, 3, 2)
-
-	health := buildHealthHandler(cfg, sqlDB, ssoClient, billingRuntime.probe)
-	holdSvc, anchorSvc, cutoverFacadeSvc := buildAuditComplianceServices(gdb, auditLedger, auditLedgerRepo, store, holdRepo)
-	// REQ-4/5 fail-closed wiring: hold/cutover services must not run with a nil audit service.
-	assertComplianceAuditWiring(holdSvc, cutoverSvc, cutoverFacadeSvc)
-	auditHandler := buildAuditLedgerHandler(auditLedger, holdSvc, anchorSvc, syncJobSvc, permissionChecker)
-	router := httpapi.NewRouter(
-		log,
-		httpapi.RouterConfig{
-			Metrics:                metricsReg,
-			Idempotency:            idemStore,
-			IdempotencyTTL:         cfg.Server.HTTP.IdempotencyTTL,
-			RateLimiter:            limiter,
-			DistributedRateLimiter: distributedRateLimiter,
-			RequestTimeout:         cfg.Server.HTTP.RequestTimeout,
-			SampleRatio:            cfg.Log.SampleRatio,
-			BanChecker:             banRepo, // repository.BanRepository satisfies middleware.BanChecker
-			Degradation:            degradationState,
-			LegacySunset:           cfg.Server.HTTP.LegacySunset,
-			RegionEpoch:            middleware.NewRegionEpochHeader(regionFencingSvc, cfg.Account.Region),
-			CutoverChecker:         cutoverSvc,
-		},
-		tokenValidator,
-		health,
-		httpapi.NewSourceHealthHandler(sourceConnectors),
-		httpapi.NewFileHandler(fileSvc, downloader, presignTTL),
-		httpapi.NewMessageHandler(msgSvc),
-		httpapi.NewCommentHandler(commentSvc),
-		httpapi.NewNotificationHandler(notifSvc),
-		httpapi.NewBlockHandler(blockSvc),
-		httpapi.NewEventsHandler(sseHub, notifRepo),
-		httpapi.NewPreferenceHandler(prefSvc),
-		httpapi.NewAdminHandler(adminSvc, []service.BanService{banSvc}, []httpapi.HubDisconnector{sseHub}, permissionChecker),
-		httpapi.NewSearchHandler(searchSvc),
-		httpapi.NewAccountHandlerWithExtensions(accountSvc, regionFencingSvc,
-			service.NewLegacyMigrationService(repository.NewLegacyMigrationRepository(gdb), sourceConnectors...),
-			cutoverFacadeSvc,
-			permissionChecker),
-		httpapi.NewAggregationHandler(aggregationSvc, permissionChecker),
-		httpapi.NewEventIngestHandler(eventIngestSvc, cfg.EventIngest.SigningKey, cfg.EventIngest.MaxBodyBytes, cfg.EventIngest.ClockSkew,
-			httpapi.WithEventSourceKeys(cfg.EventIngest.SourceKeys), httpapi.WithEventTimestampRequired(cfg.EventIngest.RequireTimestamp),
-			httpapi.WithEventSourceBindings(buildEventSourceBindings(cfg.EventIngest.Bindings)), httpapi.WithEventPermissionChecker(permissionChecker)),
-		auditHandler,
-		httpapi.NewCallbackHandler(callbackSvc, permissionChecker),
-		httpapi.NewOperationHandler(operationSvc),
-		httpapi.NewSyncJobHandler(syncJobSvc, permissionChecker),
-		httpapi.NewReplayHandlerWithProjection(replaySvc,
-			projectionReplaySvc, permissionChecker),
-	)
+	router := buildRouter(routerDependencies{
+		cfg: cfg, log: log, gdb: gdb, metricsReg: metricsReg,
+		tokenValidator: tokenValidator, downloader: downloader,
+		sseHub: sseHub, sourceConnectors: sourceConnectors,
+		callbackSvc: callbackSvc, auditLedger: auditLedger,
+		banRepo: banRepo, notifRepo: notifRepo,
+		svcs: svcs, workers: workers,
+	})
 	httpServer := buildHTTPServer(cfg, router)
 
-	grpcServer := buildGRPCServer(cfg, tokenValidator, log, metricsReg, limiter, distributedRateLimiter, permissionChecker, degradationState, grpcDependencies{
-		Files: fileSvc, Messages: msgSvc, Comments: commentSvc, Notifications: notifSvc, Blocks: blockSvc,
-		Search: searchSvc, Preferences: prefSvc, Admin: adminSvc, Bans: banSvc, Accounts: accountSvc,
-		Aggregation: aggregationSvc, Audit: auditLedger, Operations: operationSvc, Callbacks: callbackSvc, SyncJobs: syncJobSvc,
-		EventIngest: eventIngestSvc, EventBindings: buildEventSourceBindings(cfg.EventIngest.Bindings),
+	grpcServer := buildGRPCServer(cfg, tokenValidator, log, metricsReg,
+		workers.limiter, workers.distributedLimiter, svcs.permissionChecker, workers.degradationState, grpcDependencies{
+		Files: svcs.fileSvc, Messages: svcs.msgSvc, Comments: svcs.commentSvc, Notifications: svcs.notifSvc, Blocks: svcs.blockSvc,
+		Search: svcs.searchSvc, Preferences: svcs.prefSvc, Admin: svcs.adminSvc, Bans: svcs.banSvc, Accounts: svcs.accountSvc,
+		Aggregation: svcs.aggregationSvc, Audit: auditLedger, Operations: svcs.operationSvc, Callbacks: callbackSvc, SyncJobs: svcs.syncJobSvc,
+		EventIngest: svcs.eventIngestSvc, EventBindings: buildEventSourceBindings(cfg.EventIngest.Bindings),
 	})
 	// Standard ops surface: health (reported SERVING) and, when enabled, reflection.
 	grpcHealth := grpcsrv.RegisterHealth(grpcServer)
@@ -439,35 +248,35 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		stopRelay()
-		stopIdemClean()
+		workers.stopIdemClean()
 		if stopGC != nil {
 			stopGC()
 		}
-		if stopRateLimit != nil {
-			stopRateLimit()
+		if workers.stopRateLimit != nil {
+			workers.stopRateLimit()
 		}
 		if stopAuditClean != nil {
 			stopAuditClean()
 		}
-		if stopNotifClean != nil {
-			stopNotifClean()
+		if workers.stopNotifClean != nil {
+			workers.stopNotifClean()
 		}
-		if stopOutboxClean != nil {
-			stopOutboxClean()
+		if workers.stopOutboxClean != nil {
+			workers.stopOutboxClean()
 		}
 		if stopCallbacks != nil {
 			stopCallbacks()
 		}
-		if stopOperations != nil {
-			stopOperations()
+		if svcs.stopOperations != nil {
+			svcs.stopOperations()
 		}
-		if stopSyncJobs != nil {
-			stopSyncJobs()
+		if svcs.stopSyncJobs != nil {
+			svcs.stopSyncJobs()
 		}
-		if stopEventBus != nil {
-			stopEventBus()
+		if svcs.stopEventBus != nil {
+			svcs.stopEventBus()
 		}
-		stopDegradation()
+		workers.stopDegradation()
 		return nil, fmt.Errorf("grpc listen on %s: %w", grpcAddr, err)
 	}
 
@@ -476,24 +285,24 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		log:             log,
 		sqlDB:           sqlDB,
 		sso:             ssoClient,
-		redisClient:     redisClient,
+		redisClient:     workers.redisClient,
 		httpServer:      httpServer,
 		grpcServer:      grpcServer,
 		grpcHealth:      grpcHealth,
 		grpcLis:         grpcLis,
 		stopRelay:       stopRelay,
 		stopGC:          stopGC,
-		stopRateLimit:   stopRateLimit,
-		stopIdemClean:   stopIdemClean,
+		stopRateLimit:   workers.stopRateLimit,
+		stopIdemClean:   workers.stopIdemClean,
 		stopAuditClean:  stopAuditClean,
-		stopNotifClean:  stopNotifClean,
-		stopOutboxClean: stopOutboxClean,
+		stopNotifClean:  workers.stopNotifClean,
+		stopOutboxClean: workers.stopOutboxClean,
 		stopCallbacks:   stopCallbacks,
-		stopOperations:  stopOperations,
-		stopSyncJobs:    stopSyncJobs,
-		stopEventBus:    stopEventBus,
-		stopReplication: stopReplication,
-		stopDegradation: stopDegradation,
+		stopOperations:  svcs.stopOperations,
+		stopSyncJobs:    svcs.stopSyncJobs,
+		stopEventBus:    svcs.stopEventBus,
+		stopReplication: svcs.stopReplication,
+		stopDegradation: workers.stopDegradation,
 		traceShutdown:   traceShutdown,
 	}, nil
 }
