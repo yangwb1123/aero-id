@@ -35,8 +35,11 @@ type Config struct {
 
 // RateLimitConfig configures the per-actor limiter applied on both transports.
 // It is OPT-IN: disabled by default so it never surprises dev/CI. With Redis
-// configured the same budget is enforced across instances; otherwise the local
-// token bucket is used as a bounded fallback.
+// configured, the shared budget is enforced across instances by a
+// request-anchored fixed-window counter (window = max(1s, burst/rate)); when
+// Redis is unavailable the middleware and gRPC interceptor fall back to the
+// local per-instance token bucket, whose smooth refill shape and per-process
+// scope differ from the distributed fixed window.
 type RateLimitConfig struct {
 	Enabled      bool          `mapstructure:"enabled"`       // master switch; false = limiter never installed
 	RPS          float64       `mapstructure:"rps"`           // sustained requests/second per key
