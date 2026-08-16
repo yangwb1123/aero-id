@@ -102,6 +102,23 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 			"67acd7a2-5791-54bf-891b-03cea4311827"},
 		{"G13 legacy.cutover.set rolled_back->legacy", []string{"legacy.cutover.set", goldenTenant, "legacy", "rolled_back"},
 			"3c540abf-4417-56c2-b726-f26a89b0b157"},
+		// G14/G14b/G14c region.promote: 6 parts incl. the CAS fencing epoch as
+		// a decimal string (strconv.FormatInt). A retry of the same attempt
+		// re-derives the same ID (ledger dedup), while each successive epoch
+		// derives a distinct ID — distinct promotion attempts never collide.
+		{"G14 region.promote", []string{"audit", "region.promote", goldenTenant, goldenOP, "us-east", "0"},
+			"0c9b9631-6da3-5c20-813d-4ec76e5dc961"},
+		{"G14b region.promote wrong epoch", []string{"audit", "region.promote", goldenTenant, goldenOP, "us-east", "1"},
+			"efd6375b-4c86-57b1-ac7b-0e821537ce47"},
+		{"G14c region.promote epoch 2", []string{"audit", "region.promote", goldenTenant, goldenOP, "us-east", "2"},
+			"6b15c036-15c8-581b-b9c4-03c6b0f2d01b"},
+		// G15 preference.set: 5 parts incl. the sha256 payload digest slot
+		// (fixed 64-hex-char literal standing in for preferenceSetDigest
+		// output). A payload change derives a distinct ID — a later
+		// legitimate Set by the same user is never deduped away — while a
+		// retry of the same payload re-derives the same ID.
+		{"G15 preference.set", []string{"audit", "preference.set", goldenTenant, "u-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			"52d8beb8-b5fb-55ba-ad4b-e3ff011c37e5"},
 		{"S1 separator pair a", []string{"ab", "c"},
 			"251d9788-4b10-57f0-a935-e4ca289d517e"},
 		{"S2 separator pair b", []string{"a", "bc"},
@@ -125,6 +142,18 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 	}
 	if seen[Anchor("audit_hold.set", goldenTenant, "account", "acct-1024", "", "")] == seen[Anchor("audit_hold.removed", goldenTenant, "account", "acct-1024")] {
 		t.Fatal("put(\"\",nil) must not collide with removed (G9b != G10)")
+	}
+	// CAS-per-attempt dedup: the fencing epoch is part of the anchor, so two
+	// distinct promotion attempts (epoch 0 -> 1 -> 2) never collide at the
+	// ledger, while the per-case 128-bit pins prove a retry of the same
+	// epoch re-derives the same ID.
+	if Anchor("audit", "region.promote", goldenTenant, goldenOP, "us-east", "0") ==
+		Anchor("audit", "region.promote", goldenTenant, goldenOP, "us-east", "1") {
+		t.Fatal("successive fencing epochs must derive distinct EventIDs (G14 != G14b)")
+	}
+	if Anchor("audit", "region.promote", goldenTenant, goldenOP, "us-east", "1") ==
+		Anchor("audit", "region.promote", goldenTenant, goldenOP, "us-east", "2") {
+		t.Fatal("successive fencing epochs must derive distinct EventIDs (G14b != G14c)")
 	}
 }
 
