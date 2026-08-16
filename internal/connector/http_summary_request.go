@@ -95,8 +95,11 @@ func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseReq
 
 func (c *JSONSummaryConnector) decodeEraseResult(body io.Reader) (*CommandResult, error) {
 	data, err := io.ReadAll(io.LimitReader(body, c.cfg.MaxBodyBytes+1))
-	if err != nil || int64(len(data)) > c.cfg.MaxBodyBytes {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large", Cause: err}
+	if err != nil {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.response_read_failed", Temporary: true, Cause: err}
+	}
+	if int64(len(data)) > c.cfg.MaxBodyBytes {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large"}
 	}
 	if len(data) == 0 {
 		return &CommandResult{Status: "accepted"}, nil
