@@ -22,13 +22,18 @@ func RedactSummaryData(value map[string]any) map[string]any {
 
 const maxSummaryDataBytes = 64 * 1024
 
-// sensitiveSummaryParts lists credential shapes in human-readable snake_case.
-// Every part is canonicalized before matching, so camelCase and separator-free
-// spellings (accessKey, api_key, signing-key) resolve to the same shape.
+// sensitiveSummaryParts lists sensitive shapes in human-readable snake_case:
+// credential shapes plus IM message-content shapes that must never become
+// durable projections (AGENTS.md: "must not persist unrestricted IM message
+// history"). Every part is canonicalized before matching, so camelCase and
+// separator-free spellings (accessKey, api_key, signing-key) resolve to the
+// same shape. Message shapes are substring parts, not the bare words
+// "message"/"chat", so counter keys like message_count keep their values.
 var sensitiveSummaryParts = []string{
 	"password", "token", "secret", "cookie", "mfa", "recovery", "credential", "private_key",
 	"access_key", "refresh", "authorization", "object_bytes", "blob", "message_body",
 	"api_key", "signing_key",
+	"message_text", "latest_message", "recent_message", "message_preview", "chat_history", "conversation",
 }
 
 // sensitiveSummaryCanonicalParts is sensitiveSummaryParts canonicalized once so
