@@ -14,4 +14,6 @@ func positive() {
 	s.publications.RequeueDead(ctx, ids, 0, nil)                          // P2: bare B2-5 replay call discards the error
 	_ = s.repo.MarkDelivery(ctx, id, w, "success", 200, "", "", now)     // P1: drain settlement swallow (attempt+1/lease-clear lost)
 	s.repo.MarkDelivery(ctx, id, w, "pending", 503, "", "cb.failed", now) // P2: bare settlement call discards the error
+	_ = s.receipts.QuarantineEvent(ctx, envelope, "event.region_not_allowed") // P1: quarantine receipt swallow (receipt + audit coupling lost)
+	s.receipts.QuarantineEvent(ctx, envelope, "event.invalid_projection")     // P2: bare quarantine call discards the receipt write
 }

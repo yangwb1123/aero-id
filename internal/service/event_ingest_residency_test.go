@@ -13,9 +13,11 @@ import (
 )
 
 // fakeReceiptRepo records quarantine calls and always applies events.
+// Set quarantineErr to simulate a failed durable quarantine receipt write.
 type fakeReceiptRepo struct {
-	quarantined []string // error codes
-	applied     []string // event ids
+	quarantined   []string // error codes
+	applied       []string // event ids
+	quarantineErr error    // returned by QuarantineEvent when set
 }
 
 func (f *fakeReceiptRepo) ApplySnapshotEvent(ctx context.Context, envelope *event.Envelope,
@@ -31,7 +33,7 @@ func (f *fakeReceiptRepo) ApplySnapshotEventWithAudit(ctx context.Context, envel
 
 func (f *fakeReceiptRepo) QuarantineEvent(ctx context.Context, envelope *event.Envelope, code string) error {
 	f.quarantined = append(f.quarantined, code)
-	return nil
+	return f.quarantineErr
 }
 
 func testEnvelope(region string) *event.Envelope {

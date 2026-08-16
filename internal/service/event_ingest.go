@@ -73,7 +73,9 @@ func (s *eventIngestService) Ingest(ctx context.Context, envelope *event.Envelop
 	if !s.regionAllowed(envelope.SourceRegion) {
 		// P6-04: residency policy — a disallowed source region is quarantined,
 		// never applied to local projections (data stays in its authority region).
-		_ = s.receipts.QuarantineEvent(ctx, envelope, "event.region_not_allowed")
+		if err := s.quarantineEvent(ctx, envelope, "event.region_not_allowed"); err != nil {
+			return nil, err // 5xx -> Nak/redelivery; no fact on receipt failure
+		}
 		s.metrics.ObserveEventQuarantined(envelope.Source + "." + envelope.EventType)
 		return nil, apperr.Forbidden("event.region_not_allowed",
 			"event source region violates residency policy")
@@ -117,11 +119,26 @@ func validateIngestEnvelope(envelope *event.Envelope) error {
 }
 
 func (s *eventIngestService) quarantineInvalidProjection(ctx context.Context, envelope *event.Envelope, cause error) error {
-	_ = s.receipts.QuarantineEvent(ctx, envelope, "event.invalid_projection")
+	if err := s.quarantineEvent(ctx, envelope, "event.invalid_projection"); err != nil {
+		return err // 5xx -> Nak/redelivery; false fact suppressed
+	}
+	return apperr.BadRequest("event.invalid_projection", "event cannot update an approved projection").Wrap(cause)
+}
+
+// quarantineEvent persists the quarantine receipt and its anchored audit fact.
+// The receipt write is authoritative: a failure returns a transient 5xx error
+// (Nak/redelivery) and records NO audit fact — a ledger fact must never exist
+// without a durable receipt. An audit failure is also 5xx: the retry re-derives
+// the identical fact anchored on envelope.EventID and folds on the ledger dedup
+// key (uq_audit_ledger_tenant_event), so exactly one fact survives.
+func (s *eventIngestService) quarantineEvent(ctx context.Context, envelope *event.Envelope, code string) error {
+	if err := s.receipts.QuarantineEvent(ctx, envelope, code); err != nil {
+		return apperr.Internal("event.quarantine_failed", "failed to quarantine event").Wrap(err)
+	}
 	if err := s.recordAudit(ctx, envelope, nil, "quarantined"); err != nil {
 		return apperr.Internal("event.audit_failed", "failed to record event audit").Wrap(err)
 	}
-	return apperr.BadRequest("event.invalid_projection", "event cannot update an approved projection").Wrap(cause)
+	return nil
 }
 
 func mapEventApplyError(err error) error {

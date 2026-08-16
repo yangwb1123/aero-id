@@ -3,10 +3,10 @@
 #
 # P1 (assign-swallow): any statement that assigns the result of
 #   .Record / .Log / .Publish / .FinishPublication / .ClaimPublication /
-#   .RequeuePublication / .RequeueDead / .MarkDelivery to _ or _, _
-#   — the caller discards the error. This is the historical swallow shape
-#   (the converted `_ = s.audit.Record(` and `_ = s.audit.Log(` sites, the inline
-#   `_ = publisher.Publish` loop, `_ = s.publications.FinishPublication(`).
+#   .RequeuePublication / .RequeueDead / .MarkDelivery / .QuarantineEvent to
+#   _ or _, _ — the caller discards the error. This is the historical swallow
+#   shape (the converted `_ = s.audit.Record(` and `_ = s.audit.Log(` sites,
+#   the inline `_ = publisher.Publish` loop, `_ = s.publications.FinishPublication(`).
 #   The B2-5 replay surface is included: RequeuePublication/RequeueDead take a
 #   *domain.AuditFact and their error covers the in-tx audit append, so a
 #   discarded result would silently drop both the requeue and its fact.
@@ -14,7 +14,11 @@
 #   error covers attempt+1 and lease-clear, so a discarded result silently
 #   drops the settlement AND the gate (a swallowed MarkDelivery is how the
 #   drain-path swallow went unobserved — callback_worker.go:121 pre-2026-08-08
-#   hardening). The new positive fixture line is matched by the self-test.
+#   hardening). QuarantineEvent (event-ingest quarantine, 2026-08-16) is
+#   included because its error covers the durable quarantine receipt write
+#   (and the audit coupling): a discarded result silently drops the quarantine
+#   state while the caller still returns a deterministic 4xx. The new positive
+#   fixture lines are matched by the self-test.
 # P2 (bare-call): a bare statement `s.audit.Record(ctx, f)` or `s.audit.Log(ctx, e)`
 #   also discards the error and matches nothing today (errcheck is not enabled in
 #   .golangci.yml) — P2 closes that false-negative hole. Anchoring at line
@@ -27,7 +31,10 @@
 #   discard the audit-fact append error. MarkDelivery IS in P2: a bare
 #   settlement call (e.g. a future regression to `s.repo.MarkDelivery(...)`
 #   without the error branch) discards the attempt+1/lease-clear error exactly
-#   like the historical swallow it replaces.
+#   like the historical swallow it replaces. QuarantineEvent IS in P2: a bare
+#   `s.receipts.QuarantineEvent(...)` call (e.g. a future regression before
+#   the quarantineEvent helper) discards the receipt-write error exactly like
+#   the two historical `_ =` sites it replaces.
 #
 # Exclusions (documented):
 #   - only the live layer is scanned (default: the full gate surface —
@@ -133,8 +140,8 @@ fi
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SELF_DIR/testdata/audit-swallow"
 
-P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publish|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\('
-P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery)\('
+P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publish|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery|QuarantineEvent)\('
+P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery|QuarantineEvent)\('
 # G2 breaker-observation exemption (2026-08-14): internal/sso/client.go
 # calls `c.breaker.Record(...)` bare (lines 299,306,310) as circuit-breaker
 # outcome observations; breaker.Record is VOID (internal/sso/breaker.go), so
