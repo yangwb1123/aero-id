@@ -279,6 +279,41 @@ func TestValidateSet(t *testing.T) {
 	}
 }
 
+// TestAdvisoryLockKeyStable pins the advisory-lock key contract (A4): exactly
+// one package-constant key, pinned to the literal "aero-id:migrate" (a revalue
+// during a rolling deployment would split contention across two keys), and the
+// acquire/release SQL built by advisoryLockQuery from that constant — never a
+// divergent hardcoded string — so Up() and Down(), which both route through
+// withSessionLock, provably contend on one key. Session-level (pg_advisory_lock,
+// not pg_advisory_xact_lock) is pinned at the unit level too.
+func TestAdvisoryLockKeyStable(t *testing.T) {
+	const pinned = "aero-id:migrate"
+	if advisoryLockKey != pinned {
+		t.Fatalf("advisoryLockKey = %q, want pinned literal %q (revalue splits contention)", advisoryLockKey, pinned)
+	}
+	if advisoryLockKey == "" {
+		t.Fatal("advisoryLockKey must be non-empty")
+	}
+
+	acquire, release := advisoryLockQuery(advisoryLockKey)
+	for _, want := range []string{pinned, "pg_advisory_lock", "hashtext"} {
+		if !strings.Contains(acquire, want) {
+			t.Errorf("acquire SQL %q missing %q", acquire, want)
+		}
+	}
+	if strings.Contains(acquire, "pg_advisory_xact_lock") {
+		t.Errorf("acquire SQL %q must be session-level, not xact-level", acquire)
+	}
+	for _, want := range []string{pinned, "pg_advisory_unlock", "hashtext"} {
+		if !strings.Contains(release, want) {
+			t.Errorf("release SQL %q missing %q", release, want)
+		}
+	}
+	if strings.Contains(release, "pg_advisory_xact_unlock") {
+		t.Errorf("release SQL %q must be session-level, not xact-level", release)
+	}
+}
+
 // TestDiscoverFixtureLiveness pins the bash gate's self-test fixtures from the
 // Go side (REQ-7): make test must also fail if a positive fixture stops
 // reddening (or a fixture tree is deleted).

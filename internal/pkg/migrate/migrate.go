@@ -9,6 +9,7 @@
 package migrate
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,39 +111,45 @@ func (m *Migrator) Version() (uint64, error) {
 // Up applies every pending up-migration in ascending version order. It returns
 // the list of versions it applied (empty if already up to date). The migration
 // set is validated before any database access so a broken set fails before
-// schema_migrations is created (fail-before-mutate).
+// schema_migrations is created (fail-before-mutate). All database work runs
+// under a session-level advisory lock (withSessionLock) so concurrent Up/Down
+// runs against one database serialize instead of double-applying migrations.
 func (m *Migrator) Up() ([]uint64, error) {
 	migrations, err := Discover(m.dir)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.ensureTable(); err != nil {
-		return nil, err
-	}
-	applied, err := m.appliedVersions()
-	if err != nil {
-		return nil, err
-	}
 
 	var done []uint64
-	for _, mig := range migrations {
-		if applied[mig.Version] {
-			continue
+	err = m.withSessionLock(context.Background(), func() error {
+		if err := m.ensureTable(); err != nil {
+			return err
 		}
-		if mig.UpFile == "" {
-			return done, fmt.Errorf("migration %06d_%s has no .up.sql file", mig.Version, mig.Name)
-		}
-		sqlText, err := os.ReadFile(mig.UpFile)
+		applied, err := m.appliedVersions()
 		if err != nil {
-			return done, fmt.Errorf("read %s: %w", mig.UpFile, err)
+			return err
 		}
-		m.logf("applying %06d_%s", mig.Version, mig.Name)
-		if err := m.applyTx(string(sqlText), mig, true); err != nil {
-			return done, fmt.Errorf("apply %06d_%s: %w", mig.Version, mig.Name, err)
+
+		for _, mig := range migrations {
+			if applied[mig.Version] {
+				continue
+			}
+			if mig.UpFile == "" {
+				return fmt.Errorf("migration %06d_%s has no .up.sql file", mig.Version, mig.Name)
+			}
+			sqlText, err := os.ReadFile(mig.UpFile)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", mig.UpFile, err)
+			}
+			m.logf("applying %06d_%s", mig.Version, mig.Name)
+			if err := m.applyTx(string(sqlText), mig, true); err != nil {
+				return fmt.Errorf("apply %06d_%s: %w", mig.Version, mig.Name, err)
+			}
+			done = append(done, mig.Version)
 		}
-		done = append(done, mig.Version)
-	}
-	return done, nil
+		return nil
+	})
+	return done, err
 }
 
 // Down rolls back the n most-recently-applied migrations (highest versions
@@ -154,11 +161,27 @@ func (m *Migrator) Down(n int) ([]uint64, error) {
 		return nil, fmt.Errorf("down count must be >= 1, got %d", n)
 	}
 	// Validate the migration set before touching the database (fail-before-mutate,
-	// symmetric with Up).
+	// symmetric with Up). All database work runs under the same session-level
+	// advisory lock as Up so concurrent runs serialize on one key.
 	migrations, err := Discover(m.dir)
 	if err != nil {
 		return nil, err
 	}
+
+	var done []uint64
+	err = m.withSessionLock(context.Background(), func() error {
+		done, err = m.downLocked(n, migrations)
+		return err
+	})
+	return done, err
+}
+
+// downLocked runs the rollback steps while the session lock is held. It is a
+// separate method so Down stays under the funlen budget and the lock wrapper
+// stays a pure acquire/run/release.
+//
+//nolint:cyclop // rollback validates and applies each migration in reverse order atomically.
+func (m *Migrator) downLocked(n int, migrations []Migration) ([]uint64, error) {
 	if err := m.ensureTable(); err != nil {
 		return nil, err
 	}
