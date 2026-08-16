@@ -19,7 +19,7 @@ func TestCompositionRootValidatesAuditSigningKey(t *testing.T) {
 	if err := validateAuditLedgerConfig(&config.Config{AuditLedger: config.AuditLedgerConfig{SigningKey: "   "}}); err == nil {
 		t.Fatal("blank signing key must fail startup validation")
 	}
-	if err := validateAuditLedgerConfig(&config.Config{AuditLedger: config.AuditLedgerConfig{SigningKey: "change-me-please-very-long-audit-key"}}); err != nil {
+	if err := validateAuditLedgerConfig(&config.Config{AuditLedger: config.AuditLedgerConfig{SigningKey: "5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d"}}); err != nil {
 		t.Fatalf("non-empty signing key rejected: %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func TestValidateAuditGovernanceGateMatrix(t *testing.T) {
 // validateAuditLedgerConfig runs before the gate.
 func TestBuildAuditStackRefusesEnabledZeroBindings(t *testing.T) {
 	cfg := &config.Config{
-		AuditLedger: config.AuditLedgerConfig{SigningKey: "change-me-please-very-long-audit-key"},
+		AuditLedger: config.AuditLedgerConfig{SigningKey: "5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d"},
 		AuditGovernance: config.AuditGovernanceConfig{
 			Enabled: true, SourcePrefix: "aero-id", Endpoint: "https://audit-governance.internal",
 		},

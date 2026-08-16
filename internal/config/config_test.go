@@ -29,7 +29,7 @@ sso: {endpoint: "sso:9000", timeout: 5s, insecure: true, token_cache_ttl: 60s, u
 storage:
   type: local
   local: {root: /tmp/files, public_base_url: "http://x"}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 log: {level: info, encoding: json}
 `
@@ -90,7 +90,7 @@ func TestDatabaseDSN(t *testing.T) {
 }
 
 func TestLoadAuditLedgerSigningKeyValidation(t *testing.T) {
-	const validLine = "audit_ledger: {signing_key: change-me-please-very-long-audit-key}"
+	const validLine = "audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}"
 	if _, err := Load(writeTemp(t, sample)); err != nil {
 		t.Fatalf("sample with audit_ledger signing key rejected: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestValidateEventIngestRejectsNonCanonicalBindings(t *testing.T) {
 func TestDataRetentionPurgePausedValidation(t *testing.T) {
 	base := `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
@@ -279,7 +279,7 @@ sso: {endpoint: "localhost:9090"}
 func TestAuditGovernanceDeadLetterRetentionValidation(t *testing.T) {
 	base := `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
@@ -312,7 +312,7 @@ sso: {endpoint: "localhost:9090"}
 func TestLoadAuditGovernanceKnobEnvLegs(t *testing.T) {
 	base := `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
@@ -348,7 +348,7 @@ audit_governance: {purge_pause: false, dead_letter_retention: 0}
 func TestAuditGovernanceAnchorSchemeValidation(t *testing.T) {
 	base := `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
@@ -414,7 +414,7 @@ sso: {endpoint: "localhost:9090"}
 func TestAuditGovernanceActivationGate(t *testing.T) {
 	base := `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
@@ -447,7 +447,7 @@ sso: {endpoint: "localhost:9090"}
 func TestStorageGCPurgePaused(t *testing.T) {
 	base := `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
@@ -554,4 +554,85 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 	if _, err := Load(shipped); err == nil || !strings.Contains(err.Error(), wantErr) {
 		t.Fatalf("env-enabled shipped file Load err = %v, want containing %q", err, wantErr)
 	}
+}
+
+// TestLoadRejectsPlaceholderSecrets (REQ-C1/REQ-C4): both shipped signing-key
+// literals and the conventional placeholder families (change-me, changeme,
+// replace-me) are denied at Load() for the root signing_key and
+// audit_ledger.signing_key alike. Each row is applied to both fields; the
+// ≥32-byte prefix rows guarantee the failure is the deny error, never the
+// length error (deny-before-length ordering in validateAuditLedger). The
+// positive leg proves the fixed committed hex audit key and a plain root key
+// still load.
+func TestLoadRejectsPlaceholderSecrets(t *testing.T) {
+	const fixedHexAuditKey = "5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d"
+	const validAuditLine = "audit_ledger: {signing_key: " + fixedHexAuditKey + "}"
+	if _, err := Load(writeTemp(t, sample)); err != nil {
+		t.Fatalf("sample with valid signing keys rejected: %v", err)
+	}
+	const wantErr = "signing_key is a known placeholder"
+	rows := []struct {
+		name string
+		key  string
+	}{
+		{"shipped audit literal", "change-me-please-very-long-audit-key"},
+		{"shipped root literal", "change-me-please-very-long-random"},
+		{"change-me prefix, 32+ bytes", "change-me-" + strings.Repeat("x", 45)},
+		{"changeme prefix, 32+ bytes", "changeme-" + strings.Repeat("x", 45)},
+		{"replace-me prefix, 32+ bytes", "replace-me-" + strings.Repeat("x", 45)},
+	}
+	for _, tc := range rows {
+		t.Run("audit/"+tc.name, func(t *testing.T) {
+			content := strings.Replace(sample, validAuditLine, "audit_ledger: {signing_key: "+strconv.Quote(tc.key)+"}", 1)
+			_, err := Load(writeTemp(t, content))
+			if err == nil || !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("Load error = %v, want containing %q", err, wantErr)
+			}
+		})
+		t.Run("root/"+tc.name, func(t *testing.T) {
+			content := strings.Replace(sample, "signing_key: testkey", "signing_key: "+strconv.Quote(tc.key), 1)
+			_, err := Load(writeTemp(t, content))
+			if err == nil || !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("Load error = %v, want containing %q", err, wantErr)
+			}
+		})
+	}
+
+	// Positive leg: the fixed committed hex audit key and a plain root key
+	// load, with the merged audit key intact.
+	cfg, err := Load(writeTemp(t, sample))
+	if err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	if cfg.AuditLedger.SigningKey != fixedHexAuditKey {
+		t.Fatalf("AuditLedger.SigningKey = %q, want the fixed hex fixture", cfg.AuditLedger.SigningKey)
+	}
+}
+
+// TestLoadRejectsPlaceholderSecretEnvLeg (REQ-C2): Load merges AERO_ID_* env
+// into the struct before validate, so a placeholder supplied via env over a
+// valid file still fails with the pinned deny error — env cannot bypass the
+// deny-list. Mirrors TestLoadAuditGovernanceKnobEnvLegs (env pinned before
+// Load; the package stays sequential, no t.Parallel). The audit ledger key
+// exists in the file (viper lazy env merge: env wins when the key exists), so
+// a green leg proves env plumbing AND the deny check, never a wrong-reason
+// pass.
+func TestLoadRejectsPlaceholderSecretEnvLeg(t *testing.T) {
+	const wantErr = "signing_key is a known placeholder"
+
+	t.Run("audit ledger env cannot bypass", func(t *testing.T) {
+		t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", "change-me-please-very-long-audit-key")
+		_, err := Load(writeTemp(t, sample))
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("Load error = %v, want containing %q (env placeholder must not bypass)", err, wantErr)
+		}
+	})
+
+	t.Run("root env cannot bypass", func(t *testing.T) {
+		t.Setenv("AERO_ID_SIGNING_KEY", "change-me-please-very-long-random")
+		_, err := Load(writeTemp(t, sample))
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("Load error = %v, want containing %q (env placeholder must not bypass)", err, wantErr)
+		}
+	})
 }

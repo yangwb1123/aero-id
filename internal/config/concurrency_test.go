@@ -30,7 +30,7 @@ const auditGovernanceAnchorSchemeError = `audit_governance.anchor_scheme must be
 // appended per leg.
 const concurrencyBaseYAML = `
 storage: {type: local, local: {root: /tmp/files, public_base_url: "http://x"}}
-audit_ledger: {signing_key: change-me-please-very-long-audit-key}
+audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}
 signing_key: testkey
 database: {dbname: aero_id, host: localhost, port: 5432, user: aero, password: x, sslmode: disable}
 sso: {endpoint: "localhost:9090"}
