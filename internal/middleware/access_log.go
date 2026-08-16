@@ -31,6 +31,7 @@ func AccessLog(log *zap.Logger) gin.HandlerFunc {
 			zap.Int("status", c.Writer.Status()),
 			zap.Duration("latency", time.Since(start)),
 			zap.String("request_id", c.GetString("request_id")),
+			zap.String("trace_id", c.GetString("trace_id")),
 			zap.String("actor", c.GetString("actor_uid")),
 		)
 	}

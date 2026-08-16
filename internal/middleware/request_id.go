@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aero/aero-id/internal/pkg/idgen"
+	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -28,6 +29,7 @@ func RequestID() gin.HandlerFunc {
 		c.Set("request_id", rid)
 		ctx := context.WithValue(c.Request.Context(), requestIDKey, rid)
 		ctx = service.WithRequestID(ctx, rid)
+		ctx = logger.WithRequestID(ctx, rid)
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}

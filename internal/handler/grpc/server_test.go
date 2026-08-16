@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -19,6 +22,7 @@ import (
 
 	"github.com/aero/aero-id/internal/middleware"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/pkg/ratelimit"
 	"github.com/aero/aero-id/internal/service"
 )
@@ -58,6 +62,121 @@ func TestAuthInterceptor_invalidToken(t *testing.T) {
 	_, err := intc(ctx, nil, &grpc.UnaryServerInfo{}, func(context.Context, any) (any, error) { return nil, nil })
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+}
+
+// TestAuthInterceptor_populatesLoggerCarrier verifies the auth interceptor writes
+// the validated actor into the log-correlation carrier (R3). Direct invocation:
+// carrier-content only — header emission is covered end-to-end elsewhere.
+func TestAuthInterceptor_populatesLoggerCarrier(t *testing.T) {
+	intc := AuthInterceptor(fakeValidator{uid: "alice"})
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer abc"))
+	var fields []zap.Field
+	_, err := intc(ctx, nil, &grpc.UnaryServerInfo{},
+		func(c context.Context, _ any) (any, error) {
+			fields = logger.CtxFields(c)
+			return "ok", nil
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fields) != 1 || fields[0].Key != "actor_uid" || fields[0].String != "alice" {
+		t.Fatalf("carrier fields = %+v, want exactly [actor_uid=alice]", fields)
+	}
+}
+
+// installRealTracing installs an in-memory tracer provider plus W3C TraceContext
+// propagation (mirroring pkg/tracing.Init) and restores the previous globals on
+// cleanup. The propagator matters: the tests send an inbound traceparent so the
+// server span — and therefore the x-trace-id echo — must reuse its trace id.
+func installRealTracing(t *testing.T) {
+	t.Helper()
+	prevTP := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(t.Context())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+}
+
+// TestTracingInterceptor_populatesLoggerCarrier verifies the tracing interceptor
+// writes request_id and trace_id into the log-correlation carrier (R3). With an
+// inbound W3C traceparent, the server span inherits that trace id, so the carrier
+// trace_id must equal the inbound trace id — the same value the x-trace-id
+// response header carries (asserted end-to-end in the bufconn test below).
+func TestTracingInterceptor_populatesLoggerCarrier(t *testing.T) {
+	installRealTracing(t)
+
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	md := metadata.Pairs(
+		"x-request-id", "rid-1",
+		"traceparent", "00-"+traceID+"-00f067aa0ba902b7-01",
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+	intc := TracingInterceptor()
+	var fields []zap.Field
+	_, err := intc(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/x/Y"},
+		func(c context.Context, _ any) (any, error) {
+			fields = logger.CtxFields(c)
+			return "ok", nil
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fields) != 2 {
+		t.Fatalf("carrier fields = %+v, want exactly [trace_id request_id]", fields)
+	}
+	if fields[0].Key != "trace_id" || fields[0].String != traceID {
+		t.Fatalf("fields[0] = %+v, want trace_id=%s", fields[0], traceID)
+	}
+	if fields[1].Key != "request_id" || fields[1].String != "rid-1" {
+		t.Fatalf("fields[1] = %+v, want request_id=rid-1", fields[1])
+	}
+}
+
+// TestTracingInterceptor_echoesTraceAndRequestHeaders verifies the x-trace-id and
+// x-request-id response headers through the real transport (bufconn), where
+// grpc.SetHeader is honored — direct interceptor invocation swallows its error.
+func TestTracingInterceptor_echoesTraceAndRequestHeaders(t *testing.T) {
+	installRealTracing(t)
+
+	const bufSize = 1024 * 1024
+	lis := bufconn.Listen(bufSize)
+	srv := NewServerWithOptions(fakeValidator{uid: "u"}, zap.NewNop(), nil, nil, bufconnNoopService{})
+	RegisterHealth(srv)
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	cc, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+	)
+	if err != nil {
+		t.Fatalf("dial bufconn: %v", err)
+	}
+	t.Cleanup(func() { cc.Close() })
+
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+		"x-request-id", "rid-1",
+		"traceparent", "00-"+traceID+"-00f067aa0ba902b7-01",
+	))
+	var header metadata.MD
+	hc := healthpb.NewHealthClient(cc)
+	if _, err := hc.Check(ctx, &healthpb.HealthCheckRequest{Service: ""}, grpc.Header(&header)); err != nil {
+		t.Fatalf("health check: %v", err)
+	}
+	if got := header.Get("x-trace-id"); len(got) != 1 || got[0] != traceID {
+		t.Fatalf("x-trace-id header = %q, want [%s]", got, traceID)
+	}
+	if got := header.Get("x-request-id"); len(got) != 1 || got[0] != "rid-1" {
+		t.Fatalf("x-request-id header = %q, want [rid-1]", got)
 	}
 }
 

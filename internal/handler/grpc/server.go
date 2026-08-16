@@ -26,6 +26,7 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/middleware"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/pkg/ratelimit"
 	"github.com/aero/aero-id/internal/service"
@@ -156,6 +157,7 @@ func TracingInterceptor() grpc.UnaryServerInterceptor {
 			if values := md.Get("x-request-id"); len(values) > 0 && strings.TrimSpace(values[0]) != "" {
 				requestID := strings.TrimSpace(values[0])
 				ctx = service.WithRequestID(ctx, requestID)
+				ctx = logger.WithRequestID(ctx, requestID)
 				_ = grpc.SetHeader(ctx, metadata.Pairs("x-request-id", requestID))
 			}
 		}
@@ -166,6 +168,7 @@ func TracingInterceptor() grpc.UnaryServerInterceptor {
 		defer span.End()
 		if spanContext := span.SpanContext(); spanContext.HasTraceID() {
 			ctx = service.WithTraceID(ctx, spanContext.TraceID().String())
+			ctx = logger.WithTraceID(ctx, spanContext.TraceID().String())
 			_ = grpc.SetHeader(ctx, metadata.Pairs("x-trace-id", spanContext.TraceID().String()))
 		}
 
@@ -262,6 +265,7 @@ func AuthInterceptor(v TokenValidator) grpc.UnaryServerInterceptor {
 		if err != nil || uid == "" {
 			return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
 		}
+		ctx = logger.WithActor(ctx, uid)
 		if identity != nil {
 			return handler(service.WithIdentity(ctx, identity), req)
 		}

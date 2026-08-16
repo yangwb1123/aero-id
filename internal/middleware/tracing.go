@@ -9,6 +9,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -52,6 +53,7 @@ func Tracing() gin.HandlerFunc {
 			c.Writer.Header().Set("X-Trace-ID", sc.TraceID().String())
 			c.Set("trace_id", sc.TraceID().String())
 			ctx = service.WithTraceID(ctx, sc.TraceID().String())
+			ctx = logger.WithTraceID(ctx, sc.TraceID().String())
 		}
 
 		c.Request = c.Request.WithContext(ctx)

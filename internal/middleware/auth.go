@@ -9,6 +9,7 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
+	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -40,11 +41,13 @@ func Auth(v TokenValidator) gin.HandlerFunc {
 			return
 		}
 		c.Set("actor_uid", uid)
+		ctx := logger.WithActor(c.Request.Context(), uid)
 		if identity != nil {
-			c.Request = c.Request.WithContext(service.WithIdentity(c.Request.Context(), identity))
+			ctx = service.WithIdentity(ctx, identity)
 		} else {
-			c.Request = c.Request.WithContext(service.WithActor(c.Request.Context(), uid))
+			ctx = service.WithActor(ctx, uid)
 		}
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }

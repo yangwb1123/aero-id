@@ -8,8 +8,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.uber.org/zap"
 
 	"github.com/aero/aero-id/internal/middleware"
+	"github.com/aero/aero-id/internal/pkg/logger"
 )
 
 // The tracing middleware must slot into the existing chain after RequestID without
@@ -30,8 +32,10 @@ func TestTracing_preservesChainAndCorrelates(t *testing.T) {
 	e.Use(middleware.Tracing())
 
 	var ranWithRequestID bool
+	var carrierFields []zap.Field
 	e.GET("/p", func(c *gin.Context) {
 		ranWithRequestID = c.GetString("request_id") != ""
+		carrierFields = logger.CtxFields(c.Request.Context())
 		c.Status(http.StatusOK)
 	})
 
@@ -49,5 +53,20 @@ func TestTracing_preservesChainAndCorrelates(t *testing.T) {
 	}
 	if w.Header().Get("X-Trace-ID") == "" {
 		t.Fatal("expected an X-Trace-ID correlation header")
+	}
+	// The logger carrier must hold exactly request_id + trace_id (no auth in
+	// this chain), in stable order, with trace_id matching the header.
+	traceHeader := w.Header().Get("X-Trace-ID")
+	if len(carrierFields) != 2 {
+		t.Fatalf("carrier fields = %+v, want exactly [trace_id request_id]", carrierFields)
+	}
+	if carrierFields[0].Key != "trace_id" || carrierFields[0].String != traceHeader {
+		t.Fatalf("carrierFields[0] = %+v, want trace_id = header %q", carrierFields[0], traceHeader)
+	}
+	if carrierFields[1].Key != "request_id" || carrierFields[1].String == "" {
+		t.Fatalf("carrierFields[1] = %+v, want non-empty request_id", carrierFields[1])
+	}
+	if carrierFields[1].String != w.Header().Get(middleware.RequestIDHeader) {
+		t.Fatalf("carrier request_id = %q, X-Request-ID header = %q — must match", carrierFields[1].String, w.Header().Get(middleware.RequestIDHeader))
 	}
 }

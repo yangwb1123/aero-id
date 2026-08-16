@@ -11,13 +11,18 @@ package middleware_test
 //   - AccessLog: does not panic and passes through to the handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/aero/aero-id/internal/middleware"
 )
@@ -314,5 +319,104 @@ func TestAccessLog_withRequestID(t *testing.T) {
 	e.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+// newCapturingLog builds a zap logger writing JSON to an in-memory buffer. Test
+// capture only — no production WithWriter API is involved (out of scope).
+func newCapturingLog(buf *bytes.Buffer) *zap.Logger {
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+		zapcore.AddSync(buf),
+		zapcore.DebugLevel,
+	)
+	return zap.New(core)
+}
+
+// AccessLog must emit trace_id and it must equal the X-Trace-ID response header
+// (the RequestID -> Tracing -> AccessLog chain order guarantees both agree).
+// The header is asserted non-empty before comparing so an empty==empty pass can
+// never be vacuous.
+func TestAccessLog_withTraceID(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(t.Context())
+		otel.SetTracerProvider(prev)
+	})
+
+	var buf bytes.Buffer
+	e := newEngine()
+	e.Use(middleware.RequestID())
+	e.Use(middleware.Tracing())
+	e.Use(middleware.AccessLog(newCapturingLog(&buf)))
+	e.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(middleware.RequestIDHeader, "rid-1")
+	e.ServeHTTP(w, req)
+
+	traceHeader := w.Header().Get("X-Trace-ID")
+	if traceHeader == "" {
+		t.Fatal("expected a non-empty X-Trace-ID header (assert before comparing)")
+	}
+	var line map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("access log line is not valid JSON: %v (line=%q)", err, buf.String())
+	}
+	gotTrace, _ := line["trace_id"].(string)
+	if gotTrace == "" {
+		t.Fatalf("access log line missing trace_id: %v", line)
+	}
+	if gotTrace != traceHeader {
+		t.Fatalf("trace_id = %q, X-Trace-ID header = %q — must match", gotTrace, traceHeader)
+	}
+	if got, _ := line["request_id"].(string); got != "rid-1" {
+		t.Fatalf("request_id = %q, want %q", got, "rid-1")
+	}
+}
+
+// With an authenticated request, AccessLog must keep the existing request_id and
+// actor field keys/values unchanged and additionally carry trace_id. Guards
+// against accidentally renaming `actor` or dropping fields during the edit.
+func TestAccessLog_withActorCarrier(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(t.Context())
+		otel.SetTracerProvider(prev)
+	})
+
+	var buf bytes.Buffer
+	e := newEngine()
+	e.Use(middleware.RequestID())
+	e.Use(middleware.Tracing())
+	e.Use(middleware.Auth(fakeValidator{uid: "u1"}))
+	e.Use(middleware.AccessLog(newCapturingLog(&buf)))
+	e.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	e.ServeHTTP(w, req)
+
+	var line map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("access log line is not valid JSON: %v (line=%q)", err, buf.String())
+	}
+	if got, _ := line["actor"].(string); got != "u1" {
+		t.Fatalf("actor = %q, want %q (field key must stay 'actor')", got, "u1")
+	}
+	if got, _ := line["request_id"].(string); got == "" {
+		t.Fatal("request_id field missing or empty")
+	}
+	if got, _ := line["trace_id"].(string); got == "" {
+		t.Fatal("trace_id field missing or empty")
+	}
+	if got := w.Header().Get("X-Trace-ID"); got == "" {
+		t.Fatal("expected an X-Trace-ID correlation header")
 	}
 }
