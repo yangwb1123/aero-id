@@ -79,9 +79,14 @@ func (s *GormStore) Reserve(ctx context.Context, uid, endpoint, key string) (*Re
 		return nil, false, fmt.Errorf("idempotency load: %w", err)
 	}
 	// Reclaim a stale in-progress reservation whose leader never completed.
+	// The CAS predicate includes the observed expires_at: the UPDATE replaces
+	// it with a fresh future value, so at most one concurrent reclaimer of the
+	// same stale row can win (losers match zero rows). Only the value read back
+	// from the DB is safe here — Postgres stores microsecond-precision
+	// TIMESTAMPTZ, so a freshly computed time would not round-trip stably.
 	if existing.Status == 0 && now.After(existing.ExpiresAt) {
 		reclaim := s.db.WithContext(ctx).Model(&idempotencyRow{}).
-			Where("id = ? AND status = 0", existing.ID).
+			Where("id = ? AND status = 0 AND expires_at = ?", existing.ID, existing.ExpiresAt).
 			Updates(map[string]any{"created_at": now, "expires_at": now.Add(reservationTTL)})
 		if reclaim.Error == nil && reclaim.RowsAffected == 1 {
 			return nil, true, nil
