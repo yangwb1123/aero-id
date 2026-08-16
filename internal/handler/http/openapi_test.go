@@ -52,62 +52,30 @@ func loadOpenAPISpec(t *testing.T) *openAPISpec {
 	return &spec
 }
 
-// requiredClientPaths is the account-console contract surface (P7-03 user
-// portal + P7-04 admin portal); each path+method must exist in the spec.
-var requiredClientPaths = [][2]string{
-	{"/account-datasets", "GET"},
-	{"/me", "GET"},
-	{"/me/profile", "GET"},
-	{"/me/profile", "PATCH"},
-	{"/me/sources", "GET"},
-	{"/me/memberships", "GET"},
-	{"/me/data", "GET"},
-	{"/me/overview", "GET"},
-	{"/me/activity", "GET"},
-	{"/me/sync", "POST"},
-	{"/me/export", "POST"},
-	{"/me/erase", "POST"},
-	{"/sync/jobs", "GET"},
-	{"/sync/jobs/{id}", "GET"},
-	{"/sync/jobs/{id}/reconcile", "POST"},
-	{"/sync/jobs/{id}/export/download", "GET"},
-	{"/operations", "GET"},
-	{"/operations", "POST"},
-	{"/operations/{id}", "GET"},
-	{"/operations/{id}/run", "POST"},
-	{"/operations/{id}/reconcile", "POST"},
-	{"/audit/events", "GET"},
-	{"/audit/operations/{id}", "GET"},
-	{"/audit/replays", "POST"},
-	{"/audit/replays/projection", "POST"},
-	{"/audit/replays/{id}", "GET"},
-	{"/admin/callback-subscriptions", "GET"},
-	{"/admin/callback-subscriptions", "POST"},
-	{"/admin/callback-subscriptions/{id}", "DELETE"},
-	{"/admin/callback-deliveries/{id}/replay", "POST"},
-	{"/admin/regions/promote", "POST"},
-	{"/admin/regions/directory/{account_id}", "GET"},
-}
-
+// TestOpenAPISpec_CoversClientContract guards the contract surface: every
+// route in routeManifest (the single source of truth defined in
+// openapi_reconcile_test.go) must be present and well-formed in the spec, so
+// the spec cannot silently drift from the API (P7 client contract hygiene).
+// The manifest replaces the former one-directional requiredClientPaths
+// hardcoded subset, which pinned the unserved callback replay path.
 func TestOpenAPISpec_CoversClientContract(t *testing.T) {
 	spec := loadOpenAPISpec(t)
-	for _, pair := range requiredClientPaths {
-		path, method := pair[0], pair[1]
-		operations, ok := spec.Paths[path]
+	for _, r := range routeManifest {
+		operations, ok := spec.Paths[r.path]
 		if !ok {
-			t.Errorf("missing path %s in openapi spec", path)
+			t.Errorf("missing path %s in openapi spec", r.path)
 			continue
 		}
-		op, ok := operations[lowerMethod(method)]
+		op, ok := operations[lowerMethod(r.method)]
 		if !ok {
-			t.Errorf("missing method %s on path %s", method, path)
+			t.Errorf("missing method %s on path %s", r.method, r.path)
 			continue
 		}
 		if op.OperationID == "" {
-			t.Errorf("path %s %s has no operationId", method, path)
+			t.Errorf("path %s %s has no operationId", r.method, r.path)
 		}
 		if len(op.Responses) == 0 {
-			t.Errorf("path %s %s has no responses", method, path)
+			t.Errorf("path %s %s has no responses", r.method, r.path)
 		}
 	}
 }

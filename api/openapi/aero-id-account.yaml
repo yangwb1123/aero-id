@@ -118,6 +118,18 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /me/resources:
+    get:
+      operationId: getMyResources
+      parameters:
+        - {$ref: '#/components/parameters/Dataset'}
+        - {$ref: '#/components/parameters/Consistency'}
+        - {$ref: '#/components/parameters/MaxAge'}
+      responses:
+        '200': {$ref: '#/components/responses/Aggregate'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /me/sync:
     post:
       operationId: createMySyncJob
@@ -238,6 +250,18 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AuditList'}
         '403': {$ref: '#/components/responses/Error'}
+  /audit/verify:
+    get:
+      operationId: verifyAuditChain
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {name: source, in: query, required: true, schema: {type: string}}
+        - {name: partition, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Audit chain hash-chain verification result.
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
   /audit/operations/{id}:
     get:
       operationId: getOperationTimeline
@@ -320,14 +344,296 @@ paths:
       responses:
         '200': {description: Subscription deleted.}
         '403': {$ref: '#/components/responses/Error'}
-  /admin/callback-deliveries/{id}/replay:
+  /admin/callback-subscriptions/deliveries/{id}/replay:
     post:
       operationId: replayCallbackDelivery
       security: [{snaplinkBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/ID'}
       responses:
-        '202': {description: Delivery reset for manual replay.}
+        '200':
+          description: Delivery queued for manual replay (handler returns httpx.OK = 200).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: object, properties: {status: {type: string, example: queued}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts:
+    get:
+      operationId: listAccounts
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: home_region, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Keyset-paginated account list (admin).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/{id}:
+    get:
+      operationId: getAccount
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      responses:
+        '200':
+          description: Canonical account view (admin).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/backfill/legacy-identities:
+    post:
+      operationId: backfillLegacyIdentities
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Shadow backfill result for legacy uids (P1-07).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/{id}/overview:
+    get:
+      operationId: getAccountOverview
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/Dataset'}
+        - {$ref: '#/components/parameters/Consistency'}
+        - {$ref: '#/components/parameters/MaxAge'}
+      responses:
+        '200':
+          description: Account aggregate overview (admin).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/{id}/data:
+    get:
+      operationId: getAccountData
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/Dataset'}
+        - {$ref: '#/components/parameters/Consistency'}
+        - {$ref: '#/components/parameters/MaxAge'}
+      responses:
+        '200':
+          description: Account aggregate data (admin).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/{id}/sync:
+    post:
+      operationId: syncAccount
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRequest'}
+      responses:
+        '201':
+          description: Sync job created for the account.
+          content: {application/json: {schema: {$ref: '#/components/schemas/SyncJobEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/{id}/export:
+    post:
+      operationId: exportAccount
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRequest'}
+      responses:
+        '201':
+          description: Export job created for the account.
+          content: {application/json: {schema: {$ref: '#/components/schemas/SyncJobEnvelope'}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/accounts/{id}/erase:
+    post:
+      operationId: eraseAccount
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRequest'}
+      responses:
+        '202': {description: Erase saga accepted; track via /sync/jobs.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/migration/legacy/compare:
+    post:
+      operationId: compareLegacyMigration
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner_uid, source]
+              properties:
+                owner_uid: {type: string}
+                source: {type: string}
+                limit: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Shadow migration comparison result (P8-02).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/migration/legacy/cutover/{tenant_id}:
+    get:
+      operationId: getLegacyCutover
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/TenantID'}
+      responses:
+        '200':
+          description: Per-tenant legacy cutover status (P8-04).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/migration/legacy/cutover:
+    post:
+      operationId: setLegacyCutover
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, status]
+              properties:
+                tenant_id: {type: string}
+                status: {type: string}
+                note: {type: string}
+      responses:
+        '200':
+          description: Cutover decision recorded (P8-04).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/migration/legacy/cleanup-readiness/{tenant_id}:
+    get:
+      operationId: getCleanupReadiness
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/TenantID'}
+      responses:
+        '200':
+          description: Legacy cleanup readiness checklist (P8-05).
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/audit-log:
+    get:
+      operationId: listAdminAuditLog
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: action, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Admin audit log entries.
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/roles:
+    get:
+      operationId: listRoles
+      security: [{snaplinkBearer: []}]
+      responses:
+        '200':
+          description: Role catalog.
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/roles/{uid}:
+    get:
+      operationId: listUserRoles
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/UID'}
+      responses:
+        '200':
+          description: Roles held by one user.
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/roles/grant:
+    post:
+      operationId: grantRole
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid, role_code]
+              properties:
+                uid: {type: string}
+                role_code: {type: string}
+      responses:
+        '200': {description: Role granted.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/roles/revoke:
+    post:
+      operationId: revokeRole
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid, role_code]
+              properties:
+                uid: {type: string}
+                role_code: {type: string}
+      responses:
+        '200': {description: Role revoked.}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/bans:
+    post:
+      operationId: banUser
+      security: [{snaplinkBearer: []}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid, reason]
+              properties:
+                uid: {type: string}
+                reason: {type: string}
+                duration: {type: string, example: 24h}
+      responses:
+        '200': {description: User banned.}
+        '403': {$ref: '#/components/responses/Error'}
+    get:
+      operationId: listBanned
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Active bans, cursor-paged.
+          content: {application/json: {schema: {type: object}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /admin/bans/{uid}:
+    delete:
+      operationId: unbanUser
+      security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/UID'}
+      responses:
+        '200': {description: Ban lifted.}
         '403': {$ref: '#/components/responses/Error'}
   /audit/replays/{id}:
     get:
@@ -439,6 +745,9 @@ components:
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
     IdempotencyKey: {name: Idempotency-Key, in: header, schema: {type: string, maxLength: 200}}
     WorkerID: {name: X-Worker-ID, in: header, schema: {type: string, maxLength: 128}}
+    AccountID: {name: account_id, in: path, required: true, schema: {type: string, format: uuid}}
+    TenantID: {name: tenant_id, in: path, required: true, schema: {type: string}}
+    UID: {name: uid, in: path, required: true, schema: {type: string}}
   responses:
     Error:
       description: Stable application error.
