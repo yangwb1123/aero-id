@@ -2,15 +2,18 @@ package http_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	httpapi "github.com/aero/aero-id/internal/handler/http"
+	"github.com/aero/aero-id/internal/idempotency"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 )
 
@@ -23,6 +26,53 @@ type pingRegistrar struct{}
 
 func (pingRegistrar) RegisterRoutes(r httpapi.Routes) {
 	r.Auth.GET("/ping", func(c *gin.Context) { c.Status(http.StatusOK) })
+}
+
+// postRegistrar registers a protected /v1/create POST route to exercise the
+// idempotency middleware wiring.
+type postRegistrar struct{}
+
+func (postRegistrar) RegisterRoutes(r httpapi.Routes) {
+	r.Auth.POST("/create", func(c *gin.Context) { c.Status(http.StatusCreated) })
+}
+
+// failingIdemStore reserves every key but always fails Complete, so a keyed
+// POST exercises the idempotency observer's complete_failed path.
+type failingIdemStore struct{}
+
+func (failingIdemStore) Reserve(context.Context, string, string, string) (*idempotency.Record, bool, error) {
+	return nil, true, nil
+}
+
+func (failingIdemStore) Complete(context.Context, string, string, string, idempotency.Record, time.Duration) error {
+	return errors.New("complete boom")
+}
+
+func (failingIdemStore) Release(context.Context, string, string, string) error { return nil }
+
+// TestRouter_IdempotencyFailureObservedInMetrics proves the metrics-backed
+// observer passed at the router wiring site is live: a keyed POST whose
+// store.Complete fails produces the complete_failed series in /metrics.
+func TestRouter_IdempotencyFailureObservedInMetrics(t *testing.T) {
+	reg := metrics.NewRegistry()
+	e := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{
+		Metrics:     reg,
+		Idempotency: failingIdemStore{},
+	}, okValidator{}, httpapi.NewHealthHandler(), postRegistrar{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/create", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	req.Header.Set("Idempotency-Key", "k1")
+	e.ServeHTTP(httptest.NewRecorder(), req)
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/metrics = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `aeroid_idempotency_total{op="complete_failed"} 1`) {
+		t.Errorf("/metrics missing the complete_failed series:\n%s", w.Body.String())
+	}
 }
 
 func TestRouter_HealthLive(t *testing.T) {

@@ -97,7 +97,11 @@ func authenticatedMiddleware(cfg RouterConfig, validator middleware.TokenValidat
 	}
 	result = append(result, rateLimitMiddleware(cfg)...)
 	if cfg.Idempotency != nil {
-		result = append(result, middleware.Idempotency(cfg.Idempotency, cfg.IdempotencyTTL))
+		var obs middleware.IdempotencyObserver
+		if cfg.Metrics != nil {
+			obs = middleware.NewMetricsIdempotencyObserver(cfg.Metrics)
+		}
+		result = append(result, middleware.Idempotency(cfg.Idempotency, cfg.IdempotencyTTL, obs))
 	}
 	if cfg.LegacySunset != "" {
 		// ADR-011: files/messages/comments stay a compatibility source; mark them

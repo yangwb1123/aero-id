@@ -45,6 +45,7 @@ type Registry struct {
 	sourceCircuits map[string]string
 
 	control controlPlaneMetrics
+	idem    idempotencyMetrics
 
 	// SSO dependency health, populated by the SSO client (see SSOSink).
 	ssoCacheHits   map[string]uint64     // cache ("token"|"user") -> hits
@@ -249,6 +250,7 @@ func (r *Registry) WriteText(w io.Writer) {
 	r.writeSSOText(w)
 	r.writeSourceText(w)
 	r.writeOutboxText(w)
+	r.writeIdempotencyText(w)
 }
 
 // writeOutboxText renders the transactional-outbox relay series. Caller holds r.mu.
