@@ -10,7 +10,12 @@
 #   name:         slug; the results file is scripts/load/results/ghz-<name>.json
 #   call:         aeropb.<Service>.<Method> — must resolve in the proto
 #                 (api/proto/aero_id/v1/aero_id.proto); R1 reddens dead calls
-#   data:         request body JSON
+#   data:         single-quoted JSON payload ('<json>', YAML-style quoted).
+#                 The runner decodes the scalar and validates it with
+#                 json.loads() (fail-fast BEFORE any ghz campaign);
+#                 check-load-scenarios.sh R2(d) enforces the quoted,
+#                 brace-balanced form and R2(e) trips if the runner's
+#                 json.loads guard ever disappears.
 #   concurrency:  ghz --concurrency (integer)
 #   duration:     ghz --duration (Go duration string)
 #   p95 / p99:    SLO latency targets, [0-9]+(ms|s); the runner fails the

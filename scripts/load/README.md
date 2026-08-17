@@ -137,6 +137,9 @@ binaries) and self-tests its fixtures on every invocation. It guards:
   RPCs redden);
 - **R2** `run-ghz.sh` references the canonical YAML and carries no inline
   call literals; every scenario has all 7 fields with the documented formats;
+  every `data:` value is the single-quoted `'<json>'` form with a non-empty
+  brace-balanced payload (R2(d)); the runner carries the `json.loads` data
+  guard plus the `not valid JSON` failure token (R2(e));
 - **R3** every user relation in `partition-index-bench.sql` exists in
   `migrations/*.up.sql` (system relations require an allowlist entry in the
   script header);

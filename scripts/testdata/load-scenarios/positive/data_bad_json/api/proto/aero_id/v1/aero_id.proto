@@ -1,0 +1,31 @@
+syntax = "proto3";
+package aero_id.v1;
+option go_package = "github.com/aero/aero-id/internal/handler/grpc/aeropb";
+
+service AccountService {
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+  rpc ListSources(ListAccountSourcesRequest) returns (ListAccountSourcesResponse);
+}
+
+service AggregationService {
+  rpc GetMeOverview(GetMeOverviewRequest) returns (GetMeOverviewResponse);
+}
+
+service FileService {
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+}
+
+service AuditLedgerService {
+  rpc ListAuditFacts(ListAuditFactsRequest) returns (ListAuditFactsResponse);
+}
+
+message GetMeRequest {}
+message GetMeResponse {}
+message ListAccountSourcesRequest {}
+message ListAccountSourcesResponse {}
+message GetMeOverviewRequest {}
+message GetMeOverviewResponse {}
+message ListFilesRequest {}
+message ListFilesResponse {}
+message ListAuditFactsRequest {}
+message ListAuditFactsResponse {}

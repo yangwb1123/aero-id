@@ -33,8 +33,12 @@ mkdir -p "$OUT"
 # Parse the canonical YAML into one TSV record per scenario:
 #   name<TAB>call<TAB>data<TAB>concurrency<TAB>duration<TAB>p95_ms<TAB>p99_ms
 # Malformed YAML (missing/unknown fields, bad formats) aborts the run BEFORE
-# any ghz invocation — no half-campaigns.
+# any ghz invocation — no half-campaigns. The `data:` field must be the
+# canonical single-quoted YAML scalar '<json>': the parser decodes it and
+# proves the payload parses (json.loads) — a quoted-but-invalid or unquoted
+# payload aborts before any ghz campaign too (same fail-fast contract).
 PLAN="$(python3 - "$YAML" <<'PYEOF'
+import json
 import re
 import sys
 
@@ -47,6 +51,31 @@ field_re = re.compile(r"^    ([a-z0-9]+): (.*)$")
 def fail(line, msg):
     sys.stderr.write("ERROR: %s line %d: %s\n" % (path, line, msg))
     sys.exit(1)
+
+
+def to_ms(v):
+    return int(v[:-2]) if v.endswith("ms") else int(v[:-1]) * 1000
+
+
+def decode_data(value, name):
+    """Decode the canonical single-quoted YAML `data:` scalar ('<json>')
+
+    and prove the payload parses as JSON (json.loads). Any other form
+    (unquoted, empty) or a JSON-parse failure (ValueError/TypeError) aborts
+    the PLAN build fail-fast — BEFORE any ghz invocation — so a broken
+    payload can never start a half-campaign. YAML '' -> ' escapes inside
+    the quotes are unescaped per the YAML single-quoted-scalar rule.
+    """
+    if not (len(value) >= 2 and value.startswith("'") and value.endswith("'")):
+        fail(-1, "scenario %s: data %r not a single-quoted payload"
+             % (name, value))
+    payload = value[1:-1].replace("''", "'")
+    try:
+        json.loads(payload)
+    except (ValueError, TypeError) as e:
+        fail(-1, "scenario %s: data payload is not valid JSON (%s)"
+             % (name, e))
+    return payload
 
 
 scenarios = []
@@ -81,6 +110,9 @@ if not scenarios:
     sys.stderr.write("ERROR: %s: no scenarios defined\n" % path)
     sys.exit(1)
 
+# Phase 1: validate EVERY scenario (including the decoded, JSON-checked
+# data payload) BEFORE emitting any TSV row — a poisoned scenario anywhere
+# in the file aborts with zero rows and zero ghz campaigns.
 for i, s in enumerate(scenarios, 1):
     missing = [k for k in fields if k not in s or not s[k]]
     if missing:
@@ -101,13 +133,14 @@ for i, s in enumerate(scenarios, 1):
         fail(-1, "scenario %s: duration %r not a Go duration string"
              % (s["name"], s["duration"]))
 
-    def to_ms(v):
-        return int(v[:-2]) if v.endswith("ms") else int(v[:-1]) * 1000
-
     for k in ("p95", "p99"):
         if not re.fullmatch(r"[0-9]+(ms|s)", s[k]):
             fail(-1, "scenario %s: %s %r not [0-9]+(ms|s)"
                  % (s["name"], k, s[k]))
+    s["data"] = decode_data(s["data"], s["name"])
+
+# Phase 2: emit the TSV rows — only reachable when every scenario validated.
+for s in scenarios:
     print("\t".join([s["name"], s["call"], s["data"], s["concurrency"],
                      s["duration"], str(to_ms(s["p95"])), str(to_ms(s["p99"]))]))
 PYEOF

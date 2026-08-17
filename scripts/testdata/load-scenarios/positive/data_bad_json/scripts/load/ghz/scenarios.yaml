@@ -1,0 +1,28 @@
+# Fixture scenarios (data_bad_json): every field/format check is valid
+# EXCEPT the data contract — two scenarios violate R2(d): one with an
+# unquoted raw-JSON line, one with a quoted non-JSON payload. Designated
+# rule: rule_r2 (fixture class mapped in check-load-scenarios.sh).
+scenarios:
+  - name: fixture-getme
+    call: aeropb.AccountService.GetMe
+    data: '{}'
+    concurrency: 10
+    duration: 1m
+    p95: 100ms
+    p99: 250ms
+
+  - name: fixture-unquoted
+    call: aeropb.AccountService.ListSources
+    data: {"page":{"limit":20}}
+    concurrency: 10
+    duration: 1m
+    p95: 100ms
+    p99: 250ms
+
+  - name: fixture-not-json
+    call: aeropb.AggregationService.GetMeOverview
+    data: 'not json'
+    concurrency: 10
+    duration: 1m
+    p95: 100ms
+    p99: 250ms

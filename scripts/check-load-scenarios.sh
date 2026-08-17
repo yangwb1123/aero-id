@@ -32,6 +32,18 @@
 #            one non-empty name/call/data/concurrency/duration/p95/p99 with
 #            the documented formats (name [A-Za-z0-9-]+, concurrency
 #            [0-9]+, duration [0-9]+(ms|s|m|h), p95/p99 [0-9]+(ms|s)).
+#        (d) data contract: every `data:` value must be the canonical
+#            single-quoted YAML scalar '<json>' with a non-empty,
+#            brace-balanced JSON-object payload (count({) == count(}),
+#            >= 1 brace). This is a STRUCTURAL proxy for JSON validity —
+#            the runner's json.loads guard (see (e)) is the JSON authority;
+#            the gate itself stays bash + POSIX text tools only. An
+#            unquoted, empty, or brace-imbalanced data line reddens here.
+#        (e) runner data-guard tripwire (mirrors (a)): run-ghz.sh must
+#            contain the `json.loads(` guard invocation on a non-comment
+#            line AND the literal failure token `not valid JSON` (any
+#            line). A future refactor that drops the data guard reddens
+#            here; the SLO checker's json.load(f) does NOT satisfy this.
 #   R3 — every user relation in scripts/load/db/partition-index-bench.sql
 #        exists in migrations. Extraction: drop comment lines (--), drop
 #        psql meta-command lines (\), neutralize the FOR UPDATE SKIP LOCKED
@@ -53,12 +65,15 @@
 #
 # Self-tests (E8 semantics, run on EVERY invocation): fixture trees under
 # scripts/testdata/load-scenarios/ mirror the real-tree layout with a tiny
-# synthetic proto. Each positive fixture must redden its designated rule AND
-# ONLY it; the negative fixture must be clean for all rules; a missing
-# fixture tree fails the gate — the fixtures are part of the gate, not
-# decoration. A positive fixture that stops matching means the gate went
-# vacuous; a negative fixture that starts matching means a rule went
-# over-broad.
+# synthetic proto. Fixture classes: dead_rpc -> R1; runner_divergence |
+# malformed_yaml | data_bad_json -> R2; bench_table_missing -> R3;
+# missing_k6 -> R4 (data_bad_json proves the R2(d)/R2(e) data contract is
+# load-bearing: its data: lines violate R2(d) while every other check stays
+# clean). Each positive fixture must redden its designated rule AND ONLY it;
+# the negative fixture must be clean for all rules; a missing fixture tree
+# fails the gate — the fixtures are part of the gate, not decoration. A
+# positive fixture that stops matching means the gate went vacuous; a
+# negative fixture that starts matching means a rule went over-broad.
 #
 # Usage: scripts/check-load-scenarios.sh   (no args; Makefile target)
 set -euo pipefail
@@ -174,6 +189,32 @@ rule_r2() {
       violations=$((violations + 1))
     fi
   done
+  # (d) data contract: every `data:` value must be the canonical single-
+  # quoted YAML scalar '<json>' with a non-empty, brace-balanced payload
+  # (count({) == count(}), >= 1 brace). Structural proxy only — the runner's
+  # json.loads guard (e) is the JSON authority; this stays POSIX-text tools.
+  dq=$(grep -cE "^    data: '.+'$" "$yaml" || true)
+  if [ "$dq" -ne "$n" ]; then
+    echo "ERROR: R2 $yaml field 'data' has $dq/$n single-quoted payloads — every data: value must be a non-empty single-quoted '<json>'"
+    violations=$((violations + 1))
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    opens=$(printf '%s' "$line" | awk -F'{' '{print NF-1}')
+    closes=$(printf '%s' "$line" | awk -F'}' '{print NF-1}')
+    if [ "$opens" -lt 1 ] || [ "$opens" -ne "$closes" ]; then
+      echo "ERROR: R2 $yaml data: line not brace-balanced ({ count=$opens, } count=$closes — want equal and >= 1): $line"
+      violations=$((violations + 1))
+    fi
+  done < <(grep -E "^    data: '.+'$" "$yaml" || true)
+  # (e) runner data-guard tripwire (mirrors (a)): the parser must carry the
+  # json.loads guard on a non-comment line and the distinctive "not valid
+  # JSON" failure token; the SLO checker's json.load(f) does not satisfy it.
+  if ! grep -vE '^[[:space:]]*#' "$runner" | grep -q 'json.loads(' \
+     || ! grep -q 'not valid JSON' "$runner"; then
+    echo "ERROR: R2 $runner missing the json.loads data guard or its 'not valid JSON' failure token (data pass-through contract)"
+    violations=$((violations + 1))
+  fi
 }
 
 # ── R3: bench SQL relations exist in migrations ────────────────────────────
@@ -228,7 +269,7 @@ else
     cls="$(basename "$tree")"
     case "$cls" in
       dead_rpc) want=rule_r1 ;;
-      runner_divergence|malformed_yaml) want=rule_r2 ;;
+      runner_divergence|malformed_yaml|data_bad_json) want=rule_r2 ;;
       bench_table_missing) want=rule_r3 ;;
       missing_k6) want=rule_r4 ;;
       *)
