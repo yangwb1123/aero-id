@@ -224,6 +224,16 @@ func (c *Client) ValidateIdentity(ctx context.Context, token string) (*domain.To
 	return &domain.TokenIdentity{UID: uid, Subject: uid}, nil
 }
 
+// InvalidateToken evicts a cached validation result after a source reports a
+// business rejection (for example, revocation). It does not affect an
+// in-flight validation's caller result, but its epoch fence prevents that
+// stale response from being cached again.
+func (c *Client) InvalidateToken(token string) {
+	if c != nil && c.tokenCache != nil {
+		c.tokenCache.Invalidate(token)
+	}
+}
+
 // HasPermission delegates global authorization to Snaplink's stable
 // Authorizer.Check RPC. The subject is the verified Snaplink subject; this
 // method never accepts or stores a user credential.
@@ -338,6 +348,7 @@ func (c *Client) validateUpstream(token string) (string, error) {
 		}
 		return "", fmt.Errorf("sso validate: %w", errCircuitOpen)
 	}
+	epoch := c.tokenCache.Epoch(token)
 	ctx := context.Background()
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
@@ -379,7 +390,7 @@ func (c *Client) validateUpstream(token string) (string, error) {
 	if resp.ExpiresAtUnix > 0 {
 		exp = time.Unix(resp.ExpiresAtUnix, 0)
 	}
-	c.tokenCache.Set(token, resp.Uid, exp)
+	c.tokenCache.SetAtEpoch(token, resp.Uid, exp, epoch)
 	return resp.Uid, nil
 }
 

@@ -87,6 +87,20 @@ func TestClient_ValidateTokenCaches(t *testing.T) {
 	}
 }
 
+func TestClient_InvalidateTokenEvictsCachedValidation(t *testing.T) {
+	c, fake := startFakeSSO(t)
+	if _, err := c.ValidateToken(context.Background(), "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	c.InvalidateToken("revoked")
+	if _, err := c.ValidateToken(context.Background(), "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.validateCalls != 2 {
+		t.Fatalf("validate calls = %d, want 2 after invalidation", fake.validateCalls)
+	}
+}
+
 func TestClient_ValidateTokenBadReturnsError(t *testing.T) {
 	c, _ := startFakeSSO(t)
 	_, err := c.ValidateToken(context.Background(), "bad")

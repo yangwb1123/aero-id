@@ -263,6 +263,7 @@ func AuthInterceptor(v TokenValidator) grpc.UnaryServerInterceptor {
 		}
 		identity, uid, err := validateIdentity(ctx, v, token)
 		if err != nil || uid == "" {
+			middleware.InvalidateTokenOnValidationFailure(v, token, err)
 			return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
 		}
 		ctx = logger.WithActor(ctx, uid)

@@ -79,3 +79,28 @@ func TestTokenCache_SweepKeepsStaleWithinGrace(t *testing.T) {
 		t.Fatal("sweep must keep entries still within the stale grace window")
 	}
 }
+
+func TestTokenCache_InvalidateEvictsAndFencesInflightSet(t *testing.T) {
+	c := NewTokenCacheWithStale(time.Minute, time.Hour)
+	c.Set("revoked", "uid-old", time.Now().Add(time.Minute))
+	epoch := c.Epoch("revoked")
+	c.Invalidate("revoked")
+	if _, ok := c.Get("revoked"); ok {
+		t.Fatal("invalidated token must miss the fresh cache")
+	}
+	if _, ok := c.GetStale("revoked"); ok {
+		t.Fatal("invalidated token must not be served stale")
+	}
+	if c.SetAtEpoch("revoked", "uid-stale", time.Now().Add(time.Minute), epoch) {
+		t.Fatal("in-flight result from before invalidation must be rejected")
+	}
+	if _, ok := c.Get("revoked"); ok {
+		t.Fatal("stale in-flight result repopulated the cache")
+	}
+	if !c.SetAtEpoch("revoked", "uid-new", time.Now().Add(time.Minute), c.Epoch("revoked")) {
+		t.Fatal("current epoch result should be accepted")
+	}
+	if uid, ok := c.Get("revoked"); !ok || uid != "uid-new" {
+		t.Fatalf("current epoch cache = %q/%v, want uid-new/true", uid, ok)
+	}
+}

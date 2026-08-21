@@ -10,10 +10,11 @@ import (
 // with a stale window it also retains expired entries for that extra duration so
 // the client can serve a last-known uid while SSO is unreachable.
 type TokenCache struct {
-	maxTTL   time.Duration
-	staleFor time.Duration // grace window past expiry during which GetStale may serve
-	mu       sync.RWMutex
-	items    map[string]tokenEntry
+	maxTTL      time.Duration
+	staleFor    time.Duration // grace window past expiry during which GetStale may serve
+	mu          sync.RWMutex
+	items       map[string]tokenEntry
+	generations map[string]uint64
 }
 
 type tokenEntry struct {
@@ -30,9 +31,10 @@ func NewTokenCache(maxTTL time.Duration) *TokenCache {
 // of 0 disables stale serving (entries drop as soon as they expire).
 func NewTokenCacheWithStale(maxTTL, staleFor time.Duration) *TokenCache {
 	return &TokenCache{
-		maxTTL:   maxTTL,
-		staleFor: staleFor,
-		items:    make(map[string]tokenEntry),
+		maxTTL:      maxTTL,
+		staleFor:    staleFor,
+		items:       make(map[string]tokenEntry),
+		generations: make(map[string]uint64),
 	}
 }
 
@@ -73,15 +75,47 @@ func (c *TokenCache) GetExpiry(token string) (time.Time, bool) {
 	return e.expiry, ok
 }
 
+// Epoch returns the current invalidation generation for token. Callers that
+// perform an asynchronous validation can pair it with SetAtEpoch so a result
+// that completed after revocation cannot repopulate the cache.
+func (c *TokenCache) Epoch(token string) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.generations[token]
+}
+
+// Invalidate removes token and advances its generation. The generation bump
+// fences an in-flight validation that started before the invalidation.
+func (c *TokenCache) Invalidate(token string) {
+	if token == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.items, token)
+	c.generations[token]++
+	c.mu.Unlock()
+}
+
 // Set stores token→uid with the lesser of (provided expiry, now+maxTTL).
 func (c *TokenCache) Set(token, uid string, expiry time.Time) {
+	c.SetAtEpoch(token, uid, expiry, c.Epoch(token))
+}
+
+// SetAtEpoch stores token→uid only when epoch is still current. It returns
+// false when Invalidate raced the write, preventing stale in-flight results
+// from resurrecting a revoked token.
+func (c *TokenCache) SetAtEpoch(token, uid string, expiry time.Time, epoch uint64) bool {
 	ceiling := time.Now().Add(c.maxTTL)
 	if expiry.IsZero() || expiry.After(ceiling) {
 		expiry = ceiling
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generations[token] != epoch {
+		return false
+	}
 	c.items[token] = tokenEntry{uid: uid, expiry: expiry}
-	c.mu.Unlock()
+	return true
 }
 
 func (c *TokenCache) SweepExpired(now time.Time) {

@@ -11,6 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/aero/aero-id/internal/middleware"
 	"github.com/aero/aero-id/internal/pkg/ratelimit"
@@ -25,6 +27,13 @@ type fakeValidator struct {
 func (f fakeValidator) ValidateToken(context.Context, string) (string, error) {
 	return f.uid, f.err
 }
+
+type invalidatingValidator struct {
+	fakeValidator
+	invalidations int
+}
+
+func (v *invalidatingValidator) InvalidateToken(string) { v.invalidations++ }
 
 func newEngine() *gin.Engine {
 	gin.SetMode(gin.TestMode)
@@ -86,6 +95,40 @@ func TestAuth_invalidToken401(t *testing.T) {
 	e.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestAuth_businessRejectionInvalidatesCachedToken(t *testing.T) {
+	validator := &invalidatingValidator{fakeValidator: fakeValidator{err: status.Error(codes.PermissionDenied, "revoked")}}
+	e := newEngine()
+	e.Use(middleware.Auth(validator))
+	e.GET("/p", func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/p", nil)
+	req.Header.Set("Authorization", "Bearer revoked-token")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	if validator.invalidations != 1 {
+		t.Fatalf("invalidations = %d, want 1", validator.invalidations)
+	}
+}
+
+func TestAuth_availabilityFailureDoesNotInvalidateToken(t *testing.T) {
+	validator := &invalidatingValidator{fakeValidator: fakeValidator{err: status.Error(codes.Unavailable, "sso down")}}
+	e := newEngine()
+	e.Use(middleware.Auth(validator))
+	e.GET("/p", func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/p", nil)
+	req.Header.Set("Authorization", "Bearer maybe-valid")
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	if validator.invalidations != 0 {
+		t.Fatalf("invalidations = %d, want 0 on availability failure", validator.invalidations)
 	}
 }
 

@@ -2,9 +2,12 @@ package middleware
 
 import (
 	"context"
+	stderrors "errors"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -23,6 +26,13 @@ type IdentityTokenValidator interface {
 	ValidateIdentity(ctx context.Context, token string) (*domain.TokenIdentity, error)
 }
 
+// TokenInvalidator is an optional cache-eviction capability exposed by token
+// validators that retain validation results. It is used only for business
+// rejections; dependency outages must not evict otherwise usable credentials.
+type TokenInvalidator interface {
+	InvalidateToken(token string)
+}
+
 // Auth extracts the Bearer token, validates it via SSO, and injects the resulting
 // uid as the request actor (both on the gin context for logging and the request
 // context for the service layer).
@@ -36,6 +46,7 @@ func Auth(v TokenValidator) gin.HandlerFunc {
 		}
 		identity, uid, err := validateIdentity(c.Request.Context(), v, token)
 		if err != nil || uid == "" {
+			InvalidateTokenOnValidationFailure(v, token, err)
 			httpx.WriteError(c, apperr.Unauthorized("auth.invalid_token", "invalid or expired token"))
 			c.Abort()
 			return
@@ -49,6 +60,30 @@ func Auth(v TokenValidator) gin.HandlerFunc {
 		}
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
+	}
+}
+
+// InvalidateTokenOnValidationFailure evicts a cached token only when the
+// validator produced a non-availability rejection. Context cancellation and
+// upstream unavailable/deadline errors are transient and retain the cache.
+func InvalidateTokenOnValidationFailure(v TokenValidator, token string, err error) {
+	if err == nil || !shouldInvalidateToken(err) {
+		return
+	}
+	if invalidator, ok := v.(TokenInvalidator); ok {
+		invalidator.InvalidateToken(token)
+	}
+}
+
+func shouldInvalidateToken(err error) bool {
+	if stderrors.Is(err, context.Canceled) || stderrors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return false
+	default:
+		return true
 	}
 }
 
