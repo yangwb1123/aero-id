@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aero/aero-id/internal/pkg/idgen"
@@ -24,15 +25,50 @@ type Local struct {
 	cfg LocalConfig
 }
 
+var ErrInvalidKey = errors.New("storage: invalid object key")
+
 func NewLocal(cfg LocalConfig) *Local { return &Local{cfg: cfg} }
 
-func (l *Local) keyToPath(key string) string {
-	return filepath.Join(l.cfg.Root, key)
+func (l *Local) keyToPath(key string) (string, error) {
+	if err := validateLocalKey(key); err != nil {
+		return "", err
+	}
+	root, err := filepath.Abs(l.cfg.Root)
+	if err != nil {
+		return "", fmt.Errorf("resolve storage root: %w", err)
+	}
+	path, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(key)))
+	if err != nil {
+		return "", fmt.Errorf("resolve storage key: %w", err)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: path escapes storage root", ErrInvalidKey)
+	}
+	return path, nil
+}
+
+func validateLocalKey(key string) error {
+	if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\\\x00") {
+		return fmt.Errorf("%w: empty or unsafe key", ErrInvalidKey)
+	}
+	if filepath.IsAbs(filepath.FromSlash(key)) {
+		return fmt.Errorf("%w: absolute key", ErrInvalidKey)
+	}
+	for _, part := range strings.Split(filepath.ToSlash(key), "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("%w: traversal component", ErrInvalidKey)
+		}
+	}
+	return nil
 }
 
 // NewKey allocates an owner-scoped storage key (kept identical to Put's layout) so
 // the interface stays consistent across backends.
 func (l *Local) NewKey(ownerUID string) string {
+	if strings.ContainsAny(ownerUID, "/\\") || strings.TrimSpace(ownerUID) == "" || ownerUID == "." || ownerUID == ".." {
+		return ""
+	}
 	now := time.Now().UTC()
 	id := idgen.NewID().String()
 	return filepath.ToSlash(filepath.Join(ownerUID, now.Format("2006"), now.Format("01"), id))
@@ -40,7 +76,10 @@ func (l *Local) NewKey(ownerUID string) string {
 
 func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, int64, error) {
 	key := l.NewKey(ownerUID)
-	path := l.keyToPath(key)
+	path, err := l.keyToPath(key)
+	if err != nil {
+		return "", 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
 	}
@@ -58,7 +97,11 @@ func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (strin
 }
 
 func (l *Local) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	f, err := os.Open(l.keyToPath(key))
+	path, err := l.keyToPath(key)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
@@ -69,7 +112,11 @@ func (l *Local) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 }
 
 func (l *Local) Delete(ctx context.Context, key string) error {
-	err := os.Remove(l.keyToPath(key))
+	path, err := l.keyToPath(key)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
 	}
@@ -80,7 +127,11 @@ func (l *Local) Delete(ctx context.Context, key string) error {
 }
 
 func (l *Local) Stat(ctx context.Context, key string) (*ObjectInfo, error) {
-	info, err := os.Stat(l.keyToPath(key))
+	path, err := l.keyToPath(key)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
@@ -95,6 +146,9 @@ func (l *Local) Stat(ctx context.Context, key string) (*ObjectInfo, error) {
 }
 
 func (l *Local) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if err := validateLocalKey(key); err != nil {
+		return "", err
+	}
 	expires := time.Now().Add(ttl).Unix()
 	sig := l.sign(key, expires)
 	v := url.Values{}
