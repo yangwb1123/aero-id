@@ -258,6 +258,29 @@ func TestRun_OrphanYoungerThanMinAgeIsNotSwept(t *testing.T) {
 	}
 }
 
+func TestRun_OrphanWithZeroModifiedIsKept(t *testing.T) {
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	repo := &fakeRepo{refs: map[string]int64{}}
+	base := &fakeStore{objects: []storage.ObjectInfo{{Key: "owner/unknown-age"}}}
+	store := &listableStore{fakeStore: base}
+	sw := New(repo, nil, store, Config{
+		Retention:    time.Hour,
+		MinOrphanAge: time.Hour,
+		SweepOrphans: true,
+	}, nil).WithClock(fixedClock(now))
+
+	stats, err := sw.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.OrphansScanned != 1 {
+		t.Fatalf("OrphansScanned = %d, want 1", stats.OrphansScanned)
+	}
+	if stats.OrphansSwept != 0 || base.wasDeleted("owner/unknown-age") {
+		t.Fatalf("zero-modified orphan was swept: stats=%+v deletes=%v", stats, base.deleted)
+	}
+}
+
 func TestRun_OrphanSweepSkippedWhenBackendCannotList(t *testing.T) {
 	repo := &fakeRepo{refs: map[string]int64{}}
 	store := &fakeStore{} // does NOT implement Lister

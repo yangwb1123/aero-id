@@ -307,8 +307,9 @@ func (s *Sweeper) sweepOrphans(ctx context.Context) (scanned, swept int, sweptKe
 		}
 		scanned++
 		// Age guard: a freshly written object may be an upload whose row isn't committed
-		// yet. Modified is the object's last-write time.
-		if !obj.Modified.IsZero() && obj.Modified.After(cutoff) {
+		// yet. A zero timestamp is also unproven age, so keep it rather than treating
+		// missing backend metadata as permission to delete.
+		if obj.Modified.IsZero() || obj.Modified.After(cutoff) {
 			return true, nil
 		}
 		n, cerr := s.countLive(ctx, obj.Key)
