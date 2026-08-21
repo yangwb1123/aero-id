@@ -18,7 +18,14 @@ func encodeAuditCursor(fact *auditLedgerRow) string {
 	if fact == nil {
 		return ""
 	}
-	value := fact.OccurredAt.UTC().Format(time.RFC3339Nano) + "\x00" + fact.ID.String()
+	return encodeAuditCursorAt(fact.OccurredAt, fact.ID.String())
+}
+
+func encodeAuditCursorAt(at time.Time, id string) string {
+	if at.IsZero() || id == "" {
+		return ""
+	}
+	value := at.UTC().Format(time.RFC3339Nano) + "\x00" + id
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 

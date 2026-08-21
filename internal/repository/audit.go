@@ -67,7 +67,7 @@ func (r *auditRepo) List(ctx context.Context, actorUID, action string, page doma
 		q = q.Where("action = ?", action)
 	}
 	if page.Cursor != "" {
-		q = q.Where("id < ?", page.Cursor)
+		q = applyLegacyAuditCursor(q, page.Cursor)
 	}
 	limit := page.Limit
 	if limit <= 0 {
@@ -82,7 +82,7 @@ func (r *auditRepo) List(ctx context.Context, actorUID, action string, page doma
 	}
 	cursor := ""
 	if len(rows) > limit {
-		cursor = rows[limit-1].ID.String()
+		cursor = encodeAuditCursorAt(rows[limit-1].CreatedAt, rows[limit-1].ID.String())
 		rows = rows[:limit]
 	}
 	out := make([]*domain.AuditEvent, len(rows))

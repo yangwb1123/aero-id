@@ -79,7 +79,7 @@ func (r *adminRepo) ListAudit(ctx context.Context, action string, page domain.Pa
 		q = q.Where("action = ?", action)
 	}
 	if page.Cursor != "" {
-		q = q.Where("id < ?", page.Cursor)
+		q = applyLegacyAuditCursor(q, page.Cursor)
 	}
 	limit := page.Limit
 	if limit <= 0 {
@@ -94,7 +94,7 @@ func (r *adminRepo) ListAudit(ctx context.Context, action string, page domain.Pa
 	}
 	cursor := ""
 	if len(rows) > limit {
-		cursor = rows[limit-1].ID.String()
+		cursor = encodeAuditCursorAt(rows[limit-1].CreatedAt, rows[limit-1].ID.String())
 		rows = rows[:limit]
 	}
 	out := make([]*domain.AuditEvent, len(rows))
@@ -102,6 +102,14 @@ func (r *adminRepo) ListAudit(ctx context.Context, action string, page domain.Pa
 		out[i] = auditEventRowToDomain(&rows[i])
 	}
 	return out, cursor, nil
+}
+
+func applyLegacyAuditCursor(q *gorm.DB, value string) *gorm.DB {
+	if cursor, err := decodeAuditCursor(value); err == nil {
+		return q.Where("(created_at < ? OR (created_at = ? AND id < ?))", cursor.OccurredAt, cursor.OccurredAt, cursor.ID)
+	}
+	// Accept the pre-compound UUID cursor during the compatibility window.
+	return q.Where("id < ?", value)
 }
 
 func (r *adminRepo) GrantRole(ctx context.Context, uid, roleCode, grantedBy string) error {
