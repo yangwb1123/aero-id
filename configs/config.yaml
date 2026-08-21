@@ -116,6 +116,7 @@ sso:
   max_attempts: 3             # upstream tries per call within the timeout budget (1 = no retry)
   retry_backoff: 50ms         # base exponential backoff between availability-error retries
   max_concurrent: 64          # max concurrent in-flight SSO upstream RPCs across validate/get_users/authorize (0 = no cap)
+  user_batch_size: 128        # max UIDs per GetUsers RPC (0 = code default)
   keepalive_time: 30s         # send a keepalive ping after this much idle time
   keepalive_timeout: 10s      # wait this long for the keepalive ping ack before closing
   # TLS / mTLS (used only when insecure=false; empty tls_ca_file falls back to the system cert pool):

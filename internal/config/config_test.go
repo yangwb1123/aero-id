@@ -79,6 +79,25 @@ func TestLoadSSOMaxConcurrent(t *testing.T) {
 	}
 }
 
+func TestLoadSSOUserBatchSize(t *testing.T) {
+	withBlock := func(block string) string {
+		return strings.Replace(sample, ssoBlockForReplace, block, 1)
+	}
+	cfg, err := Load(writeTemp(t, withBlock(`sso: {endpoint: "sso:9000", user_batch_size: 64}`)))
+	if err != nil {
+		t.Fatalf("user_batch_size: 64 must load: %v", err)
+	}
+	if cfg.SSO.UserBatchSize != 64 {
+		t.Fatalf("SSO.UserBatchSize = %d, want 64", cfg.SSO.UserBatchSize)
+	}
+	if _, err := Load(writeTemp(t, withBlock(`sso: {endpoint: "sso:9000", user_batch_size: -1}`))); err == nil {
+		t.Fatal("negative sso.user_batch_size must be rejected")
+	}
+	if _, err := Load(writeTemp(t, withBlock(`sso: {endpoint: "sso:9000", user_batch_size: 2049}`))); err == nil {
+		t.Fatal("oversized sso.user_batch_size must be rejected")
+	}
+}
+
 func TestLoad_fromFile(t *testing.T) {
 	cfg, err := Load(writeTemp(t, sample))
 	if err != nil {

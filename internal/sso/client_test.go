@@ -25,6 +25,7 @@ type fakeSSOServer struct {
 	ssopb.UnimplementedSSOServer
 	validateCalls int
 	getUsersCalls int
+	partialUsers  bool
 }
 
 func (f *fakeSSOServer) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
@@ -40,11 +41,21 @@ func (f *fakeSSOServer) GetUsers(_ context.Context, req *ssopb.GetUsersRequest) 
 	users := make([]*ssopb.User, 0, len(req.Uids))
 	for _, uid := range req.Uids {
 		users = append(users, &ssopb.User{Uid: uid, Nickname: "n-" + uid, Avatar: "a"})
+		if f.partialUsers && len(users) > 0 {
+			break
+		}
 	}
 	return &ssopb.GetUsersResponse{Users: users}, nil
 }
 
 func startFakeSSO(t *testing.T) (*sso.Client, *fakeSSOServer) {
+	return startFakeSSOWithConfig(t, sso.ClientConfig{
+		TokenCacheTTL: 60 * time.Second,
+		UserCacheTTL:  60 * time.Second,
+	})
+}
+
+func startFakeSSOWithConfig(t *testing.T, cfg sso.ClientConfig) (*sso.Client, *fakeSSOServer) {
 	t.Helper()
 	lis := bufconn.Listen(1024 * 1024)
 	srv := grpc.NewServer()
@@ -63,10 +74,7 @@ func startFakeSSO(t *testing.T) (*sso.Client, *fakeSSOServer) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	c := sso.NewClientFromConn(conn, sso.ClientConfig{
-		TokenCacheTTL: 60 * time.Second,
-		UserCacheTTL:  60 * time.Second,
-	})
+	c := sso.NewClientFromConn(conn, cfg)
 	return c, fake
 }
 
@@ -118,6 +126,36 @@ func TestClient_GetUsersDedupesAcrossCalls(t *testing.T) {
 
 	if fake.getUsersCalls != 2 {
 		t.Errorf("calls = %d, want 2 (one per non-cached batch)", fake.getUsersCalls)
+	}
+}
+
+func TestClient_GetUsersChunksConfiguredBatchSize(t *testing.T) {
+	c, fake := startFakeSSOWithConfig(t, sso.ClientConfig{
+		TokenCacheTTL: 60 * time.Second,
+		UserCacheTTL:  60 * time.Second,
+		UserBatchSize: 2,
+	})
+	users, err := c.GetUsers(context.Background(), []string{"u1", "u2", "u3", "u4", "u5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 5 {
+		t.Fatalf("users = %d, want 5", len(users))
+	}
+	if fake.getUsersCalls != 3 {
+		t.Fatalf("GetUsers calls = %d, want 3 chunks", fake.getUsersCalls)
+	}
+}
+
+func TestClient_GetUsersRejectsPartialBatch(t *testing.T) {
+	c, fake := startFakeSSOWithConfig(t, sso.ClientConfig{
+		TokenCacheTTL: 60 * time.Second,
+		UserCacheTTL:  60 * time.Second,
+		UserBatchSize: 4,
+	})
+	fake.partialUsers = true
+	if _, err := c.GetUsers(context.Background(), []string{"u1", "u2"}); !errors.Is(err, sso.ErrPartialUsers) {
+		t.Fatalf("partial GetUsers error = %v, want ErrPartialUsers", err)
 	}
 }
 

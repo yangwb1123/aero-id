@@ -105,6 +105,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		MaxAttempts:      cfg.SSO.MaxAttempts,
 		RetryBackoff:     cfg.SSO.RetryBackoff,
 		MaxConcurrent:    cfg.SSO.MaxConcurrent,
+		UserBatchSize:    cfg.SSO.UserBatchSize,
 		KeepaliveTime:    cfg.SSO.KeepaliveTime,
 		KeepaliveTimeout: cfg.SSO.KeepaliveTimeout,
 		Metrics:          metricsReg,
@@ -183,7 +184,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		ssoClient: ssoClient, sourceConnectors: sourceConnectors,
 		controlMetrics: controlMetrics, metricsReg: metricsReg,
 		billingRuntime: billingRuntime,
-		auditLedger: auditLedger, auditLedgerRepo: auditLedgerRepo,
+		auditLedger:    auditLedger, auditLedgerRepo: auditLedgerRepo,
 		fileRepo: fileRepo, fileShareRepo: fileShareRepo,
 		msgRepo: msgRepo, commentRepo: commentRepo, notifRepo: notifRepo,
 		blockRepo: blockRepo, banRepo: banRepo, prefRepo: prefRepo,
@@ -234,11 +235,11 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 
 	grpcServer := buildGRPCServer(cfg, tokenValidator, log, metricsReg,
 		workers.limiter, workers.distributedLimiter, svcs.permissionChecker, workers.degradationState, grpcDependencies{
-		Files: svcs.fileSvc, Messages: svcs.msgSvc, Comments: svcs.commentSvc, Notifications: svcs.notifSvc, Blocks: svcs.blockSvc,
-		Search: svcs.searchSvc, Preferences: svcs.prefSvc, Admin: svcs.adminSvc, Bans: svcs.banSvc, Accounts: svcs.accountSvc,
-		Aggregation: svcs.aggregationSvc, Audit: auditLedger, Operations: svcs.operationSvc, Callbacks: callbackSvc, SyncJobs: svcs.syncJobSvc,
-		EventIngest: svcs.eventIngestSvc, EventBindings: buildEventSourceBindings(cfg.EventIngest.Bindings),
-	})
+			Files: svcs.fileSvc, Messages: svcs.msgSvc, Comments: svcs.commentSvc, Notifications: svcs.notifSvc, Blocks: svcs.blockSvc,
+			Search: svcs.searchSvc, Preferences: svcs.prefSvc, Admin: svcs.adminSvc, Bans: svcs.banSvc, Accounts: svcs.accountSvc,
+			Aggregation: svcs.aggregationSvc, Audit: auditLedger, Operations: svcs.operationSvc, Callbacks: callbackSvc, SyncJobs: svcs.syncJobSvc,
+			EventIngest: svcs.eventIngestSvc, EventBindings: buildEventSourceBindings(cfg.EventIngest.Bindings),
+		})
 	// Standard ops surface: health (reported SERVING) and, when enabled, reflection.
 	grpcHealth := grpcsrv.RegisterHealth(grpcServer)
 	if cfg.Server.GRPC.ReflectionEnabled {

@@ -278,6 +278,7 @@ type SSOConfig struct {
 	MaxAttempts         int           `mapstructure:"max_attempts"`      // upstream tries per call within the timeout budget (1 = no retry)
 	RetryBackoff        time.Duration `mapstructure:"retry_backoff"`     // base exponential backoff between availability-error retries
 	MaxConcurrent       int           `mapstructure:"max_concurrent"`    // max concurrent in-flight SSO RPCs (validate/get_users/authorize; 0 = no cap)
+	UserBatchSize       int           `mapstructure:"user_batch_size"`   // max UIDs per GetUsers RPC (0 = code default)
 	KeepaliveTime       time.Duration `mapstructure:"keepalive_time"`    // gRPC keepalive ping interval
 	KeepaliveTimeout    time.Duration `mapstructure:"keepalive_timeout"` // gRPC keepalive ping ack timeout
 	// mTLS / TLS transport security (used only when insecure=false).

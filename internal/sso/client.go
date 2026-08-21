@@ -21,6 +21,17 @@ import (
 // ssoTracerName identifies aero-id's SSO client instrumentation scope.
 const ssoTracerName = "github.com/aero/aero-id/internal/sso"
 
+const (
+	defaultUserBatchSize = 128
+	maxUserBatchSize     = 2048
+)
+
+// ErrPartialUsers means the upstream returned fewer users than requested in a
+// bounded batch. The caller must not treat the result as a complete directory
+// view because absent users are otherwise indistinguishable from a truncated
+// response.
+var ErrPartialUsers = errors.New("sso: partial user response")
+
 // MetricsSink receives SSO dependency-health observations. *metrics.Registry
 // satisfies it; the SSO client treats a nil sink as a no-op so existing
 // NewClientFromConn callers (and tests) need not provide one.
@@ -52,6 +63,8 @@ type ClientConfig struct {
 	// MaxConcurrent bounds concurrent in-flight upstream RPCs (validate, get_users,
 	// authorize) through one shared semaphore; 0 or negative disables the cap.
 	MaxConcurrent int
+	// UserBatchSize bounds each GetUsers RPC. Zero uses the code default.
+	UserBatchSize int
 
 	// Keepalive ping cadence; non-positive values fall back to defaults.
 	KeepaliveTime    time.Duration
@@ -75,8 +88,9 @@ type Client struct {
 	stopFn        func()
 	timeout       time.Duration
 
-	maxAttempts  int
-	retryBackoff time.Duration
+	maxAttempts   int
+	retryBackoff  time.Duration
+	userBatchSize int
 
 	metrics MetricsSink // nil-safe: observations are skipped when unset
 	tracer  oteltrace.Tracer
@@ -130,6 +144,13 @@ func NewClient(ctx context.Context, endpoint string, tlsCfg TLSConfig, cfg Clien
 
 // NewClientFromConn lets tests inject a bufconn-backed *grpc.ClientConn.
 func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
+	batchSize := cfg.UserBatchSize
+	if batchSize <= 0 {
+		batchSize = defaultUserBatchSize
+	}
+	if batchSize > maxUserBatchSize {
+		batchSize = maxUserBatchSize
+	}
 	c := &Client{
 		conn:          conn,
 		rpc:           ssopb.NewSSOClient(conn),
@@ -140,6 +161,7 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 		timeout:       cfg.Timeout,
 		maxAttempts:   cfg.MaxAttempts,
 		retryBackoff:  cfg.RetryBackoff,
+		userBatchSize: batchSize,
 		metrics:       cfg.Metrics,
 		tracer:        otel.Tracer(ssoTracerName),
 	}
@@ -417,9 +439,37 @@ func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User
 	defer release()
 	ctx, span := c.tracer.Start(ctx, "sso.GetUsers", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
 	start := time.Now()
-	resp, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.GetUsersResponse, error) {
-		return c.rpc.GetUsers(ctx, &ssopb.GetUsersRequest{Uids: uids})
-	})
+	out := make(map[string]User, len(uids))
+	for start := 0; start < len(uids); start += c.userBatchSize {
+		end := start + c.userBatchSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+		batch := uids[start:end]
+		resp, callErr := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.GetUsersResponse, error) {
+			return c.rpc.GetUsers(ctx, &ssopb.GetUsersRequest{Uids: batch})
+		})
+		if callErr != nil {
+			err = callErr
+			break
+		}
+		if resp == nil {
+			err = fmt.Errorf("%w: empty response", ErrPartialUsers)
+			break
+		}
+		for _, u := range resp.Users {
+			out[u.Uid] = User{UID: u.Uid, Nickname: u.Nickname, Avatar: u.Avatar}
+		}
+		for _, uid := range batch {
+			if _, ok := out[uid]; !ok {
+				err = fmt.Errorf("%w: requested uid %q was omitted", ErrPartialUsers, uid)
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
 	c.recordCall("get_users", start, err)
 	if err != nil {
 		span.SetStatus(otelcodes.Error, err.Error())
@@ -435,9 +485,5 @@ func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User
 		return nil, fmt.Errorf("sso get users: %w", err)
 	}
 	c.breaker.Record(true)
-	out := make(map[string]User, len(resp.Users))
-	for _, u := range resp.Users {
-		out[u.Uid] = User{UID: u.Uid, Nickname: u.Nickname, Avatar: u.Avatar}
-	}
 	return out, nil
 }

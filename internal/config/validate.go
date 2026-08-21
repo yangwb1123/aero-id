@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const maxSSOUserBatchSize = 2048
+
 func (c *Config) validate() error {
 	c.applyDefaults()
 	if err := c.validateRequired(); err != nil {
@@ -72,6 +74,9 @@ func (c *Config) validateRequired() error {
 	}
 	if c.SSO.MaxConcurrent < 0 {
 		return fmt.Errorf("sso.max_concurrent must not be negative (0 = no cap)")
+	}
+	if c.SSO.UserBatchSize < 0 || c.SSO.UserBatchSize > maxSSOUserBatchSize {
+		return fmt.Errorf("sso.user_batch_size must be between 0 and %d", maxSSOUserBatchSize)
 	}
 	return nil
 }
