@@ -111,6 +111,32 @@ func TestLoad_fromFile(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	bad := sample + "\nrate_limit: {rpz: 5}\n"
+	_, err := Load(writeTemp(t, bad))
+	if err == nil || !strings.Contains(err.Error(), "rpz") {
+		t.Fatalf("unknown config key error = %v, want key name rpz", err)
+	}
+}
+
+func TestLoadUnknownKeyNotTriggeredByAmbientEnv(t *testing.T) {
+	t.Setenv("AERO_ID_UNRELATED", "1")
+	if _, err := Load(writeTemp(t, sample)); err != nil {
+		t.Fatalf("unrelated ambient env must not fail config load: %v", err)
+	}
+}
+
+func TestLoadUnknownKeyDoesNotBreakEnvOverrides(t *testing.T) {
+	t.Setenv("AERO_ID_DATABASE_PASSWORD", "override-password")
+	cfg, err := Load(writeTemp(t, sample))
+	if err != nil {
+		t.Fatalf("valid env override must load: %v", err)
+	}
+	if cfg.Database.Password != "override-password" {
+		t.Fatalf("database password = %q, want env override", cfg.Database.Password)
+	}
+}
+
 func TestLoad_envOverride(t *testing.T) {
 	t.Setenv("AERO_ID_DATABASE_PASSWORD", "envpass")
 	t.Setenv("AERO_ID_SIGNING_KEY", "envkey")

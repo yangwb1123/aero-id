@@ -401,7 +401,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	// Reject unknown file keys at Load rather than silently falling back to a
+	// default. AutomaticEnv remains lazy, so unrelated ambient environment
+	// variables do not become phantom configuration fields.
+	if err := v.UnmarshalExact(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 	if err := cfg.validate(); err != nil {
