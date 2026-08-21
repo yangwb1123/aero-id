@@ -21,7 +21,6 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/aero/aero-id/internal/middleware"
-	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/pkg/ratelimit"
 	"github.com/aero/aero-id/internal/service"
@@ -208,18 +207,6 @@ func TestRateLimitInterceptor_nilLimiterIsNoop(t *testing.T) {
 			func(context.Context, any) (any, error) { return "ok", nil }); err != nil {
 			t.Fatalf("nil limiter must pass, got %v", err)
 		}
-	}
-}
-
-func TestGRPCError_mapsAppError(t *testing.T) {
-	if status.Code(grpcError(apperr.NotFound("x.not_found", "nope"))) != codes.NotFound {
-		t.Fatal("AppError should map to its gRPC code")
-	}
-}
-
-func TestGRPCError_genericInternal(t *testing.T) {
-	if status.Code(grpcError(stderrors.New("boom"))) != codes.Internal {
-		t.Fatal("non-AppError should map to Internal")
 	}
 }
 

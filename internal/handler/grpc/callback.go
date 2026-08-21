@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -29,7 +30,7 @@ func (s *CallbackServer) RegisterCallback(ctx context.Context, req *aeropb.Regis
 	subscription, secret, err := s.callbacks.Register(ctx, service.CallbackInput{
 		Endpoint: req.GetEndpoint(), TenantID: req.GetTenantId(), EventTypes: req.GetEventTypes()})
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.RegisterCallbackResponse{Subscription: callbackSubscriptionToProto(subscription), Secret: secret}, nil
 }
@@ -37,7 +38,7 @@ func (s *CallbackServer) RegisterCallback(ctx context.Context, req *aeropb.Regis
 func (s *CallbackServer) ListCallbacks(ctx context.Context, req *aeropb.ListCallbacksRequest) (*aeropb.ListCallbacksResponse, error) {
 	items, next, err := s.callbacks.List(ctx, pageFromProto(req.GetPage()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result := make([]*aeropb.CallbackSubscription, len(items))
 	for i, item := range items {
@@ -52,7 +53,7 @@ func (s *CallbackServer) DeleteCallback(ctx context.Context, req *aeropb.DeleteC
 		return nil, err
 	}
 	if err := s.callbacks.Delete(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.DeleteCallbackResponse{}, nil
 }
@@ -64,7 +65,7 @@ func (s *CallbackServer) ReplayCallbackDelivery(ctx context.Context,
 		return nil, err
 	}
 	if err := s.callbacks.ReplayDelivery(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ReplayCallbackDeliveryResponse{}, nil
 }

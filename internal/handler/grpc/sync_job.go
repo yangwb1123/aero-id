@@ -9,6 +9,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -39,11 +40,11 @@ func (s *SyncJobServer) CreateSyncJob(ctx context.Context, req *aeropb.CreateSyn
 	job, err := s.jobs.Create(ctx, service.SyncJobInput{AccountID: accountID, JobType: domain.SyncJobType(req.GetJobType()),
 		Datasets: datasets, IdempotencyKey: req.GetIdempotencyKey()})
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := syncJobToProto(job)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.CreateSyncJobResponse{Job: result}, nil
 }
@@ -55,11 +56,11 @@ func (s *SyncJobServer) GetSyncJob(ctx context.Context, req *aeropb.GetSyncJobRe
 	}
 	job, err := s.jobs.Get(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := syncJobToProto(job)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetSyncJobResponse{Job: result}, nil
 }
@@ -67,13 +68,13 @@ func (s *SyncJobServer) GetSyncJob(ctx context.Context, req *aeropb.GetSyncJobRe
 func (s *SyncJobServer) ListSyncJobs(ctx context.Context, req *aeropb.ListSyncJobsRequest) (*aeropb.ListSyncJobsResponse, error) {
 	items, next, err := s.jobs.List(ctx, pageFromProto(req.GetPage()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result := make([]*aeropb.SyncJob, 0, len(items))
 	for _, item := range items {
 		converted, err := syncJobToProto(item)
 		if err != nil {
-			return nil, grpcError(err)
+			return nil, apperr.GRPCError(err)
 		}
 		result = append(result, converted)
 	}
@@ -87,11 +88,11 @@ func (s *SyncJobServer) ReconcileSyncJob(ctx context.Context, req *aeropb.Reconc
 	}
 	job, err := s.jobs.Reconcile(ctx, id, req.GetWorkerId())
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := syncJobToProto(job)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ReconcileSyncJobResponse{Job: result}, nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -31,11 +32,11 @@ var _ aeropb.AccountServiceServer = (*AccountServer)(nil)
 func (s *AccountServer) GetMe(ctx context.Context, _ *aeropb.GetMeRequest) (*aeropb.GetMeResponse, error) {
 	view, err := s.accounts.GetMe(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := accountViewToProto(view)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetMeResponse{View: result}, nil
 }
@@ -43,11 +44,11 @@ func (s *AccountServer) GetMe(ctx context.Context, _ *aeropb.GetMeRequest) (*aer
 func (s *AccountServer) GetProfile(ctx context.Context, _ *aeropb.GetProfileRequest) (*aeropb.GetProfileResponse, error) {
 	profile, err := s.accounts.GetProfile(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := accountProfileToProto(profile)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetProfileResponse{Profile: result}, nil
 }
@@ -55,11 +56,11 @@ func (s *AccountServer) GetProfile(ctx context.Context, _ *aeropb.GetProfileRequ
 func (s *AccountServer) UpdateProfile(ctx context.Context, req *aeropb.UpdateProfileRequest) (*aeropb.UpdateProfileResponse, error) {
 	profile, err := s.accounts.UpdateProfile(ctx, updateProfileInput(req))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := accountProfileToProto(profile)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UpdateProfileResponse{Profile: result}, nil
 }
@@ -67,11 +68,11 @@ func (s *AccountServer) UpdateProfile(ctx context.Context, req *aeropb.UpdatePro
 func (s *AccountServer) ListSources(ctx context.Context, req *aeropb.ListAccountSourcesRequest) (*aeropb.ListAccountSourcesResponse, error) {
 	result, err := s.accounts.ListSources(ctx, pageFromProto(req.GetPage()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	sources, err := accountSourcesToProto(result.Sources)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListAccountSourcesResponse{Sources: sources, NextCursor: result.NextCursor}, nil
 }
@@ -79,11 +80,11 @@ func (s *AccountServer) ListSources(ctx context.Context, req *aeropb.ListAccount
 func (s *AccountServer) ListMemberships(ctx context.Context, req *aeropb.ListAccountMembershipsRequest) (*aeropb.ListAccountMembershipsResponse, error) {
 	result, err := s.accounts.ListMemberships(ctx, pageFromProto(req.GetPage()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	memberships, err := accountMembershipsToProto(result.Memberships)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListAccountMembershipsResponse{Memberships: memberships, NextCursor: result.NextCursor}, nil
 }
@@ -95,11 +96,11 @@ func (s *AccountServer) GetAccount(ctx context.Context, req *aeropb.GetAccountRe
 	}
 	view, err := s.accounts.GetAccount(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := accountViewToProto(view)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetAccountResponse{View: result}, nil
 }
@@ -112,7 +113,7 @@ func (s *AccountServer) ListAccounts(ctx context.Context, req *aeropb.ListAccoun
 		Page:       pageFromProto(req.GetPage()),
 	})
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListAccountsResponse{
 		Accounts:   accountsToProto(result.Accounts),

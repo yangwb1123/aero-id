@@ -8,6 +8,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -29,11 +30,11 @@ var _ aeropb.AggregationServiceServer = (*AggregationServer)(nil)
 func (s *AggregationServer) GetMeOverview(ctx context.Context, req *aeropb.GetMeOverviewRequest) (*aeropb.GetMeOverviewResponse, error) {
 	view, err := s.aggregation.GetMeOverview(ctx, aggregationInputFromProto(req.GetConsistency(), req.GetDatasets(), req.GetMaxAgeSeconds()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := aggregateViewToProto(view)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetMeOverviewResponse{View: result}, nil
 }
@@ -45,11 +46,11 @@ func (s *AggregationServer) GetAccountOverview(ctx context.Context, req *aeropb.
 	}
 	view, err := s.aggregation.GetAccountOverview(ctx, id, aggregationInputFromProto(req.GetConsistency(), req.GetDatasets(), req.GetMaxAgeSeconds()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := aggregateViewToProto(view)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetAccountOverviewResponse{View: result}, nil
 }

@@ -4,7 +4,6 @@ package grpc
 
 import (
 	"context"
-	stderrors "errors"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -25,7 +24,6 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/middleware"
-	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/logger"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/pkg/ratelimit"
@@ -410,19 +408,6 @@ func RecoveryInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
 		}()
 		return handler(ctx, req)
 	}
-}
-
-// grpcError maps a service error to a gRPC status. *AppError carries its own code;
-// anything else becomes Internal so internals are not leaked.
-func grpcError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var ae *apperr.AppError
-	if stderrors.As(err, &ae) {
-		return status.Error(ae.GRPC, ae.Message)
-	}
-	return status.Error(codes.Internal, "internal server error")
 }
 
 func bearerFromMD(ctx context.Context) string {

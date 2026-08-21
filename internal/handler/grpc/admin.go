@@ -11,6 +11,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -43,14 +44,14 @@ func (s *AdminServer) Register(srv *grpc.Server) { aeropb.RegisterAdminServiceSe
 
 func (s *AdminServer) GrantRole(ctx context.Context, req *aeropb.GrantRoleRequest) (*aeropb.GrantRoleResponse, error) {
 	if err := s.admin.GrantRole(ctx, req.Uid, req.RoleCode); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GrantRoleResponse{}, nil
 }
 
 func (s *AdminServer) RevokeRole(ctx context.Context, req *aeropb.RevokeRoleRequest) (*aeropb.RevokeRoleResponse, error) {
 	if err := s.admin.RevokeRole(ctx, req.Uid, req.RoleCode); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.RevokeRoleResponse{}, nil
 }
@@ -58,7 +59,7 @@ func (s *AdminServer) RevokeRole(ctx context.Context, req *aeropb.RevokeRoleRequ
 func (s *AdminServer) ListRoles(ctx context.Context, req *aeropb.ListRolesRequest) (*aeropb.ListRolesResponse, error) {
 	roles, err := s.admin.ListRoles(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	out := make([]*aeropb.Role, len(roles))
 	for i, r := range roles {
@@ -74,7 +75,7 @@ func (s *AdminServer) ListRoles(ctx context.Context, req *aeropb.ListRolesReques
 func (s *AdminServer) ListUserRoles(ctx context.Context, req *aeropb.ListUserRolesRequest) (*aeropb.ListUserRolesResponse, error) {
 	roles, err := s.admin.ListUserRoles(ctx, req.Uid)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	out := make([]*aeropb.UserRole, len(roles))
 	for i, r := range roles {
@@ -98,7 +99,7 @@ func (s *AdminServer) ListAudit(ctx context.Context, req *aeropb.ListAuditReques
 	}
 	events, next, err := s.admin.ListAudit(ctx, req.Action, page)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	out := make([]*aeropb.AuditEvent, len(events))
 	for i, e := range events {
@@ -127,11 +128,11 @@ func (s *AdminServer) Ban(ctx context.Context, req *aeropb.BanRequest) (*aeropb.
 		var err error
 		d, err = time.ParseDuration(req.Duration)
 		if err != nil {
-			return nil, grpcError(badRequest("ban.invalid_duration", "invalid duration format"))
+			return nil, apperr.GRPCError(badRequest("ban.invalid_duration", "invalid duration format"))
 		}
 	}
 	if err := s.bans.Ban(ctx, req.Uid, req.Reason, d); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.BanResponse{}, nil
 }
@@ -141,7 +142,7 @@ func (s *AdminServer) Unban(ctx context.Context, req *aeropb.UnbanRequest) (*aer
 		return nil, errUnimplemented
 	}
 	if err := s.bans.Unban(ctx, req.Uid); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UnbanResponse{}, nil
 }
@@ -157,7 +158,7 @@ func (s *AdminServer) ListBans(ctx context.Context, req *aeropb.ListBansRequest)
 	}
 	bans, next, err := s.bans.ListBanned(ctx, page)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	out := make([]*aeropb.BanEvent, len(bans))
 	for i, b := range bans {

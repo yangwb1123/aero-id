@@ -36,13 +36,13 @@ func (s *AuditLedgerServer) ListAuditFacts(ctx context.Context, req *aeropb.List
 	}
 	items, next, err := s.audit.List(ctx, filter)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result := make([]*aeropb.AuditFact, 0, len(items))
 	for _, item := range items {
 		converted, err := auditFactToProto(item)
 		if err != nil {
-			return nil, grpcError(err)
+			return nil, apperr.GRPCError(err)
 		}
 		result = append(result, converted)
 	}
@@ -61,7 +61,7 @@ func auditFilterFromProto(req *aeropb.ListAuditFactsRequest) (domain.AuditFactFi
 		filter.To = &to
 	}
 	if filter.From != nil && filter.To != nil && !filter.From.Before(*filter.To) {
-		return domain.AuditFactFilter{}, grpcError(apperr.BadRequest("audit.invalid_time_range", "audit from must be before to"))
+		return domain.AuditFactFilter{}, apperr.GRPCError(apperr.BadRequest("audit.invalid_time_range", "audit from must be before to"))
 	}
 	var err error
 	filter.AccountID, err = parseOptionalAuditID(req.GetAccountId(), "account_id")
@@ -108,7 +108,7 @@ func parseOptionalAuditID(value, field string) (domain.ID, error) {
 	}
 	id, err := idgen.Parse(value)
 	if err != nil {
-		return domain.ID{}, grpcError(apperr.BadRequest("audit.invalid_id", "invalid "+field))
+		return domain.ID{}, apperr.GRPCError(apperr.BadRequest("audit.invalid_id", "invalid "+field))
 	}
 	return id, nil
 }

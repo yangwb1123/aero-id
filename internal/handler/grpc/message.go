@@ -34,13 +34,13 @@ func (s *MessageServer) SendMessage(ctx context.Context, req *aeropb.SendMessage
 	if req.FileId != "" {
 		fid, err := idgen.Parse(req.FileId)
 		if err != nil {
-			return nil, grpcError(apperr.BadRequest("message.invalid", "invalid file_id"))
+			return nil, apperr.GRPCError(apperr.BadRequest("message.invalid", "invalid file_id"))
 		}
 		in.FileID = &fid
 	}
 	m, err := s.messages.Send(ctx, in)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.SendMessageResponse{Message: msgToPB(m)}, nil
 }
@@ -48,11 +48,11 @@ func (s *MessageServer) SendMessage(ctx context.Context, req *aeropb.SendMessage
 func (s *MessageServer) GetMessage(ctx context.Context, req *aeropb.GetMessageRequest) (*aeropb.GetMessageResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	m, err := s.messages.Get(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetMessageResponse{Message: msgToPB(m)}, nil
 }
@@ -60,7 +60,7 @@ func (s *MessageServer) GetMessage(ctx context.Context, req *aeropb.GetMessageRe
 func (s *MessageServer) Inbox(ctx context.Context, req *aeropb.InboxRequest) (*aeropb.InboxResponse, error) {
 	list, err := s.messages.Inbox(ctx, pageFromPB(req.Page), req.UnreadOnly)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.InboxResponse{
 		Messages:   msgsToPB(list.Messages),
@@ -72,7 +72,7 @@ func (s *MessageServer) Inbox(ctx context.Context, req *aeropb.InboxRequest) (*a
 func (s *MessageServer) Conversation(ctx context.Context, req *aeropb.ConversationRequest) (*aeropb.ConversationResponse, error) {
 	list, err := s.messages.Conversation(ctx, req.WithUid, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ConversationResponse{
 		Messages:   msgsToPB(list.Messages),
@@ -84,10 +84,10 @@ func (s *MessageServer) Conversation(ctx context.Context, req *aeropb.Conversati
 func (s *MessageServer) MarkRead(ctx context.Context, req *aeropb.MarkReadRequest) (*aeropb.MarkReadResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	if err := s.messages.MarkRead(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.MarkReadResponse{}, nil
 }
@@ -95,7 +95,7 @@ func (s *MessageServer) MarkRead(ctx context.Context, req *aeropb.MarkReadReques
 func (s *MessageServer) UnreadCount(ctx context.Context, _ *aeropb.UnreadCountRequest) (*aeropb.UnreadCountResponse, error) {
 	n, err := s.messages.UnreadCount(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UnreadCountResponse{UnreadCount: n}, nil
 }
@@ -103,11 +103,11 @@ func (s *MessageServer) UnreadCount(ctx context.Context, _ *aeropb.UnreadCountRe
 func (s *MessageServer) EditMessage(ctx context.Context, req *aeropb.EditMessageRequest) (*aeropb.EditMessageResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	m, err := s.messages.Edit(ctx, id, req.Content)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.EditMessageResponse{Message: msgToPB(m)}, nil
 }
@@ -115,17 +115,17 @@ func (s *MessageServer) EditMessage(ctx context.Context, req *aeropb.EditMessage
 func (s *MessageServer) DeleteMessage(ctx context.Context, req *aeropb.DeleteMessageRequest) (*aeropb.DeleteMessageResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	if err := s.messages.Delete(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.DeleteMessageResponse{}, nil
 }
 
 func (s *MessageServer) MarkConversationRead(ctx context.Context, req *aeropb.MarkConversationReadRequest) (*aeropb.MarkConversationReadResponse, error) {
 	if err := s.messages.MarkConversationRead(ctx, req.WithUid); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.MarkConversationReadResponse{}, nil
 }
@@ -133,14 +133,14 @@ func (s *MessageServer) MarkConversationRead(ctx context.Context, req *aeropb.Ma
 func (s *MessageServer) ReactToMessage(ctx context.Context, req *aeropb.ReactToMessageRequest) (*aeropb.ReactToMessageResponse, error) {
 	id, err := idgen.Parse(req.MessageId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid message_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid message_id"))
 	}
 	actor, ok := service.ActorFrom(ctx)
 	if !ok {
-		return nil, grpcError(apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
+		return nil, apperr.GRPCError(apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
 	}
 	if err := s.messages.ReactToMessage(ctx, id, actor); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ReactToMessageResponse{}, nil
 }
@@ -148,14 +148,14 @@ func (s *MessageServer) ReactToMessage(ctx context.Context, req *aeropb.ReactToM
 func (s *MessageServer) UnreactMessage(ctx context.Context, req *aeropb.UnreactMessageRequest) (*aeropb.UnreactMessageResponse, error) {
 	id, err := idgen.Parse(req.MessageId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid message_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid message_id"))
 	}
 	actor, ok := service.ActorFrom(ctx)
 	if !ok {
-		return nil, grpcError(apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
+		return nil, apperr.GRPCError(apperr.Unauthorized("auth.unauthorized", "missing authenticated actor"))
 	}
 	if err := s.messages.UnreactMessage(ctx, id, actor); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UnreactMessageResponse{}, nil
 }

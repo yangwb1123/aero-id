@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-architecture.sh — guard the live layered runtime (rules a-f).
+# check-architecture.sh — guard the live layered runtime (rules a-g).
 #
 # Replaces the vacuous cross-feature gate over the dead features list
 # (`file message block notification`), whose every subject was either deleted
@@ -48,6 +48,8 @@
 #       preference structs) never count as references. Enumeration covers
 #       const-block members (internal/domain carries 60+ exported const-block
 #       members) and type aliases (`type ID = idgen.ID`).
+#   (g) Single gRPC error mapper. Files under internal/handler/grpc/ may not
+#       define a local grpcError function; use internal/pkg/errors.GRPCError.
 #
 # Exceptions (each with justification; review periodically):
 #   EX-1 hub -> service: internal/hub/adapter.go imports internal/service
@@ -225,6 +227,24 @@ scan_handler_repo_import() {
   done
 }
 
+# ── rule (g): one gRPC error mapper ─────────────────────────────────────────
+scan_grpc_error_mapper() {
+  local root f
+  for root in "$@"; do
+    [ -d "$root" ] || continue
+    while IFS= read -r f; do
+      case "/$f" in
+        */internal/handler/grpc/*) ;;
+        *) continue ;;
+      esac
+      if grep -q "func grpcError" "$f"; then
+        echo "VIOLATION: $f defines a local grpcError (use internal/pkg/errors.GRPCError)"
+        violations=$((violations + 1))
+      fi
+    done < <(find "$root" -name '*.go' 2>/dev/null | sort)
+  done
+}
+
 # ── rule (f): domain exported-symbol liveness ─────────────────────────────
 # Enumerate exported top-level identifiers declared in one Go source file
 # (read from stdin): type X / var X / func X / single-line const X plus
@@ -332,6 +352,7 @@ else
   selftest_rule "(d) infra layers"             scan_infra_service_repo
   selftest_rule "(e1) handler repo import"     scan_handler_repo_import
   selftest_rule "(f) domain liveness"          scan_domain_liveness
+  selftest_rule "(g) single grpc error mapper" scan_grpc_error_mapper
 fi
 
 # ── real-tree scan: internal/ and cmd/ only (fixtures are never scanned) ────
@@ -342,6 +363,7 @@ scan_repository_service internal cmd
 scan_infra_service_repo internal cmd
 scan_handler_repo_import internal cmd
 scan_domain_liveness internal cmd
+scan_grpc_error_mapper internal cmd
 
 if [ "$fail" -ne 0 ] || [ "$violations" -gt 0 ]; then
   echo ""
@@ -350,4 +372,4 @@ if [ "$fail" -ne 0 ] || [ "$violations" -gt 0 ]; then
   exit 1
 fi
 
-echo "✓ Architecture check passed (rules a-f: dead-tree ban, domain purity, repository/service, infra layers, handler/repository, domain liveness)"
+echo "✓ Architecture check passed (rules a-g: dead-tree ban, domain purity, repository/service, infra layers, handler/repository, domain liveness, single grpc error mapper)"

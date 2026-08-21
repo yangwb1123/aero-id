@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -28,7 +29,7 @@ var _ aeropb.PreferenceServiceServer = (*PreferenceServer)(nil)
 func (s *PreferenceServer) GetPreferences(ctx context.Context, _ *aeropb.GetPreferencesRequest) (*aeropb.GetPreferencesResponse, error) {
 	prefs, err := s.svc.List(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	pb := make([]*aeropb.NotificationPreference, len(prefs))
 	for i, p := range prefs {
@@ -52,7 +53,7 @@ func (s *PreferenceServer) SetPreferences(ctx context.Context, req *aeropb.SetPr
 		}
 	}
 	if err := s.svc.Set(ctx, prefs); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.SetPreferencesResponse{}, nil
 }

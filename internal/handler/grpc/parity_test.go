@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -63,6 +64,7 @@ func TestGRPC_ShareFile_NonOwnerPermissionDenied(t *testing.T) {
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("code = %v, want PermissionDenied", status.Code(err))
 	}
+	assertGRPCErrorReason(t, err, "file.forbidden")
 }
 
 func TestGRPC_ListSharedWithMe(t *testing.T) {
@@ -172,6 +174,21 @@ func TestGRPC_ReportComment_DuplicateConflict(t *testing.T) {
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("code = %v, want AlreadyExists", status.Code(err))
 	}
+	assertGRPCErrorReason(t, err, "comment.already_reported")
+}
+
+func assertGRPCErrorReason(t *testing.T, err error, want string) {
+	t.Helper()
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("error is not a gRPC status: %v", err)
+	}
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok && info.Reason == want {
+			return
+		}
+	}
+	t.Fatalf("gRPC error details = %#v, want ErrorInfo reason %q", st.Details(), want)
 }
 
 func TestGRPC_HideComment_Success(t *testing.T) {

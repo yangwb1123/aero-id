@@ -30,11 +30,11 @@ func (s *FileServer) Register(srv *grpc.Server) { aeropb.RegisterFileServiceServ
 func (s *FileServer) GetFile(ctx context.Context, req *aeropb.GetFileRequest) (*aeropb.GetFileResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	f, err := s.files.Get(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetFileResponse{File: fileToPB(f)}, nil
 }
@@ -42,7 +42,7 @@ func (s *FileServer) GetFile(ctx context.Context, req *aeropb.GetFileRequest) (*
 func (s *FileServer) ListFiles(ctx context.Context, req *aeropb.ListFilesRequest) (*aeropb.ListFilesResponse, error) {
 	list, err := s.files.List(ctx, req.OwnerUid, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListFilesResponse{Files: filesToPB(list.Files), NextCursor: list.NextCursor}, nil
 }
@@ -50,10 +50,10 @@ func (s *FileServer) ListFiles(ctx context.Context, req *aeropb.ListFilesRequest
 func (s *FileServer) DeleteFile(ctx context.Context, req *aeropb.DeleteFileRequest) (*aeropb.DeleteFileResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	if err := s.files.Delete(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.DeleteFileResponse{}, nil
 }
@@ -61,7 +61,7 @@ func (s *FileServer) DeleteFile(ctx context.Context, req *aeropb.DeleteFileReque
 func (s *FileServer) GetDownloadURL(ctx context.Context, req *aeropb.DownloadURLRequest) (*aeropb.DownloadURLResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	ttl := time.Duration(req.TtlSeconds) * time.Second
 	if ttl <= 0 {
@@ -69,7 +69,7 @@ func (s *FileServer) GetDownloadURL(ctx context.Context, req *aeropb.DownloadURL
 	}
 	url, err := s.files.DownloadURL(ctx, id, ttl)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.DownloadURLResponse{Url: url}, nil
 }
@@ -77,10 +77,10 @@ func (s *FileServer) GetDownloadURL(ctx context.Context, req *aeropb.DownloadURL
 func (s *FileServer) ShareFile(ctx context.Context, req *aeropb.ShareFileRequest) (*aeropb.ShareFileResponse, error) {
 	id, err := idgen.Parse(req.FileId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
 	}
 	if err := s.files.ShareFile(ctx, id, req.GranteeUids); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ShareFileResponse{}, nil
 }
@@ -88,10 +88,10 @@ func (s *FileServer) ShareFile(ctx context.Context, req *aeropb.ShareFileRequest
 func (s *FileServer) UnshareFile(ctx context.Context, req *aeropb.UnshareFileRequest) (*aeropb.UnshareFileResponse, error) {
 	id, err := idgen.Parse(req.FileId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
 	}
 	if err := s.files.UnshareFile(ctx, id, req.GranteeUid); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UnshareFileResponse{}, nil
 }
@@ -99,7 +99,7 @@ func (s *FileServer) UnshareFile(ctx context.Context, req *aeropb.UnshareFileReq
 func (s *FileServer) ListSharedWithMe(ctx context.Context, req *aeropb.ListSharedWithMeRequest) (*aeropb.ListFilesResponse, error) {
 	list, err := s.files.ListSharedWithMe(ctx, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListFilesResponse{Files: filesToPB(list.Files), NextCursor: list.NextCursor}, nil
 }
@@ -115,7 +115,7 @@ func (s *FileServer) PresignUpload(ctx context.Context, req *aeropb.PresignUploa
 		Visibility: visibility,
 	}, defaultDownloadTTL)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.PresignUploadResponse{
 		FileId:     res.FileID.String(),
@@ -127,7 +127,7 @@ func (s *FileServer) PresignUpload(ctx context.Context, req *aeropb.PresignUploa
 func (s *FileServer) CompleteUpload(ctx context.Context, req *aeropb.CompleteUploadRequest) (*aeropb.CompleteUploadResponse, error) {
 	fileID, err := idgen.Parse(req.FileId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid file_id"))
 	}
 	visibility, err := visibilityFromProto(req.Visibility)
 	if err != nil {
@@ -141,7 +141,7 @@ func (s *FileServer) CompleteUpload(ctx context.Context, req *aeropb.CompleteUpl
 		Visibility: visibility,
 	})
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.CompleteUploadResponse{File: fileToPB(f)}, nil
 }
@@ -152,7 +152,7 @@ func (s *FileServer) CompleteUpload(ctx context.Context, req *aeropb.CompleteUpl
 func (s *FileServer) UpdateFileMetadata(ctx context.Context, req *aeropb.UpdateFileMetadataRequest) (*aeropb.UpdateFileMetadataResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	in := service.UpdateFileMetadataInput{Name: req.Name}
 	if req.Visibility != nil {
@@ -167,7 +167,7 @@ func (s *FileServer) UpdateFileMetadata(ctx context.Context, req *aeropb.UpdateF
 	}
 	f, err := s.files.UpdateMetadata(ctx, id, in)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UpdateFileMetadataResponse{File: fileToPB(f)}, nil
 }

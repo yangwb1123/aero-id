@@ -29,7 +29,7 @@ func (s *NotificationServer) Register(srv *grpc.Server) {
 func (s *NotificationServer) ListNotifications(ctx context.Context, req *aeropb.ListNotificationsRequest) (*aeropb.ListNotificationsResponse, error) {
 	list, err := s.notifs.List(ctx, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListNotificationsResponse{
 		Notifications: notificationsToPB(list.Notifications),
@@ -41,7 +41,7 @@ func (s *NotificationServer) ListNotifications(ctx context.Context, req *aeropb.
 func (s *NotificationServer) UnreadCount(ctx context.Context, _ *aeropb.NotificationUnreadCountRequest) (*aeropb.NotificationUnreadCountResponse, error) {
 	n, err := s.notifs.UnreadCount(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.NotificationUnreadCountResponse{UnreadCount: n}, nil
 }
@@ -49,17 +49,17 @@ func (s *NotificationServer) UnreadCount(ctx context.Context, _ *aeropb.Notifica
 func (s *NotificationServer) MarkRead(ctx context.Context, req *aeropb.MarkNotificationReadRequest) (*aeropb.MarkNotificationReadResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	if err := s.notifs.MarkRead(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.MarkNotificationReadResponse{}, nil
 }
 
 func (s *NotificationServer) MarkAllRead(ctx context.Context, _ *aeropb.MarkAllNotificationsReadRequest) (*aeropb.MarkAllNotificationsReadResponse, error) {
 	if err := s.notifs.MarkAllRead(ctx); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.MarkAllNotificationsReadResponse{}, nil
 }

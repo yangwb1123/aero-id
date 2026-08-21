@@ -66,6 +66,13 @@ func (c *Config) validateRequired() error {
 	if c.Database.DBName == "" {
 		return fmt.Errorf("database.dbname is required")
 	}
+	if err := c.validateSSO(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) validateSSO() error {
 	if c.SSO.Endpoint == "" {
 		return fmt.Errorf("sso.endpoint is required")
 	}

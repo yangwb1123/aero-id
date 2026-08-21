@@ -46,26 +46,26 @@ var _ aeropb.SourceIngestServiceServer = (*EventIngestServer)(nil)
 
 func (s *EventIngestServer) IngestEvents(ctx context.Context, req *aeropb.IngestEventsRequest) (*aeropb.IngestEventsResponse, error) {
 	if req == nil || len(req.GetEvents()) == 0 || len(req.GetEvents()) > maxEventBatch {
-		return nil, grpcError(apperr.BadRequest("event.batch_invalid", "event batch must contain one to one hundred events"))
+		return nil, apperr.GRPCError(apperr.BadRequest("event.batch_invalid", "event batch must contain one to one hundred events"))
 	}
 	binding, err := s.resolveBinding(ctx)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	results := make([]*aeropb.EventIngestResult, 0, len(req.GetEvents()))
 	for _, item := range req.GetEvents() {
 		envelope, err := canonicalEventFromProto(item)
 		if err != nil {
-			return nil, grpcError(err)
+			return nil, apperr.GRPCError(err)
 		}
 		if binding != nil {
 			if err := binding.Apply(envelope); err != nil {
-				return nil, grpcError(apperr.Forbidden("event.source_unauthorized", "event source is not authorized"))
+				return nil, apperr.GRPCError(apperr.Forbidden("event.source_unauthorized", "event source is not authorized"))
 			}
 		}
 		result, err := s.ingest.Ingest(ctx, envelope)
 		if err != nil {
-			return nil, grpcError(err)
+			return nil, apperr.GRPCError(err)
 		}
 		results = append(results, &aeropb.EventIngestResult{EventId: result.EventID, Status: result.Status})
 	}

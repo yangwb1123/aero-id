@@ -27,7 +27,7 @@ func (s *CommentServer) Register(srv *grpc.Server) { aeropb.RegisterCommentServi
 func (s *CommentServer) CreateComment(ctx context.Context, req *aeropb.CreateCommentRequest) (*aeropb.CreateCommentResponse, error) {
 	tid, err := idgen.Parse(req.TargetId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("comment.invalid", "invalid target_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("comment.invalid", "invalid target_id"))
 	}
 	in := service.CreateCommentInput{
 		TargetType: domain.TargetType(req.TargetType),
@@ -37,13 +37,13 @@ func (s *CommentServer) CreateComment(ctx context.Context, req *aeropb.CreateCom
 	if req.ParentId != "" {
 		pid, err := idgen.Parse(req.ParentId)
 		if err != nil {
-			return nil, grpcError(apperr.BadRequest("comment.invalid", "invalid parent_id"))
+			return nil, apperr.GRPCError(apperr.BadRequest("comment.invalid", "invalid parent_id"))
 		}
 		in.ParentID = &pid
 	}
 	c, err := s.comments.Create(ctx, in)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.CreateCommentResponse{Comment: commentToPB(c)}, nil
 }
@@ -51,11 +51,11 @@ func (s *CommentServer) CreateComment(ctx context.Context, req *aeropb.CreateCom
 func (s *CommentServer) ListComments(ctx context.Context, req *aeropb.ListCommentsRequest) (*aeropb.ListCommentsResponse, error) {
 	tid, err := idgen.Parse(req.TargetId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("comment.invalid", "invalid target_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("comment.invalid", "invalid target_id"))
 	}
 	list, err := s.comments.List(ctx, domain.TargetType(req.TargetType), tid, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListCommentsResponse{
 		Comments:   commentsToPB(list.Comments),
@@ -67,11 +67,11 @@ func (s *CommentServer) ListComments(ctx context.Context, req *aeropb.ListCommen
 func (s *CommentServer) Replies(ctx context.Context, req *aeropb.RepliesRequest) (*aeropb.RepliesResponse, error) {
 	rootID, err := idgen.Parse(req.RootId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid root_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid root_id"))
 	}
 	list, err := s.comments.Replies(ctx, rootID, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.RepliesResponse{
 		Comments:   commentsToPB(list.Comments),
@@ -83,10 +83,10 @@ func (s *CommentServer) Replies(ctx context.Context, req *aeropb.RepliesRequest)
 func (s *CommentServer) DeleteComment(ctx context.Context, req *aeropb.DeleteCommentRequest) (*aeropb.DeleteCommentResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	if err := s.comments.Delete(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.DeleteCommentResponse{}, nil
 }
@@ -94,11 +94,11 @@ func (s *CommentServer) DeleteComment(ctx context.Context, req *aeropb.DeleteCom
 func (s *CommentServer) LikeComment(ctx context.Context, req *aeropb.LikeCommentRequest) (*aeropb.LikeCommentResponse, error) {
 	id, err := idgen.Parse(req.CommentId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
 	}
 	res, err := s.comments.Like(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.LikeCommentResponse{LikeCount: protoCount(res.LikeCount)}, nil
 }
@@ -106,11 +106,11 @@ func (s *CommentServer) LikeComment(ctx context.Context, req *aeropb.LikeComment
 func (s *CommentServer) UnlikeComment(ctx context.Context, req *aeropb.UnlikeCommentRequest) (*aeropb.UnlikeCommentResponse, error) {
 	id, err := idgen.Parse(req.CommentId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
 	}
 	res, err := s.comments.Unlike(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UnlikeCommentResponse{LikeCount: protoCount(res.LikeCount)}, nil
 }
@@ -118,10 +118,10 @@ func (s *CommentServer) UnlikeComment(ctx context.Context, req *aeropb.UnlikeCom
 func (s *CommentServer) ReportComment(ctx context.Context, req *aeropb.ReportCommentRequest) (*aeropb.ReportCommentResponse, error) {
 	id, err := idgen.Parse(req.CommentId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
 	}
 	if err := s.comments.Report(ctx, id, req.Reason); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ReportCommentResponse{}, nil
 }
@@ -129,10 +129,10 @@ func (s *CommentServer) ReportComment(ctx context.Context, req *aeropb.ReportCom
 func (s *CommentServer) HideComment(ctx context.Context, req *aeropb.HideCommentRequest) (*aeropb.HideCommentResponse, error) {
 	id, err := idgen.Parse(req.CommentId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
 	}
 	if err := s.comments.Hide(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.HideCommentResponse{}, nil
 }
@@ -140,10 +140,10 @@ func (s *CommentServer) HideComment(ctx context.Context, req *aeropb.HideComment
 func (s *CommentServer) UnhideComment(ctx context.Context, req *aeropb.UnhideCommentRequest) (*aeropb.UnhideCommentResponse, error) {
 	id, err := idgen.Parse(req.CommentId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
 	}
 	if err := s.comments.Unhide(ctx, id); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.UnhideCommentResponse{}, nil
 }
@@ -151,11 +151,11 @@ func (s *CommentServer) UnhideComment(ctx context.Context, req *aeropb.UnhideCom
 func (s *CommentServer) EditComment(ctx context.Context, req *aeropb.EditCommentRequest) (*aeropb.EditCommentResponse, error) {
 	id, err := idgen.Parse(req.Id)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid id"))
 	}
 	c, err := s.comments.Edit(ctx, id, req.Content)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.EditCommentResponse{Comment: commentToPB(c)}, nil
 }
@@ -163,19 +163,19 @@ func (s *CommentServer) EditComment(ctx context.Context, req *aeropb.EditComment
 func (s *CommentServer) ListReports(ctx context.Context, req *aeropb.ListReportsRequest) (*aeropb.ListReportsResponse, error) {
 	id, err := idgen.Parse(req.CommentId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid comment_id"))
 	}
 	var status *domain.ReportStatus
 	if req.Status != nil {
 		s, ok := reportStatusByName[*req.Status]
 		if !ok {
-			return nil, grpcError(apperr.BadRequest("comment.invalid", "invalid status filter"))
+			return nil, apperr.GRPCError(apperr.BadRequest("comment.invalid", "invalid status filter"))
 		}
 		status = &s
 	}
 	list, err := s.comments.ListReports(ctx, id, status, pageFromPB(req.Page))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ListReportsResponse{
 		Reports:    reportsToPB(list.Reports),
@@ -187,14 +187,14 @@ func (s *CommentServer) ListReports(ctx context.Context, req *aeropb.ListReports
 func (s *CommentServer) ResolveReport(ctx context.Context, req *aeropb.ResolveReportRequest) (*aeropb.ResolveReportResponse, error) {
 	id, err := idgen.Parse(req.ReportId)
 	if err != nil {
-		return nil, grpcError(apperr.BadRequest("request.invalid_id", "invalid report_id"))
+		return nil, apperr.GRPCError(apperr.BadRequest("request.invalid_id", "invalid report_id"))
 	}
 	status, ok := reportStatusByName[req.Status]
 	if !ok {
-		return nil, grpcError(apperr.BadRequest("comment.invalid", "status must be resolved or dismissed"))
+		return nil, apperr.GRPCError(apperr.BadRequest("comment.invalid", "status must be resolved or dismissed"))
 	}
 	if err := s.comments.ResolveReport(ctx, id, status); err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ResolveReportResponse{}, nil
 }

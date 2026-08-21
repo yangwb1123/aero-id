@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/handler/grpc/aeropb"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/service"
 )
 
@@ -37,7 +38,7 @@ func (s *SearchServer) Search(ctx context.Context, req *aeropb.SearchRequest) (*
 
 	hits, err := s.svc.Search(ctx, req.Query, kinds, int(req.Limit))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 
 	pbHits := make([]*aeropb.SearchHit, 0, len(hits))

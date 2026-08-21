@@ -1,9 +1,11 @@
 package errors
 
 import (
+	"context"
 	stdErrors "errors"
 	"net/http"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -59,15 +61,29 @@ func Unavailable(code, msg string) *AppError {
 	return &AppError{Code: code, Message: msg, HTTP: http.StatusServiceUnavailable, GRPC: codes.Unavailable}
 }
 
-// GRPCError converts a service error to a gRPC status error. *AppError carries its
-// own code; anything else becomes Internal so internals are not leaked.
+// GRPCError converts a service error to a gRPC status error. An AppError keeps
+// its safe message and carries its stable dotted code as an ErrorInfo detail;
+// deadline and cancellation errors retain their canonical gRPC status. Other
+// errors become Internal so dependency details are never exposed.
 func GRPCError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var ae *AppError
 	if stdErrors.As(err, &ae) {
-		return status.Error(ae.GRPC, ae.Message)
+		st, detailErr := status.New(ae.GRPC, ae.Message).WithDetails(
+			&errdetails.ErrorInfo{Reason: ae.Code, Domain: "aero-id"},
+		)
+		if detailErr != nil {
+			return status.New(ae.GRPC, ae.Message).Err()
+		}
+		return st.Err()
+	}
+	switch {
+	case stdErrors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
+	case stdErrors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, "request canceled")
 	}
 	return status.Error(codes.Internal, "internal server error")
 }

@@ -51,11 +51,11 @@ func (s *OperationServer) CreateOperation(ctx context.Context, req *aeropb.Creat
 	operation, err := s.operations.Create(ctx, service.OperationInput{AccountID: accountID, HomeRegion: req.GetHomeRegion(),
 		OperationType: req.GetOperationType(), IdempotencyKey: req.GetIdempotencyKey(), RequestPayload: payload, Steps: steps})
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := operationToProto(operation)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.CreateOperationResponse{Operation: result}, nil
 }
@@ -67,11 +67,11 @@ func (s *OperationServer) GetOperation(ctx context.Context, req *aeropb.GetOpera
 	}
 	operation, err := s.operations.Get(ctx, id)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := operationToProto(operation)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.GetOperationResponse{Operation: result}, nil
 }
@@ -79,13 +79,13 @@ func (s *OperationServer) GetOperation(ctx context.Context, req *aeropb.GetOpera
 func (s *OperationServer) ListOperations(ctx context.Context, req *aeropb.ListOperationsRequest) (*aeropb.ListOperationsResponse, error) {
 	items, next, err := s.operations.List(ctx, pageFromProto(req.GetPage()))
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result := make([]*aeropb.Operation, 0, len(items))
 	for _, item := range items {
 		converted, err := operationToProto(item)
 		if err != nil {
-			return nil, grpcError(err)
+			return nil, apperr.GRPCError(err)
 		}
 		result = append(result, converted)
 	}
@@ -99,11 +99,11 @@ func (s *OperationServer) RunOperation(ctx context.Context, req *aeropb.RunOpera
 	}
 	operation, err := s.operations.Run(ctx, id, req.GetWorkerId())
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := operationToProto(operation)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.RunOperationResponse{Operation: result}, nil
 }
@@ -115,11 +115,11 @@ func (s *OperationServer) ReconcileOperation(ctx context.Context, req *aeropb.Re
 	}
 	operation, err := s.operations.Reconcile(ctx, id, req.GetWorkerId())
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	result, err := operationToProto(operation)
 	if err != nil {
-		return nil, grpcError(err)
+		return nil, apperr.GRPCError(err)
 	}
 	return &aeropb.ReconcileOperationResponse{Operation: result}, nil
 }
@@ -183,7 +183,7 @@ func parseOptionalOperationID(value, field string) (domain.ID, error) {
 	}
 	id, err := parseID(value, field)
 	if err != nil {
-		return domain.ID{}, grpcError(apperr.BadRequest("operation.invalid_id", "invalid "+field))
+		return domain.ID{}, apperr.GRPCError(apperr.BadRequest("operation.invalid_id", "invalid "+field))
 	}
 	return id, nil
 }
