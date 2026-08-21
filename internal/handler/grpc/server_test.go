@@ -210,6 +210,65 @@ func TestRateLimitInterceptor_nilLimiterIsNoop(t *testing.T) {
 	}
 }
 
+type failingDistributedLimiter struct{}
+
+func (failingDistributedLimiter) Allow(context.Context, string) (bool, time.Duration, error) {
+	return false, 0, stderrors.New("redis unavailable")
+}
+
+func TestRateLimitInterceptorSensitiveFailsClosedOnDistributedOutage(t *testing.T) {
+	intc := RateLimitInterceptor(nil, failingDistributedLimiter{})
+	ctx := service.WithActor(context.Background(), "u1")
+	call := func(method string) error {
+		_, err := intc(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method},
+			func(context.Context, any) (any, error) { return "ok", nil })
+		return err
+	}
+	for _, method := range []string{
+		"/aero_id.v1.OperationService/RunOperation",
+		"/aero_id.v1.CallbackService/ReplayCallbackDelivery",
+		"/aero_id.v1.AdminService/ListAudit",
+	} {
+		if got := status.Code(call(method)); got != codes.Unavailable {
+			t.Errorf("sensitive %s code = %v, want Unavailable", method, got)
+		}
+	}
+	if err := call("/aero_id.v1.MessageService/Inbox"); err != nil {
+		t.Fatalf("interactive method must fail open, got %v", err)
+	}
+}
+
+func TestRateLimitInterceptorSensitiveUsesLocalDecisionOnOutage(t *testing.T) {
+	local := ratelimit.New(1, 1, time.Minute)
+	_ = local.Allow("uid:u1")
+	intc := RateLimitInterceptor(local, failingDistributedLimiter{})
+	ctx := service.WithActor(context.Background(), "u1")
+	_, err := intc(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/aero_id.v1.OperationService/RunOperation"},
+		func(context.Context, any) (any, error) { return "ok", nil })
+	if got := status.Code(err); got != codes.ResourceExhausted {
+		t.Fatalf("sensitive local decision code = %v, want ResourceExhausted", got)
+	}
+}
+
+func TestIsGRPCRateLimitSensitive(t *testing.T) {
+	cases := map[string]bool{
+		"/aero_id.v1.AdminService/ListAudit":                 true,
+		"/aero_id.v1.AuditLedgerService/ListAuditFacts":      true,
+		"/aero_id.v1.OperationService/CreateOperation":       true,
+		"/aero_id.v1.OperationService/RunOperation":          true,
+		"/aero_id.v1.CallbackService/ReplayCallbackDelivery": true,
+		"/aero_id.v1.SyncJobService/CreateSyncJob":           true,
+		"/aero_id.v1.SourceIngestService/IngestEvents":       true,
+		"/aero_id.v1.MessageService/Inbox":                   false,
+		"/aero_id.v1.OperationService/GetOperation":          false,
+	}
+	for method, want := range cases {
+		if got := isGRPCRateLimitSensitive(method); got != want {
+			t.Errorf("isGRPCRateLimitSensitive(%q) = %v, want %v", method, got, want)
+		}
+	}
+}
+
 // TestNewServerWithOptions_acceptsGRPCServerOptions verifies that
 // WithGRPCServerOptions does not cause a panic and the server starts normally.
 func TestNewServerWithOptions_acceptsGRPCServerOptions(t *testing.T) {

@@ -296,7 +296,10 @@ func RateLimitInterceptor(l *ratelimit.Limiter, distributed ...ratelimit.Distrib
 		if (l == nil && len(distributed) == 0) || (info != nil && infraMethod(info.FullMethod)) {
 			return handler(ctx, req)
 		}
-		allowed, _ := allowGRPCRateLimit(ctx, rateLimitKey(ctx), l, firstDistributed(distributed))
+		allowed, unavailable := allowGRPCRateLimit(ctx, rateLimitKey(ctx), l, firstDistributed(distributed), isGRPCRateLimitSensitive(info.FullMethod))
+		if unavailable {
+			return nil, status.Error(codes.Unavailable, "rate limiter unavailable; sensitive request refused")
+		}
 		if allowed {
 			return handler(ctx, req)
 		}
@@ -311,20 +314,23 @@ func firstDistributed(values []ratelimit.DistributedLimiter) ratelimit.Distribut
 	return values[0]
 }
 
-func allowGRPCRateLimit(ctx context.Context, key string, local *ratelimit.Limiter, distributed ratelimit.DistributedLimiter) (bool, time.Duration) {
+func allowGRPCRateLimit(ctx context.Context, key string, local *ratelimit.Limiter, distributed ratelimit.DistributedLimiter, sensitive bool) (bool, bool) {
 	if distributed != nil {
-		allowed, retry, err := distributed.Allow(ctx, key)
+		allowed, _, err := distributed.Allow(ctx, key)
 		if err == nil {
-			return allowed, retry
+			return allowed, false
 		}
-		// A Redis outage must not turn a configured edge limiter into a total
-		// outage; fall back to the local bulkhead and keep the error observable
-		// through the local decision path.
+		// Interactive calls fall back to the local bucket. Sensitive calls only
+		// proceed when that bucket can still make a decision; an outage with no
+		// local limiter must not silently bypass the throttle.
+		if sensitive && local == nil {
+			return false, true
+		}
 	}
 	if local == nil {
-		return true, 0
+		return true, false
 	}
-	return local.Allow(key), local.RetryAfter()
+	return local.Allow(key), false
 }
 
 // PermissionInterceptor checks that the authenticated actor has the required
