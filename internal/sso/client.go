@@ -174,12 +174,16 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	if cfg.MaxConcurrent > 0 {
 		c.sem = make(chan struct{}, cfg.MaxConcurrent)
 	}
-	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
+	c.userCache = NewUserCacheWithStale(cfg.UserCacheTTL, cfg.StaleTTL, c.fetchUsers)
 	if c.metrics != nil {
 		c.userCache.SetLookupObserver(func(hit bool) { c.recordCache("user", hit) })
 	}
-	stop := c.tokenCache.RunCleaner(30 * time.Second)
-	c.stopFn = stop
+	tokenStop := c.tokenCache.RunCleaner(30 * time.Second)
+	userStop := c.userCache.RunCleaner(30 * time.Second)
+	c.stopFn = func() {
+		tokenStop()
+		userStop()
+	}
 	return c
 }
 
