@@ -74,7 +74,11 @@ func TestServerBinaryActivationGateBoot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "-config", filepath.Join(root, "configs", "config.yaml"))
-	cmd.Env = append(scrubAuditGovernanceEnv(os.Environ()), "AERO_ID_AUDIT_GOVERNANCE_ENABLED=true")
+	cmd.Env = append(scrubAuditGovernanceEnv(os.Environ()),
+		"AERO_ID_AUDIT_GOVERNANCE_ENABLED=true",
+		"AERO_ID_SIGNING_KEY=ssssssssssssssssssssssssssssssss",
+		"AERO_ID_AUDIT_LEDGER_SIGNING_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	)
 	out, err := cmd.CombinedOutput()
 
 	var exitErr *exec.ExitError

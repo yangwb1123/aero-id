@@ -73,7 +73,7 @@ type EventIngestConfig struct {
 	MaxBodyBytes     int64                               `mapstructure:"max_body_bytes"`
 	ClockSkew        time.Duration                       `mapstructure:"clock_skew"`
 	AllowedRegions   []string                            `mapstructure:"allowed_regions"` // residency allow-list (P6-04); empty = accept any source region
-	Bindings         map[string]EventSourceBindingConfig `mapstructure:"bindings"` // Snaplink client_id -> source binding
+	Bindings         map[string]EventSourceBindingConfig `mapstructure:"bindings"`        // Snaplink client_id -> source binding
 }
 
 type EventSourceBindingConfig struct {
@@ -89,26 +89,29 @@ type EventBusConfig struct {
 }
 
 type NATSBusConfig struct {
-	Enabled          bool          `mapstructure:"enabled"`
-	URL              string        `mapstructure:"url"`
-	Stream           string        `mapstructure:"stream"`
-	Subject          string        `mapstructure:"subject"`
-	Durable          string        `mapstructure:"durable"`
-	MaxRedeliveries  int           `mapstructure:"max_redeliveries"`
-	AckWait          time.Duration `mapstructure:"ack_wait"`
+	Enabled           bool          `mapstructure:"enabled"`
+	URL               string        `mapstructure:"url"`
+	Stream            string        `mapstructure:"stream"`
+	Subject           string        `mapstructure:"subject"`
+	DeadLetterSubject string        `mapstructure:"dead_letter_subject"`
+	Durable           string        `mapstructure:"durable"`
+	MaxRedeliveries   int           `mapstructure:"max_redeliveries"`
+	AckWait           time.Duration `mapstructure:"ack_wait"`
 }
 
 // ReplicationConfig configures cross-region projection replication (P6-03).
 // Transport is one of "nats" (subject) or "http" (remote ingest endpoint with
 // the same HMAC scheme the ingest handler verifies).
 type ReplicationConfig struct {
-	Enabled      bool          `mapstructure:"enabled"`
-	Interval     time.Duration `mapstructure:"interval"`
-	BatchSize    int           `mapstructure:"batch_size"`
-	Transport    string        `mapstructure:"transport"`   // nats | http
-	NATSSubject  string        `mapstructure:"nats_subject"` // transport=nats
-	HTTPEndpoint string        `mapstructure:"http_endpoint"` // transport=http
-	HTTPKey      string        `mapstructure:"http_key"`     // transport=http; HMAC key for the remote ingest
+	Enabled         bool          `mapstructure:"enabled"`
+	Interval        time.Duration `mapstructure:"interval"`
+	Lease           time.Duration `mapstructure:"lease"` // worker lease; 0 = service default
+	BatchSize       int           `mapstructure:"batch_size"`
+	Transport       string        `mapstructure:"transport"`         // nats | http
+	NATSSubject     string        `mapstructure:"nats_subject"`      // transport=nats
+	HTTPEndpoint    string        `mapstructure:"http_endpoint"`     // transport=http
+	HTTPKey         string        `mapstructure:"http_key"`          // transport=http; HMAC key for the remote ingest
+	HTTPBearerToken string        `mapstructure:"http_bearer_token"` // transport=http; service identity token, secret provider/env only
 }
 
 type AuditLedgerConfig struct {
@@ -274,6 +277,7 @@ type SSOConfig struct {
 	BreakerCooldown     time.Duration `mapstructure:"breaker_cooldown"`  // how long the breaker fast-fails before probing SSO again
 	MaxAttempts         int           `mapstructure:"max_attempts"`      // upstream tries per call within the timeout budget (1 = no retry)
 	RetryBackoff        time.Duration `mapstructure:"retry_backoff"`     // base exponential backoff between availability-error retries
+	MaxConcurrent       int           `mapstructure:"max_concurrent"`    // max concurrent in-flight SSO RPCs (validate/get_users/authorize; 0 = no cap)
 	KeepaliveTime       time.Duration `mapstructure:"keepalive_time"`    // gRPC keepalive ping interval
 	KeepaliveTimeout    time.Duration `mapstructure:"keepalive_timeout"` // gRPC keepalive ping ack timeout
 	// mTLS / TLS transport security (used only when insecure=false).

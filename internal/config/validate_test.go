@@ -38,12 +38,12 @@ const (
 	maxSendFloorErr    = "server.grpc.max_send_msg_size must be >= 1KB when set"
 
 	// FR-4.1 (validateEventBus, validate.go:287-298).
-	eventBusRequiredErr = "event_bus.nats url, stream, subject and durable are required when enabled"
+	eventBusRequiredErr = "event_bus.nats url, stream, subject, dead_letter_subject and durable are required when enabled"
 	eventBusNegativeErr = "event_bus.nats max_redeliveries and ack_wait must not be negative"
 
 	// FR-4.2 (validateReplication, validate.go:300-320).
 	replicationNATSRequiredErr = "replication.nats_subject is required when transport=nats"
-	replicationHTTPRequiredErr = "replication.http_endpoint and http_key are required when transport=http"
+	replicationHTTPRequiredErr = "replication.http_endpoint, http_key and http_bearer_token are required when transport=http"
 	replicationTransportErr    = "replication.transport must be nats or http"
 	replicationLimitsErr       = "replication interval must be positive and batch_size must not be negative"
 
@@ -97,27 +97,27 @@ type sourceURLCase struct {
 // the parse-error branch.
 func sourceURLCases() []sourceURLCase {
 	return []sourceURLCase{
-		{"https", "https://sso.example/token", true},                       // pass-through
-		{"https root path", "https://sso.example/", true},                  // pass-through
-		{"https bare query", "https://sso.example/token?", true},           // ForceQuery parity: RawQuery=="" (validate.go:395)
-		{"https uppercase scheme", "HTTPS://sso.example/token", true},      // parser lowercases the scheme
-		{"http localhost", "http://localhost/token", true},                 // loopback carve-out
-		{"http localhost port", "http://localhost:8080/token", true},       // loopback carve-out
-		{"http 127.0.0.1", "http://127.0.0.1/token", true},                 // loopback carve-out
-		{"http 127.0.0.1 port", "http://127.0.0.1:9090", true},             // loopback carve-out
-		{"http ipv6 loopback", "http://[::1]/token", true},                 // loopback carve-out
-		{"http ipv6 loopback port", "http://[::1]:9090/x", true},           // loopback carve-out
-		{"http localhost uppercase host", "http://LOCALHOST/token", true},  // isLocalEndpoint lowercases (validate.go:424-427)
-		{"http non-loopback", "http://sso.example/token", false},           // CANARY: https-outside-localhost rule (validate.go:401-403)
-		{"http non-loopback port", "http://sso.example:8080/", false},      // CANARY: same
-		{"ftp scheme", "ftp://sso.example/token", false},                   // scheme must be http/https (validate.go:399-400)
-		{"not a url", "not-a-url", false},                                  // parse error (validate.go:395)
-		{"userinfo", "https://u:p@sso.example/token", false},               // parsed.User != nil (validate.go:395)
-		{"fragment", "https://sso.example/token#frag", false},              // parsed.Fragment != "" (validate.go:395)
-		{"raw query", "https://sso.example/token?x=1", false},              // parsed.RawQuery != "" (validate.go:395)
-		{"whitespace padded", "  https://sso.example/token  ", false},      // divergence pin: no trim => parse error (validate.go:395); the audit connector trims and accepts
-		{"empty host", "https://", false},                                  // parsed.Hostname()=="" (validate.go:395)
-		{"empty host http", "http://", false},                              // parsed.Hostname()=="" (validate.go:395)
+		{"https", "https://sso.example/token", true},                      // pass-through
+		{"https root path", "https://sso.example/", true},                 // pass-through
+		{"https bare query", "https://sso.example/token?", true},          // ForceQuery parity: RawQuery=="" (validate.go:395)
+		{"https uppercase scheme", "HTTPS://sso.example/token", true},     // parser lowercases the scheme
+		{"http localhost", "http://localhost/token", true},                // loopback carve-out
+		{"http localhost port", "http://localhost:8080/token", true},      // loopback carve-out
+		{"http 127.0.0.1", "http://127.0.0.1/token", true},                // loopback carve-out
+		{"http 127.0.0.1 port", "http://127.0.0.1:9090", true},            // loopback carve-out
+		{"http ipv6 loopback", "http://[::1]/token", true},                // loopback carve-out
+		{"http ipv6 loopback port", "http://[::1]:9090/x", true},          // loopback carve-out
+		{"http localhost uppercase host", "http://LOCALHOST/token", true}, // isLocalEndpoint lowercases (validate.go:424-427)
+		{"http non-loopback", "http://sso.example/token", false},          // CANARY: https-outside-localhost rule (validate.go:401-403)
+		{"http non-loopback port", "http://sso.example:8080/", false},     // CANARY: same
+		{"ftp scheme", "ftp://sso.example/token", false},                  // scheme must be http/https (validate.go:399-400)
+		{"not a url", "not-a-url", false},                                 // parse error (validate.go:395)
+		{"userinfo", "https://u:p@sso.example/token", false},              // parsed.User != nil (validate.go:395)
+		{"fragment", "https://sso.example/token#frag", false},             // parsed.Fragment != "" (validate.go:395)
+		{"raw query", "https://sso.example/token?x=1", false},             // parsed.RawQuery != "" (validate.go:395)
+		{"whitespace padded", "  https://sso.example/token  ", false},     // divergence pin: no trim => parse error (validate.go:395); the audit connector trims and accepts
+		{"empty host", "https://", false},                                 // parsed.Hostname()=="" (validate.go:395)
+		{"empty host http", "http://", false},                             // parsed.Hostname()=="" (validate.go:395)
 	}
 }
 
@@ -202,6 +202,31 @@ func TestValidateSourceMTLSAndPaths(t *testing.T) {
 	}
 }
 
+func TestValidateCallbackBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*CallbackConfig)
+		wantErr string
+	}{
+		{"defaults", nil, ""},
+		{"negative", func(c *CallbackConfig) { c.MaxResponseBytes = -1 }, "callback timeout, response, retry, and concurrency values must not be negative"},
+		{"timeout cap", func(c *CallbackConfig) { c.RequestTimeout = maxCallbackRequestTimeout + time.Second }, "callback.request_timeout must not exceed"},
+		{"response cap", func(c *CallbackConfig) { c.MaxResponseBytes = maxCallbackResponseBytes + 1 }, "callback.max_response_bytes must not exceed"},
+		{"attempt cap", func(c *CallbackConfig) { c.MaxAttempts = maxCallbackAttempts + 1 }, "callback.max_attempts must not exceed"},
+		{"retry cap", func(c *CallbackConfig) { c.RetryBase = maxCallbackRetryBase + time.Second }, "callback.retry_base must not exceed"},
+		{"concurrency cap", func(c *CallbackConfig) { c.WorkerConcurrency = maxCallbackWorkerConcurrency + 1 }, "callback.worker_concurrency must not exceed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value := CallbackConfig{}
+			if tc.mutate != nil {
+				tc.mutate(&value)
+			}
+			wantConfigErr(t, validateCallback(value), tc.wantErr)
+		})
+	}
+}
+
 type transportCase struct {
 	name    string
 	cfg     Config
@@ -220,13 +245,13 @@ func transportCases() []transportCase {
 	return []transportCase{
 		{"all zero (defaults)", Config{}, ""}, // zero = default; no floor applied
 		{"keepalive 500ms", Config{Server: ServerConfig{GRPC: GRPCConfig{KeepaliveMinPingInterval: 500 * time.Millisecond}}}, keepaliveFloorErr}, // CANARY
-		{"keepalive exactly 1s", Config{Server: ServerConfig{GRPC: GRPCConfig{KeepaliveMinPingInterval: time.Second}}}, ""},                       // boundary
+		{"keepalive exactly 1s", Config{Server: ServerConfig{GRPC: GRPCConfig{KeepaliveMinPingInterval: time.Second}}}, ""},                      // boundary
 		{"keepalive 10s (shipped)", Config{Server: ServerConfig{GRPC: GRPCConfig{KeepaliveMinPingInterval: 10 * time.Second}}}, ""},
 		{"read_header_timeout 500ms", Config{Server: ServerConfig{HTTP: HTTPConfig{ReadHeaderTimeout: 500 * time.Millisecond}}}, readHeaderFloorErr}, // CANARY
 		{"read_header_timeout exactly 1s", Config{Server: ServerConfig{HTTP: HTTPConfig{ReadHeaderTimeout: time.Second}}}, ""},                       // boundary
 		{"read_header_timeout 10s (shipped)", Config{Server: ServerConfig{HTTP: HTTPConfig{ReadHeaderTimeout: 10 * time.Second}}}, ""},
-		{"max_recv 512", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxRecvMsgSize: 512}}}, maxRecvFloorErr},  // CANARY
-		{"max_recv exactly 1024", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxRecvMsgSize: 1024}}}, ""},     // boundary
+		{"max_recv 512", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxRecvMsgSize: 512}}}, maxRecvFloorErr}, // CANARY
+		{"max_recv exactly 1024", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxRecvMsgSize: 1024}}}, ""},    // boundary
 		{"max_recv 4MiB (shipped)", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxRecvMsgSize: 4194304}}}, ""},
 		{"max_send 512", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxSendMsgSize: 512}}}, maxSendFloorErr}, // CANARY
 		{"max_send exactly 1024", Config{Server: ServerConfig{GRPC: GRPCConfig{MaxSendMsgSize: 1024}}}, ""},    // boundary
@@ -254,7 +279,8 @@ type eventBusCase struct {
 func eventBusBase() NATSBusConfig {
 	return NATSBusConfig{
 		Enabled: true, URL: "nats://nats:4222", Stream: "aero_events",
-		Subject: "aero.events.canonical", Durable: "aero-id-ingest",
+		Subject: "aero.events.canonical", DeadLetterSubject: "aero.events.canonical.dead-letter",
+		Durable:         "aero-id-ingest",
 		MaxRedeliveries: 5, AckWait: 30 * time.Second,
 	}
 }
@@ -276,6 +302,9 @@ func eventBusCases() []eventBusCase {
 		{"enabled, missing stream", func(n *NATSBusConfig) { n.Stream = "" }, eventBusRequiredErr},
 		{"enabled, missing subject", func(n *NATSBusConfig) { n.Subject = "" }, eventBusRequiredErr},
 		{"enabled, missing durable", func(n *NATSBusConfig) { n.Durable = "" }, eventBusRequiredErr},
+		{"enabled, same canonical and dead-letter subject", func(n *NATSBusConfig) {
+			n.DeadLetterSubject = n.Subject
+		}, "event_bus.nats dead_letter_subject must differ from subject"},
 		{"enabled, fully set", nil, ""},
 		{"enabled, negative max_redeliveries", func(n *NATSBusConfig) { n.MaxRedeliveries = -1 }, eventBusNegativeErr},
 		{"enabled, negative ack_wait", func(n *NATSBusConfig) { n.AckWait = -time.Second }, eventBusNegativeErr},
@@ -323,9 +352,16 @@ func replicationCases() []replicationCase {
 			r.Transport = "http"
 			r.HTTPEndpoint = "https://region.example/ingest"
 			r.HTTPKey = "replication-hmac-key-00000000000000000000"
+			r.HTTPBearerToken = "replication-service-token"
 		}, ""},
+		{"enabled http, insecure remote endpoint", func(r *ReplicationConfig) {
+			r.Transport = "http"
+			r.HTTPEndpoint = "http://region.example/ingest"
+			r.HTTPKey = "replication-hmac-key-00000000000000000000"
+			r.HTTPBearerToken = "replication-service-token"
+		}, "replication.http_endpoint must use https outside localhost"},
 		{"enabled, unsupported transport", func(r *ReplicationConfig) { r.Transport = "tcp" }, replicationTransportErr}, // switch default
-		{"enabled, empty transport", func(r *ReplicationConfig) { r.Transport = "" }, replicationTransportErr},         // switch default
+		{"enabled, empty transport", func(r *ReplicationConfig) { r.Transport = "" }, replicationTransportErr},          // switch default
 		{"enabled nats, zero interval", func(r *ReplicationConfig) { r.Interval = 0 }, replicationLimitsErr},
 		{"enabled nats, negative batch", func(r *ReplicationConfig) { r.BatchSize = -1 }, replicationLimitsErr},
 		{"enabled nats, zero batch", func(r *ReplicationConfig) { r.BatchSize = 0 }, ""}, // 0 is not negative
@@ -345,7 +381,7 @@ type webhookCase struct {
 // pin the positive-duration guard.
 func webhookCases() []webhookCase {
 	return []webhookCase{
-		{"disabled (empty url)", WebhookConfig{Timeout: "5s"}, ""}, // CANARY: disabled short-circuit
+		{"disabled (empty url)", WebhookConfig{Timeout: "5s"}, ""},                         // CANARY: disabled short-circuit
 		{"url set, timeout empty", WebhookConfig{URL: "https://hooks.example/events"}, ""}, // empty timeout = default 10s
 		{"url set, timeout 5s", WebhookConfig{URL: "https://hooks.example/events", Timeout: "5s"}, ""},
 		{"url set, timeout 500ms", WebhookConfig{URL: "https://hooks.example/events", Timeout: "500ms"}, ""}, // no floor
@@ -377,7 +413,7 @@ func sourceKeyCases() []sourceKeyCase {
 		{"unsupported source", map[string]string{"slack": "slack-hmac-key-00000000000000000004"}, sourceKeyUnsupportedErr},
 		{"short snaplink key", map[string]string{"snaplink": "short"}, sourceKeyShortErr},
 		{"whitespace-padded short key", map[string]string{"snaplink": "                        "}, sourceKeyShortErr}, // pins strings.TrimSpace (validate.go:330)
-		{"exactly 32 bytes", map[string]string{"snaplink": "01234567890123456789012345678901"}, ""},                // boundary
+		{"exactly 32 bytes", map[string]string{"snaplink": "01234567890123456789012345678901"}, ""},                   // boundary
 	}
 }
 
@@ -455,5 +491,17 @@ func TestValidateBindingRegions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			wantConfigErr(t, validateBindingRegions(tc.bindings, map[string]struct{}{"local": {}}), tc.wantErr)
 		})
+	}
+}
+
+func TestValidateEventBindingWildcardIsReplicationOnly(t *testing.T) {
+	valid := EventSourceBindingConfig{TenantID: "*", Source: "aero-id", SourceRegion: "local"}
+	if err := validateEventBinding("replication-client", valid); err != nil {
+		t.Fatalf("replication wildcard binding rejected: %v", err)
+	}
+	invalid := valid
+	invalid.Source = "aero-im"
+	if err := validateEventBinding("replication-client", invalid); err == nil {
+		t.Fatal("wildcard tenant binding for aero-im was accepted")
 	}
 }

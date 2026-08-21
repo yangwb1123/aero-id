@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 		if got := r.Header.Get("X-Request-ID"); got != "request-1" {
 			t.Fatalf("X-Request-ID = %q, want request-1", got)
 		}
-		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"datasets":{"aero-im.profile":{"display_name":"Ada","token":"secret","nested":{"body":"message"}}}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"generated_at":"2026-08-20T00:00:00Z","datasets":{"aero-im.profile":{"display_name":"Ada","token":"secret","nested":{"body":"message"}}}}`))
 	}))
 	defer server.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
@@ -41,7 +42,7 @@ func TestJSONSummaryConnectorRedactsSnaplinkIdentityCredentials(t *testing.T) {
 		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.AccountDataset("snaplink.identity")) {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
-		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"snaplink.identity":{
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{"snaplink.identity":{
 			"display_name":"Ada","email":"ada@example.com","verified":true,
 			"identity":{"api_key":"sk-1","apikey":"sk-2","jwt":"eyJhbGciOi…","passcode":"123456",
 			"otp":"654321","verification_code":"abc-123","access_token":"tok-1","mfa_secret":"mfa-1"}}}}`))
@@ -76,7 +77,7 @@ func TestJSONSummaryConnectorRedactsCamelCaseCredentials(t *testing.T) {
 		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.AccountDataset("aero-vault.tenants")) {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
-		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"aero-vault.tenants":{"display_name":"Ada","owner":{"accessKey":"AKIA…","privateKey":"-----BEGIN…"}}}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{"aero-vault.tenants":{"display_name":"Ada","owner":{"accessKey":"AKIA…","privateKey":"-----BEGIN…"}}}}`))
 	}))
 	defer server.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
@@ -126,5 +127,85 @@ func TestJSONSummaryConnectorRejectsOversizedBody(t *testing.T) {
 	}
 	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{3}}); err == nil {
 		t.Fatal("oversized response was accepted")
+	}
+}
+
+func TestJSONSummaryConnectorRejectsMissingFreshnessMetadata(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{name: "region", body: `{"version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`, code: "source.region_missing"},
+		{name: "generated_at", body: `{"source_region":"west","version":1,"datasets":{}}`, code: "source.generated_at_missing"},
+		{name: "version", body: `{"source_region":"west","version":0,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`, code: "source.version_invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+			var remote *RemoteError
+			if !errors.As(err, &remote) {
+				t.Fatalf("error = %v, want RemoteError", err)
+			}
+			if remote.Kind != ErrorInvalid || remote.Code != tc.code {
+				t.Fatalf("remote = %+v, want invalid/%s", remote, tc.code)
+			}
+		})
+	}
+}
+
+func TestJSONSummaryConnectorRejectsInvalidReferences(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{name: "source account id", body: `{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","sources":[{"scope_type":"workspace","scope_id":"w-1"}]}`, code: "source.reference_invalid"},
+		{name: "source scope pair", body: `{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","sources":[{"source_account_id":"a-1","scope_type":"workspace"}]}`, code: "source.reference_invalid"},
+		{name: "membership", body: `{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","memberships":[{"scope_type":"workspace","scope_id":"w-1"}]}`, code: "source.membership_invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+			var remote *RemoteError
+			if !errors.As(err, &remote) {
+				t.Fatalf("error = %v, want RemoteError", err)
+			}
+			if remote.Kind != ErrorInvalid || remote.Code != tc.code {
+				t.Fatalf("remote = %+v, want invalid/%s", remote, tc.code)
+			}
+		})
+	}
+}
+
+func TestJSONSummaryConnectorRejectsRequestedRegionMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
+	}))
+	defer server.Close()
+	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Region: "east"})
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Code != "source.region_mismatch" || remote.Kind != ErrorInvalid {
+		t.Fatalf("error = %+v, want invalid/source.region_mismatch", err)
 	}
 }

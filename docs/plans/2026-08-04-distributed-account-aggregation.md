@@ -2,19 +2,20 @@
 
 > 日期：2026-08-04
 >
-> 状态：仓库内实现已完成并全部门禁验证通过（2026-08-05 复核）；剩余均为外部发布/基础设施门禁：
+> 状态：仓库内目标代码、迁移、组合根和完整门禁已完成；2026-08-20 复核时，普通测试、严格 lint、
+> 架构/审计/迁移/协议门禁、完整 `make test-integration` 和 build 均通过。剩余均为外部发布/基础设施门禁：
 > 源系统（Snaplink/IM/Vault）API 发布与 contract test、多区域真实基础设施与故障切换演练、
 > 独立客户端技术选型与立项（P7）。
 >
 > 复核结论：`make test`、`make lint`、`make lint-strict`、`make check-file-sizes`、`make build`、
-> `make test-integration`、`make check-architecture` 全部绿灯；修复了此前阻塞 `lint-strict` 的
-> 27 处违规（unused/nilerr/errorlint/cyclop/funlen/lll/SA4006）。
+> `make test-integration`、`make check-architecture` 全部绿灯；NATS poison/DLQ、app composition-root
+> 和 replication cursor lease 均由定向及完整集成覆盖。
 >
 > 目标：将当前 aero-id 从 SSO 用户内容服务逐步演进为跨 Snaplink、Aero IM、Aero Vault、多个数据中心的账户聚合、统一管理、操作编排和审计平台。
 >
 > 实施原则：现有 API 兼容优先；先建立权威边界和读模型，再接入事件、审计和跨区域能力；禁止跨服务数据库直连和分布式两阶段提交。
 
-## 当前实现快照（2026-08-04）
+## 当前实现快照（2026-08-20 复核）
 
 以下项目已经在当前 live runtime 中有代码、迁移、组合根 wiring 和单元测试：
 
@@ -22,17 +23,19 @@
 - Snaplink JWKS JWT 校验、issuer/audience/subject 校验，以及 AuthZ gRPC adapter；
 - allow-listed dataset registry、eventual/bounded/strong 聚合、源 Connector 的 deadline、retry budget、bulkhead、breaker 和响应脱敏；
 - canonical event HTTP/gRPC ingest、receipt/version 幂等、乱序保护、quarantine，以及可重建快照投影；
+- canonical event 消费限制到当前 schema 版本；毒丸消息先写入同一 JetStream 的脱敏死信主题，再终止原消息，
+  死信写入失败则重投；NATS 发布使用调用方 deadline；
 - durable audit ledger、request/trace/operation/causation 关联、脱敏、hash chain、签名和链验证；
 - durable Operation/Saga、unknown outcome、callback challenge/SSRF 约束、签名投递、重试、DLQ 和手动 replay；
 - forensic/dry-run/controlled replay、sync/reconcile/export/erase job、加密 TTL 导出下载；
 - Operation 与 Sync worker 已使用执行/对账租约类型；过期执行租约先转为 `unknown`，禁止普通执行器盲目重发源命令；事件 receipt 支持处理租约接管；
-- 审计事实与 durable publication queue 在同一事务提交，publication/Callback delivery 完成均执行 lease-owner CAS；执行/对账 worker 已按 Home Region 过滤，当前迁移已推进到 `000052_add_source_event_ingest_permission`（包含 billing projection、tenant 隔离、命令幂等隔离、事件/审计租户隔离、quota reservation 和 source event ingest 权限）；
+- 审计事实与 durable publication queue 在同一事务提交，publication/Callback delivery 完成均执行 lease-owner CAS；执行/对账 worker 已按 Home Region 过滤，当前迁移已推进到 `000061_add_replication_cursor_checkpoint`（包含 billing projection、tenant 隔离、命令幂等隔离、事件/审计租户隔离、quota reservation、source event ingest 权限、复制 cursor fencing，以及按 `updated_at + id` 的 in-place snapshot checkpoint）；失效/删除投影也会跨区域传播，避免远端保留已撤销数据；
 - source event ingest 已接入 InternalAuth、Snaplink client binding、来源/region/tenant 约束和带时间戳的 per-source HMAC；Profile、Snapshot event、Operation 和 Sync 的高风险状态变更具备同事务 durable audit 路径；
 - Operation worker 会自动扫描本区域可对账的 `unknown/compensating` 操作，并通过 source operation status 或补偿状态推进；不会把未知结果当作可安全重发的普通 pending 步骤；
 - 独立账户客户端使用的 HTTP 路由、gRPC 契约和 [客户端契约](../clients/aero-account-console-contract.md)。
 
 当前仓库门禁已通过：`make test`、`make lint`、`make lint-strict`、`make check-file-sizes`、`make build`、
-`make check-architecture` 和 `make test-integration`。集成门禁使用 Makefile 固化的 `go test -p 1`，避免
+`make test-integration` 和 `make check-architecture`。集成门禁使用 Makefile 固化的 `go test -p 1`，避免
 多个旧兼容域同时启动 PostgreSQL 容器时触发 Docker 端口转发重置；这不改变生产服务并发模型。
 
 以下不能仅靠 aero-id 仓库单独完成，仍是发布/基础设施门禁：
@@ -196,7 +199,7 @@ Global DNS / Anycast / L7 Gateway
 
 ## 7. 数据模型计划
 
-仓库已从原有 `000030` 继续完成控制面迁移至 `000052`；下面的 `000031`–`000039` 是最初的数据模型基线，`000040`–`000052` 是审计、租户、幂等、配额、未知结果和事件接入硬化。每个 `.up.sql` 必须有对应 `.down.sql`，已应用迁移不得原地修改。
+仓库已从原有 `000030` 继续完成控制面迁移至 `000061`；下面的 `000031`–`000039` 是最初的数据模型基线，`000040`–`000061` 是审计、租户、幂等、配额、未知结果、事件接入和复制 fencing/checkpoint 硬化。每个 `.up.sql` 必须有对应 `.down.sql`，已应用迁移不得原地修改。
 
 | 建议迁移 | 核心内容 |
 |---|---|
@@ -226,6 +229,8 @@ Global DNS / Anycast / L7 Gateway
 | `000050_scope_events_and_audit_by_tenant` | Event receipt/Audit ledger 租户隔离 |
 | `000051_create_account_quota_reservations` | 有界资源操作的 durable quota reservation |
 | `000052_add_source_event_ingest_permission` | source event ingest 的最小权限角色授权 |
+| `000060_add_replication_cursor_leases` | 跨区域复制 cursor 的数据库 owner/expiry lease 与 stale-worker fencing |
+| `000061_add_replication_cursor_checkpoint` | 复制 cursor 记录 `updated_at + id` checkpoint，并传播 unavailable/erase 投影 |
 
 关键约束：
 

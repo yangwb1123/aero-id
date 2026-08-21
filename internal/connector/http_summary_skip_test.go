@@ -48,7 +48,7 @@ func TestJSONSummaryConnectorSurfacesSkippedDatasets(t *testing.T) {
 // Complete == payload.Complete and report no skips.
 func TestJSONSummaryConnectorNoFalseDowngradeForRegisteredVaultDatasets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"complete":true,"datasets":{` +
+		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"generated_at":"2026-08-20T00:00:00Z","complete":true,"datasets":{` +
 			`"aero-vault.tenants":{"count":1},"aero-vault.buckets":{"count":2},"aero-vault.usage":{"bytes":100}}}`))
 	}))
 	defer server.Close()

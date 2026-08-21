@@ -124,18 +124,18 @@ func (c *JSONSummaryConnector) decodeEraseResult(body io.Reader) (*CommandResult
 }
 
 func (c *JSONSummaryConnector) summaryFromPayload(payload *summaryPayload) (*Summary, error) {
-	region := payload.SourceRegion
+	region := strings.TrimSpace(payload.SourceRegion)
 	if region == "" {
-		region = c.cfg.Region
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_missing"}
 	}
 	if c.cfg.Region != "" && region != c.cfg.Region {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_mismatch"}
 	}
 	if payload.GeneratedAt.IsZero() {
-		payload.GeneratedAt = time.Now().UTC()
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.generated_at_missing"}
 	}
 	if payload.Version < 1 {
-		payload.Version = 1
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.version_invalid"}
 	}
 	result := &Summary{Source: c.source, SourceRegion: region, Version: payload.Version, Complete: payload.Complete}
 	if err := c.appendDatasetSnapshots(result, payload.Datasets, region, payload.GeneratedAt); err != nil {
@@ -145,8 +145,16 @@ func (c *JSONSummaryConnector) summaryFromPayload(payload *summaryPayload) (*Sum
 	// from aero-id's perspective, regardless of the source's own flag. Downgrade
 	// only; a payload already marked incomplete stays incomplete.
 	result.Complete = payload.Complete && len(result.SkippedDatasets) == 0
-	result.Sources = sourceReferences(c.source, region, payload)
-	result.Memberships = membershipReferences(c.source, region, payload)
+	sources, err := sourceReferences(c.source, region, payload)
+	if err != nil {
+		return nil, err
+	}
+	memberships, err := membershipReferences(c.source, region, payload)
+	if err != nil {
+		return nil, err
+	}
+	result.Sources = sources
+	result.Memberships = memberships
 	return result, nil
 }
 
@@ -174,30 +182,50 @@ func (c *JSONSummaryConnector) appendDatasetSnapshots(result *Summary, datasets 
 	return nil
 }
 
-func sourceReferences(source Source, region string, payload *summaryPayload) []*domain.AccountSource {
+func markMissingRequestedDatasets(result *Summary, requested []domain.AccountDataset) {
+	if result == nil || !result.Complete || len(requested) == 0 {
+		return
+	}
+	returned := make(map[domain.AccountDataset]struct{}, len(result.Snapshots))
+	for _, snapshot := range result.Snapshots {
+		if snapshot != nil {
+			returned[snapshot.Dataset] = struct{}{}
+		}
+	}
+	for _, dataset := range requested {
+		if _, ok := returned[dataset]; !ok {
+			result.Complete = false
+			return
+		}
+	}
+}
+
+func sourceReferences(source Source, region string, payload *summaryPayload) ([]*domain.AccountSource, error) {
 	result := make([]*domain.AccountSource, 0, len(payload.Sources))
 	for _, value := range payload.Sources {
-		if value.SourceAccountID == "" {
-			continue
+		if strings.TrimSpace(value.SourceAccountID) == "" ||
+			(strings.TrimSpace(value.ScopeType) == "") != (strings.TrimSpace(value.ScopeID) == "") {
+			return nil, &RemoteError{Source: source, Kind: ErrorInvalid, Code: "source.reference_invalid"}
 		}
 		result = append(result, &domain.AccountSource{Source: source.String(), SourceRegion: region,
-			SourceAccountID: value.SourceAccountID, ScopeType: value.ScopeType, ScopeID: value.ScopeID, Status: value.Status,
+			SourceAccountID: strings.TrimSpace(value.SourceAccountID), ScopeType: strings.TrimSpace(value.ScopeType),
+			ScopeID: strings.TrimSpace(value.ScopeID), Status: strings.TrimSpace(value.Status),
 			Version: payload.Version, GeneratedAt: timePtr(payload.GeneratedAt), LastSyncedAt: timePtr(time.Now().UTC()),
 			Data: RedactSummaryData(value.Data)})
 	}
-	return result
+	return result, nil
 }
 
-func membershipReferences(source Source, region string, payload *summaryPayload) []*domain.AccountMembership {
+func membershipReferences(source Source, region string, payload *summaryPayload) ([]*domain.AccountMembership, error) {
 	result := make([]*domain.AccountMembership, 0, len(payload.Memberships))
 	for _, value := range payload.Memberships {
-		if value.ScopeType == "" || value.ScopeID == "" || value.SourceMemberID == "" {
-			continue
+		if strings.TrimSpace(value.ScopeType) == "" || strings.TrimSpace(value.ScopeID) == "" || strings.TrimSpace(value.SourceMemberID) == "" {
+			return nil, &RemoteError{Source: source, Kind: ErrorInvalid, Code: "source.membership_invalid"}
 		}
 		result = append(result, &domain.AccountMembership{Source: source.String(), SourceRegion: region,
-			ScopeType: value.ScopeType, ScopeID: value.ScopeID, SourceMemberID: value.SourceMemberID,
-			Role: value.Role, Status: value.Status, Version: payload.Version, LastSyncedAt: timePtr(time.Now().UTC()),
+			ScopeType: strings.TrimSpace(value.ScopeType), ScopeID: strings.TrimSpace(value.ScopeID), SourceMemberID: strings.TrimSpace(value.SourceMemberID),
+			Role: strings.TrimSpace(value.Role), Status: strings.TrimSpace(value.Status), Version: payload.Version, LastSyncedAt: timePtr(time.Now().UTC()),
 			Data: RedactSummaryData(value.Data)})
 	}
-	return result
+	return result, nil
 }

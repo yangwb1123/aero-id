@@ -37,8 +37,11 @@ func TestNATSConfigValidation(t *testing.T) {
 	if err := validateNATSConfig(NATSConfig{URL: "nats://x", Stream: "s"}); err == nil {
 		t.Fatal("missing subject/durable must fail")
 	}
-	if err := validateNATSConfig(NATSConfig{URL: "nats://x", Stream: "s", Subject: "sub", Durable: "d"}); err != nil {
+	if err := validateNATSConfig(NATSConfig{URL: "nats://x", Stream: "s", Subject: "sub", DeadLetterSubject: "sub.dead-letter", Durable: "d"}); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+	if err := validateNATSConfig(NATSConfig{URL: "nats://x", Stream: "s", Subject: "sub", DeadLetterSubject: "sub", Durable: "d"}); err == nil {
+		t.Fatal("canonical and dead-letter subjects must not be identical")
 	}
 }
 

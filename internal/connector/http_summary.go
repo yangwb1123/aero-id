@@ -50,10 +50,31 @@ type JSONSummaryConnector struct {
 	openedUntil    time.Time
 }
 
+const (
+	maxSourceBodyBytes    int64 = 16 << 20
+	maxSourceConcurrency        = 4096
+	maxSourceAttempts           = 10
+	maxSourceTimeout            = 5 * time.Minute
+	maxSourceRetryBackoff       = time.Minute
+)
+
 func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnector, error) {
 	if strings.TrimSpace(cfg.Endpoint) == "" {
 		return nil, fmt.Errorf("%s connector endpoint is required", source)
 	}
+	cfg = defaultHTTPConfig(cfg)
+	if err := validateHTTPConfigBounds(cfg); err != nil {
+		return nil, err
+	}
+	client, err := sourceClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &JSONSummaryConnector{source: source, cfg: cfg, client: client,
+		bulkhead: bulkhead.New(clampedSummaryConcurrency(cfg.MaxConcurrency))}, nil
+}
+
+func defaultHTTPConfig(cfg HTTPConfig) HTTPConfig {
 	if cfg.SummaryPath == "" {
 		cfg.SummaryPath = "/internal/account-summary"
 	}
@@ -72,6 +93,10 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 	if cfg.RetryBackoff <= 0 {
 		cfg.RetryBackoff = 50 * time.Millisecond
 	}
+	return cfg
+}
+
+func sourceClient(cfg HTTPConfig) (*http.Client, error) {
 	client := cfg.Client
 	if client == nil {
 		var err error
@@ -80,7 +105,26 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 			return nil, err
 		}
 	}
-	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, bulkhead: bulkhead.New(clampedSummaryConcurrency(cfg.MaxConcurrency))}, nil
+	return client, nil
+}
+
+func validateHTTPConfigBounds(cfg HTTPConfig) error {
+	if cfg.MaxBodyBytes > maxSourceBodyBytes {
+		return fmt.Errorf("source connector max body bytes must not exceed %d", maxSourceBodyBytes)
+	}
+	if cfg.MaxConcurrency > maxSourceConcurrency {
+		return fmt.Errorf("source connector max concurrency must not exceed %d", maxSourceConcurrency)
+	}
+	if cfg.MaxAttempts > maxSourceAttempts {
+		return fmt.Errorf("source connector max attempts must not exceed %d", maxSourceAttempts)
+	}
+	if cfg.Timeout > maxSourceTimeout {
+		return fmt.Errorf("source connector timeout must not exceed %s", maxSourceTimeout)
+	}
+	if cfg.RetryBackoff > maxSourceRetryBackoff {
+		return fmt.Errorf("source connector retry backoff must not exceed %s", maxSourceRetryBackoff)
+	}
+	return nil
 }
 
 // clampedSummaryConcurrency preserves the connector's historical default:
@@ -161,6 +205,11 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 		}
 	}()
 
+	result, err = c.fetchSummary(ctx, req)
+	return result, err
+}
+
+func (c *JSONSummaryConnector) fetchSummary(ctx context.Context, req SummaryRequest) (*Summary, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
 	httpReq, err := c.newSummaryRequest(ctx, req)
@@ -169,17 +218,29 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 	}
 	response, err := c.doHTTP(ctx, func() (*http.Request, error) { return httpReq.Clone(ctx), nil })
 	if err != nil {
-		kind := ErrorUnavailable
-		if ctx.Err() != nil {
-			kind = ErrorTimeout
-		}
-		return nil, &RemoteError{Source: c.source, Kind: kind, Code: "source.request_failed", Temporary: true, Cause: err}
+		return nil, c.summaryRequestError(ctx, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, remoteHTTPError(c.source, response.StatusCode)
 	}
-	return c.decodeSummary(response.Body)
+	result, err := c.decodeSummary(response.Body)
+	if err != nil {
+		return nil, err
+	}
+	if expected := strings.TrimSpace(req.Region); expected != "" && result.SourceRegion != expected {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_mismatch"}
+	}
+	markMissingRequestedDatasets(result, req.Datasets)
+	return result, nil
+}
+
+func (c *JSONSummaryConnector) summaryRequestError(ctx context.Context, err error) error {
+	kind := ErrorUnavailable
+	if ctx.Err() != nil {
+		kind = ErrorTimeout
+	}
+	return &RemoteError{Source: c.source, Kind: kind, Code: "source.request_failed", Temporary: true, Cause: err}
 }
 
 func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {

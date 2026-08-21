@@ -126,7 +126,8 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithAccountRegionDirectory(repository.NewRegionDirectoryRepository(deps.gdb, deps.auditLedgerRepo), deps.cfg.Account.HomeRegionVersion),
 	)
 	regionFencingSvc := service.NewRegionFencingService(repository.NewRegionDirectoryRepository(deps.gdb, deps.auditLedgerRepo),
-		service.WithRegionFencingAuditLogger(deps.auditLedger))
+		service.WithRegionFencingAuditLogger(deps.auditLedger),
+		service.WithRegionFencingAllowedRegions(deps.cfg.Account.Regions))
 	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(deps.gdb, deps.auditLedgerRepo),
 		repository.NewLegacyCleanupRepository(deps.gdb), deps.auditLedger)
 	aggregationSvc := service.NewAggregationService(accountSvc, deps.snapshotRepo, deps.sourceConnectors...)
@@ -191,6 +192,10 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		auditWiredService{name: "preference", svc: prefSvc},
 		auditWiredService{name: "region_fencing", svc: regionFencingSvc},
 		auditWiredService{name: "projection_replay", svc: projectionReplaySvc},
+		auditWiredService{name: "event_ingest", svc: eventIngestSvc},
+		auditWiredService{name: "operation", svc: operationSvc},
+		auditWiredService{name: "replay", svc: replaySvc},
+		auditWiredService{name: "sync_job", svc: syncJobSvc},
 	)
 	// The replication worker is nil when replication is disabled; assert only when wired.
 	if replicationSvc != nil {
@@ -205,7 +210,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		operationSvc: operationSvc, replaySvc: replaySvc, projectionReplaySvc: projectionReplaySvc,
 		syncJobSvc: syncJobSvc, banSvc: banSvc, replicationSvc: replicationSvc,
 		permissionChecker: permissionChecker,
-		stopEventBus: stopEventBus, stopReplication: stopReplication,
+		stopEventBus:      stopEventBus, stopReplication: stopReplication,
 		stopOperations: stopOperations, stopSyncJobs: stopSyncJobs,
 	}, nil
 }

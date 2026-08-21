@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -32,12 +33,19 @@ type S3 struct {
 }
 
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion(cfg.Region),
-		awsconfig.WithCredentialsProvider(
+	if (strings.TrimSpace(cfg.AccessKey) == "") != (strings.TrimSpace(cfg.SecretKey) == "") {
+		return nil, errors.New("s3 access key and secret key must be configured together")
+	}
+	loadOptions := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
+	// Empty credentials deliberately use the AWS SDK's default provider chain
+	// (for example workload identity or an instance role). Static credentials
+	// are only installed when the caller supplied a complete pair.
+	if cfg.AccessKey != "" && cfg.SecretKey != "" {
+		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
-		),
-	)
+		))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("aws config: %w", err)
 	}

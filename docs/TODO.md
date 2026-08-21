@@ -98,10 +98,11 @@
       `POST /v1/admin/regions/promote`（CAS 提升，stale epoch 失败）、`GET /v1/admin/regions/directory/:account_id`；
       写路径 fail-closed（`region.write_fenced`），旧区域提升后无法提交；存量账户惰性建目录（单区域兼容）
       （`repository/region_directory.go`、`service/region_fencing.go` + 单元/集成测试）
-- [x] P6-03 跨区域投影复制：迁移 000055 `replication_cursors`；EventPublisher 端口
-      （NATS JetStream + HMAC HTTP 适配器）；复制 worker 发布本地归属账户的 approved 投影为
-      canonical `projection.snapshot` 事件（确定性 event_id 支持 receipt 去重）；
-      配置 `replication.{enabled,interval,batch_size,transport,...}`；
+- [x] P6-03 跨区域投影复制：迁移 `000055` 基线、`000060` lease fencing、`000061` update-aware checkpoint；
+      EventPublisher 端口（NATS JetStream + 带 service identity 的 HMAC HTTP 适配器）；复制 worker 发布
+      本地归属账户的 approved 投影为 canonical `projection.snapshot` 事件（按投影 revision 确定性
+      event_id 支持 receipt 去重，同版本 erase/unavailable 也可传播）；配置
+      `replication.{enabled,interval,batch_size,transport,...}`；
       NATS 发布→消费→ingest→event store 全链路集成测试
       （修复：envelope source 白名单与 dataset 绑定允许 aero-id 控制面中继）
 - [x] P6-09 broker 重投递 chaos 测试：handler 瞬态失败 → Nak → JetStream 重投递 → 成功 ack

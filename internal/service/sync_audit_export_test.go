@@ -323,3 +323,29 @@ func TestAuditExport_RepeatedDownloadAllowedWithoutOneTime(t *testing.T) {
 		t.Fatalf("second download: %v", err)
 	}
 }
+
+func TestAuditExport_DownloadRecordsAccessAuditBeforeBurn(t *testing.T) {
+	facts := []*domain.AuditFact{auditExportFact("tenant-a")}
+	store := &memoryStore{objects: map[string][]byte{}}
+	audit := &auditRecordSpy{}
+	svc := newAuditExportService(facts, store)
+	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", AccountID: idgen.NewID(),
+		ActorUID: "admin-1", JobType: domain.SyncJobAuditExport}
+	result, err := svc.executeAuditExport(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.audit = audit
+	key, _ := result.Result["_storage_key"].(string)
+	svc.repo.(*minimalSyncJobRepo).SeedJob(&domain.SyncJob{ID: job.ID, TenantID: job.TenantID,
+		ActorUID: job.ActorUID, JobType: job.JobType, Status: result.Status, Result: result.Result})
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, true); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if audit.records != 1 {
+		t.Fatalf("audit records = %d, want 1", audit.records)
+	}
+	if _, ok := store.objects[key]; ok {
+		t.Fatal("one-time artifact must be burned after the access audit")
+	}
+}

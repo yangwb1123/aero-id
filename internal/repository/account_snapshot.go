@@ -22,6 +22,15 @@ type SnapshotRepository interface {
 	ListReplicableSnapshots(ctx context.Context, homeRegion string, afterID domain.ID, limit int) ([]ReplicableSnapshot, error)
 }
 
+// ReplicationSnapshotRepository adds an update-aware checkpoint for workers.
+// The legacy method remains available for deterministic fakes and older
+// callers; production wiring implements this interface so an in-place version
+// update cannot be skipped merely because snapshot.id stayed constant.
+type ReplicationSnapshotRepository interface {
+	ListReplicableSnapshotsAfter(ctx context.Context, homeRegion string, afterUpdatedAt time.Time,
+		afterID domain.ID, limit int) ([]ReplicableSnapshot, error)
+}
+
 // ReplicableSnapshot pairs a projection with its account tenant for canonical
 // envelope construction during cross-region replication.
 type ReplicableSnapshot struct {
@@ -184,6 +193,16 @@ const replicableSnapshotColumns = "account_snapshots.id, account_snapshots.accou
 	"account_snapshots.created_at, account_snapshots.updated_at, accounts.tenant_id"
 
 func (r *accountSnapshotRepo) ListReplicableSnapshots(ctx context.Context, homeRegion string, afterID domain.ID, limit int) ([]ReplicableSnapshot, error) {
+	return r.listReplicableSnapshots(ctx, homeRegion, time.Time{}, afterID, limit)
+}
+
+func (r *accountSnapshotRepo) ListReplicableSnapshotsAfter(ctx context.Context, homeRegion string,
+	afterUpdatedAt time.Time, afterID domain.ID, limit int) ([]ReplicableSnapshot, error) {
+	return r.listReplicableSnapshots(ctx, homeRegion, afterUpdatedAt, afterID, limit)
+}
+
+func (r *accountSnapshotRepo) listReplicableSnapshots(ctx context.Context, homeRegion string,
+	afterUpdatedAt time.Time, afterID domain.ID, limit int) ([]ReplicableSnapshot, error) {
 	if limit <= 0 || limit > 10000 {
 		limit = 1000
 	}
@@ -192,11 +211,20 @@ func (r *accountSnapshotRepo) ListReplicableSnapshots(ctx context.Context, homeR
 		Table("account_snapshots").
 		Select(replicableSnapshotColumns).
 		Joins("JOIN accounts ON accounts.id = account_snapshots.account_id AND accounts.home_region = ?", homeRegion).
-		Where("account_snapshots.status IN ?", []string{string(domain.SnapshotFresh), string(domain.SnapshotStale)})
-	if afterID != (domain.ID{}) {
+		Where("account_snapshots.status IN ?", []string{string(domain.SnapshotFresh), string(domain.SnapshotStale), string(domain.SnapshotUnavailable)})
+	if !afterUpdatedAt.IsZero() {
+		checkpoint := afterUpdatedAt.UTC()
+		query = query.Where("(account_snapshots.updated_at > ? OR (account_snapshots.updated_at = ? AND account_snapshots.id > ?))",
+			checkpoint, checkpoint, afterID)
+	} else if afterID != (domain.ID{}) {
 		query = query.Where("account_snapshots.id > ?", afterID)
 	}
-	if err := query.Order("account_snapshots.id ASC").Limit(limit).Scan(&rows).Error; err != nil {
+	if !afterUpdatedAt.IsZero() {
+		query = query.Order("account_snapshots.updated_at ASC, account_snapshots.id ASC")
+	} else {
+		query = query.Order("account_snapshots.id ASC")
+	}
+	if err := query.Limit(limit).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]ReplicableSnapshot, 0, len(rows))

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/aero/aero-id/internal/sso"
+	"github.com/aero/aero-id/internal/sso/authzpb"
 	"github.com/aero/aero-id/internal/sso/ssopb"
 )
 
@@ -355,9 +357,10 @@ func TestClient_ValidateTokenSingleflight(t *testing.T) {
 // observe recovery, while asserting on how many calls actually reached the server.
 type toggleSSO struct {
 	ssopb.UnimplementedSSOServer
-	mu    sync.Mutex
-	down  bool
-	calls int
+	mu            sync.Mutex
+	down          bool
+	calls         int
+	getUsersCalls int
 }
 
 func (s *toggleSSO) ValidateToken(_ context.Context, req *ssopb.ValidateTokenRequest) (*ssopb.ValidateTokenResponse, error) {
@@ -375,6 +378,21 @@ func (s *toggleSSO) setDown(d bool) {
 	s.mu.Lock()
 	s.down = d
 	s.mu.Unlock()
+}
+
+// GetUsers counts reachable batch fetches while down; used to prove the breaker
+// short-circuits fetchUsers (A2).
+func (s *toggleSSO) GetUsers(_ context.Context, _ *ssopb.GetUsersRequest) (*ssopb.GetUsersResponse, error) {
+	s.mu.Lock()
+	s.getUsersCalls++
+	s.mu.Unlock()
+	return nil, status.Error(codes.Unavailable, "sso down")
+}
+
+func (s *toggleSSO) GetUsersCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getUsersCalls
 }
 
 func (s *toggleSSO) Calls() int {
@@ -401,6 +419,91 @@ func startToggleSSO(t *testing.T, down bool, cfg sso.ClientConfig) (*sso.Client,
 		t.Fatal(err)
 	}
 	return sso.NewClientFromConn(conn, cfg), server
+}
+
+// fakeAuthorizerServer implements the Snaplink Authorizer.Check RPC for bufconn
+// tests. It counts Check calls, returns an injectable error/Allowed bit, and —
+// when block is set — parks inside Check until release is closed while tracking
+// the server-side in-flight peak, so a test can prove a concurrency cap holds.
+// block/started must be set together; started is closed when the first blocked
+// Check enters (a deterministic "the slot is held" signal for A4).
+type fakeAuthorizerServer struct {
+	authzpb.UnimplementedAuthorizerServer
+	mu         sync.Mutex
+	err        error
+	allowed    bool
+	checkCalls int
+	block      chan struct{} // non-nil: Check blocks until closed
+	started    chan struct{} // non-nil with block: closed on the first Check entry
+	startedDo  sync.Once
+	inFlight   int32
+	peak       int32
+}
+
+func (f *fakeAuthorizerServer) Check(_ context.Context, _ *authzpb.CheckRequest) (*authzpb.CheckResponse, error) {
+	f.mu.Lock()
+	f.checkCalls++
+	err := f.err
+	allowed := f.allowed
+	f.mu.Unlock()
+
+	inflight := atomic.AddInt32(&f.inFlight, 1)
+	defer atomic.AddInt32(&f.inFlight, -1)
+	for {
+		cur := atomic.LoadInt32(&f.peak)
+		if inflight <= cur || atomic.CompareAndSwapInt32(&f.peak, cur, inflight) {
+			break
+		}
+	}
+	if f.block != nil {
+		if f.started != nil {
+			f.startedDo.Do(func() { close(f.started) })
+		}
+		<-f.block
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &authzpb.CheckResponse{Allowed: allowed}, nil
+}
+
+func (f *fakeAuthorizerServer) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checkCalls
+}
+
+func (f *fakeAuthorizerServer) setErr(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
+func (f *fakeAuthorizerServer) peakInFlight() int32 {
+	return atomic.LoadInt32(&f.peak)
+}
+
+// startFakeAuthorizer builds a bufconn client registered with BOTH the SSO
+// service and the authorizer fake, so HasPermission and GetUsers are reachable
+// on one connection. Callers own Close on the returned client.
+func startFakeAuthorizer(t *testing.T, authz *fakeAuthorizerServer, cfg sso.ClientConfig) *sso.Client {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	ssopb.RegisterSSOServer(srv, &fakeSSOServer{})
+	authzpb.RegisterAuthorizerServer(srv, authz)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sso.NewClientFromConn(conn, cfg)
 }
 
 func TestClient_BreakerOpensAndStopsCallingSSO(t *testing.T) {
@@ -582,5 +685,136 @@ func TestClient_BreakerRecoversAfterCooldown(t *testing.T) {
 	// Breaker closed again: subsequent calls flow normally.
 	if uid, err := c.ValidateToken(ctx, "after"); err != nil || uid != "uid-after" {
 		t.Fatalf("post-recovery uid=%q err=%v", uid, err)
+	}
+}
+
+// TestClient_AuthorizeBreakerOpensAndStopsCallingSSO (A1): N consecutive
+// Unavailable errors from Authorizer.Check trip the shared breaker; while it is
+// open, HasPermission returns a fast, availability-classified error with zero
+// additional fake Check calls.
+func TestClient_AuthorizeBreakerOpensAndStopsCallingSSO(t *testing.T) {
+	const threshold = 3
+	fake := &fakeAuthorizerServer{err: status.Error(codes.Unavailable, "authz down")}
+	c := startFakeAuthorizer(t, fake, sso.ClientConfig{
+		TokenCacheTTL:    time.Minute,
+		UserCacheTTL:     time.Minute,
+		BreakerThreshold: threshold,
+		BreakerCooldown:  time.Hour, // stay open for the rest of the test
+		MaxAttempts:      1,         // one upstream attempt per logical call
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	for i := 0; i < threshold; i++ {
+		if _, err := c.HasPermission(ctx, "uid-1", "vault.file.delete"); err == nil {
+			t.Fatalf("pre-trip call %d: expected error from down authorizer", i)
+		} else if status.Code(err) != codes.Unavailable {
+			t.Fatalf("pre-trip call %d: want availability-classified error, got %v", i, err)
+		}
+	}
+	if got := fake.calls(); got != threshold {
+		t.Fatalf("Check calls before trip = %d, want %d", got, threshold)
+	}
+
+	// Breaker is now open: further checks fast-fail WITHOUT reaching the fake.
+	for i := 0; i < 5; i++ {
+		if _, err := c.HasPermission(ctx, "uid-2", "vault.file.delete"); err == nil {
+			t.Fatalf("post-trip call %d: expected fast-fail error", i)
+		} else if status.Code(err) != codes.Unavailable {
+			t.Fatalf("post-trip call %d: want availability-classified error, got %v", i, err)
+		}
+	}
+	if got := fake.calls(); got != threshold {
+		t.Errorf("Check calls after trip = %d, want %d (breaker must short-circuit)", got, threshold)
+	}
+}
+
+// TestClient_GetUsersFastFailsWhenBreakerOpen (A2): with the shared breaker open
+// (tripped through the validate path), public GetUsers must return an
+// availability-classified error without reaching the fake SSO server. UserCache
+// propagates the fetcher error unchanged, so the classified error surfaces.
+func TestClient_GetUsersFastFailsWhenBreakerOpen(t *testing.T) {
+	const threshold = 2
+	c, server := startToggleSSO(t, true, sso.ClientConfig{
+		TokenCacheTTL:    time.Minute,
+		UserCacheTTL:     time.Minute,
+		BreakerThreshold: threshold,
+		BreakerCooldown:  time.Hour, // stays open for the rest of the test
+	})
+	defer c.Close()
+	ctx := context.Background()
+
+	// Trip the breaker through the validate path.
+	for i := 0; i < threshold; i++ {
+		if _, err := c.ValidateToken(ctx, fmt.Sprintf("tok-%d", i)); err == nil {
+			t.Fatalf("validate %d: expected error from down SSO", i)
+		}
+	}
+	if got := server.GetUsersCalls(); got != 0 {
+		t.Fatalf("GetUsers calls before = %d, want 0", got)
+	}
+
+	if _, err := c.GetUsers(ctx, []string{"u1"}); err == nil {
+		t.Fatal("expected error from GetUsers with the breaker open")
+	} else if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want availability-classified error, got %v", err)
+	}
+	if got := server.GetUsersCalls(); got != 0 {
+		t.Errorf("GetUsers calls after = %d, want 0 (breaker must short-circuit)", got)
+	}
+}
+
+// TestClient_AuthorizeConcurrencyCap (A4): with MaxConcurrent=1 and a Check
+// server that parks inside the RPC, a second HasPermission must wait on the
+// shared semaphore — never reaching the server (the in-flight peak stays 1) —
+// and surface its caller deadline while the slot stays held; once the first
+// call completes, both results are intact.
+func TestClient_AuthorizeConcurrencyCap(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	fake := &fakeAuthorizerServer{allowed: true, block: release, started: started}
+	c := startFakeAuthorizer(t, fake, sso.ClientConfig{
+		TokenCacheTTL: time.Minute,
+		UserCacheTTL:  time.Minute,
+		Timeout:       5 * time.Second, // generous RPC bound for the parked call
+		MaxConcurrent: 1,
+		MaxAttempts:   1,
+	})
+	defer c.Close()
+
+	ctx := context.Background()
+	type authzResult struct {
+		ok  bool
+		err error
+	}
+	first := make(chan authzResult, 1)
+	go func() {
+		ok, err := c.HasPermission(ctx, "u1", "vault.file.delete")
+		first <- authzResult{ok, err}
+	}()
+	<-started // the first call holds the only slot, parked inside Check
+
+	// The second call parks on the semaphore; its caller deadline bounds the slot
+	// wait (R8), so it fails with a deadline-classified error while the slot is
+	// held — WITHOUT entering the server.
+	shortCtx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if ok, err := c.HasPermission(shortCtx, "u2", "vault.file.delete"); err == nil {
+		t.Fatalf("second call ok=%v: expected slot-wait deadline while the cap holds", ok)
+	} else if !errors.Is(err, context.DeadlineExceeded) && status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("second call err=%v: want deadline-classified slot-wait error", err)
+	}
+
+	if got := fake.peakInFlight(); got != 1 {
+		t.Errorf("server-side in-flight peak = %d, want 1 (MaxConcurrent=1)", got)
+	}
+	if got := fake.calls(); got != 1 {
+		t.Errorf("Check calls = %d, want 1 (second call must not consume an RPC slot)", got)
+	}
+
+	close(release)
+	res := <-first
+	if res.err != nil || !res.ok {
+		t.Fatalf("first call ok=%v err=%v (want grant after the slot is released)", res.ok, res.err)
 	}
 }

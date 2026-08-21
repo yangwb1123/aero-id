@@ -33,7 +33,8 @@ func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logge
 		}
 		publisher = natsPublisher
 	case "http":
-		httpPublisher, err := event.NewHTTPPublisher(cfg.Replication.HTTPEndpoint, cfg.Replication.HTTPKey,
+		httpPublisher, err := event.NewAuthenticatedHTTPPublisher(cfg.Replication.HTTPEndpoint, cfg.Replication.HTTPKey,
+			cfg.Replication.HTTPBearerToken,
 			&http.Client{Timeout: 10 * time.Second})
 		if err != nil {
 			return nil, nil, fmt.Errorf("replication http publisher: %w", err)
@@ -51,6 +52,7 @@ func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logge
 		repository.NewReplicationCursorRepository(gdb),
 		publisher,
 		service.WithProjectionReplicationMetrics(service.NewRegistryControlPlaneMetrics(metricsReg)),
+		service.WithProjectionReplicationLease(cfg.Replication.Lease),
 		service.WithProjectionReplicationAudit(auditLedger))
 	interval := cfg.Replication.Interval
 	if interval <= 0 {

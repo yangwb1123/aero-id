@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/aero/aero-id/internal/sso"
+	"github.com/aero/aero-id/internal/sso/authzpb"
 	"github.com/aero/aero-id/internal/sso/ssopb"
 )
 
@@ -66,14 +69,17 @@ func (s *recordingSink) snapshot() (hit, miss, callOK, callErr map[string]int) {
 	return cp(s.cacheHit), cp(s.cacheMiss), cp(s.callOK), cp(s.callErr)
 }
 
-// startMeteredSSO builds a bufconn client wired with the given metrics sink, reusing
-// the fakeSSOServer from client_test.go.
-func startMeteredSSO(t *testing.T, sink sso.MetricsSink) (*sso.Client, *fakeSSOServer) {
+// startMeteredSSO builds a bufconn client wired with the given metrics sink,
+// reusing fakeSSOServer from client_test.go and adding an (initially granting)
+// fakeAuthorizerServer so the "authorize" op is observable on the same conn.
+func startMeteredSSO(t *testing.T, sink sso.MetricsSink) (*sso.Client, *fakeSSOServer, *fakeAuthorizerServer) {
 	t.Helper()
 	lis := bufconn.Listen(1024 * 1024)
 	srv := grpc.NewServer()
 	fake := &fakeSSOServer{}
+	authorizer := &fakeAuthorizerServer{allowed: true}
 	ssopb.RegisterSSOServer(srv, fake)
+	authzpb.RegisterAuthorizerServer(srv, authorizer)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
@@ -92,12 +98,12 @@ func startMeteredSSO(t *testing.T, sink sso.MetricsSink) (*sso.Client, *fakeSSOS
 		UserCacheTTL:  60 * time.Second,
 		Metrics:       sink,
 	})
-	return c, fake
+	return c, fake, authorizer
 }
 
 func TestClient_MetricsTokenCacheHitMissAndErrors(t *testing.T) {
 	sink := newRecordingSink()
-	c, _ := startMeteredSSO(t, sink)
+	c, _, _ := startMeteredSSO(t, sink)
 	ctx := context.Background()
 
 	// Miss then hit on the same token.
@@ -129,7 +135,7 @@ func TestClient_MetricsTokenCacheHitMissAndErrors(t *testing.T) {
 
 func TestClient_MetricsUserCacheAndCall(t *testing.T) {
 	sink := newRecordingSink()
-	c, _ := startMeteredSSO(t, sink)
+	c, _, _ := startMeteredSSO(t, sink)
 	ctx := context.Background()
 
 	// First batch: both miss and trigger one upstream get_users.
@@ -161,5 +167,39 @@ func TestClient_NilMetricsSinkIsSafe(t *testing.T) {
 	}
 	if _, err := c.GetUsers(context.Background(), []string{"u1"}); err != nil {
 		t.Fatalf("get users with nil sink: %v", err)
+	}
+}
+
+// TestClient_MetricsAuthorizeCallAndErrors (A3): the MetricsSink fake records an
+// "authorize" ObserveSSOCall with ok=false on an authz availability error and
+// ok=true on a grant (Allowed=true is an RPC success), with no cross-contamination
+// of the existing validate/get_users op counts.
+func TestClient_MetricsAuthorizeCallAndErrors(t *testing.T) {
+	sink := newRecordingSink()
+	c, _, authorizer := startMeteredSSO(t, sink)
+	ctx := context.Background()
+
+	// Grant: the RPC succeeded (Allowed=true), so ok=true on "authorize".
+	if ok, err := c.HasPermission(ctx, "u1", "vault.file.delete"); err != nil || !ok {
+		t.Fatalf("authorize grant ok=%v err=%v", ok, err)
+	}
+
+	// Availability error: the RPC failed, so the same op records ok=false.
+	authorizer.setErr(status.Error(codes.Unavailable, "authz down"))
+	if _, err := c.HasPermission(ctx, "u2", "vault.file.delete"); err == nil {
+		t.Fatal("expected error from down authorizer")
+	}
+
+	_, _, callOK, callErr := sink.snapshot()
+	if callOK["authorize"] != 1 {
+		t.Errorf("authorize ok calls = %d, want 1 (grant is an RPC success)", callOK["authorize"])
+	}
+	if callErr["authorize"] != 1 {
+		t.Errorf("authorize error calls = %d, want 1", callErr["authorize"])
+	}
+	// No cross-contamination: validate/get_users emit no "authorize" op and vice versa.
+	if callOK["validate"] != 0 || callOK["get_users"] != 0 || callErr["validate"] != 0 || callErr["get_users"] != 0 {
+		t.Errorf("unexpected cross-contamination: validate ok=%d err=%d get_users ok=%d err=%d, want 0 each",
+			callOK["validate"], callErr["validate"], callOK["get_users"], callErr["get_users"])
 	}
 }

@@ -167,6 +167,25 @@ func TestRegionFencingPromote_CASConflict(t *testing.T) {
 	}
 }
 
+func TestRegionFencingPromote_RejectsUnconfiguredRegion(t *testing.T) {
+	dir := newFakeRegionDirectory()
+	account := fencingTestAccount("local")
+	if err := dir.EnsureDirectory(context.Background(), account.TenantID, account.ID, "local", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewRegionFencingService(dir, WithRegionFencingAllowedRegions([]string{"local", "us-east"}))
+	if _, err := svc.Promote(context.Background(), account.TenantID, account.ID, "eu-west", 0); err == nil {
+		t.Fatal("promotion to an unconfigured region must be rejected")
+	}
+	entry, err := dir.GetDirectory(context.Background(), account.TenantID, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.HomeRegion != "local" || entry.FencedEpoch != 0 {
+		t.Fatalf("rejected promotion changed directory: %+v", entry)
+	}
+}
+
 // ── B3 Gap-4 audit site (S3 in-tx promote) ──────────────────────────────────
 
 func (f *fakeRegionDirectory) PromoteWithFencingWithAudit(ctx context.Context, tenantID string, accountID domain.ID,

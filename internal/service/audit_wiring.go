@@ -28,6 +28,10 @@ func (s *projectionReplicationService) AuditLoggerWired() bool {
 func (s *projectionReplayService) AuditLoggerWired() bool {
 	return s.audit != nil
 }
+func (s *eventIngestService) AuditLoggerWired() bool { return s.audit != nil }
+func (s *operationService) AuditLoggerWired() bool   { return s.audit != nil }
+func (s *replayService) AuditLoggerWired() bool      { return s.audit != nil }
+func (s *syncJobService) AuditLoggerWired() bool     { return s.audit != nil }
 
 // The hold and cutover services guard their fact append with the same
 // `if s.audit != nil` skip guard (0 = disabled convention for unit tests);

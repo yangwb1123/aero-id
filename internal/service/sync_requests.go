@@ -35,3 +35,10 @@ func isUnknownRemote(err error) bool {
 	return remote.Kind == connector.ErrorTimeout || remote.Kind == connector.ErrorUnavailable ||
 		remote.Kind == connector.ErrorUnknown
 }
+
+func eraseCallOutcome(err error) (string, bool, bool) {
+	if isUnknownRemote(err) {
+		return "unknown", true, false
+	}
+	return "failed", false, true
+}

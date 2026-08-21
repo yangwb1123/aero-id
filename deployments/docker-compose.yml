@@ -1,9 +1,11 @@
+# Local integration stack. All credential values are supplied by the caller;
+# keep them in an untracked .env file or a secret manager, never in this file.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: aero
-      POSTGRES_PASSWORD: aero
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
       POSTGRES_DB: aero_id
     ports: ["5432:5432"]
     healthcheck:
@@ -23,17 +25,36 @@ services:
       - ../migrations:/migrations
     command:
       ["-path", "/migrations", "-database",
-       "postgres://aero:aero@postgres:5432/aero_id?sslmode=disable", "up"]
+       "postgres://aero:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/aero_id?sslmode=disable", "up"]
 
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}"
     ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - miniodata:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}"
+        "$${MINIO_ROOT_PASSWORD}" && mc mb --ignore-existing local/aero-id-files
 
   aero-id:
     build:
@@ -44,12 +65,22 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
     environment:
-      # Override the file config for the compose network (see config.yaml defaults).
+      # The compose stack uses Postgres and MinIO on the internal network.
       AERO_ID_DATABASE_HOST: postgres
-      AERO_ID_DATABASE_PASSWORD: aero
-      AERO_ID_SIGNING_KEY: docker-dev-signing-key-change-me
-      AERO_ID_SSO_ENDPOINT: "sso:9000"
+      AERO_ID_DATABASE_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
+      AERO_ID_SIGNING_KEY: "${AERO_ID_SIGNING_KEY:?Set AERO_ID_SIGNING_KEY}"
+      AERO_ID_AUDIT_LEDGER_SIGNING_KEY: "${AERO_ID_AUDIT_LEDGER_SIGNING_KEY:?Set AERO_ID_AUDIT_LEDGER_SIGNING_KEY}"
+      AERO_ID_SSO_ENDPOINT: "${AERO_ID_SSO_ENDPOINT:?Set AERO_ID_SSO_ENDPOINT to the Snaplink gRPC endpoint}"
+      AERO_ID_STORAGE_TYPE: s3
+      AERO_ID_STORAGE_S3_ENDPOINT: http://minio:9000
+      AERO_ID_STORAGE_S3_REGION: us-east-1
+      AERO_ID_STORAGE_S3_BUCKET: aero-id-files
+      AERO_ID_STORAGE_S3_ACCESS_KEY: "${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}"
+      AERO_ID_STORAGE_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}"
+      AERO_ID_STORAGE_S3_USE_PATH_STYLE: "true"
     ports: ["8080:8080", "9090:9090"]
 
 volumes:

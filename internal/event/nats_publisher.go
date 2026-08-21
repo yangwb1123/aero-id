@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -30,14 +31,30 @@ func NewNATSPublisher(url, subject string) (*NATSPublisher, error) {
 func (p *NATSPublisher) Target() string { return "nats:" + p.subject }
 
 func (p *NATSPublisher) Publish(ctx context.Context, envelope *Envelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := envelope.Validate(); err != nil {
+		return fmt.Errorf("invalid canonical envelope: %w", err)
+	}
 	js, err := p.conn.JetStream()
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
-	if _, err := js.Publish(p.subject, mustMarshalEnvelope(envelope)); err != nil {
+	if _, err := js.Publish(p.subject, mustMarshalEnvelope(envelope), nats.Context(ctx)); err != nil {
 		return fmt.Errorf("nats publish projection: %w", err)
 	}
-	return p.conn.Flush()
+	flushTimeout := 5 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		flushTimeout = time.Until(deadline)
+		if flushTimeout <= 0 {
+			return ctx.Err()
+		}
+	}
+	if err := p.conn.FlushTimeout(flushTimeout); err != nil {
+		return fmt.Errorf("nats flush projection: %w", err)
+	}
+	return nil
 }
 
 // Close disconnects from NATS.

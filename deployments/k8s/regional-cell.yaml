@@ -38,16 +38,65 @@ data:
       region: "REGION_PLACEHOLDER"        # set per cell, e.g. us-east-1
       home_region_version: "v1"
       regions: ["us-east-1", "eu-west-1", "ap-southeast-1"]
+    sources:
+      snaplink:
+        endpoint: https://snaplink.REGION_PLACEHOLDER.example.com
+        summary_path: /internal/account-summary
+        erase_path: ""                     # enable only after the source contract is deployed
+        status_path: ""
+        region: "REGION_PLACEHOLDER"
+        timeout: 2s
+        max_body_bytes: 1048576
+        max_concurrency: 32
+        max_attempts: 3
+        retry_backoff: 50ms
+      aero_im:
+        endpoint: https://aero-im.REGION_PLACEHOLDER.example.com
+        summary_path: /internal/account-summary
+        erase_path: ""
+        status_path: ""
+        region: "REGION_PLACEHOLDER"
+        timeout: 2s
+        max_body_bytes: 1048576
+        max_concurrency: 32
+        max_attempts: 3
+        retry_backoff: 50ms
+      aero_vault:
+        endpoint: https://aero-vault.REGION_PLACEHOLDER.example.com
+        summary_path: /internal/account-summary
+        erase_path: ""
+        status_path: ""
+        region: "REGION_PLACEHOLDER"
+        timeout: 2s
+        max_body_bytes: 1048576
+        max_concurrency: 32
+        max_attempts: 3
+        retry_backoff: 50ms
     database:
       host: aero-id-postgres
       port: 5432
-      name: aero_id
+      dbname: aero_id
       user: aero
+      password: ""                       # injected through AERO_ID_DATABASE_PASSWORD
       sslmode: require
       max_open_conns: 50
       max_idle_conns: 10
       conn_max_lifetime: 30m
       auto_migrate: false                 # production applies migrations via cmd/migrate
+    sso:
+      endpoint: snaplink-authz:9000       # replace with the regional Snaplink gRPC endpoint
+      jwks_url: https://snaplink.example.com/.well-known/jwks.json
+      issuer: https://snaplink.example.com
+      audience: aero-id
+      authz_client_id: aero-id
+      authz_required: true
+      authz_legacy_fallback: false
+      timeout: 5s
+      insecure: false
+      readiness_critical: true
+      max_attempts: 3
+      retry_backoff: 50ms
+      max_concurrent: 64
     redis:
       endpoint: aero-id-redis:6379
     event_bus:
@@ -56,44 +105,51 @@ data:
         url: nats://aero-id-nats:4222
         stream: aero_events
         subject: aero.events.canonical
+        dead_letter_subject: aero.events.canonical.dead-letter
         durable: aero-id-ingest
         max_redeliveries: 5
         ack_wait: 30s
     replication:
       enabled: false                      # enable per cell once cross-region links exist
       interval: 5s
+      lease: 2m
       batch_size: 500
       transport: nats
       nats_subject: aero.events.canonical
+      http_endpoint: ""                # transport=http: remote ingest URL
+      http_key: ""                     # transport=http: HMAC key from secret provider
+      http_bearer_token: ""             # transport=http: service identity token from secret provider
     callback:
+      master_key: ""                       # injected through AERO_ID_CALLBACK_MASTER_KEY
       worker_interval: 1s
       worker_concurrency: 4
     storage:
       type: s3
-      endpoint: https://minio.REGION_PLACEHOLDER.example.com
-      bucket: aero-id-files
-      region: REGION_PLACEHOLDER
+      s3:
+        endpoint: https://minio.REGION_PLACEHOLDER.example.com
+        bucket: aero-id-files
+        region: REGION_PLACEHOLDER
+        use_path_style: false
       max_upload_bytes: 52428800
+    event_ingest:
+      signing_key: ""                       # injected through AERO_ID_EVENT_INGEST_SIGNING_KEY
+      require_timestamp: true
+      max_body_bytes: 1048576
+      clock_skew: 5m
+    audit_ledger:
+      signing_key: ""                       # injected through AERO_ID_AUDIT_LEDGER_SIGNING_KEY
+    export:
+      encryption_key: ""                    # injected through AERO_ID_EXPORT_ENCRYPTION_KEY
+    signing_key: ""                         # injected through AERO_ID_SIGNING_KEY
     tracing:
       enabled: true
       endpoint: otel-collector:4317
       sample_ratio: 0.1
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aero-id-secrets
-  namespace: aero-id
-type: Opaque
-stringData:
-  database_password: "CHANGE_ME_DB_PASSWORD"
-  redis_password: "CHANGE_ME_REDIS_PASSWORD"
-  signing_key: "CHANGE_ME_SIGNING_KEY_32_BYTES_MINIMUM"
-  callback_master_key: "CHANGE_ME_CALLBACK_MASTER_KEY"
-  event_ingest_signing_key: "CHANGE_ME_EVENT_INGEST_KEY"
-  audit_ledger_signing_key: "CHANGE_ME_AUDIT_LEDGER_KEY_32_BYTES_MINIMUM"
-  sso_bearer_token: "CHANGE_ME_SSO_TOKEN"
-  export_encryption_key: "CHANGE_ME_EXPORT_KEY"
+# Secret `aero-id-secrets` is provisioned out of band by the approved secret
+# provider. It must contain database_password, redis_password, signing_key,
+# callback_master_key, event_ingest_signing_key, audit_ledger_signing_key and
+# export_encryption_key; add replication_http_bearer_token when HTTP
+# replication is enabled. No secret values belong in this manifest.
 ---
 apiVersion: v1
 kind: Service
@@ -170,12 +226,21 @@ spec:
             - name: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: audit_ledger_signing_key}
-            - name: AERO_ID_SSO_BEARER_TOKEN
-              valueFrom:
-                secretKeyRef: {name: aero-id-secrets, key: sso_bearer_token}
             - name: AERO_ID_EXPORT_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: export_encryption_key}
+            - name: AERO_ID_SOURCES_SNAPLINK_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_bearer_token, optional: true}
+            - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
@@ -278,6 +343,18 @@ spec:
             - name: AERO_ID_SIGNING_KEY
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: signing_key}
+            - name: AERO_ID_SOURCES_SNAPLINK_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_bearer_token, optional: true}
+            - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id

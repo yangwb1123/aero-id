@@ -78,6 +78,11 @@ func newBootDatabase(t *testing.T) bootDatabase {
 func bootConfigFromShippedFile(t *testing.T) (*config.Config, *gorm.DB) {
 	t.Helper()
 	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
+	// The shipped file intentionally contains no secret material. Supply
+	// test-only values before Load so this boot fixture exercises the real
+	// config path without weakening the production configuration contract.
+	t.Setenv("AERO_ID_SIGNING_KEY", "ssssssssssssssssssssssssssssssss")
+	t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	cfg, err := config.Load(filepath.Join(testpg.RepoRoot(t), "configs", "config.yaml"))
 	if err != nil {
 		t.Fatalf("load shipped config: %v", err)

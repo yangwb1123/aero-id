@@ -22,7 +22,8 @@ func buildEventBusConsumer(cfg *config.Config, log *zap.Logger,
 	}
 	bus, err := event.NewNATSBus(event.NATSConfig{
 		URL: cfg.EventBus.NATS.URL, Stream: cfg.EventBus.NATS.Stream,
-		Subject: cfg.EventBus.NATS.Subject, Durable: cfg.EventBus.NATS.Durable,
+		Subject: cfg.EventBus.NATS.Subject, DeadLetterSubject: cfg.EventBus.NATS.DeadLetterSubject,
+		Durable:         cfg.EventBus.NATS.Durable,
 		MaxRedeliveries: cfg.EventBus.NATS.MaxRedeliveries, AckWait: cfg.EventBus.NATS.AckWait,
 	})
 	if err != nil {
@@ -33,6 +34,7 @@ func buildEventBusConsumer(cfg *config.Config, log *zap.Logger,
 		return err
 	})
 	if err != nil {
+		_ = bus.Close()
 		return nil, fmt.Errorf("event bus subscribe: %w", err)
 	}
 	log.Info("event bus consumer enabled", zap.String("stream", cfg.EventBus.NATS.Stream),

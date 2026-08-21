@@ -100,7 +100,7 @@ server.grpc.max_send_msg_size must be >= 1KB when set               (validate.go
 event_bus.nats url, stream, subject and durable are required when enabled   (validate.go:292-293)
 event_bus.nats max_redeliveries and ack_wait must not be negative   (validate.go:295-296)
 replication.nats_subject is required when transport=nats            (validate.go:304-305)
-replication.http_endpoint and http_key are required when transport=http    (validate.go:307-308)
+replication.http_endpoint, http_key and http_bearer_token are required when transport=http    (validate.go:307-308)
 replication.transport must be nats or http                          (validate.go:311-312)
 replication interval must be positive and batch_size must not be negative  (validate.go:315-316)
 outbox.webhook.timeout must be a positive duration                  (validate.go:185-186)
@@ -114,7 +114,7 @@ event_ingest.bindings.client-a.source_region must be listed in account.regions  
 - **FR-2 source**: `SourceEndpointConfig{Endpoint: "https://sso.example/", Timeout: 2s, MaxBodyBytes: 1048576, MaxConcurrency: 32, MaxAttempts: 3, RetryBackoff: 50ms, SummaryPath: "/internal/account-summary"}` — matches the shipped sources block.
 - **FR-3 transport**: `Config{Server: ServerConfig{HTTP: HTTPConfig{ReadHeaderTimeout: ...}, GRPC: GRPCConfig{KeepaliveMinPingInterval, MaxRecvMsgSize, MaxSendMsgSize: ...}}}` — only the four guard-relevant fields set.
 - **FR-4.1 bus**: NATS `{Enabled: true, URL: "nats://nats:4222", Stream: "aero_events", Subject: "aero.events.canonical", Durable: "aero-id-ingest", MaxRedeliveries: 5, AckWait: 30s}`.
-- **FR-4.2 replication**: enabled `{Interval: 5s, BatchSize: 500, Transport: "nats", NATSSubject: "aero.events.canonical"}`; http cells add `HTTPEndpoint: "https://region.example/ingest"`, `HTTPKey` ≥ 32 chars.
+- **FR-4.2 replication**: enabled `{Interval: 5s, BatchSize: 500, Transport: "nats", NATSSubject: "aero.events.canonical"}`; http cells add an HTTPS `HTTPEndpoint`, `HTTPKey` ≥ 32 chars, and a service `HTTPBearerToken`.
 - **FR-4.4 keys**: `{"snaplink", "aero-im", "aero-vault"}` keys ≥ 32 bytes; boundary cell exactly 32 bytes.
 
 ---

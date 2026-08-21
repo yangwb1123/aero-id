@@ -50,8 +50,8 @@ type Registry struct {
 	// SSO dependency health, populated by the SSO client (see SSOSink).
 	ssoCacheHits   map[string]uint64     // cache ("token"|"user") -> hits
 	ssoCacheMisses map[string]uint64     // cache ("token"|"user") -> misses
-	ssoErrors      map[string]uint64     // op ("validate"|"get_users") -> errors
-	ssoLatency     map[string]*histogram // op ("validate"|"get_users") -> upstream latency
+	ssoErrors      map[string]uint64     // op ("validate"|"get_users"|"authorize") -> errors
+	ssoLatency     map[string]*histogram // op ("validate"|"get_users"|"authorize") -> upstream latency
 
 	// Transactional-outbox relay observability. outboxMu isolates these fields so
 	// outbox drain operations (every 5s) never block HTTP/gRPC or SSO metrics.
@@ -132,9 +132,9 @@ func (r *Registry) ObserveSSOCache(cache string, hit bool) {
 	}
 }
 
-// ObserveSSOCall records one upstream SSO RPC. op is "validate" or "get_users", dur
-// is the call latency, and ok is false when the RPC failed (counts toward the error
-// rate). Latency is recorded for every call regardless of outcome.
+// ObserveSSOCall records one upstream SSO RPC. op is "validate", "get_users", or
+// "authorize", dur is the call latency, and ok is false when the RPC failed (counts
+// toward the error rate). Latency is recorded for every call regardless of outcome.
 func (r *Registry) ObserveSSOCall(op string, dur time.Duration, ok bool) {
 	secs := dur.Seconds()
 	r.mu.Lock()

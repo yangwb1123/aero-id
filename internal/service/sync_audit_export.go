@@ -27,8 +27,7 @@ const auditExportEventsPerPage = 1000
 //nolint:cyclop // export assembles header, pages and digest with explicit outcomes.
 func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
 	if s.auditLedger == nil {
-		_ = s.finishJob(ctx, job, domain.SyncJobFailed, "audit_export.ledger_unavailable", "audit ledger repository is not configured", nil)
-		return s.repo.Get(ctx, job.ID)
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_unavailable", "audit ledger repository is not configured", nil)
 	}
 	events := make([]map[string]any, 0, auditExportEventsPerPage)
 	cursor := ""
@@ -37,8 +36,7 @@ func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.Syn
 			TenantID: job.TenantID, Page: domain.Page{Limit: auditExportEventsPerPage, Cursor: cursor},
 		})
 		if err != nil {
-			_ = s.finishJob(ctx, job, domain.SyncJobFailed, "audit_export.ledger_read_failed", "failed to read the audit ledger", nil)
-			return s.repo.Get(ctx, job.ID)
+			return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_read_failed", "failed to read the audit ledger", nil)
 		}
 		for _, fact := range facts {
 			events = append(events, auditExportEvent(fact))
@@ -64,40 +62,37 @@ func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.Syn
 func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *domain.SyncJob,
 	manifest map[string]any, generatedAt time.Time) (*domain.SyncJob, error) {
 	if s.store == nil {
-		_ = s.finishJob(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.store_unavailable",
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.store_unavailable",
 			"temporary export storage is not configured", manifest)
-		return s.repo.Get(ctx, job.ID)
 	}
 	if len(s.exportKey) == 0 {
-		_ = s.finishJob(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.encryption_not_configured",
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.encryption_not_configured",
 			"export encryption is not configured", manifest)
-		return s.repo.Get(ctx, job.ID)
 	}
 	expiresAt := generatedAt.Add(s.exportTTL)
 	manifest["download_url"] = "/v1/sync/jobs/" + job.ID.String() + "/export/download"
 	manifest["expires_at"] = expiresAt
 	data, err := json.Marshal(manifest)
 	if err != nil {
-		return nil, err
+		cause := apperr.Internal("audit_export.serialize_failed", "failed to serialize audit export manifest").Wrap(err)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.serialize_failed", "failed to serialize audit export manifest", nil, cause)
 	}
 	if int64(len(data)) > s.maxExport {
-		_ = s.finishJob(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.too_large",
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.too_large",
 			"audit export exceeds the configured limit", nil)
-		return s.repo.Get(ctx, job.ID)
 	}
 	encrypted, err := encryptExport(data, s.exportKey)
 	if err != nil {
-		return nil, apperr.Internal("audit_export.encrypt_failed", "failed to encrypt audit export artifact").Wrap(err)
+		cause := apperr.Internal("audit_export.encrypt_failed", "failed to encrypt audit export artifact").Wrap(err)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.encrypt_failed", "failed to encrypt audit export artifact", nil, cause)
 	}
 	key, _, err := s.store.Put(ctx, job.ActorUID, "audit-export-"+job.ID.String()+".bin", bytes.NewReader(encrypted))
 	if err != nil {
-		return nil, apperr.Internal("audit_export.write_failed", "failed to write audit export artifact").Wrap(err)
+		cause := apperr.Internal("audit_export.write_failed", "failed to write audit export artifact").Wrap(err)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.write_failed", "failed to write audit export artifact", nil, cause)
 	}
 	manifest["_storage_key"] = key
-	if err := s.finishJob(ctx, job, domain.SyncJobCompleted, "", "", manifest); err != nil {
-		return nil, err
-	}
-	return s.repo.Get(ctx, job.ID)
+	return s.finishJobAndLoad(ctx, job, domain.SyncJobCompleted, "", "", manifest)
 }
 
 // auditExportEvent is the allow-listed per-fact projection: identity fields,

@@ -27,6 +27,7 @@ type RegionFencingService interface {
 type regionFencingService struct {
 	directory repository.RegionDirectoryRepository
 	audit     AuditLogger // nil => audit inactive
+	regions   map[string]struct{}
 }
 
 func NewRegionFencingService(directory repository.RegionDirectoryRepository, opts ...func(*regionFencingService)) RegionFencingService {
@@ -41,6 +42,21 @@ func NewRegionFencingService(directory repository.RegionDirectoryRepository, opt
 // service; when wired, Promote routes through the in-tx audited repository arm.
 func WithRegionFencingAuditLogger(a AuditLogger) func(*regionFencingService) {
 	return func(s *regionFencingService) { s.audit = a }
+}
+
+// WithRegionFencingAllowedRegions prevents an administrative promotion from
+// creating a directory entry for a typo or an unconfigured residency region.
+// An empty set preserves compatibility for isolated unit callers; production
+// composition always supplies the validated account region list.
+func WithRegionFencingAllowedRegions(regions []string) func(*regionFencingService) {
+	return func(s *regionFencingService) {
+		s.regions = make(map[string]struct{}, len(regions))
+		for _, region := range regions {
+			if value := strings.TrimSpace(region); value != "" {
+				s.regions[value] = struct{}{}
+			}
+		}
+	}
 }
 
 func (s *regionFencingService) Directory(ctx context.Context, tenantID string, accountID domain.ID) (*repository.RegionDirectory, error) {
@@ -59,6 +75,11 @@ func (s *regionFencingService) Promote(ctx context.Context, tenantID string, acc
 	targetRegion = strings.TrimSpace(targetRegion)
 	if targetRegion == "" {
 		return 0, apperr.BadRequest("region.invalid_target", "target region is required")
+	}
+	if len(s.regions) > 0 {
+		if _, ok := s.regions[targetRegion]; !ok {
+			return 0, apperr.BadRequest("region.invalid_target", "target region is not configured")
+		}
 	}
 	// Security-relevant admin op: with an auditor wired, the promotion CAS and
 	// its fact commit in ONE transaction (in-tx model, ban/file-share

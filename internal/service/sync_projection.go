@@ -7,6 +7,13 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 )
 
+func syncSummaryStatus(summary *connector.Summary) (string, bool) {
+	if summary != nil && !summary.Complete {
+		return "partial", true
+	}
+	return "synced", false
+}
+
 //nolint:cyclop // source projection persistence applies version, freshness, and partial-result rules together.
 func (s *syncJobService) persistSyncSummary(ctx context.Context, job *domain.SyncJob, account *domain.Account,
 	source connector.Source, requested []domain.AccountDataset, summary *connector.Summary) error {

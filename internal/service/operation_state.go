@@ -97,6 +97,7 @@ func (s *operationService) abortReconciledOperation(ctx context.Context, operati
 
 type operationProgress struct {
 	failed, unknown, open, pending, running bool
+	partial                                 bool
 	compensationFailed, compensationUnknown bool
 	uncompensatedSuccess                    bool
 }
@@ -114,6 +115,9 @@ func inspectOperationProgress(steps []*domain.OperationStep) operationProgress {
 func (p *operationProgress) observe(step *domain.OperationStep) {
 	p.observeStatus(step.Status, step.CompensationAction, step.CompensationStatus)
 	p.observeCompensation(step)
+	if stepResultIsPartial(step.Result) {
+		p.partial = true
+	}
 }
 
 func (p *operationProgress) observeStatus(status domain.OperationStepStatus, compensationAction string,
@@ -154,6 +158,9 @@ func (p operationProgress) status() domain.OperationStatus {
 		if p.unknown {
 			return domain.OperationUnknown
 		}
+		if p.partial {
+			return domain.OperationPartiallyCompleted
+		}
 		return domain.OperationCompleted
 	}
 	if p.unknown || p.compensationUnknown {
@@ -166,10 +173,18 @@ func (p operationProgress) failedStatus() domain.OperationStatus {
 	if !p.failed {
 		return domain.OperationCompleted
 	}
-	if p.compensationFailed || p.uncompensatedSuccess {
+	if p.partial || p.compensationFailed || p.uncompensatedSuccess {
 		return domain.OperationPartiallyCompleted
 	}
 	return domain.OperationFailed
+}
+
+func stepResultIsPartial(result map[string]any) bool {
+	status, ok := result["status"].(string)
+	if !ok {
+		return false
+	}
+	return status == "partial" || status == string(domain.OperationPartiallyCompleted)
 }
 
 func (s *operationService) finishOperation(ctx context.Context, id domain.ID) (*domain.Operation, error) {
@@ -199,5 +214,9 @@ func (s *operationService) finishOperation(ctx context.Context, id domain.ID) (*
 	if terminalOperationStatus(status) && status != operation.Status {
 		s.metrics.ObserveOperationOutcome(string(status))
 	}
-	return s.repo.Get(ctx, id)
+	finished, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, apperr.Internal("operation.reload_failed", "failed to reload finished operation").Wrap(err)
+	}
+	return finished, nil
 }

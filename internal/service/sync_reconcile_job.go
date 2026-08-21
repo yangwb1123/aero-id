@@ -35,11 +35,8 @@ func (s *syncJobService) Reconcile(ctx context.Context, id domain.ID, worker str
 
 func (s *syncJobService) reconcileClaimed(ctx context.Context, claimed *domain.SyncJob) (*domain.SyncJob, error) {
 	if claimed.JobType != domain.SyncJobErase {
-		if err := s.finishJob(ctx, claimed, domain.SyncJobUnknown, "sync.reconcile_unsupported",
-			"this sync job type has no outcome reconciler", claimed.Result); err != nil {
-			return nil, apperr.Internal("sync.reconcile_finish_failed", "failed to release unsupported sync reconciliation").Wrap(err)
-		}
-		return s.repo.Get(ctx, claimed.ID)
+		return s.finishJobAndLoad(ctx, claimed, domain.SyncJobUnknown, "sync.reconcile_unsupported",
+			"this sync job type has no outcome reconciler", claimed.Result)
 	}
 	return s.reconcileErase(ctx, claimed)
 }
@@ -48,8 +45,8 @@ func (s *syncJobService) reconcileClaimed(ctx context.Context, claimed *domain.S
 func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
-		_ = s.finishJob(ctx, job, domain.SyncJobFailed, "erase.account_load_failed", "failed to load account", nil)
-		return nil, apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
+		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.account_load_failed", "failed to load account", nil, cause)
 	}
 	result := cloneSyncResult(job.Result)
 	sources := syncResultSources(result)
@@ -96,10 +93,7 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 			code, message = "erase.local_projection_failed", "source deletion completed but local erasure failed"
 		}
 	}
-	if err := s.finishJob(ctx, job, status, code, message, result); err != nil {
-		return nil, apperr.Internal("sync.reconcile_finish_failed", "failed to finish sync reconciliation").Wrap(err)
-	}
-	return s.repo.Get(ctx, job.ID)
+	return s.finishJobAndLoad(ctx, job, status, code, message, result)
 }
 
 func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *domain.Account, job *domain.SyncJob,
@@ -128,7 +122,7 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 	if operationID == "" {
 		operationID = sourceOperationID(value)
 	}
-	return status, operationID, result.Result, nil
+	return eraseSourceOutcome(status), operationID, result.Result, nil
 }
 
 func remoteUnknownError(source, code string) error {
@@ -174,6 +168,17 @@ func eraseFailureStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func eraseSourceOutcome(status string) string {
+	status = normalizedCommandStatus(status)
+	if commandSucceeded(status) {
+		return "completed"
+	}
+	if eraseFailureStatus(status) {
+		return "failed"
+	}
+	return "unknown"
 }
 
 func commandSucceeded(status string) bool {

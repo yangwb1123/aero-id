@@ -10,6 +10,11 @@ import (
 	"github.com/aero/aero-id/internal/pkg/idgen"
 )
 
+// CurrentSchemaVersion is the only canonical envelope version understood by
+// this binary. Future versions must be explicitly supported before they can
+// reach a projector; the NATS adapter quarantines unsupported messages.
+const CurrentSchemaVersion = 1
+
 type Envelope struct {
 	EventID          domain.ID      `json:"event_id"`
 	Source           string         `json:"source"`
@@ -70,6 +75,9 @@ func (e *Envelope) validateSource() error {
 func (e *Envelope) validateType() error {
 	if strings.TrimSpace(e.EventType) == "" || e.SchemaVersion <= 0 {
 		return fmt.Errorf("event_type and schema_version are required")
+	}
+	if e.SchemaVersion != CurrentSchemaVersion {
+		return fmt.Errorf("schema_version %d is unsupported", e.SchemaVersion)
 	}
 	return nil
 }

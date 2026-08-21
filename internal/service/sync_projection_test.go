@@ -72,6 +72,29 @@ var vaultDatasets = []domain.AccountDataset{
 	domain.AccountDataset("aero-vault.usage"),
 }
 
+func TestSyncSummaryStatusSurfacesIncompleteResults(t *testing.T) {
+	if status, partial := syncSummaryStatus(&connector.Summary{Complete: false}); status != "partial" || !partial {
+		t.Fatalf("incomplete summary = %q/%v, want partial/true", status, partial)
+	}
+	if status, partial := syncSummaryStatus(&connector.Summary{Complete: true}); status != "synced" || partial {
+		t.Fatalf("complete summary = %q/%v, want synced/false", status, partial)
+	}
+}
+
+func TestDatasetsBySourceKeepsMissingConnectorDetectionScoped(t *testing.T) {
+	got := datasetsBySource([]domain.AccountDataset{
+		domain.AccountDataset("aero-vault.buckets"),
+		domain.AccountDataset("aero-vault.usage"),
+		domain.AccountDataset("aero-im.profile"),
+	})
+	if len(got[connector.SourceAeroVault]) != 2 || len(got[connector.SourceAeroIM]) != 1 {
+		t.Fatalf("datasets by source = %#v, want vault=2 and im=1", got)
+	}
+	if _, ok := got[connector.SourceSnaplink]; ok {
+		t.Fatal("unrequested source should not be treated as a missing connector")
+	}
+}
+
 // TestPersistSyncSummary_SkipsSuppressReconcileMarking: a summary downgraded
 // to incomplete because datasets were skipped must not mark previously
 // projected snapshots unavailable or references missing, even though the job

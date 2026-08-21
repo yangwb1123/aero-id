@@ -104,6 +104,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		BreakerCooldown:  cfg.SSO.BreakerCooldown,
 		MaxAttempts:      cfg.SSO.MaxAttempts,
 		RetryBackoff:     cfg.SSO.RetryBackoff,
+		MaxConcurrent:    cfg.SSO.MaxConcurrent,
 		KeepaliveTime:    cfg.SSO.KeepaliveTime,
 		KeepaliveTimeout: cfg.SSO.KeepaliveTimeout,
 		Metrics:          metricsReg,

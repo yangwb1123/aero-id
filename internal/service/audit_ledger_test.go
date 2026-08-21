@@ -19,6 +19,8 @@ type auditLedgerRepoSpy struct {
 	source    string
 	partition string
 	appendErr error
+	listErr   error
+	verifyErr error
 }
 
 func (r *auditLedgerRepoSpy) Append(_ context.Context, fact *domain.AuditFact) error {
@@ -28,7 +30,7 @@ func (r *auditLedgerRepoSpy) Append(_ context.Context, fact *domain.AuditFact) e
 
 func (r *auditLedgerRepoSpy) List(_ context.Context, filter domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
 	r.filter = filter
-	return nil, "", nil
+	return nil, "", r.listErr
 }
 
 func (r *auditLedgerRepoSpy) ChainPartitions(ctx context.Context) ([]repository.ChainPartition, error) {
@@ -41,7 +43,7 @@ func (r *auditLedgerRepoSpy) ChainHead(ctx context.Context, source, partition st
 
 func (r *auditLedgerRepoSpy) VerifyChain(_ context.Context, source, partition string) error {
 	r.source, r.partition = source, partition
-	return nil
+	return r.verifyErr
 }
 
 // TestAuditLedgerServiceMethodSetFrozen (R-4): the ledger service must never
@@ -88,7 +90,8 @@ func TestAuditLedgerRecordEnqueuesOnly(t *testing.T) {
 // TestAuditLedgerDuplicateMapsToSuccess (FM-7): a duplicate event_id from the
 // repo (sequential retry of an idempotent command) surfaces as success at the
 // service layer; every other error propagates.
-func TestAuditLedgerDuplicateMapsToSuccess(t *testing.T) {	dupe := &auditLedgerRepoSpy{}
+func TestAuditLedgerDuplicateMapsToSuccess(t *testing.T) {
+	dupe := &auditLedgerRepoSpy{}
 	dupe.appendErr = repository.ErrAuditDuplicate
 	ledger := NewAuditLedgerService(dupe)
 	if err := ledger.Record(t.Context(), AuditFactInput{Action: "account.provisioned"}); err != nil {
@@ -247,5 +250,34 @@ func TestAuditLedgerOverridesRequestedTenant(t *testing.T) {
 	}
 	if repo.source != "aero-id" || repo.partition != "tenant-a:user-1" {
 		t.Fatalf("verified source/partition = %q/%q", repo.source, repo.partition)
+	}
+}
+
+func TestAuditLedgerReadsRecordMetadataAudit(t *testing.T) {
+	repo := &auditLedgerRepoSpy{}
+	ledger := NewAuditLedgerService(repo)
+	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-a"})
+	filter := domain.AuditFactFilter{Action: "account.viewed", Page: domain.Page{Limit: 20, Cursor: "cursor"}}
+	if _, _, err := ledger.List(ctx, filter); err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if repo.appended == nil || repo.appended.Action != "audit.viewed" {
+		t.Fatalf("audit append = %#v, want audit.viewed", repo.appended)
+	}
+	if repo.appended.Payload["action_filter"] != "account.viewed" ||
+		repo.appended.Payload["cursor_present"] != true || repo.appended.Payload["page_limit"] != 20 {
+		t.Fatalf("audit payload = %#v, want allow-listed query metadata", repo.appended.Payload)
+	}
+}
+
+func TestAuditLedgerReadAuditFailureIsFailClosed(t *testing.T) {
+	repo := &auditLedgerRepoSpy{appendErr: errors.New("ledger down")}
+	ledger := NewAuditLedgerService(repo)
+	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-a"})
+	if _, _, err := ledger.List(ctx, domain.AuditFactFilter{}); err == nil {
+		t.Fatal("List() must fail when the access audit cannot be appended")
+	}
+	if err := ledger.VerifyChain(ctx, "aero-id", "tenant-a"); err == nil {
+		t.Fatal("VerifyChain() must fail when the access audit cannot be appended")
 	}
 }

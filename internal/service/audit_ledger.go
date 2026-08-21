@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 )
@@ -81,7 +82,7 @@ func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) e
 		if s.metrics != nil {
 			s.metrics.ObserveAuditIngestFailure(strings.TrimSpace(input.Source))
 		}
-		return err
+		return apperr.Unavailable("audit.ingest_failed", "audit ledger append failed").Wrap(err)
 	}
 	if s.metrics != nil {
 		s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(input.Action))
@@ -157,7 +158,14 @@ func (s *auditLedgerService) List(ctx context.Context, filter domain.AuditFactFi
 		return nil, "", err
 	}
 	filter.TenantID = tenantID
-	return s.repo.List(ctx, filter)
+	facts, next, err := s.repo.List(ctx, filter)
+	if err != nil {
+		return nil, "", apperr.Unavailable("audit.list_failed", "audit ledger query failed").Wrap(err)
+	}
+	if err := s.Record(ctx, auditReadFactInput(tenantID, filter)); err != nil {
+		return nil, "", err
+	}
+	return facts, next, nil
 }
 
 func (s *auditLedgerService) VerifyChain(ctx context.Context, source, partition string) error {
@@ -165,7 +173,33 @@ func (s *auditLedgerService) VerifyChain(ctx context.Context, source, partition 
 	if err != nil {
 		return err
 	}
-	return s.repo.VerifyChain(ctx, source, auditTenantPartition(tenantID, partition))
+	if err := s.repo.VerifyChain(ctx, source, auditTenantPartition(tenantID, partition)); err != nil {
+		return apperr.Unavailable("audit.verify_failed", "audit chain verification failed").Wrap(err)
+	}
+	if err := s.Record(ctx, AuditFactInput{Source: "aero-id", TenantID: tenantID, Action: "audit.chain.verified",
+		ResourceType: "audit_chain", ResourceID: auditTenantPartition(tenantID, partition),
+		Payload: map[string]any{"source": source}}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func auditReadFactInput(tenantID string, filter domain.AuditFactFilter) AuditFactInput {
+	return AuditFactInput{Source: "aero-id", TenantID: tenantID, Action: "audit.viewed",
+		ResourceType: "audit_ledger", ResourceID: "tenant:" + tenantID,
+		Payload: map[string]any{
+			"action_filter":            filter.Action,
+			"source_filter":            filter.Source,
+			"resource_type_filter":     filter.ResourceType,
+			"actor_filter_present":     strings.TrimSpace(filter.ActorUID) != "",
+			"request_filter_present":   strings.TrimSpace(filter.RequestID) != "",
+			"account_filter_present":   filter.AccountID != (domain.ID{}),
+			"operation_filter_present": filter.OperationID != (domain.ID{}),
+			"from_present":             filter.From != nil,
+			"to_present":               filter.To != nil,
+			"cursor_present":           strings.TrimSpace(filter.Page.Cursor) != "",
+			"page_limit":               filter.Page.Limit,
+		}}
 }
 
 func auditTenantPartition(tenantID, partition string) string {

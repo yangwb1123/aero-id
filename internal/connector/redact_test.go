@@ -96,6 +96,16 @@ func TestRedactSummaryDataNestedAndArrayCredentials(t *testing.T) {
 	}
 }
 
+func TestRedactSummaryDataNestedArrays(t *testing.T) {
+	input := map[string]any{"items": []any{[]any{map[string]any{
+		"token": "nested-secret", "display_name": "Ada",
+	}}}}
+	got := RedactSummaryData(input)
+	if containsSensitiveSummaryKey(got) {
+		t.Fatalf("credential key survived nested-array redaction: %#v", got)
+	}
+}
+
 func TestRedactSummaryDataDoesNotBroadenGenericKey(t *testing.T) {
 	input := map[string]any{"keyboard": "a", "monkey": "b", "keynote": "c", "display_name": "Ada"}
 	got := RedactSummaryData(input)

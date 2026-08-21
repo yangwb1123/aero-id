@@ -66,6 +66,8 @@ func TestFinishOperationEmitsOutcomeOncePerTerminalStatus(t *testing.T) {
 		expected domain.OperationStatus
 	}{
 		{"completed", []*domain.OperationStep{{Status: domain.StepSucceeded}}, domain.OperationCompleted},
+		{"partial source result", []*domain.OperationStep{{Status: domain.StepSucceeded,
+			Result: map[string]any{"status": string(domain.OperationPartiallyCompleted)}}}, domain.OperationPartiallyCompleted},
 		{"failed", []*domain.OperationStep{{Status: domain.StepFailed}}, domain.OperationFailed},
 		// A failed step with a failed compensation is the partially_completed
 		// fixture: CompensationStatus=Pending would map to unknown (pending

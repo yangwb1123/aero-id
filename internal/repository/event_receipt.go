@@ -142,7 +142,7 @@ func (r *eventReceiptRepo) applySnapshotRow(tx *gorm.DB, envelope *event.Envelop
 	mutation *event.SnapshotMutation, now time.Time) (EventApplyStatus, error) {
 	var existing accountSnapshotRow
 	lookup := tx.Where("account_id = ? AND source = ? AND dataset = ?", mutation.AccountID, mutation.Source, mutation.Dataset).First(&existing)
-	if lookup.Error == nil && existing.Version >= mutation.Version && mutation.Version > 0 {
+	if lookup.Error == nil && shouldSkipSnapshotRevision(existing, envelope, mutation) {
 		return EventOutOfOrder, nil
 	}
 	if lookup.Error != nil && !errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
@@ -167,6 +167,23 @@ func (r *eventReceiptRepo) applySnapshotRow(tx *gorm.DB, envelope *event.Envelop
 	return EventApplied, nil
 }
 
+func shouldSkipSnapshotRevision(existing accountSnapshotRow, envelope *event.Envelope,
+	mutation *event.SnapshotMutation) bool {
+	if mutation.Version <= 0 || existing.Version < mutation.Version {
+		return false
+	}
+	if existing.Version > mutation.Version {
+		return true
+	}
+	// Replicated projections may legitimately change in place at the same
+	// source version (for example, an erase turns the row unavailable). The
+	// replication envelope carries the source revision time in OccurredAt;
+	// accept only a non-older aero-id revision so ordinary source duplicates
+	// still remain out-of-order.
+	return envelope.Source != "aero-id" ||
+		(existing.GeneratedAt.After(envelope.OccurredAt) && !existing.GeneratedAt.IsZero())
+}
+
 func (r *eventReceiptRepo) appendEventAudit(ctx context.Context, tx *gorm.DB, fact *domain.AuditFact,
 	mutation *event.SnapshotMutation, status EventApplyStatus) error {
 	if fact == nil {
@@ -184,7 +201,10 @@ func (r *eventReceiptRepo) appendEventAudit(ctx context.Context, tx *gorm.DB, fa
 }
 
 func (r *eventReceiptRepo) QuarantineEvent(ctx context.Context, envelope *event.Envelope, code string) error {
-	payload, _ := json.Marshal(event.RedactPayload(envelope.Payload))
+	payload, err := json.Marshal(event.RedactPayload(envelope.Payload))
+	if err != nil {
+		return fmt.Errorf("marshal quarantined event payload: %w", err)
+	}
 	now := time.Now().UTC()
 	row := &eventReceiptRow{
 		ID: idgen.NewID(), TenantID: envelope.TenantID, Source: envelope.Source, EventID: envelope.EventID,

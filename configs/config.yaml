@@ -86,7 +86,7 @@ database:
   host: 127.0.0.1
   port: 5432
   user: aero
-  password: aero
+  password: ""              # secret provider/env only: AERO_ID_DATABASE_PASSWORD
   dbname: aero_id
   sslmode: disable
   max_open_conns: 50
@@ -115,6 +115,7 @@ sso:
   breaker_cooldown: 10s       # how long to fast-fail before admitting a single recovery probe
   max_attempts: 3             # upstream tries per call within the timeout budget (1 = no retry)
   retry_backoff: 50ms         # base exponential backoff between availability-error retries
+  max_concurrent: 64          # max concurrent in-flight SSO upstream RPCs across validate/get_users/authorize (0 = no cap)
   keepalive_time: 30s         # send a keepalive ping after this much idle time
   keepalive_timeout: 10s      # wait this long for the keepalive ping ack before closing
   # TLS / mTLS (used only when insecure=false; empty tls_ca_file falls back to the system cert pool):
@@ -158,19 +159,22 @@ event_bus:                       # optional canonical-event consumer transport (
     url: ""                       # e.g. nats://nats:4222
     stream: aero_events
     subject: aero.events.canonical
+    dead_letter_subject: aero.events.canonical.dead-letter
     durable: aero-id-ingest
     max_redeliveries: 5
     ack_wait: 30s
 replication:                      # optional cross-region projection replication (P6-03)
   enabled: false
   interval: 5s
+  lease: 2m
   batch_size: 500
   transport: nats                # nats | http
   nats_subject: aero.events.canonical
   http_endpoint: ""               # transport=http: remote region ingest URL
   http_key: ""                    # transport=http: HMAC key matching remote event_ingest
+  http_bearer_token: ""            # transport=http: service identity token from secret provider/env
 audit_ledger:
-  signing_key: 8074523de328219f7f160081226e33afc992347ccd04f3e30cde48667eb97488   # local-dev placeholder; override with AERO_ID_AUDIT_LEDGER_SIGNING_KEY in production
+  signing_key: ""            # secret provider/env only: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
 audit_governance:                # durable relay from audit_publications; disabled until all source bindings exist
   enabled: false
   endpoint: ""                   # e.g. https://audit-governance.internal
@@ -227,7 +231,7 @@ storage:
     purge_batch: 500             # max soft-deleted rows purged per pass (0 => default 500)
     sweep_orphans: false         # also delete orphaned blobs (best-effort; needs a listable backend)
     purge_paused: false          # maintenance: suspend row purge + orphan reclamation so dead-letter replay cannot race blob deletion
-signing_key: 160047158b5f58078e730161cdeca45544da45fee1f47ecdfdc54537310f83b9
+signing_key: ""              # secret provider/env only: AERO_ID_SIGNING_KEY
 log:    { level: info, encoding: console, sample_ratio: 0 }   # 0..1; <1 samples info-level access logs
 data_retention:
   audit_retention: 2160h                  # 90 days (0 = never purge)

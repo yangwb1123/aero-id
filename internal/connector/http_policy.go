@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -51,14 +52,15 @@ func (c *JSONSummaryConnector) doHTTP(ctx context.Context, factory func() (*http
 		if err != nil {
 			return nil, err
 		}
+		canRetry := retryableRequest(request)
 		response, err := c.client.Do(request)
 		if err == nil {
-			if !retryableStatus(response.StatusCode) || attempt+1 >= c.cfg.MaxAttempts {
+			if !canRetry || !retryableStatus(response.StatusCode) || attempt+1 >= c.cfg.MaxAttempts {
 				return response, nil
 			}
 			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.cfg.MaxBodyBytes))
 			_ = response.Body.Close()
-		} else if attempt+1 >= c.cfg.MaxAttempts {
+		} else if !canRetry || attempt+1 >= c.cfg.MaxAttempts {
 			return nil, err
 		}
 		if err := waitRetry(ctx, c.cfg.RetryBackoff, attempt); err != nil {
@@ -69,6 +71,22 @@ func (c *JSONSummaryConnector) doHTTP(ctx context.Context, factory func() (*http
 }
 
 func retryableStatus(status int) bool { return status == http.StatusTooManyRequests || status >= 500 }
+
+// retryableRequest keeps automatic retries within the at-least-once contract:
+// safe reads may be retried, while command methods must explicitly carry an
+// idempotency key before a transport failure or transient response can cause a
+// second remote execution.
+func retryableRequest(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	switch request.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return strings.TrimSpace(request.Header.Get("Idempotency-Key")) != ""
+	}
+}
 
 func waitRetry(ctx context.Context, base time.Duration, attempt int) error {
 	delay := base << attempt

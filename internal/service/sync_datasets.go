@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 
+	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
 )
 
@@ -22,6 +23,19 @@ func datasetsFromRequest(request map[string]any) []domain.AccountDataset {
 		}
 	case []domain.AccountDataset:
 		result = append(result, values...)
+	}
+	return result
+}
+
+func datasetsBySource(datasets []domain.AccountDataset) map[connector.Source][]domain.AccountDataset {
+	result := make(map[connector.Source][]domain.AccountDataset)
+	for _, dataset := range datasets {
+		descriptor, ok := domain.DatasetDescriptorOf(dataset)
+		if !ok {
+			continue
+		}
+		source := connector.Source(descriptor.Source)
+		result[source] = append(result[source], dataset)
 	}
 	return result
 }

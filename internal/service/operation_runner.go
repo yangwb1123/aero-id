@@ -128,7 +128,25 @@ func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.
 	if result == nil {
 		return "", nil, fmt.Errorf("source erase result is empty")
 	}
-	return result.SourceOperationID, map[string]any{"status": result.Status}, nil
+	outcome := map[string]any{"status": result.Status}
+	if result.SourceOperationID != "" {
+		outcome["source_operation_id"] = result.SourceOperationID
+	}
+	if err := commandResultOutcome(client.Source(), result); err != nil {
+		return result.SourceOperationID, outcome, err
+	}
+	return result.SourceOperationID, outcome, nil
+}
+
+func commandResultOutcome(source connector.Source, result *connector.CommandResult) error {
+	status := normalizedCommandStatus(result.Status)
+	if commandSucceeded(status) {
+		return nil
+	}
+	if eraseFailureStatus(status) {
+		return &connector.RemoteError{Source: source, Kind: connector.ErrorInvalid, Code: "source.operation_failed"}
+	}
+	return &connector.RemoteError{Source: source, Kind: connector.ErrorUnknown, Code: "source.operation_pending", Temporary: true}
 }
 
 //nolint:cyclop // projection persistence handles each allow-listed source dataset in one operation step.
@@ -173,7 +191,20 @@ func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.O
 			return "", nil, err
 		}
 	}
-	return "", map[string]any{"status": "synced", "count": len(summary.Snapshots)}, nil
+	return "", syncOperationResult(summary), nil
+}
+
+func syncOperationResult(summary *connector.Summary) map[string]any {
+	status := "synced"
+	result := map[string]any{"status": status, "count": len(summary.Snapshots), "complete": summary.Complete}
+	if !summary.Complete {
+		result["status"] = string(domain.OperationPartiallyCompleted)
+		result["error_code"] = "source.summary_incomplete"
+	}
+	if len(summary.SkippedDatasets) > 0 {
+		result["skipped_datasets"] = summary.SkippedDatasets
+	}
+	return result
 }
 
 func operationDatasets(payload map[string]any) []domain.AccountDataset {

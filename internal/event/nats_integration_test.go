@@ -51,7 +51,7 @@ func createStream(t *testing.T, url, stream, subject string) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := js.AddStream(&nats.StreamConfig{Name: stream, Subjects: []string{subject}}); err != nil {
+	if _, err := js.AddStream(&nats.StreamConfig{Name: stream, Subjects: []string{subject, subject + ".dead-letter"}}); err != nil {
 		t.Fatalf("add stream: %v", err)
 	}
 }
@@ -75,7 +75,8 @@ func TestNATSBusConsumesCanonicalEnvelopes(t *testing.T) {
 
 	bus, err := event.NewNATSBus(event.NATSConfig{
 		URL: url, Stream: "aero_events", Subject: "aero.events.canonical",
-		Durable: "aero-id-ingest", MaxRedeliveries: 2, AckWait: 5 * time.Second,
+		DeadLetterSubject: "aero.events.canonical.dead-letter",
+		Durable:           "aero-id-ingest", MaxRedeliveries: 2, AckWait: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("new bus: %v", err)
@@ -159,7 +160,8 @@ func TestNATSBusRejectsPoisonEnvelope(t *testing.T) {
 	createStream(t, url, "aero_events", "aero.events.canonical")
 	bus, err := event.NewNATSBus(event.NATSConfig{
 		URL: url, Stream: "aero_events", Subject: "aero.events.canonical",
-		Durable: "aero-id-ingest-poison", MaxRedeliveries: 2, AckWait: 2 * time.Second,
+		DeadLetterSubject: "aero.events.canonical.dead-letter",
+		Durable:           "aero-id-ingest-poison", MaxRedeliveries: 2, AckWait: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +186,11 @@ func TestNATSBusRejectsPoisonEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	deadLetters, err := js.SubscribeSync("aero.events.canonical.dead-letter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deadLetters.Unsubscribe()
 	// Malformed JSON must be Term()inated, never delivered to the handler.
 	if _, err := js.Publish("aero.events.canonical", []byte("{not-json")); err != nil {
 		t.Fatal(err)
@@ -192,14 +199,30 @@ func TestNATSBusRejectsPoisonEnvelope(t *testing.T) {
 	if _, err := js.Publish("aero.events.canonical", []byte(`{"event_id":"00000000-0000-0000-0000-000000000000","source":"x"}`)); err != nil {
 		t.Fatal(err)
 	}
-	conn.Close()
-
 	select {
 	case <-received:
 		t.Fatal("poison envelopes must never reach the handler")
 	case <-time.After(3 * time.Second):
 		// expected: no handler invocation
 	}
+	for i := 0; i < 2; i++ {
+		msg, nextErr := deadLetters.NextMsg(3 * time.Second)
+		if nextErr != nil {
+			t.Fatalf("dead-letter record %d was not published: %v", i, nextErr)
+		}
+		var record map[string]any
+		if err := json.Unmarshal(msg.Data, &record); err != nil {
+			t.Fatalf("dead-letter record %d is invalid JSON: %v", i, err)
+		}
+		if record["payload_sha256"] == nil || record["payload_bytes"] == nil {
+			t.Fatalf("dead-letter record %d lacks digest metadata: %#v", i, record)
+		}
+		if _, leaked := record["payload"]; leaked {
+			t.Fatalf("dead-letter record %d leaked original payload: %#v", i, record)
+		}
+		_ = msg.Ack()
+	}
+	conn.Close()
 }
 
 func newIngestService(receipts repository.EventReceiptRepository) service.EventIngestService {
@@ -228,7 +251,8 @@ func TestProjectionReplicationRoundTrip(t *testing.T) {
 
 	bus, err := event.NewNATSBus(event.NATSConfig{
 		URL: url, Stream: "aero_events", Subject: "aero.events.canonical",
-		Durable: "aero-id-ingest-repl", MaxRedeliveries: 2, AckWait: 5 * time.Second,
+		DeadLetterSubject: "aero.events.canonical.dead-letter",
+		Durable:           "aero-id-ingest-repl", MaxRedeliveries: 2, AckWait: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +312,8 @@ func TestNATSBusRedeliveryAfterTransientFailure(t *testing.T) {
 	createStream(t, url, "aero_events", "aero.events.canonical")
 	bus, err := event.NewNATSBus(event.NATSConfig{
 		URL: url, Stream: "aero_events", Subject: "aero.events.canonical",
-		Durable: "aero-id-ingest-redeliver", MaxRedeliveries: 5, AckWait: 1 * time.Second,
+		DeadLetterSubject: "aero.events.canonical.dead-letter",
+		Durable:           "aero-id-ingest-redeliver", MaxRedeliveries: 5, AckWait: 1 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

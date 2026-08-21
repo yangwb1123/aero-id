@@ -43,6 +43,42 @@ func writeTemp(t *testing.T, content string) string {
 	return p
 }
 
+const ssoBlockForReplace = `sso: {endpoint: "sso:9000", timeout: 5s, insecure: true, token_cache_ttl: 60s, user_cache_ttl: 300s}`
+
+// TestLoadSSOMaxConcurrent (R9): the max_concurrent key parses end-to-end; 0 and
+// an absent key both remain valid (0 = no cap), and a negative value is rejected
+// by startup validation.
+func TestLoadSSOMaxConcurrent(t *testing.T) {
+	withBlock := func(block string) string {
+		return strings.Replace(sample, ssoBlockForReplace, block, 1)
+	}
+
+	cfg, err := Load(writeTemp(t, withBlock(`sso: {endpoint: "sso:9000", max_concurrent: 64}`)))
+	if err != nil {
+		t.Fatalf("max_concurrent: 64 must load: %v", err)
+	}
+	if cfg.SSO.MaxConcurrent != 64 {
+		t.Errorf("SSO.MaxConcurrent=%d, want 64", cfg.SSO.MaxConcurrent)
+	}
+
+	for name, block := range map[string]string{
+		"explicit zero (no cap)":          `sso: {endpoint: "sso:9000", max_concurrent: 0}`,
+		"absent key (defaults to no cap)": sample,
+	} {
+		content := block
+		if block != sample {
+			content = strings.Replace(sample, ssoBlockForReplace, block, 1)
+		}
+		if _, err := Load(writeTemp(t, content)); err != nil {
+			t.Errorf("%s must load: %v", name, err)
+		}
+	}
+
+	if _, err := Load(writeTemp(t, withBlock(`sso: {endpoint: "sso:9000", max_concurrent: -1}`))); err == nil {
+		t.Error("negative sso.max_concurrent must be rejected by validation")
+	}
+}
+
 func TestLoad_fromFile(t *testing.T) {
 	cfg, err := Load(writeTemp(t, sample))
 	if err != nil {
@@ -560,6 +596,10 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 
 	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
 	t.Setenv("AERO_ID_BILLING_ENABLED", "false")
+	// The shipped file intentionally contains no secret material. Supply test
+	// secrets through the same environment override used by deployments.
+	t.Setenv("AERO_ID_SIGNING_KEY", strings.Repeat("s", 32))
+	t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", strings.Repeat("a", 32))
 	cfg, err := Load(shipped)
 	if err != nil {
 		t.Fatalf("shipped configs/config.yaml must load: %v", err)

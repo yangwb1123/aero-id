@@ -46,3 +46,12 @@ func TestEnvelopeRejectsInvalidVersionAndStatus(t *testing.T) {
 		t.Fatal("zero aggregate version was accepted")
 	}
 }
+
+func TestEnvelopeRejectsUnsupportedSchemaVersion(t *testing.T) {
+	envelope := &Envelope{EventID: idgen.NewID(), Source: "aero-im", SourceRegion: "west", EventType: "changed",
+		SchemaVersion: CurrentSchemaVersion + 1, AggregateType: "account", AggregateID: "user-1",
+		AggregateVersion: 1, OccurredAt: time.Now().UTC(), Payload: map[string]any{}}
+	if err := envelope.Validate(); err == nil {
+		t.Fatal("unsupported schema version was accepted")
+	}
+}

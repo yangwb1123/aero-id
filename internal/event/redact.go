@@ -14,6 +14,15 @@ func RedactPayload(value map[string]any) map[string]any {
 	return boundedProjectionData(redactProjectionData(value, 0))
 }
 
+func redactedEnvelope(envelope *Envelope) *Envelope {
+	if envelope == nil {
+		return nil
+	}
+	copy := *envelope
+	copy.Payload = RedactPayload(envelope.Payload)
+	return &copy
+}
+
 const maxProjectionDataBytes = 64 * 1024
 
 func boundedProjectionData(value map[string]any) map[string]any {
@@ -39,24 +48,24 @@ func redactProjectionData(value map[string]any, depth int) map[string]any {
 		if projectionSensitiveKey(key) {
 			continue
 		}
-		switch nested := item.(type) {
-		case map[string]any:
-			result[key] = redactProjectionData(nested, depth+1)
-		case []any:
-			items := make([]any, 0, len(nested))
-			for _, child := range nested {
-				if childMap, ok := child.(map[string]any); ok {
-					items = append(items, redactProjectionData(childMap, depth+1))
-				} else {
-					items = append(items, child)
-				}
-			}
-			result[key] = items
-		default:
-			result[key] = item
-		}
+		result[key] = redactProjectionValue(item, depth+1)
 	}
 	return result
+}
+
+func redactProjectionValue(value any, depth int) any {
+	switch nested := value.(type) {
+	case map[string]any:
+		return redactProjectionData(nested, depth)
+	case []any:
+		result := make([]any, 0, len(nested))
+		for _, child := range nested {
+			result = append(result, redactProjectionValue(child, depth))
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 func projectionSensitiveKey(key string) bool {

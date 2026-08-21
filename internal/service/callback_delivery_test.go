@@ -182,6 +182,7 @@ func callbackDelivery(endpoint string, attempt int) *domain.CallbackDelivery {
 type cannedTransport struct {
 	mu     sync.Mutex
 	status int
+	body   []byte
 	calls  int
 	header http.Header
 }
@@ -191,10 +192,10 @@ func (t *cannedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	defer t.mu.Unlock()
 	t.calls++
 	t.header = request.Header.Clone()
-	body, _ := io.ReadAll(request.Body)
+	_, _ = io.ReadAll(request.Body)
 	return &http.Response{
 		StatusCode: t.status, Status: http.StatusText(t.status),
-		Header: http.Header{}, Body: io.NopCloser(bytesReader(body)), Request: request,
+		Header: http.Header{}, Body: io.NopCloser(bytesReader(t.body)), Request: request,
 	}, nil
 }
 
@@ -288,6 +289,24 @@ func TestCallbackDelivery_SignatureAndHeaders(t *testing.T) {
 	defer repo.mu.Unlock()
 	if len(repo.marked) != 1 || repo.marked[0].status != "success" {
 		t.Errorf("marks = %+v, want one success", repo.marked)
+	}
+}
+
+func TestCallbackDelivery_RejectsOversizedResponse(t *testing.T) {
+	transport := &cannedTransport{status: http.StatusAccepted, body: []byte("12345")}
+	svc := newCallbackTestService(newCallbackFakeRepo(callbackDelivery(callbackTestEndpoint, 1)),
+		CallbackConfig{RequestTimeout: 2 * time.Second, MaxResponseBytes: 4, MaxAttempts: 3, RetryBase: time.Millisecond,
+			AllowPrivateTarget: true}, transport)
+	svc.drain(context.Background())
+
+	repo := svc.repo.(*callbackFakeRepo)
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.marked) != 1 {
+		t.Fatalf("marked = %d, want 1", len(repo.marked))
+	}
+	if repo.marked[0].status != "pending" || repo.marked[0].statusCode != http.StatusAccepted {
+		t.Fatalf("mark = %+v, want pending with accepted status", repo.marked[0])
 	}
 }
 

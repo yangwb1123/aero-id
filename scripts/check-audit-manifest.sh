@@ -43,6 +43,7 @@ MANIFEST=(
   "internal/service/file.go|AuditFileCreate|standalone-fact|-"
   "internal/service/file.go|AuditFileDelete|standalone-fact|-"
   "internal/service/file_presign.go|AuditFileCreate|standalone-fact|-"
+  "internal/service/file_presign.go|AuditFileDownload|standalone-fact|-"
   "internal/service/file_share.go|AuditFileUpdate|standalone-fact|-"
   "internal/service/message_audit.go|auditMessageSend|standalone-fact|-"
   "internal/service/message_audit.go|auditMessageEdit|standalone-fact|-"
@@ -51,6 +52,7 @@ MANIFEST=(
   "internal/service/preference.go|AuditPreferenceSet|standalone-fact|-"
   "internal/service/projection_replication.go|AuditProjectionReplicationPublish|standalone-fact|-"
   "internal/service/projection_replay.go|auditProjectionReplay|standalone-fact|-"
+  "internal/service/sync_export.go|exportDownloadAudit|standalone-fact|-"
 )
 
 fail=0

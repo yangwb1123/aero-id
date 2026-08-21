@@ -37,7 +37,7 @@ func TestConnector_SummarySerializesAtMaxConcurrencyOne(t *testing.T) {
 		mu.Lock()
 		inFlight--
 		mu.Unlock()
-		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxConcurrency: 1, MaxAttempts: 1})
@@ -74,7 +74,7 @@ func TestConnector_CancelledAcquireMapsToSourceBulkhead(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		close(firstStarted)
 		<-releaseFirst
-		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxConcurrency: 1, MaxAttempts: 1})
@@ -140,7 +140,7 @@ func TestConnector_DefaultConcurrencyAllowsParallel(t *testing.T) {
 			close(enter)
 		}
 		<-release
-		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxConcurrency: 0, MaxAttempts: 1})

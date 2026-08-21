@@ -166,7 +166,13 @@ func (s *callbackService) deliver(ctx context.Context, delivery *domain.Callback
 		return 0, "", err
 	}
 	defer response.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(response.Body, s.cfg.MaxResponseBytes))
+	data, err := io.ReadAll(io.LimitReader(response.Body, s.cfg.MaxResponseBytes+1))
+	if err != nil {
+		return response.StatusCode, "", err
+	}
+	if int64(len(data)) > s.cfg.MaxResponseBytes {
+		return response.StatusCode, "", errors.New("callback response is too large")
+	}
 	return response.StatusCode, string(data), nil
 }
 

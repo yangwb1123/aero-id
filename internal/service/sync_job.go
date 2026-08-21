@@ -34,20 +34,20 @@ type SyncJobInput struct {
 }
 
 type syncJobService struct {
-	repo         repository.SyncJobRepository
-	accounts     AccountService
-	accountRepo  repository.AccountRepository
-	snapshots    repository.SnapshotRepository
-	store        storage.FileStorage
-	connectors   map[connector.Source]connector.Connector
-	permission   PermissionChecker
-	audit        AuditLedgerService
-	auditLedger  repository.AuditLedgerRepository // optional; enables audit_export jobs (P4-08)
-	exportKey    []byte
-	exportTTL    time.Duration
-	maxExport    int64
-	region       string
-	metrics      ControlPlaneMetrics
+	repo        repository.SyncJobRepository
+	accounts    AccountService
+	accountRepo repository.AccountRepository
+	snapshots   repository.SnapshotRepository
+	store       storage.FileStorage
+	connectors  map[connector.Source]connector.Connector
+	permission  PermissionChecker
+	audit       AuditLedgerService
+	auditLedger repository.AuditLedgerRepository // optional; enables audit_export jobs (P4-08)
+	exportKey   []byte
+	exportTTL   time.Duration
+	maxExport   int64
+	region      string
+	metrics     ControlPlaneMetrics
 }
 
 type SyncJobOption func(*syncJobService)
@@ -295,15 +295,27 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 	datasets := datasetsFromRequest(job.Request)
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
-		_ = s.finishJob(ctx, job, domain.SyncJobFailed, "sync.account_load_failed", "failed to load account", nil)
-		return nil, apperr.Internal("sync.account_load_failed", "failed to load account").Wrap(err)
+		cause := apperr.Internal("sync.account_load_failed", "failed to load account").Wrap(err)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.account_load_failed", "failed to load account", nil, cause)
 	}
 	result := map[string]any{"mode": string(job.JobType), "sources": map[string]any{}}
+	required := datasetsBySource(datasets)
 	var wait sync.WaitGroup
 	var mu sync.Mutex
 	var failures int
+	var incomplete int
+	var missing int
+	for source, requested := range required {
+		if _, configured := s.connectors[source]; configured {
+			continue
+		}
+		missing++
+		result["sources"].(map[string]any)[string(source)] = map[string]any{
+			"status": "not_configured", "error_code": "source.not_configured", "datasets": requested,
+		}
+	}
 	for source, client := range s.connectors {
-		requested := datasetsForSource(datasets, string(source))
+		requested := required[source]
 		if len(requested) == 0 {
 			continue
 		}
@@ -319,24 +331,37 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 				return
 			}
 			summary, callErr := client.Summary(ctx, syncSummaryRequest(account, job, requested))
-			mu.Lock()
-			defer mu.Unlock()
 			if callErr != nil {
+				mu.Lock()
 				failures++
-				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "unavailable", "error_code": "source.unavailable"}
+				result["sources"].(map[string]any)[string(source)] = map[string]any{
+					"status": "unavailable", "error_code": sourceErrorCode(callErr),
+				}
+				mu.Unlock()
 				return
 			}
 			if summary == nil {
+				mu.Lock()
 				failures++
 				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "invalid_response", "error_code": "source.empty_summary"}
+				mu.Unlock()
 				return
 			}
 			if persistErr := s.persistSyncSummary(ctx, job, account, source, requested, summary); persistErr != nil {
+				mu.Lock()
 				failures++
 				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "projection_error"}
+				mu.Unlock()
 				return
 			}
-			status := map[string]any{"status": "synced", "count": len(summary.Snapshots), "complete": summary.Complete}
+			statusName, partial := syncSummaryStatus(summary)
+			status := map[string]any{"status": statusName, "count": len(summary.Snapshots), "complete": summary.Complete}
+			if partial {
+				status["error_code"] = "source.summary_incomplete"
+			}
+			if len(summary.SkippedDatasets) > 0 {
+				status["skipped_datasets"] = summary.SkippedDatasets
+			}
 			if job.JobType == domain.SyncJobReconcile {
 				drift := snapshotDrift(before, summary.Snapshots)
 				status["drift_count"] = drift
@@ -346,26 +371,28 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 					status["repaired_count"] = 0
 				}
 			}
+			mu.Lock()
+			if partial {
+				incomplete++
+			}
 			result["sources"].(map[string]any)[string(source)] = status
+			mu.Unlock()
 		}(source, client, requested)
 	}
 	wait.Wait()
 	status := domain.SyncJobCompleted
-	if len(s.connectors) == 0 || failures > 0 {
+	if missing > 0 || failures > 0 || incomplete > 0 {
 		status = domain.SyncJobPartiallyComplete
 	}
-	if err := s.finishJob(ctx, job, status, "", "", result); err != nil {
-		return nil, apperr.Internal("sync.finish_failed", "failed to finish sync job").Wrap(err)
-	}
-	return s.repo.Get(ctx, job.ID)
+	return s.finishJobAndLoad(ctx, job, status, "", "", result)
 }
 
 //nolint:cyclop,funlen // erase execution preserves unknown remote outcomes before local deletion.
 func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
-		_ = s.finishJob(ctx, job, domain.SyncJobFailed, "erase.account_load_failed", "failed to load account", nil)
-		return nil, apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
+		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.account_load_failed", "failed to load account", nil, cause)
 	}
 	datasets := datasetsFromRequest(job.Request)
 	result := map[string]any{"sources": map[string]any{}}
@@ -401,11 +428,14 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 			mu.Lock()
 			defer mu.Unlock()
 			if callErr != nil {
-				failures++
-				if isUnknownRemote(callErr) {
+				status, outcomeUnknown, outcomeFailed := eraseCallOutcome(callErr)
+				if outcomeUnknown {
 					unknown = true
 				}
-				statuses[string(source)] = map[string]any{"status": "failed", "error_code": remoteErrorCode(callErr)}
+				if outcomeFailed {
+					failures++
+				}
+				statuses[string(source)] = map[string]any{"status": status, "error_code": remoteErrorCode(callErr)}
 				return
 			}
 			if commandResult == nil {
@@ -437,10 +467,7 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 		status = domain.SyncJobPartiallyComplete
 		code, message = "erase.local_projection_failed", "source deletion completed but local erasure failed"
 	}
-	if err := s.finishJob(ctx, job, status, code, message, result); err != nil {
-		return nil, err
-	}
-	return s.repo.Get(ctx, job.ID)
+	return s.finishJobAndLoad(ctx, job, status, code, message, result)
 }
 
 func (s *syncJobService) finishJob(ctx context.Context, job *domain.SyncJob, status domain.SyncJobStatus, code, message string, result map[string]any) error {

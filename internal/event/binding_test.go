@@ -37,3 +37,24 @@ func TestSourceBindingRejectsUnknownOrConflictingClaims(t *testing.T) {
 		t.Fatal("body-selected source was accepted")
 	}
 }
+
+func TestSourceBindingAllowsWildcardTenantOnlyForReplication(t *testing.T) {
+	bindings := SourceBindings{"replication-client": {TenantID: "*", Source: "aero-id", SourceRegion: "west"}}
+	binding, err := bindings.Resolve(&domain.TokenIdentity{ClientID: "replication-client"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := &Envelope{TenantID: "tenant-a", Source: "aero-id", SourceRegion: "west"}
+	if err := binding.Apply(envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.TenantID != "tenant-a" || envelope.Source != "aero-id" || envelope.SourceRegion != "west" {
+		t.Fatalf("wildcard binding changed event scope: %+v", envelope)
+	}
+	if err := binding.Apply(&Envelope{Source: "aero-id", SourceRegion: "west"}); err == nil {
+		t.Fatal("wildcard binding accepted an event without a tenant")
+	}
+	if (SourceBinding{TenantID: "*", Source: "aero-im", SourceRegion: "west"}).valid() {
+		t.Fatal("wildcard tenant was accepted for a source other than aero-id")
+	}
+}

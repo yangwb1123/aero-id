@@ -22,6 +22,14 @@ func (s *fileService) DownloadURL(ctx context.Context, id domain.ID, ttl time.Du
 	if err != nil {
 		return "", apperr.Internal("file.presign_failed", "failed to presign download URL").Wrap(err)
 	}
+	if s.audit != nil {
+		// audit-site: standalone-fact — file.download access audit; no domain write.
+		if err := s.audit.Log(ctx, &domain.AuditEvent{ID: idgen.NewID(), ActorUID: actorFromContext(ctx),
+			Action: domain.AuditFileDownload, SubjectType: "file", SubjectID: id.String(),
+			Meta: map[string]any{"storage_type": f.StorageType}}); err != nil {
+			return "", apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+		}
+	}
 	return url, nil
 }
 

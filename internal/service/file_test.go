@@ -244,6 +244,31 @@ func TestFileService_DownloadURLPresigns(t *testing.T) {
 	}
 }
 
+func TestFileService_DownloadURLRecordsAccessAudit(t *testing.T) {
+	id := idgen.NewID()
+	var logged *domain.AuditEvent
+	audit := &mocks.Auditor{LogFn: func(_ context.Context, event *domain.AuditEvent) error {
+		logged = event
+		return nil
+	}}
+	repo := &mocks.FileRepo{GetFn: func(_ context.Context, got domain.ID) (*domain.File, error) {
+		if got != id {
+			t.Fatalf("file id = %s, want %s", got, id)
+		}
+		return &domain.File{ID: id, OwnerUID: "owner", StorageKey: "owner/file", StorageType: "s3"}, nil
+	}}
+	store := &mocks.Storage{PresignGetFn: func(_ context.Context, key string, _ time.Duration) (string, error) {
+		return "https://download.example/file", nil
+	}}
+	svc := service.NewFileService(repo, store, "s3", service.WithFileAuditLogger(audit))
+	if _, err := svc.DownloadURL(service.WithActor(context.Background(), "owner"), id, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if logged == nil || logged.Action != domain.AuditFileDownload || logged.SubjectID != id.String() {
+		t.Fatalf("download audit = %#v, want file.download for %s", logged, id)
+	}
+}
+
 func TestFileService_GetGranteeAllowed(t *testing.T) {
 	repo := &mocks.FileRepo{
 		GetFn: func(_ context.Context, id domain.ID) (*domain.File, error) {

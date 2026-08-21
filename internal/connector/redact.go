@@ -59,24 +59,24 @@ func redactSummaryMap(value map[string]any, depth int) map[string]any {
 		if sensitiveSummaryKey(key) {
 			continue
 		}
-		switch nested := item.(type) {
-		case map[string]any:
-			result[key] = redactSummaryMap(nested, depth+1)
-		case []any:
-			values := make([]any, 0, len(nested))
-			for _, child := range nested {
-				if childMap, ok := child.(map[string]any); ok {
-					values = append(values, redactSummaryMap(childMap, depth+1))
-				} else {
-					values = append(values, child)
-				}
-			}
-			result[key] = values
-		default:
-			result[key] = item
-		}
+		result[key] = redactSummaryValue(item, depth+1)
 	}
 	return result
+}
+
+func redactSummaryValue(value any, depth int) any {
+	switch nested := value.(type) {
+	case map[string]any:
+		return redactSummaryMap(nested, depth)
+	case []any:
+		result := make([]any, 0, len(nested))
+		for _, child := range nested {
+			result = append(result, redactSummaryValue(child, depth))
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 // canonicalSummaryKey lowercases a key and strips every separator so that

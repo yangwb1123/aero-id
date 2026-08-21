@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -45,5 +46,26 @@ func TestConnector_EraseRejectsOversizedBody(t *testing.T) {
 	}
 	if remote.Kind != ErrorInvalid || remote.Temporary || remote.Code != "source.response_too_large" {
 		t.Fatalf("remote = %+v, want invalid/non-temporary/source.response_too_large", remote)
+	}
+}
+
+func TestNewJSONSummaryConnectorRejectsUnboundedConfiguration(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  HTTPConfig
+	}{
+		{name: "body", cfg: HTTPConfig{MaxBodyBytes: maxSourceBodyBytes + 1}},
+		{name: "concurrency", cfg: HTTPConfig{MaxConcurrency: maxSourceConcurrency + 1}},
+		{name: "attempts", cfg: HTTPConfig{MaxAttempts: maxSourceAttempts + 1}},
+		{name: "timeout", cfg: HTTPConfig{Timeout: maxSourceTimeout + time.Second}},
+		{name: "backoff", cfg: HTTPConfig{RetryBackoff: maxSourceRetryBackoff + time.Second}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cfg.Endpoint = "http://127.0.0.1"
+			if _, err := NewJSONSummaryConnector(SourceAeroIM, tc.cfg); err == nil {
+				t.Fatal("unbounded connector configuration was accepted")
+			}
+		})
 	}
 }

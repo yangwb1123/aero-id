@@ -36,6 +36,13 @@ per-source key rather than the compatibility shared key. Keep the bearer client
 credential and the HMAC key in independent secret-manager entries so either can
 rotate without changing tenant routing.
 
+Cross-region HTTP projection replication is the controlled exception to the
+source-local tenant binding: its Snaplink machine client may use
+`tenant_id: "*"` only with `source: aero-id`, and the binding still pins the
+sending `source_region`. The event body carries the already-authorized tenant
+and the HMAC signs the exact redacted envelope; no caller-supplied tenant or
+source can widen that binding.
+
 ## Accounts and quota
 
 Accounts and external identities are keyed by tenant. Migration `000048`

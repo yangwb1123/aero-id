@@ -10,8 +10,8 @@ import (
 
 // TestCompositionRootValidatesAuditSigningKey (FM-8): an empty ledger signing
 // key must fail startup instead of turning every audit append (and every
-// converted mutation) into a runtime failure. The dev placeholder in
-// configs/config.yaml is non-empty, so the out-of-box config still boots.
+// converted mutation) into a runtime failure. Shipped configuration obtains
+// the key from the environment or an approved secret provider.
 func TestCompositionRootValidatesAuditSigningKey(t *testing.T) {
 	if err := validateAuditLedgerConfig(&config.Config{AuditLedger: config.AuditLedgerConfig{SigningKey: ""}}); err == nil {
 		t.Fatal("empty signing key must fail startup validation")

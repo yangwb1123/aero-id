@@ -106,7 +106,7 @@ func TestConnector_RetryBudgetRespected(t *testing.T) {
 // returned (partial semantics) — the aggregation layer reports freshness.
 func TestConnector_PartialSummaryAccepted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"datasets":{}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 1})
@@ -117,6 +117,9 @@ func TestConnector_PartialSummaryAccepted(t *testing.T) {
 	}
 	if summary.SourceRegion != "west" || summary.Version != 4 {
 		t.Errorf("summary metadata lost: %+v", summary)
+	}
+	if summary.Complete {
+		t.Fatal("summary with a requested dataset missing from the payload must be incomplete")
 	}
 }
 
@@ -130,7 +133,7 @@ func TestConnector_RetriesTransientThenSucceeds(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{"aero-im.profile":{"display_name":"Ada"}}}`))
+		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{"aero-im.profile":{"display_name":"Ada"}}}`))
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 3, RetryBackoff: time.Millisecond})
@@ -140,6 +143,46 @@ func TestConnector_RetriesTransientThenSucceeds(t *testing.T) {
 	}
 	if len(summary.Snapshots) != 1 {
 		t.Errorf("snapshots = %d, want 1", len(summary.Snapshots))
+	}
+}
+
+func TestConnector_DoesNotRetryEraseWithoutIdempotency(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxAttempts: 3, RetryBackoff: time.Millisecond})
+	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, OperationID: "op-1"})
+	if err == nil {
+		t.Fatal("erase failure must surface")
+	}
+	if calls != 1 {
+		t.Fatalf("erase calls = %d, want 1 without idempotency key", calls)
+	}
+}
+
+func TestConnector_RetriesEraseWithIdempotency(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"completed","source_operation_id":"source-op-1"}`))
+	}))
+	defer server.Close()
+	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxAttempts: 3, RetryBackoff: time.Millisecond})
+	result, err := client.Erase(t.Context(), EraseRequest{
+		AccountID: domain.ID{1}, OperationID: "op-1", IdempotencyKey: "erase-1",
+	})
+	if err != nil {
+		t.Fatalf("idempotent erase should recover: %v", err)
+	}
+	if result.Status != "completed" || calls != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed/2", result, calls)
 	}
 }
 

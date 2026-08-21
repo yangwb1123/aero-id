@@ -10,10 +10,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// errCircuitOpen is returned by validateUpstream when the breaker is open and no
-// stale identity is available to serve. It wraps into the normal "sso validate"
-// error so callers see a uniform validation failure.
-var errCircuitOpen = errors.New("sso circuit breaker open")
+// errCircuitOpen is returned when the shared circuit breaker is open and a call
+// would otherwise attempt an upstream RPC (validate, get_users, or authorize).
+// It is intentionally availability-classified (gRPC code Unavailable) so every
+// fast-fail surface reports the same classified outcome; isAvailabilityError
+// detects it through errors.As unwrapping in status.Code.
+var errCircuitOpen = status.Error(codes.Unavailable, "sso circuit breaker open")
 
 type breakerState int
 
@@ -34,9 +36,10 @@ func (s breakerState) String() string {
 	}
 }
 
-// breaker is a minimal three-state circuit breaker guarding the SSO ValidateToken
-// RPC. It trips after a configurable number of consecutive availability failures,
-// fast-fails for a cooldown window, then admits a single probe to test recovery.
+// breaker is a minimal three-state circuit breaker guarding the SSO upstream RPCs
+// (validate, get_users, authorize). It trips after a configurable number of
+// consecutive availability failures, fast-fails for a cooldown window, then
+// admits a single probe to test recovery.
 //
 // Only availability failures (SSO unreachable/too slow) drive it — see
 // isAvailabilityError; a healthy SSO rejecting a token must not trip it. It is

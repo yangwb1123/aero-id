@@ -27,6 +27,7 @@ const (
 	AuditFileCreate                   = "file.create"
 	AuditFileDelete                   = "file.delete"
 	AuditFileUpdate                   = "file.update"
+	AuditFileDownload                 = "file.download"
 	AuditMessageSend                  = "message.send"
 	AuditMessageEdit                  = "message.edit"
 	AuditMessageReact                 = "message.react"

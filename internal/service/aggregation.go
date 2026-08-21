@@ -125,6 +125,10 @@ func (s *aggregationService) refreshSource(ctx context.Context, account *domain.
 	}
 	if err := s.persistSummary(ctx, account.ID, summary); err != nil {
 		s.setSourceError(result, mu, source, "projection.write_failed")
+		return
+	}
+	if !summary.Complete {
+		s.setSourceError(result, mu, source, "source.summary_incomplete")
 	}
 }
 

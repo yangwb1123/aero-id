@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/repository/testpg"
 )
@@ -117,5 +118,52 @@ func TestEventReceiptTenantIsolation(t *testing.T) {
 		t.Fatal("cross-tenant event apply must fail")
 	} else if !errorsIsTenantMismatch(applyErr) {
 		t.Errorf("error = %v, want tenant mismatch", applyErr)
+	}
+}
+
+func TestEventReceiptAcceptsNewerReplicatedRevisionAtSameVersion(t *testing.T) {
+	db := testpg.Start(t)
+	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	ledger := repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{})
+	accounts := repository.NewAccountRepository(db, ledger)
+	account, err := accounts.EnsureByIdentity(t.Context(), "tenant-replica", "snaplink", "u-replica", "u-replica", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := repository.NewEventReceiptRepository(db, ledger)
+	first := eventStoreEnvelope(account.ID, "aero-vault.buckets", 1, time.Now().UTC())
+	first.Source = "aero-id"
+	first.EventType = "projection.snapshot"
+	first.AggregateType = "projection"
+	first.TenantID = "tenant-replica"
+	first.Payload["status"] = "fresh"
+	mutation, err := first.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := receipts.ApplySnapshotEvent(t.Context(), first, mutation); err != nil || result.Status != repository.EventApplied {
+		t.Fatalf("initial replica = %v, %v; want applied", result, err)
+	}
+	second := eventStoreEnvelope(account.ID, "aero-vault.buckets", 1, first.OccurredAt.Add(time.Minute))
+	second.Source = "aero-id"
+	second.EventType = "projection.snapshot"
+	second.AggregateType = "projection"
+	second.TenantID = "tenant-replica"
+	second.Payload["status"] = "unavailable"
+	second.Payload["data"] = map[string]any{}
+	mutation, err = second.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := receipts.ApplySnapshotEvent(t.Context(), second, mutation); err != nil || result.Status != repository.EventApplied {
+		t.Fatalf("same-version replica = %v, %v; want applied", result, err)
+	}
+	snapshots := repository.NewAccountSnapshotRepository(db)
+	snapshot, err := snapshots.GetSnapshot(t.Context(), account.ID, "aero-id", "aero-vault.buckets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != domain.SnapshotUnavailable {
+		t.Fatalf("replica status = %s, want unavailable", snapshot.Status)
 	}
 }

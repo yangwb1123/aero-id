@@ -67,28 +67,67 @@ type callbackService struct {
 	metrics      ControlPlaneMetrics
 }
 
+const (
+	maxCallbackRequestTimeout = 5 * time.Minute
+	maxCallbackResponseBytes  = int64(16 << 20)
+	maxCallbackAttempts       = 10
+	maxCallbackRetryBase      = time.Minute
+)
+
 func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) CallbackService {
-	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = 5 * time.Second
-	}
-	if cfg.MaxResponseBytes <= 0 {
-		cfg.MaxResponseBytes = 64 * 1024
-	}
-	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 8
-	}
-	if cfg.RetryBase <= 0 {
-		cfg.RetryBase = time.Second
-	}
-	if cfg.WorkerConcurrency <= 0 {
-		cfg.WorkerConcurrency = 1
-	}
-	if cfg.WorkerConcurrency > 64 {
-		cfg.WorkerConcurrency = 64
-	}
+	cfg = normalizeCallbackConfig(cfg)
 	sum := sha256.Sum256([]byte(cfg.MasterKey))
 	return &callbackService{repo: repo, cfg: cfg, key: sum[:], worker: "callback-" + idgen.NewID().String(),
 		bulkhead: bulkhead.New(cfg.WorkerConcurrency), metrics: noopControlPlaneMetrics{}}
+}
+
+func normalizeCallbackConfig(cfg CallbackConfig) CallbackConfig {
+	cfg.RequestTimeout = boundedCallbackDuration(cfg.RequestTimeout, 5*time.Second, maxCallbackRequestTimeout)
+	cfg.MaxResponseBytes = boundedCallbackBytes(cfg.MaxResponseBytes, 64*1024, maxCallbackResponseBytes)
+	cfg.MaxAttempts = boundedCallbackAttempts(cfg.MaxAttempts, 8, maxCallbackAttempts)
+	cfg.RetryBase = boundedCallbackDuration(cfg.RetryBase, time.Second, maxCallbackRetryBase)
+	cfg.WorkerConcurrency = boundedCallbackConcurrency(cfg.WorkerConcurrency)
+	return cfg
+}
+
+func boundedCallbackDuration(value, fallback, max time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func boundedCallbackBytes(value, fallback, max int64) int64 {
+	if value <= 0 {
+		return fallback
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func boundedCallbackAttempts(value, fallback, max int) int {
+	if value <= 0 {
+		return fallback
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func boundedCallbackConcurrency(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	if value > 64 {
+		return 64
+	}
+	return value
 }
 
 // SetControlPlaneMetrics attaches the observability sink (called by the

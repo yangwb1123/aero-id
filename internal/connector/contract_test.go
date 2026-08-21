@@ -28,7 +28,7 @@ func TestConnector_PropagatesBearerTokenOnEverySurface(t *testing.T) {
 		sawAuth = append(sawAuth, r.Header.Get("Authorization"))
 		switch r.URL.Path {
 		case "/summary":
-			_, _ = w.Write([]byte(`{"source_region":"west","version":1,"datasets":{}}`))
+			_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 		case "/erase":
 			_, _ = w.Write([]byte(`{"status":"completed","source_operation_id":"op-1"}`))
 		case "/status":

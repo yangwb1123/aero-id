@@ -12,12 +12,13 @@ import (
 
 // NATSConfig configures the JetStream consumer adapter (P3-04).
 type NATSConfig struct {
-	URL              string        // nats://host:4222
-	Stream           string        // existing stream holding canonical events
-	Subject          string        // subject filter, e.g. "aero.events.canonical"
-	Durable          string        // durable consumer name (resume after restart)
-	MaxRedeliveries  int           // redelivery cap before a message is dead-lettered by JetStream
-	AckWait          time.Duration // per-message ack deadline
+	URL               string        // nats://host:4222
+	Stream            string        // existing stream holding canonical events
+	Subject           string        // subject filter, e.g. "aero.events.canonical"
+	DeadLetterSubject string        // durable subject in the same stream for poison metadata
+	Durable           string        // durable consumer name (resume after restart)
+	MaxRedeliveries   int           // redelivery cap before a message is dead-lettered by JetStream
+	AckWait           time.Duration // per-message ack deadline
 }
 
 // NATSBus consumes canonical envelopes from a NATS JetStream stream.
@@ -25,7 +26,7 @@ type NATSConfig struct {
 // Ack semantics (at-least-once):
 //   - handler success      -> Ack
 //   - transient failure    -> Nak (redeliver with backoff up to MaxRedeliveries)
-//   - malformed/poison     -> Term (JetStream dead-letter, never replayed forever)
+//   - malformed/poison     -> durable redacted DLQ record, then Term
 type NATSBus struct {
 	conn *nats.Conn
 	cfg  NATSConfig
@@ -48,8 +49,11 @@ func validateNATSConfig(cfg NATSConfig) error {
 	if cfg.URL == "" {
 		return errors.New("nats url is required")
 	}
-	if cfg.Stream == "" || cfg.Subject == "" || cfg.Durable == "" {
-		return errors.New("nats stream, subject and durable are required")
+	if cfg.Stream == "" || cfg.Subject == "" || cfg.DeadLetterSubject == "" || cfg.Durable == "" {
+		return errors.New("nats stream, subject, dead-letter subject and durable are required")
+	}
+	if cfg.Subject == cfg.DeadLetterSubject {
+		return errors.New("nats dead-letter subject must differ from subject")
 	}
 	return nil
 }
@@ -67,6 +71,7 @@ func (b *NATSBus) Subscribe(ctx context.Context, handler EnvelopeHandler) (func(
 		nats.MaxDeliver(b.maxRedeliveries()),
 		nats.AckWait(b.ackWait()),
 		nats.ManualAck(),
+		nats.BindStream(b.cfg.Stream),
 	}
 	subscription, err := js.Subscribe(b.cfg.Subject, func(msg *nats.Msg) {
 		b.handleMessage(ctx, msg, handler)
@@ -83,14 +88,13 @@ func (b *NATSBus) Subscribe(ctx context.Context, handler EnvelopeHandler) (func(
 func (b *NATSBus) handleMessage(ctx context.Context, msg *nats.Msg, handler EnvelopeHandler) {
 	var envelope Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-		// Poison: cannot even decode; terminate without redelivery.
-		_ = msg.Term()
+		b.terminatePoison(msg, "malformed_json", nil)
 		return
 	}
 	// Canonical envelope validation is the adapter's last line of defense;
 	// the ingest service re-validates and quarantines with its own codes.
 	if err := envelope.Validate(); err != nil {
-		_ = msg.Term()
+		b.terminatePoison(msg, "invalid_envelope", &envelope)
 		return
 	}
 	if err := handler(ctx, &envelope); err != nil {
@@ -99,9 +103,8 @@ func (b *NATSBus) handleMessage(ctx context.Context, msg *nats.Msg, handler Enve
 			return
 		}
 		// Deterministic rejection (bad projection, tenant mismatch, region
-		// policy): terminate so the message goes to the JetStream DLQ subject
-		// instead of looping until MaxRedeliveries.
-		_ = msg.Term()
+		// policy): quarantine before terminating instead of looping forever.
+		b.terminatePoison(msg, "handler_rejected", &envelope)
 		return
 	}
 	_ = msg.Ack()

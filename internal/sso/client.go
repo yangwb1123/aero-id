@@ -27,7 +27,8 @@ const ssoTracerName = "github.com/aero/aero-id/internal/sso"
 type MetricsSink interface {
 	// ObserveSSOCache records a cache lookup ("token" or "user") as hit or miss.
 	ObserveSSOCache(cache string, hit bool)
-	// ObserveSSOCall records an upstream RPC ("validate" or "get_users") latency and outcome.
+	// ObserveSSOCall records an upstream RPC ("validate", "get_users", or "authorize")
+	// latency and outcome.
 	ObserveSSOCall(op string, dur time.Duration, ok bool)
 }
 
@@ -48,6 +49,10 @@ type ClientConfig struct {
 	MaxAttempts  int
 	RetryBackoff time.Duration
 
+	// MaxConcurrent bounds concurrent in-flight upstream RPCs (validate, get_users,
+	// authorize) through one shared semaphore; 0 or negative disables the cap.
+	MaxConcurrent int
+
 	// Keepalive ping cadence; non-positive values fall back to defaults.
 	KeepaliveTime    time.Duration
 	KeepaliveTimeout time.Duration
@@ -65,7 +70,8 @@ type Client struct {
 	tokenCache    *TokenCache
 	userCache     *UserCache
 	sf            singleflight.Group // collapses concurrent validations of the same token
-	breaker       *breaker           // trips on sustained SSO outage so new tokens fast-fail
+	breaker       *breaker           // trips on sustained SSO outage so upstream RPCs fast-fail
+	sem           chan struct{}      // bounds concurrent in-flight upstream RPCs (nil = no cap)
 	stopFn        func()
 	timeout       time.Duration
 
@@ -87,6 +93,23 @@ func (c *Client) recordCache(cache string, hit bool) {
 func (c *Client) recordCall(op string, start time.Time, err error) {
 	if c.metrics != nil {
 		c.metrics.ObserveSSOCall(op, time.Since(start), err == nil)
+	}
+}
+
+// acquireSlot reserves an upstream RPC slot bounded by ctx; it is a no-op when
+// MaxConcurrent <= 0. A slot-wait that exceeds the deadline surfaces as
+// context.DeadlineExceeded — availability-classified, consistent with the
+// circuit-open fast-fail contract — and must not feed the breaker (no RPC was
+// attempted). Callers must defer the returned release when err is nil.
+func (c *Client) acquireSlot(ctx context.Context) (func(), error) {
+	if c.sem == nil {
+		return func() {}, nil
+	}
+	select {
+	case c.sem <- struct{}{}:
+		return func() { <-c.sem }, nil
+	case <-ctx.Done():
+		return func() {}, ctx.Err()
 	}
 }
 
@@ -125,6 +148,9 @@ func NewClientFromConn(conn *grpc.ClientConn, cfg ClientConfig) *Client {
 	}
 	if c.retryBackoff <= 0 {
 		c.retryBackoff = 50 * time.Millisecond
+	}
+	if cfg.MaxConcurrent > 0 {
+		c.sem = make(chan struct{}, cfg.MaxConcurrent)
 	}
 	c.userCache = NewUserCache(cfg.UserCacheTTL, c.fetchUsers)
 	if c.metrics != nil {
@@ -205,17 +231,55 @@ func (c *Client) HasPermission(ctx context.Context, uid, permission string) (boo
 	if c.authz == nil {
 		return false, errors.New("snaplink authorizer is not configured")
 	}
-	requestCtx := ctx
+	return c.authorizeUpstream(ctx, uid, permission)
+}
+
+// authorizeUpstream performs the Authorizer.Check RPC under the caller's
+// context, bounded by the configured timeout. It mirrors fetchUsers: the
+// circuit breaker gates the call (availability failures trip it, business
+// rejections close it), one shared slot bounds concurrent in-flight upstream
+// RPCs, and availability errors are retried within the timeout budget. An
+// Allowed=false response is a success for the breaker (the RPC completed) and
+// is returned to the caller verbatim.
+func (c *Client) authorizeUpstream(ctx context.Context, uid, permission string) (bool, error) {
+	if !c.breaker.Allow() {
+		return false, fmt.Errorf("snaplink authorization check: %w", errCircuitOpen)
+	}
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
-		requestCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
-	response, err := c.authz.Check(requestCtx, &authzpb.CheckRequest{SubjectId: uid, ClientId: c.authzClientID, Permission: permission})
+	release, err := c.acquireSlot(ctx)
 	if err != nil {
 		return false, fmt.Errorf("snaplink authorization check: %w", err)
 	}
-	return response.GetAllowed(), nil
+	defer release()
+	ctx, span := c.tracer.Start(ctx, "sso.Authorize", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	start := time.Now()
+	allowed, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (bool, error) {
+		resp, err := c.authz.Check(ctx, &authzpb.CheckRequest{SubjectId: uid, ClientId: c.authzClientID, Permission: permission})
+		if err != nil {
+			return false, err
+		}
+		return resp.GetAllowed(), nil
+	})
+	c.recordCall("authorize", start, err)
+	if err != nil {
+		span.SetStatus(otelcodes.Error, err.Error())
+	}
+	span.End()
+	if err != nil {
+		if isAvailabilityError(err) {
+			c.breaker.Record(false)
+		} else {
+			// A non-availability error (e.g. PermissionDenied) proves SSO is alive.
+			c.breaker.Record(true)
+		}
+		return false, fmt.Errorf("snaplink authorization check: %w", err)
+	}
+	c.breaker.Record(true)
+	return allowed, nil
 }
 
 // NOTE: the inline Snaplink AuditWriter delivery path (Client.Publish) was
@@ -280,6 +344,11 @@ func (c *Client) validateUpstream(token string) (string, error) {
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
+	release, err := c.acquireSlot(ctx)
+	if err != nil {
+		return "", fmt.Errorf("sso validate: %w", err)
+	}
+	defer release()
 	// Client span over the SSO hop so a request trace extends into the dependency.
 	ctx, span := c.tracer.Start(ctx, "sso.ValidateToken", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
 	start := time.Now()
@@ -293,16 +362,14 @@ func (c *Client) validateUpstream(token string) (string, error) {
 	span.End()
 	if err != nil {
 		if isAvailabilityError(err) {
-			// SSO is unreachable: record the failure (may trip the breaker) and fall back
-			// to a recently-cached identity within the stale grace window so a transient
-			// outage doesn't reject every authenticated request.
+			// SSO unreachable: record the failure (may trip the breaker) and serve a
+			// recently-cached identity within the stale grace window.
 			c.breaker.Record(false)
 			if uid, ok := c.tokenCache.GetStale(token); ok {
 				return uid, nil
 			}
 		} else {
-			// A response that rejects the token: SSO is healthy, so close the breaker and
-			// do NOT serve a stale identity for a token the upstream explicitly refused.
+			// A rejection proves SSO is alive: close the breaker; never serve stale for it.
 			c.breaker.Record(true)
 		}
 		return "", fmt.Errorf("sso validate: %w", err)
@@ -322,11 +389,21 @@ func (c *Client) GetUsers(ctx context.Context, uids []string) (map[string]User, 
 }
 
 func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User, error) {
+	if !c.breaker.Allow() {
+		// Breaker open: the GetUsers RPC would fail availability-style, so fast-fail
+		// without touching the upstream or consuming a concurrency slot.
+		return nil, fmt.Errorf("sso get users: %w", errCircuitOpen)
+	}
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
+	release, err := c.acquireSlot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sso get users: %w", err)
+	}
+	defer release()
 	ctx, span := c.tracer.Start(ctx, "sso.GetUsers", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
 	start := time.Now()
 	resp, err := callWithRetry(ctx, c.maxAttempts, c.retryBackoff, func(ctx context.Context) (*ssopb.GetUsersResponse, error) {
@@ -338,8 +415,15 @@ func (c *Client) fetchUsers(ctx context.Context, uids []string) (map[string]User
 	}
 	span.End()
 	if err != nil {
+		if isAvailabilityError(err) {
+			c.breaker.Record(false)
+		} else {
+			// A non-availability error (e.g. Unimplemented) proves SSO is reachable.
+			c.breaker.Record(true)
+		}
 		return nil, fmt.Errorf("sso get users: %w", err)
 	}
+	c.breaker.Record(true)
 	out := make(map[string]User, len(resp.Users))
 	for _, u := range resp.Users {
 		out[u.Uid] = User{UID: u.Uid, Nickname: u.Nickname, Avatar: u.Avatar}

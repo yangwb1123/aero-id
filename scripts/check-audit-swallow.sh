@@ -65,7 +65,8 @@
 #     this repo (a silent vacuous no-op that would re-expose the stubs —
 #     FM-5, pinned by the pb_exclude liveness self-test).
 #   - a narrow breaker-observation exemption (G2): bare statement-start
-#     `c.breaker.Record(...)` lines (internal/sso/client.go:299,306,310) are
+#     `c.breaker.Record(...)` lines (internal/sso/client.go:274,277,281;
+#     authorize/get_users paths at 370-381/423-430 since B3-2) are
 #     circuit-breaker outcome observations (breaker.Record is void), not
 #     audit writes. BREAKER_EXEMPT_PATTERN is a statement-anchored,
 #     receiver-exact post-filter (grep -vE) — d.breaker, c.breaker2,
@@ -142,8 +143,9 @@ FIXTURES="$SELF_DIR/testdata/audit-swallow"
 
 P1_PATTERN='^[[:space:]]*(_ = |_, _ = )[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|Publish|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery|QuarantineEvent)\('
 P2_PATTERN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.(Record|Log|FinishPublication|ClaimPublication|RequeuePublication|RequeueDead|MarkDelivery|QuarantineEvent)\('
-# G2 breaker-observation exemption (2026-08-14): internal/sso/client.go
-# calls `c.breaker.Record(...)` bare (lines 299,306,310) as circuit-breaker
+# G2 breaker-observation exemption (2026-08-14, refreshed B3-2):
+# internal/sso/client.go calls `c.breaker.Record(...)` bare (validate lines
+# 274,277,281; authorize 370-381; get_users 423-430) as circuit-breaker
 # outcome observations; breaker.Record is VOID (internal/sso/breaker.go), so
 # the call discards nothing and the P1 `_ =` form cannot even compile. The
 # exemption is a POST-FILTER on grep output (grep -vE), not a change to

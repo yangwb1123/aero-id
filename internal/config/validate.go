@@ -12,6 +12,9 @@ func (c *Config) validate() error {
 	if err := c.validateRequired(); err != nil {
 		return err
 	}
+	if err := c.validateEnvironmentSecurity(); err != nil {
+		return err
+	}
 	if err := c.validateSourcesAndRegions(); err != nil {
 		return err
 	}
@@ -66,6 +69,9 @@ func (c *Config) validateRequired() error {
 	}
 	if c.SSO.JWKSURL != "" && (strings.TrimSpace(c.SSO.Issuer) == "" || strings.TrimSpace(c.SSO.Audience) == "") {
 		return fmt.Errorf("sso.issuer and sso.audience are required when sso.jwks_url is configured")
+	}
+	if c.SSO.MaxConcurrent < 0 {
+		return fmt.Errorf("sso.max_concurrent must not be negative (0 = no cap)")
 	}
 	return nil
 }
@@ -136,20 +142,13 @@ func (c *Config) validateRuntimeLimits() error {
 		validateStorage(c.Storage), validateRateLimit(c.RateLimit), validateStorageGC(c.Storage.GC),
 		validateExport(c.Export), validateWebhook(c.Outbox.Webhook), validateEventIngest(c.EventIngest),
 		validateEventBus(c.EventBus), validateReplication(c.Replication), validateAuditLedger(c.AuditLedger),
-		validateDataRetention(c.DataRetention), validateAuditGovernance(c.AuditGovernance),
+		validateDataRetention(c.DataRetention), validateAuditGovernance(c.AuditGovernance), validateCallback(c.Callback),
 		c.validateCommercialIntegrations(),
 	}
 	for _, err := range checks {
 		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func validateStorage(value StorageConfig) error {
-	if value.Type != "local" && value.Type != "s3" {
-		return fmt.Errorf("storage.type must be 'local' or 's3'")
 	}
 	return nil
 }
@@ -215,41 +214,6 @@ func validateAuditLedger(value AuditLedgerConfig) error {
 	}
 	if len(key) < 32 {
 		return fmt.Errorf("audit_ledger.signing_key must be at least 32 bytes")
-	}
-	return nil
-}
-
-// wellKnownPlaceholderSecrets are signing-key literals that were shipped in
-// configs/config.yaml and are therefore public forever. They must never boot
-// anywhere: the audit ledger signs every record_hash with its HMAC key and the
-// root key signs presigned download URLs, so a known key would let an attacker
-// forge tamper-evidence signatures or download links. The deny-list is
-// compiled-in and cannot be overridden by env (Load merges env before
-// validate, so an env-supplied placeholder still fails).
-var wellKnownPlaceholderSecrets = map[string]struct{}{
-	"change-me-please-very-long-audit-key": {},
-	"change-me-please-very-long-random":    {},
-}
-
-// placeholderSecretPrefixes covers the conventional placeholder families for
-// both signing keys; the deny-before-length ordering in validateAuditLedger
-// makes the deny error deterministic even for 32+ byte placeholder-looking
-// values.
-var placeholderSecretPrefixes = []string{"change-me", "changeme", "replace-me"}
-
-// rejectPlaceholderSecret denies well-known placeholder signing keys. Both
-// signing-key validators call it; the pinned substring "signing_key is a
-// known placeholder" is asserted by TestLoadRejectsPlaceholderSecrets — do
-// not reword without updating that test.
-func rejectPlaceholderSecret(key, field string) error {
-	normalized := strings.ToLower(strings.TrimSpace(key))
-	if _, known := wellKnownPlaceholderSecrets[normalized]; known {
-		return fmt.Errorf("%s is a known placeholder — secrets must come from environment or an approved secret provider", field)
-	}
-	for _, prefix := range placeholderSecretPrefixes {
-		if strings.HasPrefix(normalized, prefix) {
-			return fmt.Errorf("%s is a known placeholder — secrets must come from environment or an approved secret provider", field)
-		}
 	}
 	return nil
 }
@@ -329,8 +293,12 @@ func validateEventBus(value EventBusConfig) error {
 	if !value.NATS.Enabled {
 		return nil
 	}
-	if value.NATS.URL == "" || value.NATS.Stream == "" || value.NATS.Subject == "" || value.NATS.Durable == "" {
-		return fmt.Errorf("event_bus.nats url, stream, subject and durable are required when enabled")
+	if value.NATS.URL == "" || value.NATS.Stream == "" || value.NATS.Subject == "" ||
+		value.NATS.DeadLetterSubject == "" || value.NATS.Durable == "" {
+		return fmt.Errorf("event_bus.nats url, stream, subject, dead_letter_subject and durable are required when enabled")
+	}
+	if value.NATS.Subject == value.NATS.DeadLetterSubject {
+		return fmt.Errorf("event_bus.nats dead_letter_subject must differ from subject")
 	}
 	if value.NATS.MaxRedeliveries < 0 || value.NATS.AckWait < 0 {
 		return fmt.Errorf("event_bus.nats max_redeliveries and ack_wait must not be negative")
@@ -338,31 +306,9 @@ func validateEventBus(value EventBusConfig) error {
 	return nil
 }
 
-func validateReplication(value ReplicationConfig) error {
-	if !value.Enabled {
-		return nil
-	}
-	switch value.Transport {
-	case "nats":
-		if value.NATSSubject == "" {
-			return fmt.Errorf("replication.nats_subject is required when transport=nats")
-		}
-	case "http":
-		if value.HTTPEndpoint == "" || value.HTTPKey == "" {
-			return fmt.Errorf("replication.http_endpoint and http_key are required when transport=http")
-		}
-	default:
-		return fmt.Errorf("replication.transport must be nats or http")
-	}
-	if value.Interval <= 0 || value.BatchSize < 0 {
-		return fmt.Errorf("replication interval must be positive and batch_size must not be negative")
-	}
-	return nil
-}
-
 func validateEventSourceKeys(keys map[string]string) error {
 	for source, key := range keys {
-		if source != "snaplink" && source != "aero-im" && source != "aero-vault" {
+		if source != "snaplink" && source != "aero-im" && source != "aero-vault" && source != "aero-id" {
 			return fmt.Errorf("event_ingest.source_keys contains unsupported source %q", source)
 		}
 		if len(strings.TrimSpace(key)) < 32 {
@@ -382,19 +328,16 @@ func validateEventBindings(bindings map[string]EventSourceBindingConfig) error {
 }
 
 func validateEventBinding(clientID string, binding EventSourceBindingConfig) error {
-	normalizedClientID := strings.TrimSpace(clientID)
-	if normalizedClientID == "" || normalizedClientID != clientID {
-		return fmt.Errorf("event_ingest.bindings contains a non-canonical client id %q", clientID)
+	checks := []func() error{
+		func() error { return validateBindingClientID(clientID) },
+		func() error { return validateBindingTenant(clientID, binding) },
+		func() error { return validateBindingSource(clientID, binding) },
+		func() error { return validateBindingRegion(clientID, binding) },
 	}
-	if binding.TenantID != strings.TrimSpace(binding.TenantID) {
-		return fmt.Errorf("event_ingest.bindings.%s.tenant_id must be canonical", clientID)
-	}
-	if binding.Source != "snaplink" && binding.Source != "aero-im" && binding.Source != "aero-vault" {
-		return fmt.Errorf("event_ingest.bindings.%s has unsupported source", clientID)
-	}
-	region := strings.TrimSpace(binding.SourceRegion)
-	if region == "" || region != binding.SourceRegion {
-		return fmt.Errorf("event_ingest.bindings.%s.source_region must be canonical and non-blank", clientID)
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
