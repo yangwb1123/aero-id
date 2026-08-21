@@ -150,14 +150,14 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 		return stats, nil
 	}
 
-	purged, blobs, purgedIDs, err := s.purgeSoftDeleted(ctx)
+	purged, blobs, reclaimedKeys, err := s.purgeSoftDeleted(ctx)
 	stats.RowsPurged = purged
 	stats.BlobsPurged = blobs
 	if err != nil {
 		s.log.Warn("gc: purge phase failed", zap.Error(err))
 		firstErr = err
 	} else {
-		s.observePurgeAudit(ctx, blobs, purgedIDs)
+		s.observePurgeAudit(ctx, blobs, reclaimedKeys)
 	}
 
 	if s.cfg.SweepOrphans {
@@ -186,15 +186,11 @@ func (s *Sweeper) Run(ctx context.Context) (Stats, error) {
 // AFTER the in-tx purge committed (blob deletion is an external storage side
 // effect with no domain row to join). The in-tx storage.gc.purged fact is
 // written by PurgeWithAudit inside purgeSoftDeleted.
-func (s *Sweeper) observePurgeAudit(ctx context.Context, blobs int, purgedIDs []domain.ID) {
+func (s *Sweeper) observePurgeAudit(ctx context.Context, blobs int, reclaimedKeys []string) {
 	if s.audits == nil || blobs <= 0 {
 		return
 	}
-	blobKeys := make([]string, 0, len(purgedIDs))
-	for _, id := range purgedIDs {
-		blobKeys = append(blobKeys, id.String())
-	}
-	if aerr := s.audits.RecordBlobReclaim(ctx, blobs, blobKeys); aerr != nil {
+	if aerr := s.audits.RecordBlobReclaim(ctx, blobs, reclaimedKeys); aerr != nil {
 		s.log.Warn("gc: blob reclaim audit observation failed", zap.Error(aerr))
 	}
 }
@@ -217,7 +213,7 @@ func (s *Sweeper) observeOrphanAudit(ctx context.Context, swept int, sweptKeys [
 // race window between a concurrent content-dedup Create and this purge pass.
 //
 //nolint:cyclop // row purge and refcount-safe blob reclamation form one reconciliation phase.
-func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged int, purgedIDs []domain.ID, err error) {
+func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged int, reclaimedKeys []string, err error) {
 	before := s.now().Add(-s.cfg.Retention)
 	rows, lerr := s.repo.ListSoftDeletedBefore(ctx, before, s.cfg.PurgeBatch)
 	if lerr != nil {
@@ -244,17 +240,17 @@ func (s *Sweeper) purgeSoftDeleted(ctx context.Context) (rowsPurged, blobsPurged
 		return 0, 0, nil, derr
 	}
 	rowsPurged = len(ids)
-	purgedIDs = ids
-
-	return rowsPurged, s.reclaimUnreferencedBlobs(ctx, rows), purgedIDs, nil
+	blobsPurged, reclaimedKeys = s.reclaimUnreferencedBlobs(ctx, rows)
+	return rowsPurged, blobsPurged, reclaimedKeys, nil
 }
 
 // reclaimUnreferencedBlobs de-dups storage keys and deletes each blob that no
 // remaining row references. After HardDelete, a still-referenced key (by a
 // live row or another soft-deleted row not yet purged) reports count > 0 and
 // is left alone.
-func (s *Sweeper) reclaimUnreferencedBlobs(ctx context.Context, rows []*domain.File) int {
+func (s *Sweeper) reclaimUnreferencedBlobs(ctx context.Context, rows []*domain.File) (int, []string) {
 	blobsPurged := 0
+	reclaimedKeys := make([]string, 0, len(rows))
 	seen := make(map[string]struct{}, len(rows))
 	for _, f := range rows {
 		if f.StorageKey == "" {
@@ -279,8 +275,9 @@ func (s *Sweeper) reclaimUnreferencedBlobs(ctx context.Context, rows []*domain.F
 			continue
 		}
 		blobsPurged++
+		reclaimedKeys = append(reclaimedKeys, f.StorageKey)
 	}
-	return blobsPurged
+	return blobsPurged, reclaimedKeys
 }
 
 // countLive returns how many live references exist for a storage key. When a

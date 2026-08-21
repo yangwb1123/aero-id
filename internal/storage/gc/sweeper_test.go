@@ -61,9 +61,10 @@ func (r *fakeRepo) CountAnyByStorageKey(_ context.Context, key string) (int64, e
 
 // fakeStore records deletes and optionally enumerates objects for the orphan phase.
 type fakeStore struct {
-	mu      sync.Mutex
-	deleted []string
-	objects []storage.ObjectInfo // enumerated by listableStore.List
+	mu           sync.Mutex
+	deleted      []string
+	deleteErrors map[string]error
+	objects      []storage.ObjectInfo // enumerated by listableStore.List
 }
 
 func (s *fakeStore) Put(context.Context, string, string, io.Reader) (string, int64, error) {
@@ -73,6 +74,9 @@ func (s *fakeStore) Get(context.Context, string) (io.ReadCloser, error) { return
 func (s *fakeStore) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.deleteErrors[key]; err != nil {
+		return err
+	}
 	s.deleted = append(s.deleted, key)
 	return nil
 }
@@ -170,6 +174,53 @@ func TestRun_PurgesRowButKeepsBlobSharedByLiveRow(t *testing.T) {
 	}
 	if stats.BlobsPurged != 0 {
 		t.Fatalf("BlobsPurged = %d, want 0", stats.BlobsPurged)
+	}
+}
+
+func TestRun_PurgeAuditReportsActualReclaimedStorageKeys(t *testing.T) {
+	shared := "owner/shared-blob"
+	first := &domain.File{ID: idgen.NewID(), StorageKey: shared}
+	second := &domain.File{ID: idgen.NewID(), StorageKey: shared}
+	repo := &fakeRepo{
+		softDeleted: []*domain.File{first, second},
+		refs:        map[string]int64{shared: 2},
+	}
+	store := &fakeStore{}
+	audits := &recordingAuditWriter{repo: repo}
+	sw := New(repo, nil, store, Config{Retention: time.Hour}, nil).WithAuditWriter(audits)
+
+	stats, err := sw.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.BlobsPurged != 1 {
+		t.Fatalf("BlobsPurged = %d, want 1", stats.BlobsPurged)
+	}
+	if len(audits.blobReclaim) != 1 || audits.blobReclaim[0] != shared {
+		t.Fatalf("blob reclaim keys = %v, want [%q]", audits.blobReclaim, shared)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != shared {
+		t.Fatalf("deleted keys = %v, want [%q]", store.deleted, shared)
+	}
+}
+
+func TestRun_PurgeAuditOmitsStorageKeysWhoseDeleteFailed(t *testing.T) {
+	key := "owner/delete-fails"
+	file := &domain.File{ID: idgen.NewID(), StorageKey: key}
+	repo := &fakeRepo{softDeleted: []*domain.File{file}, refs: map[string]int64{key: 1}}
+	store := &fakeStore{deleteErrors: map[string]error{key: errors.New("storage unavailable")}}
+	audits := &recordingAuditWriter{repo: repo}
+	sw := New(repo, nil, store, Config{Retention: time.Hour}, nil).WithAuditWriter(audits)
+
+	stats, err := sw.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.BlobsPurged != 0 {
+		t.Fatalf("BlobsPurged = %d, want 0", stats.BlobsPurged)
+	}
+	if len(audits.blobReclaim) != 0 {
+		t.Fatalf("failed deletion must not be audited as reclaimed: %v", audits.blobReclaim)
 	}
 }
 
