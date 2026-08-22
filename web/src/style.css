@@ -172,6 +172,19 @@ section > [data-iris-card] {
   justify-content: flex-end;
 }
 
+.admin-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr)) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+}
+
+.admin-filter-actions {
+  display: flex;
+  gap: var(--iris-space-sm, 12px);
+  justify-content: flex-end;
+}
+
 .pagination-actions {
   display: flex;
   justify-content: center;
@@ -275,5 +288,13 @@ section > [data-iris-card] {
   .form-row {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  .admin-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-filter-actions {
+    justify-content: flex-start;
   }
 }

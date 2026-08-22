@@ -11,6 +11,12 @@ export { AeroIdError } from "./transport";
 
 const maxExportResponseBytes = 64 * 1024 * 1024;
 
+export interface AdminAccountFilters {
+  query?: string;
+  status?: string;
+  homeRegion?: string;
+}
+
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -94,6 +100,42 @@ export class AeroIdClient {
       await this.request("GET", "/me/resources", {
         query: { dataset: datasets, consistency: "eventual" },
       }),
+    ) as AggregateView;
+  }
+
+  async listAdminAccounts(
+    filters: AdminAccountFilters = {},
+    cursor?: string,
+  ): Promise<PageData<JsonRecord>> {
+    return pageOf(
+      dataOf(
+        await this.request("GET", "/admin/accounts", {
+          query: {
+            q: filters.query,
+            status: filters.status,
+            home_region: filters.homeRegion,
+            cursor,
+            limit: 50,
+          },
+        }),
+      ),
+      "accounts",
+    );
+  }
+
+  async getAdminAccount(id: string): Promise<AccountView> {
+    return dataOf(
+      await this.request("GET", `/admin/accounts/${encodeURIComponent(id)}`),
+    ) as AccountView;
+  }
+
+  async getAdminAccountOverview(id: string): Promise<AggregateView> {
+    return dataOf(
+      await this.request(
+        "GET",
+        `/admin/accounts/${encodeURIComponent(id)}/overview`,
+        { query: { consistency: "eventual" } },
+      ),
     ) as AggregateView;
   }
 

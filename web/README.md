@@ -8,6 +8,7 @@
 - 调用 aero-id `/v1/me`、Profile、来源、成员关系、脱敏资源摘要、活动、同步/导出任务和 Operation API；
 - 支持任务详情、unknown 结果对账，以及带 Bearer 且确认后销毁制品的一次性导出下载；
 - 展示 Operation/Saga 步骤、来源 operation ID、补偿状态与追加式脱敏审计时间线；
+- 管理员可按关键词、状态和 home region 查询账户，并检查来源与投影的新鲜度；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；
 - 使用独立链接进入 Audit Governance、Aero IM 和 Aero Vault 控制台，不跨 audience 转发 token。
 

@@ -154,6 +154,45 @@ describe("AeroIdClient", () => {
     expect(requested.searchParams.get("limit")).toBe("50");
   });
 
+  it("filters admin accounts and loads an encoded account freshness view", async () => {
+    const requests: URL[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(new URL(String(input)));
+      if (requests.length === 1)
+        return json({ data: { accounts: [], next_cursor: "account-1" } });
+      if (requests.length === 2)
+        return json({ data: { account: { account_id: "account/1" } } });
+      return json({
+        data: { account: { account_id: "account/1" }, snapshots: [] },
+      });
+    });
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await expect(
+      client.listAdminAccounts(
+        { query: "uid@example.test", status: "active", homeRegion: "west" },
+        "account:cursor",
+      ),
+    ).resolves.toEqual({ items: [], nextCursor: "account-1" });
+    await client.getAdminAccount("account/1");
+    await client.getAdminAccountOverview("account/1");
+
+    expect(requests[0].pathname).toBe("/v1/admin/accounts");
+    expect(requests[0].searchParams.get("q")).toBe("uid@example.test");
+    expect(requests[0].searchParams.get("status")).toBe("active");
+    expect(requests[0].searchParams.get("home_region")).toBe("west");
+    expect(requests[0].searchParams.get("cursor")).toBe("account:cursor");
+    expect(requests[1].pathname).toBe("/v1/admin/accounts/account%2F1");
+    expect(requests[2].pathname).toBe(
+      "/v1/admin/accounts/account%2F1/overview",
+    );
+    expect(requests[2].searchParams.get("consistency")).toBe("eventual");
+  });
+
   it("loads and reconciles a sync job through its encoded resource path", async () => {
     const requests: Array<{ url: URL; method?: string }> = [];
     const fetcher = vi.fn(
