@@ -10,8 +10,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "format:check": "prettier --check src README.md index.html",
-    "check": "pnpm test && pnpm lint && pnpm typecheck && pnpm format:check && pnpm build",
+    "check:iris-imports": "node scripts/verify-iris-imports.mjs",
+    "format:check": "prettier --check src scripts README.md index.html package.json",
+    "check": "pnpm check:iris-imports && pnpm test && pnpm lint && pnpm typecheck && pnpm format:check && pnpm build",
     "dev:iris": "IRIS_UI_SOURCE=1 vite",
     "clean": "rm -rf dist .turbo"
   },

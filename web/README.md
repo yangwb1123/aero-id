@@ -72,6 +72,9 @@ pnpm check
 
 `pnpm dev:iris` 会在当前工作站直接解析 `~/iris-ui/packages/*/src`，适合组件库与产品 UI
 联调；`pnpm build` 使用 lockfile 固定的已发布 Iris 包，因此 CI 和容器不依赖个人目录。
+业务源码的 import 始终保持 npm 包名（例如 `@iris-ui-kit/react`），Vite 只在
+`IRIS_UI_SOURCE=1` 时把这些包名 alias 到本地源码。`pnpm check:iris-imports` 会禁止业务源码
+直接导入本地 Iris 路径以及 `workspace:`、`file:`、`link:` 依赖。
 
 生产镜像：
 
