@@ -177,6 +177,50 @@ describe("AeroIdClient", () => {
     expect(requests[1].method).toBe("POST");
   });
 
+  it("loads an operation, reconciles unknown state and pages its audit timeline", async () => {
+    const requests: Array<{ url: URL; method?: string }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: new URL(String(input)), method: init?.method });
+        if (requests.length === 3) {
+          return json({
+            data: {
+              events: [{ event_id: "event-1", action: "operation.created" }],
+              next_cursor: "event-1",
+            },
+          });
+        }
+        return json({
+          data: { operation_id: "operation/1", status: "unknown" },
+        });
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.getOperation("operation/1");
+    await client.reconcileOperation("operation/1");
+    await expect(
+      client.listOperationAudit("operation/1", "audit:cursor"),
+    ).resolves.toEqual({
+      items: [{ event_id: "event-1", action: "operation.created" }],
+      nextCursor: "event-1",
+    });
+
+    expect(requests[0].url.pathname).toBe("/v1/operations/operation%2F1");
+    expect(requests[0].method).toBe("GET");
+    expect(requests[1].url.pathname).toBe(
+      "/v1/operations/operation%2F1/reconcile",
+    );
+    expect(requests[1].method).toBe("POST");
+    expect(requests[2].url.pathname).toBe("/v1/audit/operations/operation%2F1");
+    expect(requests[2].url.searchParams.get("cursor")).toBe("audit:cursor");
+    expect(requests[2].url.searchParams.get("limit")).toBe("50");
+  });
+
   it("downloads an export with authorization and one-time semantics", async () => {
     let requested = new URL("https://invalid.test");
     let headers = new Headers();

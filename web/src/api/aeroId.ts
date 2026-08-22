@@ -200,6 +200,31 @@ export class AeroIdClient {
     );
   }
 
+  async reconcileOperation(id: string): Promise<JsonRecord> {
+    return dataOf(
+      await this.request(
+        "POST",
+        `/operations/${encodeURIComponent(id)}/reconcile`,
+      ),
+    );
+  }
+
+  async listOperationAudit(
+    id: string,
+    cursor?: string,
+  ): Promise<PageData<JsonRecord>> {
+    return pageOf(
+      dataOf(
+        await this.request(
+          "GET",
+          `/audit/operations/${encodeURIComponent(id)}`,
+          { query: { cursor, limit: 50 } },
+        ),
+      ),
+      "events",
+    );
+  }
+
   private async request(
     method: string,
     path: string,

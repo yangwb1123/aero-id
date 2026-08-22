@@ -198,6 +198,15 @@ section > [data-iris-card] {
   font-size: 14px;
 }
 
+.detail-heading {
+  margin-block: var(--iris-space-lg, 20px) var(--iris-space-sm, 12px);
+  font-size: 16px;
+}
+
+.operation-details [data-iris-timeline] {
+  padding: var(--iris-space-sm, 12px);
+}
+
 .json-preview {
   max-height: 280px;
   margin: 0;
