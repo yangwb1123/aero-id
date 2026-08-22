@@ -52,10 +52,14 @@ export function RecordTable({
   records,
   columns,
   empty = "暂无数据",
+  actionsLabel = "操作",
+  renderActions,
 }: {
   records: JsonRecord[];
   columns: RecordColumn[];
   empty?: string;
+  actionsLabel?: string;
+  renderActions?(record: JsonRecord): React.ReactNode;
 }): React.ReactElement {
   if (records.length === 0)
     return (
@@ -69,6 +73,7 @@ export function RecordTable({
             {columns.map((column) => (
               <th key={column.key}>{column.label}</th>
             ))}
+            {renderActions ? <th>{actionsLabel}</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -89,6 +94,7 @@ export function RecordTable({
                   {display(valueOf(record, column), column.kind)}
                 </td>
               ))}
+              {renderActions ? <td>{renderActions(record)}</td> : null}
             </tr>
           ))}
         </tbody>

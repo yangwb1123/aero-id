@@ -154,6 +154,76 @@ describe("AeroIdClient", () => {
     expect(requested.searchParams.get("limit")).toBe("50");
   });
 
+  it("loads and reconciles a sync job through its encoded resource path", async () => {
+    const requests: Array<{ url: URL; method?: string }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: new URL(String(input)), method: init?.method });
+        return json({ data: { job_id: "job/1", status: "unknown" } });
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.getSyncJob("job/1");
+    await client.reconcileSyncJob("job/1");
+
+    expect(requests[0].url.pathname).toBe("/v1/sync/jobs/job%2F1");
+    expect(requests[0].method).toBe("GET");
+    expect(requests[1].url.pathname).toBe("/v1/sync/jobs/job%2F1/reconcile");
+    expect(requests[1].method).toBe("POST");
+  });
+
+  it("downloads an export with authorization and one-time semantics", async () => {
+    let requested = new URL("https://invalid.test");
+    let headers = new Headers();
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requested = new URL(String(input));
+        headers = new Headers(init?.headers);
+        return new Response('{"export":true}', {
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": "15",
+          },
+        });
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "download-token",
+      fetcher as typeof fetch,
+    );
+
+    const blob = await client.downloadExport("job-1", true);
+
+    expect(requested.pathname).toBe("/v1/sync/jobs/job-1/export/download");
+    expect(requested.searchParams.get("one_time")).toBe("true");
+    expect(headers.get("Authorization")).toBe("Bearer download-token");
+    expect(blob.size).toBe(15);
+  });
+
+  it("rejects an export declared above the browser size limit", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response("", {
+          headers: { "Content-Length": String(64 * 1024 * 1024 + 1) },
+        }),
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await expect(client.downloadExport("job-1")).rejects.toMatchObject({
+      code: "response.too_large",
+    });
+  });
+
   it("preserves stable API error metadata without exposing the bearer token", async () => {
     const fetcher = vi.fn(async () =>
       json(

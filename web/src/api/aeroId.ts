@@ -6,31 +6,10 @@ import type {
   PageData,
   Profile,
 } from "../types";
+import { AeroIdTransport, type RequestOptions } from "./transport";
+export { AeroIdError } from "./transport";
 
-const requestTimeoutMs = 15_000;
-const maxJsonResponseBytes = 2 * 1024 * 1024;
-
-interface ErrorEnvelope {
-  error?: { code?: string; message?: string; request_id?: string };
-}
-
-export interface RequestOptions {
-  query?: Record<string, string | number | string[] | undefined>;
-  body?: unknown;
-  idempotencyKey?: string;
-}
-
-export class AeroIdError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    readonly requestId?: string,
-  ) {
-    super(message);
-    this.name = "AeroIdError";
-  }
-}
+const maxExportResponseBytes = 64 * 1024 * 1024;
 
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
@@ -69,13 +48,15 @@ function activityPage(data: JsonRecord): PageData<JsonRecord> {
 }
 
 export class AeroIdClient {
-  private writeEpoch?: string;
+  private readonly transport: AeroIdTransport;
 
   constructor(
-    private readonly baseUrl: string,
-    private readonly accessToken: () => string,
-    private readonly fetcher: typeof fetch = window.fetch.bind(window),
-  ) {}
+    baseUrl: string,
+    accessToken: () => string,
+    fetcher: typeof fetch = window.fetch.bind(window),
+  ) {
+    this.transport = new AeroIdTransport(baseUrl, accessToken, fetcher);
+  }
 
   async listDatasets(): Promise<Dataset[]> {
     const data = dataOf(await this.request("GET", "/account-datasets"));
@@ -159,6 +140,29 @@ export class AeroIdClient {
     );
   }
 
+  async getSyncJob(id: string): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("GET", `/sync/jobs/${encodeURIComponent(id)}`),
+    );
+  }
+
+  async reconcileSyncJob(id: string): Promise<JsonRecord> {
+    return dataOf(
+      await this.request(
+        "POST",
+        `/sync/jobs/${encodeURIComponent(id)}/reconcile`,
+      ),
+    );
+  }
+
+  async downloadExport(id: string, oneTime = true): Promise<Blob> {
+    return this.transport.download(
+      `/sync/jobs/${encodeURIComponent(id)}/export/download`,
+      { query: { one_time: String(oneTime) }, timeoutMs: 60_000 },
+      maxExportResponseBytes,
+    );
+  }
+
   async createSyncJob(datasets: string[]): Promise<JsonRecord> {
     const key = crypto.randomUUID();
     return dataOf(
@@ -201,109 +205,6 @@ export class AeroIdClient {
     path: string,
     options: RequestOptions = {},
   ): Promise<unknown> {
-    const token = this.accessToken().trim();
-    if (!token) throw new AeroIdError(401, "auth.required", "登录状态已失效");
-    const url = this.buildURL(path, options.query);
-    const headers = this.buildHeaders(token, options);
-    const response = await this.performRequest(
-      url,
-      method,
-      headers,
-      options.body,
-    );
-    this.writeEpoch =
-      response.headers.get("X-Aero-Write-Epoch") ?? this.writeEpoch;
-    return this.readResponse(response);
-  }
-
-  private buildURL(path: string, query: RequestOptions["query"]): URL {
-    const url = new URL(
-      `${this.baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`,
-    );
-    for (const [name, raw] of Object.entries(query ?? {})) {
-      if (raw === undefined || raw === "") continue;
-      for (const value of Array.isArray(raw) ? raw : [raw])
-        url.searchParams.append(name, String(value));
-    }
-    return url;
-  }
-
-  private buildHeaders(token: string, options: RequestOptions): Headers {
-    const headers = new Headers({
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-      "X-Request-ID": crypto.randomUUID(),
-    });
-    if (options.body !== undefined)
-      headers.set("Content-Type", "application/json");
-    if (options.idempotencyKey)
-      headers.set("Idempotency-Key", options.idempotencyKey);
-    if (this.writeEpoch) headers.set("X-Aero-Write-Epoch", this.writeEpoch);
-    return headers;
-  }
-
-  private async performRequest(
-    url: URL,
-    method: string,
-    headers: Headers,
-    body: unknown,
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(
-      () => controller.abort(),
-      requestTimeoutMs,
-    );
-    let response: Response;
-    try {
-      response = await this.fetcher(url, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        credentials: "omit",
-        signal: controller.signal,
-      });
-    } catch {
-      if (controller.signal.aborted) {
-        throw new AeroIdError(0, "network.timeout", "aero-id 请求超时");
-      }
-      throw new AeroIdError(0, "network.unavailable", "无法连接 aero-id");
-    } finally {
-      window.clearTimeout(timeout);
-    }
-    return response;
-  }
-
-  private async readResponse(response: Response): Promise<unknown> {
-    if (response.status === 204) return undefined;
-    const text = await response.text();
-    if (text.length > maxJsonResponseBytes) {
-      throw new AeroIdError(
-        response.status,
-        "response.too_large",
-        "aero-id 响应过大",
-      );
-    }
-    let payload: unknown;
-    try {
-      payload = text ? JSON.parse(text) : {};
-    } catch {
-      throw new AeroIdError(
-        response.status,
-        "response.invalid",
-        "aero-id 返回了无效响应",
-      );
-    }
-    if (!response.ok) {
-      const envelope = isRecord(payload) ? (payload as ErrorEnvelope) : {};
-      throw new AeroIdError(
-        response.status,
-        envelope.error?.code ?? "request.failed",
-        envelope.error?.message ?? "请求失败",
-        envelope.error?.request_id ??
-          response.headers.get("X-Request-ID") ??
-          undefined,
-      );
-    }
-    return payload;
+    return this.transport.request(method, path, options);
   }
 }

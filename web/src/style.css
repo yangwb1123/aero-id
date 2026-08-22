@@ -178,6 +178,47 @@ section > [data-iris-card] {
   padding-block-start: var(--iris-space-md, 16px);
 }
 
+.detail-actions,
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--iris-space-sm, 12px);
+  flex-wrap: wrap;
+}
+
+.detail-json-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--iris-space-md, 16px);
+  margin-block-start: var(--iris-space-md, 16px);
+}
+
+.detail-json-grid h3 {
+  margin-block: 0 8px;
+  font-size: 14px;
+}
+
+.json-preview {
+  max-height: 280px;
+  margin: 0;
+  padding: var(--iris-space-sm, 12px);
+  overflow: auto;
+  border: 1px solid var(--iris-border);
+  border-radius: var(--iris-radius-md, 8px);
+  background: var(
+    --iris-muted-background,
+    color-mix(in srgb, var(--iris-muted) 8%, transparent)
+  );
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .table-scroll {
   overflow-x: auto;
 }

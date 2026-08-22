@@ -22,11 +22,15 @@ export function PagedRecordTable({
   loadPage,
   columns,
   empty,
+  actionsLabel,
+  renderActions,
 }: {
   page: PageData<JsonRecord>;
   loadPage(cursor: string): Promise<PageData<JsonRecord>>;
   columns: RecordColumn[];
   empty?: string;
+  actionsLabel?: string;
+  renderActions?(record: JsonRecord): React.ReactNode;
 }): React.ReactElement {
   const [current, setCurrent] = React.useState(page);
   const [loadingMore, setLoadingMore] = React.useState(false);
@@ -62,7 +66,13 @@ export function PagedRecordTable({
 
   return (
     <>
-      <RecordTable records={current.items} columns={columns} empty={empty} />
+      <RecordTable
+        records={current.items}
+        columns={columns}
+        empty={empty}
+        actionsLabel={actionsLabel}
+        renderActions={renderActions}
+      />
       {loadError ? (
         <IrisAlert tone="danger">
           <div className="alert-actions">

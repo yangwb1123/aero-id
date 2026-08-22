@@ -1,6 +1,7 @@
 import * as React from "react";
 import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/react";
 import type { AeroIdClient } from "../api/aeroId";
+import { JobDetails, syncJobID } from "../components/JobDetails";
 import { PageHeader } from "../components/PageHeader";
 import { PageError, PageLoading } from "../components/PageState";
 import { PagedRecordTable } from "../components/PagedRecordTable";
@@ -21,6 +22,7 @@ export function JobsPage({
   const resource = useAsyncResource(load);
   const [action, setAction] = React.useState<"sync" | "export">();
   const [actionError, setActionError] = React.useState<Error>();
+  const [selectedJob, setSelectedJob] = React.useState<string>();
   if (resource.loading) return <PageLoading />;
   if (resource.error)
     return <PageError error={resource.error} retry={resource.reload} />;
@@ -80,8 +82,28 @@ export function JobsPage({
             { key: "completed_at", label: "完成时间", kind: "date" },
           ]}
           empty="暂无同步或导出任务"
+          renderActions={(job) => {
+            const id = syncJobID(job);
+            return id ? (
+              <IrisButton
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedJob(id)}
+              >
+                查看详情
+              </IrisButton>
+            ) : null;
+          }}
         />
       </IrisCard>
+      {selectedJob ? (
+        <JobDetails
+          client={client}
+          jobID={selectedJob}
+          close={() => setSelectedJob(undefined)}
+          changed={resource.reload}
+        />
+      ) : null}
     </section>
   );
 }
