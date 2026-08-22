@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -199,6 +200,36 @@ func TestCORS_permissive_preflight204(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("ACAO = %q, want *", got)
+	}
+}
+
+func TestCORS_exposesAccountConsoleHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(middleware.CORS(nil))
+	e.GET("/x", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodOptions, "/x", nil)
+	req.Header.Set("Origin", "https://accounts.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "authorization,idempotency-key,x-aero-write-epoch")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204", w.Code)
+	}
+	allowed := w.Header().Get("Access-Control-Allow-Headers")
+	for _, name := range []string{"Authorization", "Idempotency-Key", "X-Aero-Write-Epoch"} {
+		if !strings.Contains(allowed, name) {
+			t.Errorf("Access-Control-Allow-Headers = %q, missing %q", allowed, name)
+		}
+	}
+	exposed := w.Header().Get("Access-Control-Expose-Headers")
+	for _, name := range []string{"X-Request-ID", "X-Trace-ID", "X-Aero-Degraded", "X-Aero-Write-Epoch"} {
+		if !strings.Contains(exposed, name) {
+			t.Errorf("Access-Control-Expose-Headers = %q, missing %q", exposed, name)
+		}
 	}
 }
 

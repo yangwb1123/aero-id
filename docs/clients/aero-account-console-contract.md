@@ -14,15 +14,19 @@
 | grant | Authorization Code + PKCE（S256，强制） |
 | scopes | `openid profile account:read` 起步；按需加 `account:write account:manage audit:read audit:replay operation:read callback:manage source:sync` |
 
-前端技术栈**未定**（Flutter 与替代方案评估中）：本契约与 OpenAPI
-（`api/openapi/aero-id-account.yaml`，仓库有守卫测试防漂移）是技术栈无关的交付，
-客户端实现待选型确认后另行立项（独立仓库）。
+前端已选用 Iris UI 的 React 适配器，首个可运行客户端位于
+`/home/u1/iris-ui/apps/aero-platform-console`。本契约与 OpenAPI
+（`api/openapi/aero-id-account.yaml`，仓库有守卫测试防漂移）仍保持技术栈无关；
+客户端不复用 `snaplink-console` 的 OAuth client，也不把 aero-id audience 的 token
+转发给 Audit Governance、Aero IM 或 Aero Vault。
 ## 登录与请求上下文
 
 - 在 Snaplink 注册独立 OAuth/OIDC client，不复用 `snaplink-console` 的 client ID。
 - 浏览器使用 Authorization Code + PKCE；令牌的 issuer、audience、subject 必须由 Snaplink 校验。
 - 每次请求发送 `Authorization: Bearer <access-token>`。客户端可发送 `X-Request-ID`，服务端会在响应中返回它；服务端还返回 `X-Trace-ID`。
 - 需要幂等的 POST 同时发送 `Idempotency-Key`。重复请求返回同一任务/操作结果，不重复触发源系统副作用。
+- 浏览器 CORS 预检允许 `Idempotency-Key`、`X-Aero-Write-Epoch` 和 W3C trace headers，并暴露
+  `X-Request-ID`、`X-Trace-ID`、降级、写 epoch、陈旧读取、幂等重放与重试响应头。
 
 ## 响应和数据集
 

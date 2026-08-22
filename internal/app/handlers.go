@@ -49,6 +49,7 @@ func buildRouter(deps routerDependencies) http.Handler {
 	router := httpapi.NewRouter(
 		deps.log,
 		httpapi.RouterConfig{
+			CORSOrigins:            deps.cfg.Server.HTTP.CORSOrigins,
 			Metrics:                deps.metricsReg,
 			Idempotency:            deps.workers.idemStore,
 			IdempotencyTTL:         deps.cfg.Server.HTTP.IdempotencyTTL,

@@ -2,9 +2,31 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+var browserRequestHeaders = []string{
+	"Authorization",
+	"Content-Type",
+	RequestIDHeader,
+	"Idempotency-Key",
+	"X-Aero-Write-Epoch",
+	"Traceparent",
+	"Tracestate",
+	"Baggage",
+}
+
+var browserResponseHeaders = []string{
+	RequestIDHeader,
+	"X-Trace-ID",
+	"X-Aero-Degraded",
+	"X-Aero-Write-Epoch",
+	"X-Aero-Stale-Read",
+	"Idempotent-Replayed",
+	"Retry-After",
+}
 
 // CORS applies permissive defaults when origins is empty, otherwise reflects only
 // allow-listed origins. Handles the OPTIONS preflight with 204 for allowed origins
@@ -34,7 +56,8 @@ func CORS(origins []string) gin.HandlerFunc {
 			}
 			if allowAll || originAllowed {
 				c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-				c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,"+RequestIDHeader)
+				c.Header("Access-Control-Allow-Headers", strings.Join(browserRequestHeaders, ","))
+				c.Header("Access-Control-Expose-Headers", strings.Join(browserResponseHeaders, ","))
 			}
 		}
 		if c.Request.Method == http.MethodOptions {

@@ -193,6 +193,7 @@ type ServerConfig struct {
 type HTTPConfig struct {
 	Host              string        `mapstructure:"host"`
 	Port              int           `mapstructure:"port"`
+	CORSOrigins       []string      `mapstructure:"cors_origins"` // exact browser origins; empty keeps the development wildcard
 	ReadTimeout       time.Duration `mapstructure:"read_timeout"`
 	ReadHeaderTimeout time.Duration `mapstructure:"read_header_timeout"` // prevents Slowloris; >= 1s
 	WriteTimeout      time.Duration `mapstructure:"write_timeout"`
