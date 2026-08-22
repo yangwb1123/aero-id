@@ -23,7 +23,7 @@ func syncSummaryRequest(account *domain.Account, job *domain.SyncJob, datasets [
 func eraseRequestForJob(account *domain.Account, job *domain.SyncJob, source connector.Source,
 	datasets []domain.AccountDataset) connector.EraseRequest {
 	return connector.EraseRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: job.ActorUID,
-		TenantID: job.TenantID, RequestID: job.RequestID, Datasets: datasets,
+		TenantID: job.TenantID, RequestID: job.RequestID, Region: account.HomeRegion, Datasets: datasets,
 		IdempotencyKey: job.IdempotencyKey + ":" + string(source), OperationID: job.ID.String()}
 }
 

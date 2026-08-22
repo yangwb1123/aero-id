@@ -70,6 +70,54 @@ func TestConnector_PropagatesBearerTokenOnEverySurface(t *testing.T) {
 	}
 }
 
+// TestConnector_PropagatesRegionOnCommandSurfaces: account-affecting source
+// commands must carry the account home region on both the transport header and
+// query string so a source can route the request to the correct authority.
+func TestConnector_PropagatesRegionOnCommandSurfaces(t *testing.T) {
+	type requestObservation struct {
+		path   string
+		header string
+		query  string
+	}
+	var observations []requestObservation
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observations = append(observations, requestObservation{path: r.URL.Path,
+			header: r.Header.Get("X-Aero-Region"), query: r.URL.Query().Get("region")})
+		switch r.URL.Path {
+		case "/erase", "/status":
+			_, _ = w.Write([]byte(`{"status":"completed","source_operation_id":"op-1"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := newTestConnector(t, server.URL, HTTPConfig{
+		ErasePath:           "/erase",
+		OperationStatusPath: "/status",
+		MaxAttempts:         1,
+	})
+	const region = "us-west-2"
+	if _, err := client.Erase(t.Context(), EraseRequest{
+		AccountID: domain.ID{1}, Region: region, OperationID: "op-id-1", IdempotencyKey: "idem-1",
+	}); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if _, err := client.OperationStatus(t.Context(), OperationStatusRequest{
+		AccountID: domain.ID{1}, Region: region, OperationID: "op-id-1", SourceOperationID: "op-1",
+	}); err != nil {
+		t.Fatalf("operation status: %v", err)
+	}
+	if len(observations) != 2 {
+		t.Fatalf("observations = %d, want 2", len(observations))
+	}
+	for _, observation := range observations {
+		if observation.header != region || observation.query != region {
+			t.Errorf("%s region = header %q/query %q, want %q/%q", observation.path,
+				observation.header, observation.query, region, region)
+		}
+	}
+}
+
 // TestConnector_ContextDeadlineCancelsInFlightCall: a client-side context
 // deadline must abort the call promptly (bounded by the deadline, not the
 // server's stall) and map to a stable timeout error, never a hang.

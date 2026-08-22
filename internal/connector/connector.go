@@ -74,6 +74,7 @@ type EraseRequest struct {
 	ActorUID       string
 	TenantID       string
 	RequestID      string
+	Region         string
 	Datasets       []domain.AccountDataset
 	IdempotencyKey string
 	OperationID    string
@@ -85,6 +86,7 @@ type OperationStatusRequest struct {
 	ActorUID          string
 	TenantID          string
 	RequestID         string
+	Region            string
 	OperationID       string
 	SourceOperationID string
 	IdempotencyKey    string

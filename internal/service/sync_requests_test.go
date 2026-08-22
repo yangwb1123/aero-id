@@ -5,7 +5,18 @@ import (
 	"testing"
 
 	"github.com/aero/aero-id/internal/connector"
+	"github.com/aero/aero-id/internal/domain"
 )
+
+func TestEraseRequestForJobCarriesAccountHomeRegion(t *testing.T) {
+	account := &domain.Account{ID: domain.ID{1}, CanonicalUID: "uid-1", HomeRegion: "us-east-1"}
+	job := &domain.SyncJob{ID: domain.ID{2}, ActorUID: "actor-1", TenantID: "tenant-1", RequestID: "request-1",
+		IdempotencyKey: "erase-1"}
+	request := eraseRequestForJob(account, job, connector.SourceAeroVault, nil)
+	if request.Region != account.HomeRegion {
+		t.Fatalf("region = %q, want account home region %q", request.Region, account.HomeRegion)
+	}
+}
 
 func TestEraseCallOutcomeDoesNotTurnUnknownIntoFailure(t *testing.T) {
 	cases := []struct {

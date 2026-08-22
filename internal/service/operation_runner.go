@@ -91,7 +91,7 @@ func (r *connectorOperationRunner) Reconcile(ctx context.Context, operation *dom
 	}
 	result, err := statusClient.OperationStatus(ctx, connector.OperationStatusRequest{
 		AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: operation.ActorUID,
-		TenantID: operation.TenantID, RequestID: operation.RequestID, OperationID: operation.ID.String(),
+		TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, OperationID: operation.ID.String(),
 		SourceOperationID: step.SourceOperationID,
 		IdempotencyKey:    operation.ID.String() + ":" + step.ID.String(),
 	})
@@ -120,7 +120,7 @@ func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.
 	}
 	datasets := operationDatasets(step.RequestPayload)
 	result, err := command.Erase(ctx, connector.EraseRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
-		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID, Datasets: datasets,
+		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, Datasets: datasets,
 		IdempotencyKey: operation.ID.String() + ":" + step.ID.String() + suffix, OperationID: operation.ID.String()})
 	if err != nil {
 		return "", nil, err

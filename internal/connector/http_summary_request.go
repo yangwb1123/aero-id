@@ -71,6 +71,11 @@ func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseReq
 	if err != nil {
 		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint", Cause: err}
 	}
+	if req.Region != "" {
+		query := endpoint.Query()
+		query.Set("region", req.Region)
+		endpoint.RawQuery = query.Encode()
+	}
 	body, err := json.Marshal(map[string]any{"account_id": req.AccountID.String(), "canonical_uid": req.CanonicalUID,
 		"datasets": req.Datasets, "idempotency_key": req.IdempotencyKey, "operation_id": req.OperationID})
 	if err != nil {
@@ -86,6 +91,9 @@ func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseReq
 	request.Header.Set("X-Aero-Canonical-UID", req.CanonicalUID)
 	request.Header.Set("X-Aero-Actor-UID", req.ActorUID)
 	request.Header.Set("X-Aero-Tenant-ID", req.TenantID)
+	if req.Region != "" {
+		request.Header.Set("X-Aero-Region", req.Region)
+	}
 	request.Header.Set("X-Request-ID", req.RequestID)
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
 	request.Header.Set("Idempotency-Key", req.IdempotencyKey)
