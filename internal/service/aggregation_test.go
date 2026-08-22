@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
@@ -69,5 +70,38 @@ func TestAggregationRefreshLeavesCompleteSummaryHealthy(t *testing.T) {
 		nil, result, &sync.Mutex{})
 	if len(result.SourceErrors) != 0 {
 		t.Fatalf("complete summary produced source errors: %v", result.SourceErrors)
+	}
+}
+
+func TestAggregationMarkFreshnessHonorsMaxAge(t *testing.T) {
+	now := time.Now().UTC()
+	old := now.Add(-time.Hour)
+	result := &domain.AggregateOverview{
+		Snapshots: []*domain.AccountSnapshot{{Dataset: domain.AccountDataset("aero-vault.buckets"),
+			Status: domain.SnapshotFresh, LastSyncedAt: &old}},
+		SourceErrors: map[string]string{},
+	}
+	service := &aggregationService{}
+	if !service.markFreshness(result, []domain.AccountDataset{"aero-vault.buckets"}, time.Minute) {
+		t.Fatal("old projection must make the aggregate partial")
+	}
+	if result.Snapshots[0].Status != domain.SnapshotStale {
+		t.Fatalf("snapshot status = %q, want stale", result.Snapshots[0].Status)
+	}
+	if len(result.StaleDatasets) != 1 || result.StaleDatasets[0] != "aero-vault.buckets" {
+		t.Fatalf("stale datasets = %#v, want aero-vault.buckets", result.StaleDatasets)
+	}
+}
+
+func TestAggregationMarkFreshnessRequiresLastSyncedAt(t *testing.T) {
+	result := &domain.AggregateOverview{
+		Snapshots:    []*domain.AccountSnapshot{{Dataset: domain.AccountDataset("aero-vault.buckets"), Status: domain.SnapshotFresh}},
+		SourceErrors: map[string]string{},
+	}
+	if !(&aggregationService{}).markFreshness(result, []domain.AccountDataset{"aero-vault.buckets"}, time.Minute) {
+		t.Fatal("projection without sync timestamp must be partial")
+	}
+	if result.Snapshots[0].Status != domain.SnapshotStale {
+		t.Fatalf("snapshot status = %q, want stale", result.Snapshots[0].Status)
 	}
 }

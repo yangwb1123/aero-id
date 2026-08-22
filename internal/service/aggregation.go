@@ -29,6 +29,8 @@ type aggregationService struct {
 	connectors map[connector.Source]connector.Connector
 }
 
+const defaultAggregationMaxAge = 5 * time.Minute
+
 func NewAggregationService(accounts AccountService, snapshots repository.SnapshotRepository, connectors ...connector.Connector) AggregationService {
 	bySource := make(map[connector.Source]connector.Connector, len(connectors))
 	for _, item := range connectors {
@@ -69,7 +71,7 @@ func (s *aggregationService) load(ctx context.Context, account *domain.Account, 
 		return nil, apperr.BadRequest("aggregation.invalid_consistency", "unsupported consistency mode")
 	}
 	if input.MaxAge <= 0 {
-		input.MaxAge = 5 * time.Minute
+		input.MaxAge = defaultAggregationMaxAge
 	}
 	snapshots, err := s.snapshots.ListSnapshots(ctx, account.ID, datasets)
 	if err != nil {
@@ -87,7 +89,7 @@ func (s *aggregationService) load(ctx context.Context, account *domain.Account, 
 		}
 		result.Snapshots = fresh
 	}
-	result.Partial = s.markFreshness(result, datasets)
+	result.Partial = s.markFreshness(result, datasets, input.MaxAge)
 	return result, nil
 }
 
@@ -241,7 +243,8 @@ func needsRefresh(snapshots []*domain.AccountSnapshot, requested []domain.Accoun
 	return false
 }
 
-func (s *aggregationService) markFreshness(result *domain.AggregateOverview, datasets []domain.AccountDataset) bool {
+func (s *aggregationService) markFreshness(result *domain.AggregateOverview, datasets []domain.AccountDataset,
+	maxAge time.Duration) bool {
 	partial := len(result.SourceErrors) > 0
 	now := time.Now().UTC()
 	byDataset := snapshotByDataset(result.Snapshots)
@@ -251,7 +254,7 @@ func (s *aggregationService) markFreshness(result *domain.AggregateOverview, dat
 			partial = s.markMissingDataset(result, dataset) || partial
 			continue
 		}
-		if snapshot.Status == domain.SnapshotFresh && !snapshot.Fresh(now) {
+		if snapshot.Status == domain.SnapshotFresh && !snapshotFreshWithin(snapshot, now, maxAge) {
 			snapshot.Status = domain.SnapshotStale
 		}
 		if snapshot.Status != domain.SnapshotFresh {
@@ -260,6 +263,16 @@ func (s *aggregationService) markFreshness(result *domain.AggregateOverview, dat
 		}
 	}
 	return partial
+}
+
+func snapshotFreshWithin(snapshot *domain.AccountSnapshot, now time.Time, maxAge time.Duration) bool {
+	if snapshot == nil || !snapshot.Fresh(now) || snapshot.LastSyncedAt == nil {
+		return false
+	}
+	if maxAge <= 0 {
+		maxAge = defaultAggregationMaxAge
+	}
+	return !snapshot.LastSyncedAt.Before(now.Add(-maxAge))
 }
 
 func snapshotByDataset(snapshots []*domain.AccountSnapshot) map[domain.AccountDataset]*domain.AccountSnapshot {
