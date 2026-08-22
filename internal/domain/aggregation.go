@@ -128,3 +128,15 @@ type AggregateOverview struct {
 	SourceErrors  map[string]string
 	StaleDatasets []AccountDataset
 }
+
+// AccountActivityPage is a keyset page over the redacted activity-summary
+// projection. Events remain source-owned data; aero-id exposes only the
+// allow-listed projection payload and its freshness metadata.
+type AccountActivityPage struct {
+	Events        []map[string]any
+	NextCursor    string
+	Partial       bool
+	GeneratedAt   time.Time
+	SourceErrors  map[string]string
+	StaleDatasets []AccountDataset
+}

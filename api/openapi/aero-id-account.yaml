@@ -62,7 +62,9 @@ paths:
         '200':
           description: Recent account activity from local projections.
           content: {application/json: {schema: {$ref: '#/components/schemas/ActivityEnvelope'}}}
+        '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /me/erase:
     post:
       operationId: eraseMyAccount
@@ -904,6 +906,10 @@ components:
           properties:
             events: {type: array, items: {type: object}}
             next_cursor: {type: string}
+            partial: {type: boolean}
+            generated_at: {type: string, format: date-time}
+            source_errors: {type: object, additionalProperties: {type: string}}
+            stale_datasets: {type: array, items: {type: string}}
     ReplayRequest:
       type: object
       properties:

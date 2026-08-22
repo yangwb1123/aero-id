@@ -81,7 +81,7 @@ describe("AeroIdClient", () => {
     expect(requested.searchParams.get("consistency")).toBe("eventual");
   });
 
-  it("adapts the shipped activity snapshot envelope", async () => {
+  it("adapts the legacy activity snapshot envelope during rolling upgrades", async () => {
     const fetcher = vi.fn(async () =>
       json({
         data: {
@@ -107,6 +107,32 @@ describe("AeroIdClient", () => {
       items: [{ event_id: "event-1", event_type: "message.sent" }],
       nextCursor: "event-1",
     });
+  });
+
+  it("reads the paged activity envelope and passes its opaque cursor", async () => {
+    let requested = new URL("https://invalid.test");
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requested = new URL(String(input));
+      return json({
+        data: {
+          events: [{ event_id: "event-1", event_type: "message.sent" }],
+          next_cursor: "event-1",
+        },
+      });
+    });
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await expect(client.listActivity("event-2")).resolves.toEqual({
+      items: [{ event_id: "event-1", event_type: "message.sent" }],
+      nextCursor: "event-1",
+    });
+    expect(requested.pathname).toBe("/v1/me/activity");
+    expect(requested.searchParams.get("cursor")).toBe("event-2");
+    expect(requested.searchParams.get("limit")).toBe("50");
   });
 
   it("passes opaque keyset cursors without interpreting them", async () => {

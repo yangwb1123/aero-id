@@ -45,16 +45,13 @@ func (h *AggregationHandler) GetMeOverview(c *gin.Context) {
 }
 
 func (h *AggregationHandler) GetMeActivity(c *gin.Context) {
-	input := aggregationInput(c)
-	if len(input.Datasets) == 0 {
-		input.Datasets = []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}
-	}
-	view, err := h.aggregation.GetMeOverview(c.Request.Context(), input)
+	view, err := h.aggregation.ListMeActivity(c.Request.Context(), aggregationInput(c), httpx.PageFromQuery(c))
 	if err != nil {
 		httpx.WriteError(c, err)
 		return
 	}
-	httpx.OK(c, aggregateOverviewResponse(view))
+	httpx.OK(c, gin.H{"events": view.Events, "next_cursor": view.NextCursor, "partial": view.Partial,
+		"generated_at": view.GeneratedAt, "source_errors": view.SourceErrors, "stale_datasets": view.StaleDatasets})
 }
 
 func (h *AggregationHandler) ListDatasets(c *gin.Context) {

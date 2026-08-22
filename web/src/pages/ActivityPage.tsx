@@ -3,7 +3,7 @@ import { IrisCard } from "@iris-ui-kit/react";
 import type { AeroIdClient } from "../api/aeroId";
 import { PageHeader } from "../components/PageHeader";
 import { PageError, PageLoading } from "../components/PageState";
-import { RecordTable } from "../components/RecordTable";
+import { PagedRecordTable } from "../components/PagedRecordTable";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 
 export function ActivityPage({
@@ -23,8 +23,9 @@ export function ActivityPage({
         description="来自本地脱敏活动投影，不读取消息正文或文件内容。"
       />
       <IrisCard variant="outline">
-        <RecordTable
-          records={resource.data!.items}
+        <PagedRecordTable
+          page={resource.data!}
+          loadPage={(cursor) => client.listActivity(cursor)}
           columns={[
             {
               key: "occurred_at",

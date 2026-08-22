@@ -15,6 +15,7 @@ import (
 type AggregationService interface {
 	GetMeOverview(context.Context, AggregationInput) (*domain.AggregateOverview, error)
 	GetAccountOverview(context.Context, domain.ID, AggregationInput) (*domain.AggregateOverview, error)
+	ListMeActivity(context.Context, AggregationInput, domain.Page) (*domain.AccountActivityPage, error)
 }
 
 type AggregationInput struct {

@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 )
@@ -39,6 +41,25 @@ func (aggregationAccountFixture) UpsertSource(context.Context, *domain.AccountSo
 }
 func (aggregationAccountFixture) UpsertMembership(context.Context, *domain.AccountMembership) error {
 	return nil
+}
+
+type activityAccountFixture struct {
+	AccountService
+	accountID domain.ID
+}
+
+func (f activityAccountFixture) GetMe(context.Context) (*AccountView, error) {
+	return &AccountView{Account: &domain.Account{ID: f.accountID}}, nil
+}
+
+type activitySnapshotFixture struct {
+	repository.SnapshotRepository
+	snapshot *domain.AccountSnapshot
+}
+
+func (f activitySnapshotFixture) ListSnapshots(context.Context, domain.ID,
+	[]domain.AccountDataset) ([]*domain.AccountSnapshot, error) {
+	return []*domain.AccountSnapshot{f.snapshot}, nil
 }
 
 func TestAggregationRefreshMarksIncompleteSummaryPartial(t *testing.T) {
@@ -103,5 +124,56 @@ func TestAggregationMarkFreshnessRequiresLastSyncedAt(t *testing.T) {
 	}
 	if result.Snapshots[0].Status != domain.SnapshotStale {
 		t.Fatalf("snapshot status = %q, want stale", result.Snapshots[0].Status)
+	}
+}
+
+func TestAggregationListMeActivityUsesEventIDKeyset(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &aggregationService{accounts: activityAccountFixture{accountID: idgen.NewID()},
+		snapshots: activitySnapshotFixture{snapshot: &domain.AccountSnapshot{
+			Dataset: domain.DatasetAeroIMActivitySummary, Status: domain.SnapshotFresh, LastSyncedAt: &now,
+			Data: map[string]any{"events": []map[string]any{{"event_id": "event-3"}, {"event_id": "event-2"}, {"event_id": "event-1"}}},
+		}}, connectors: map[connector.Source]connector.Connector{}}
+	first, err := svc.ListMeActivity(context.Background(), AggregationInput{}, domain.Page{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Events) != 1 || first.Events[0]["event_id"] != "event-3" || first.NextCursor != "event-3" {
+		t.Fatalf("first page = %+v", first)
+	}
+	second, err := svc.ListMeActivity(context.Background(), AggregationInput{}, domain.Page{Limit: 2, Cursor: first.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Events) != 2 || second.Events[0]["event_id"] != "event-2" || second.NextCursor != "" {
+		t.Fatalf("second page = %+v", second)
+	}
+}
+
+func TestAggregationListMeActivityRejectsInvalidCursor(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &aggregationService{accounts: activityAccountFixture{accountID: idgen.NewID()},
+		snapshots: activitySnapshotFixture{snapshot: &domain.AccountSnapshot{
+			Dataset: domain.DatasetAeroIMActivitySummary, Status: domain.SnapshotFresh, LastSyncedAt: &now,
+			Data: map[string]any{"events": []any{map[string]any{"event_id": "event-1"}}},
+		}}, connectors: map[connector.Source]connector.Connector{}}
+	_, err := svc.ListMeActivity(context.Background(), AggregationInput{}, domain.Page{Cursor: "missing"})
+	var appErr *apperr.AppError
+	if !errors.As(err, &appErr) || appErr.Code != "activity.invalid_cursor" {
+		t.Fatalf("error = %v, want activity.invalid_cursor", err)
+	}
+}
+
+func TestAggregationListMeActivityRejectsMalformedProjection(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &aggregationService{accounts: activityAccountFixture{accountID: idgen.NewID()},
+		snapshots: activitySnapshotFixture{snapshot: &domain.AccountSnapshot{
+			Dataset: domain.DatasetAeroIMActivitySummary, Status: domain.SnapshotFresh, LastSyncedAt: &now,
+			Data: map[string]any{"events": []any{map[string]any{"event_type": "message.sent"}}},
+		}}, connectors: map[connector.Source]connector.Connector{}}
+	_, err := svc.ListMeActivity(context.Background(), AggregationInput{}, domain.Page{})
+	var appErr *apperr.AppError
+	if !errors.As(err, &appErr) || appErr.Code != "activity.projection_invalid" || appErr.HTTP != 503 {
+		t.Fatalf("error = %v, want activity.projection_invalid/503", err)
 	}
 }
