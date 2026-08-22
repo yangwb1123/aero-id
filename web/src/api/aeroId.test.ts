@@ -71,8 +71,9 @@ describe("AeroIdClient", () => {
       fetcher as typeof fetch,
     );
 
-    await client.getOverview(["aero-im.workspaces", "aero-vault.usage"]);
+    await client.getResources(["aero-im.workspaces", "aero-vault.usage"]);
 
+    expect(requested.pathname).toBe("/v1/me/resources");
     expect(requested.searchParams.getAll("dataset")).toEqual([
       "aero-im.workspaces",
       "aero-vault.usage",

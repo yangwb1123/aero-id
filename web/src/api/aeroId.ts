@@ -108,6 +108,14 @@ export class AeroIdClient {
     ) as AggregateView;
   }
 
+  async getResources(datasets: string[] = []): Promise<AggregateView> {
+    return dataOf(
+      await this.request("GET", "/me/resources", {
+        query: { dataset: datasets, consistency: "eventual" },
+      }),
+    ) as AggregateView;
+  }
+
   async listSources(cursor?: string): Promise<PageData<JsonRecord>> {
     return pageOf(
       dataOf(

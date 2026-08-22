@@ -18,12 +18,14 @@ import { JobsPage } from "./pages/JobsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { ProfilePage } from "./pages/ProfilePage";
+import { ResourcesPage } from "./pages/ResourcesPage";
 import { ServiceLinksPage } from "./pages/ServiceLinksPage";
 
 const menus: NavNode[] = [
   { key: "overview", title: "账户概览", icon: "home" },
   { key: "profile", title: "个人资料", icon: "user" },
   { key: "connections", title: "来源与成员关系", icon: "link" },
+  { key: "resources", title: "资源摘要", icon: "folder" },
   { key: "activity", title: "近期活动", icon: "clock" },
   { key: "jobs", title: "同步与导出", icon: "download" },
   { key: "operations", title: "跨系统操作", icon: "settings" },
@@ -46,6 +48,8 @@ function PageHost({
       return <ProfilePage client={client} />;
     case "connections":
       return <ConnectionsPage client={client} />;
+    case "resources":
+      return <ResourcesPage client={client} />;
     case "activity":
       return <ActivityPage client={client} />;
     case "jobs":

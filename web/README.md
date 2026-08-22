@@ -5,7 +5,7 @@
 - 通过 Snaplink Authorization Code + PKCE（S256）登录；
 - 在浏览器内存中持有短期 access token，不写入 localStorage/sessionStorage；
 - 退出时调用 discovery 声明的 `end_session_endpoint`，销毁 Snaplink 会话后回跳；
-- 调用 aero-id `/v1/me`、Profile、来源、成员关系、活动、同步/导出任务和 Operation API；
+- 调用 aero-id `/v1/me`、Profile、来源、成员关系、脱敏资源摘要、活动、同步/导出任务和 Operation API；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；
 - 使用独立链接进入 Audit Governance、Aero IM 和 Aero Vault 控制台，不跨 audience 转发 token。
 
