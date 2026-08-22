@@ -23,6 +23,8 @@ data:
       http:
         host: 0.0.0.0
         port: 8080
+        cors_origins:
+          - https://accounts.example.com
         read_timeout: 15s
         read_header_timeout: 10s
         write_timeout: 15s
