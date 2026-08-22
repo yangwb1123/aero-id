@@ -172,6 +172,12 @@ section > [data-iris-card] {
   justify-content: flex-end;
 }
 
+.pagination-actions {
+  display: flex;
+  justify-content: center;
+  padding-block-start: var(--iris-space-md, 16px);
+}
+
 .table-scroll {
   overflow-x: auto;
 }

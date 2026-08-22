@@ -3,7 +3,7 @@ import { IrisCard } from "@iris-ui-kit/react";
 import type { AeroIdClient } from "../api/aeroId";
 import { PageHeader } from "../components/PageHeader";
 import { PageError, PageLoading } from "../components/PageState";
-import { RecordTable } from "../components/RecordTable";
+import { PagedRecordTable } from "../components/PagedRecordTable";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 
 export function ConnectionsPage({
@@ -29,8 +29,9 @@ export function ConnectionsPage({
         description="保留 Aero IM、Aero Vault 和 Snaplink 的原生引用，不把不同作用域折叠成一个 tenant_id。"
       />
       <IrisCard variant="outline" header="来源账户">
-        <RecordTable
-          records={resource.data!.sources.items}
+        <PagedRecordTable
+          page={resource.data!.sources}
+          loadPage={(cursor) => client.listSources(cursor)}
           columns={[
             { key: "source", label: "来源", aliases: ["source_system"] },
             {
@@ -46,8 +47,9 @@ export function ConnectionsPage({
         />
       </IrisCard>
       <IrisCard variant="outline" header="成员关系">
-        <RecordTable
-          records={resource.data!.memberships.items}
+        <PagedRecordTable
+          page={resource.data!.memberships}
+          loadPage={(cursor) => client.listMemberships(cursor)}
           columns={[
             { key: "source", label: "来源" },
             { key: "scope_type", label: "作用域类型" },

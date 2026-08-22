@@ -3,7 +3,7 @@ import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/react";
 import type { AeroIdClient } from "../api/aeroId";
 import { PageHeader } from "../components/PageHeader";
 import { PageError, PageLoading } from "../components/PageState";
-import { RecordTable } from "../components/RecordTable";
+import { PagedRecordTable } from "../components/PagedRecordTable";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 
 export function JobsPage({
@@ -69,8 +69,9 @@ export function JobsPage({
         <IrisAlert tone="danger">{actionError.message}</IrisAlert>
       ) : null}
       <IrisCard variant="outline">
-        <RecordTable
-          records={resource.data!.jobs.items}
+        <PagedRecordTable
+          page={resource.data!.jobs}
+          loadPage={(cursor) => client.listSyncJobs(cursor)}
           columns={[
             { key: "id", label: "任务 ID", aliases: ["job_id"] },
             { key: "job_type", label: "类型", aliases: ["type"] },

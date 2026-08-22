@@ -75,7 +75,13 @@ export function RecordTable({
           {records.map((record, index) => (
             <tr
               key={String(
-                record.id ?? record.event_id ?? record.account_id ?? index,
+                record.job_id ??
+                  record.operation_id ??
+                  record.source_account_id ??
+                  record.id ??
+                  record.event_id ??
+                  record.account_id ??
+                  index,
               )}
             >
               {columns.map((column) => (

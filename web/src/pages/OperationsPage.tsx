@@ -3,7 +3,7 @@ import { IrisAlert, IrisCard } from "@iris-ui-kit/react";
 import type { AeroIdClient } from "../api/aeroId";
 import { PageHeader } from "../components/PageHeader";
 import { PageError, PageLoading } from "../components/PageState";
-import { RecordTable } from "../components/RecordTable";
+import { PagedRecordTable } from "../components/PagedRecordTable";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 
 export function OperationsPage({
@@ -31,8 +31,9 @@ export function OperationsPage({
         </IrisAlert>
       ) : null}
       <IrisCard variant="outline">
-        <RecordTable
-          records={resource.data!.items}
+        <PagedRecordTable
+          page={resource.data!}
+          loadPage={(cursor) => client.listOperations(cursor)}
           columns={[
             { key: "id", label: "操作 ID", aliases: ["operation_id"] },
             { key: "operation_type", label: "类型", aliases: ["type"] },

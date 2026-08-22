@@ -109,6 +109,25 @@ describe("AeroIdClient", () => {
     });
   });
 
+  it("passes opaque keyset cursors without interpreting them", async () => {
+    let requested = new URL("https://invalid.test");
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requested = new URL(String(input));
+      return json({ data: { sources: [], next_cursor: "" } });
+    });
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.listSources("opaque:source:cursor");
+
+    expect(requested.pathname).toBe("/v1/me/sources");
+    expect(requested.searchParams.get("cursor")).toBe("opaque:source:cursor");
+    expect(requested.searchParams.get("limit")).toBe("50");
+  });
+
   it("preserves stable API error metadata without exposing the bearer token", async () => {
     const fetcher = vi.fn(async () =>
       json(
