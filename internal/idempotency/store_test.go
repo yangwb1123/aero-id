@@ -144,3 +144,42 @@ func TestGormStore_Reserve_ConcurrentReclaimSingleWinner(t *testing.T) {
 		round(fmt.Sprintf("race-%s-%d", uuid.NewString(), i))
 	}
 }
+
+func TestGormStore_Reserve_ExpiredCompletedRecordReclaims(t *testing.T) {
+	db := testpg.Start(t)
+	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	store := idempotency.NewGormStore(db)
+	ctx := context.Background()
+
+	const uid, endpoint, key = "u-expired", "POST /v1/messages", "expired-complete"
+	if _, reserved, err := store.Reserve(ctx, uid, endpoint, key); err != nil || !reserved {
+		t.Fatalf("initial reserve: reserved=%v err=%v", reserved, err)
+	}
+	if err := store.Complete(ctx, uid, endpoint, key, idempotency.Record{
+		Status: 201, ContentType: "application/json", Body: []byte(`{"old":true}`),
+	}, time.Hour); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := db.Exec(`UPDATE idempotency_keys SET expires_at = ? WHERE uid = ? AND endpoint = ? AND idem_key = ?`,
+		time.Now().UTC().Add(-time.Minute), uid, endpoint, key).Error; err != nil {
+		t.Fatalf("force-expire completed row: %v", err)
+	}
+
+	rec, reserved, err := store.Reserve(ctx, uid, endpoint, key)
+	if err != nil {
+		t.Fatalf("reserve after completed TTL: %v", err)
+	}
+	if !reserved || rec != nil {
+		t.Fatalf("expired completed record: reserved=%v rec=%+v, want fresh reservation", reserved, rec)
+	}
+
+	if err := store.Complete(ctx, uid, endpoint, key, idempotency.Record{
+		Status: 200, ContentType: "application/json", Body: []byte(`{"new":true}`),
+	}, time.Hour); err != nil {
+		t.Fatalf("complete reclaimed reservation: %v", err)
+	}
+	rec, reserved, err = store.Reserve(ctx, uid, endpoint, key)
+	if err != nil || reserved || rec == nil || !rec.Completed || string(rec.Body) != `{"new":true}` {
+		t.Fatalf("replay after reclaim: reserved=%v rec=%+v err=%v", reserved, rec, err)
+	}
+}
