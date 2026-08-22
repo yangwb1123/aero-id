@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -96,7 +97,7 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(newSpanExporter(exporter, dynamic)),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
 	)
@@ -165,8 +166,10 @@ type DynamicSampler struct {
 	exportErrors   atomic.Uint64
 	exportAttempts atomic.Uint64
 
-	stopCh  chan struct{}
-	stopped chan struct{}
+	stopCh   chan struct{}
+	stopped  chan struct{}
+	started  atomic.Bool
+	stopOnce sync.Once
 }
 
 // NewDynamicSampler creates a DynamicSampler with the given initial ratio.
@@ -188,6 +191,19 @@ func (s *DynamicSampler) loadRatio() float64 {
 // setRatio safely stores a float64 ratio.
 func (s *DynamicSampler) setRatio(r float64) {
 	s.ratio.Store(math.Float64bits(r))
+}
+
+// RecordExport feeds one exporter attempt into the adaptive sampler. The
+// counting exporter calls this after each batch so collector failures can lower
+// sampling pressure without coupling the sampler to OTLP implementation types.
+func (s *DynamicSampler) RecordExport(err error) {
+	if s == nil {
+		return
+	}
+	s.exportAttempts.Add(1)
+	if err != nil {
+		s.exportErrors.Add(1)
+	}
 }
 
 // ShouldSample implements sdktrace.Sampler. It returns a probabilistic sampling
@@ -225,11 +241,25 @@ func (s *DynamicSampler) Description() string {
 //
 //nolint:cyclop,funlen // adaptive sampling has explicit healthy, degraded, recovery, and stop states.
 func (s *DynamicSampler) startMonitor(originalRatio float64) {
+	s.startMonitorWithIntervals(originalRatio, samplingWindowDuration, recoveryInterval)
+}
+
+//nolint:cyclop,funlen // adaptive sampling has explicit healthy, degraded, recovery, and stop states.
+func (s *DynamicSampler) startMonitorWithIntervals(originalRatio float64, windowDuration, recoveryDuration time.Duration) {
+	if !s.started.CompareAndSwap(false, true) {
+		return
+	}
+	if windowDuration <= 0 {
+		windowDuration = samplingWindowDuration
+	}
+	if recoveryDuration <= 0 {
+		recoveryDuration = recoveryInterval
+	}
 	go func() {
 		defer close(s.stopped)
 
-		windowTicker := time.NewTicker(samplingWindowDuration)
-		recoveryTicker := time.NewTicker(recoveryInterval)
+		windowTicker := time.NewTicker(windowDuration)
+		recoveryTicker := time.NewTicker(recoveryDuration)
 		defer windowTicker.Stop()
 		defer recoveryTicker.Stop()
 
@@ -293,6 +323,9 @@ func (s *DynamicSampler) startMonitor(originalRatio float64) {
 
 // stopMonitor signals the monitor goroutine to stop and waits for it to finish.
 func (s *DynamicSampler) stopMonitor() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() { close(s.stopCh) })
+	if !s.started.Load() {
+		return
+	}
 	<-s.stopped
 }
