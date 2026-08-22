@@ -42,6 +42,7 @@ The 2026-05-22 design under `docs/superpowers/specs/` is historical input.
 ## Prerequisites
 
 - Go 1.26+
+- Node.js 22+ and pnpm 10.34+ (account Web console)
 - Docker (for integration tests and local stack)
 - `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc` (only to regenerate protos)
 - `migrate` CLI (golang-migrate) for running migrations locally
@@ -73,6 +74,22 @@ make test              # unit tests
 make test-integration  # integration tests (spins up Postgres/MinIO via testcontainers)
 make proto             # regenerate gRPC stubs
 ```
+
+## Web console
+
+The independent account console lives in [`web/`](web/README.md). It uses
+Snaplink Authorization Code + PKCE for login and calls only aero-id's `/v1`
+account-control-plane APIs. Install and run it with:
+
+```bash
+make web-install
+make web-dev            # http://localhost:5180
+make web-check          # tests, lint, typecheck, format and production build
+```
+
+On this workstation, `cd web && pnpm dev:iris` resolves Iris UI directly from
+`~/iris-ui` for component development. Normal builds consume the published,
+versioned Iris packages and do not depend on that local path.
 
 ## Configuration
 

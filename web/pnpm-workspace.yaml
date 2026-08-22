@@ -1,0 +1,15 @@
+packages:
+  - '.'
+
+# Iris UI 0.x packages currently publish workspace:* in their dependency
+# metadata. Pinning the public packages here keeps this standalone consumer
+# installable until the upstream publish pipeline rewrites those protocols.
+overrides:
+  '@iris-ui-kit/core': 0.2.1
+  '@iris-ui-kit/icons': 0.2.0
+  '@iris-ui-kit/skins': 0.1.1
+  '@iris-ui-kit/theme': 0.3.0
+  '@iris-ui-kit/tokens': 0.3.0
+
+allowBuilds:
+  esbuild: true

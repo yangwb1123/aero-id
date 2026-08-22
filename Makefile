@@ -2,8 +2,10 @@ SHELL := /bin/bash
 MODULE := github.com/aero/aero-id
 BIN    := bin/aero-id
 PG_DSN ?= postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
+PNPM  ?= pnpm
+WEB_DIR := web
 
-.PHONY: tidy build build-audit-replay run test test-integration lint clean proto load-test-http load-test-grpc load-test-event load-test-callback load-test-db load-test-db-seed check-integration-compile check-load-scenarios
+.PHONY: tidy build build-audit-replay run test test-integration lint clean proto web-install web-dev web-test web-lint web-build web-check load-test-http load-test-grpc load-test-event load-test-callback load-test-db load-test-db-seed check-integration-compile check-load-scenarios
 tidy:        ; go mod tidy
 build:       ; go build -o $(BIN) ./cmd/server
 	@$(MAKE) --no-print-directory build-audit-replay
@@ -14,7 +16,14 @@ run:         ; go run ./cmd/server -config configs/config.yaml
 test:        ; go test ./... -count=1
 test-integration: ; go test -tags=integration -p 1 ./... -count=1
 lint:        ; go vet ./...
-clean:       ; rm -rf bin/
+clean:       ; rm -rf bin/ web/dist/
+
+web-install: ; cd $(WEB_DIR) && $(PNPM) install --frozen-lockfile
+web-dev:     ; cd $(WEB_DIR) && $(PNPM) dev
+web-test:    ; cd $(WEB_DIR) && $(PNPM) test
+web-lint:    ; cd $(WEB_DIR) && $(PNPM) lint
+web-build:   ; cd $(WEB_DIR) && $(PNPM) build
+web-check:   ; cd $(WEB_DIR) && $(PNPM) check
 
 # ── Strict lint gate (HARNESS.md) ───────────────────────────────────────
 # Enforces: file ≤500 lines, function ≤50 lines, complexity ≤10.

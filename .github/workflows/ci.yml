@@ -10,6 +10,25 @@ env:
   GO_VERSION: "1.26"
 
 jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: Check web console
+        working-directory: web
+        run: pnpm check
+
   lint:
     runs-on: ubuntu-latest
     steps:

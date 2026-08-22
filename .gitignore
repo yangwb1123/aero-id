@@ -24,6 +24,9 @@ pbatch/__pycache__/
 /.qwen/
 /.skills/
 /ai-dev/
+/web/node_modules/
+/web/dist/
+/web/.turbo/
 
 # ai-batch-runner runtime artifacts
 .pi-batch/
