@@ -679,10 +679,13 @@ paths:
   /admin/audit/anchor:
     post:
       operationId: anchorAuditChains
+      description: Requires the system.config permission because the operation writes immutable objects for every audit chain.
       security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
         '200':
-          description: WORM anchor pass over all audit chains (P4-03).
+          description: WORM anchor pass over all audit chains after a durable, fail-closed administrative intent audit (P4-03).
           content: {application/json: {schema: {$ref: '#/components/schemas/AnchorRunEnvelope'}}}
         '403': {$ref: '#/components/responses/Error'}
   /admin/audit/anchor/manifest/{source}/{partition}:
@@ -694,7 +697,7 @@ paths:
         - {name: partition, in: path, required: true, schema: {type: string}}
       responses:
         '200':
-          description: Newest stored anchor for the chain.
+          description: Newest stored anchor for the chain; a successful sensitive read is durably audited before return.
           content: {application/json: {schema: {type: object}}}
         '403': {$ref: '#/components/responses/Error'}
   /admin/regions/promote:

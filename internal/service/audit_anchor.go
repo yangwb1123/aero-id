@@ -45,10 +45,22 @@ type AnchorChainResult struct {
 type auditAnchorService struct {
 	ledger repository.AuditLedgerRepository
 	store  storage.FileStorage
+	audit  AuditLedgerService
 }
 
-func NewAuditAnchorService(ledger repository.AuditLedgerRepository, store storage.FileStorage) AuditAnchorService {
-	return &auditAnchorService{ledger: ledger, store: store}
+type AuditAnchorOption func(*auditAnchorService)
+
+func WithAuditAnchorAudit(audit AuditLedgerService) AuditAnchorOption {
+	return func(s *auditAnchorService) { s.audit = audit }
+}
+
+func NewAuditAnchorService(ledger repository.AuditLedgerRepository, store storage.FileStorage,
+	opts ...AuditAnchorOption) AuditAnchorService {
+	svc := &auditAnchorService{ledger: ledger, store: store}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 const anchorPrefix = "audit-anchor"
@@ -56,6 +68,9 @@ const anchorPrefix = "audit-anchor"
 func (s *auditAnchorService) AnchorOnce(ctx context.Context) (*AnchorRunResult, error) {
 	if s.ledger == nil || s.store == nil {
 		return nil, apperr.Unavailable("audit_anchor.unavailable", "audit anchor storage is not configured")
+	}
+	if err := s.recordAnchorRequest(ctx); err != nil {
+		return nil, err
 	}
 	partitions, err := s.ledger.ChainPartitions(ctx)
 	if err != nil {
@@ -80,6 +95,18 @@ func (s *auditAnchorService) AnchorOnce(ctx context.Context) (*AnchorRunResult, 
 	}
 	return result, nil
 }
+
+func (s *auditAnchorService) recordAnchorRequest(ctx context.Context) error {
+	if s.audit == nil {
+		return nil // unit-test compatibility; composition wiring forbids this
+	}
+	// audit-site: standalone-fact — records the administrative intent before
+	// any immutable archive object is written, so audit failure is fail-closed.
+	return s.audit.Record(ctx, AuditFactInput{Source: "aero-id", Action: "audit.anchor.requested",
+		ResourceType: "audit_anchor", ResourceID: "all_chains"})
+}
+
+func (s *auditAnchorService) AuditLoggerWired() bool { return s.audit != nil }
 
 // verifiedHead returns the chain head only after verifying the chain and
 // confirming the head did not advance while verification ran. Anchoring a
@@ -271,5 +298,19 @@ func (s *auditAnchorService) AnchorManifest(ctx context.Context, source, partiti
 	if newest == nil {
 		return nil, apperr.NotFound("audit_anchor.not_found", "anchor not found")
 	}
+	if err := s.recordManifestRead(ctx, source, partition); err != nil {
+		return nil, err
+	}
 	return newest, nil
+}
+
+func (s *auditAnchorService) recordManifestRead(ctx context.Context, source, partition string) error {
+	if s.audit == nil {
+		return nil // unit-test compatibility; composition wiring forbids this
+	}
+	// audit-site: standalone-fact — successful sensitive evidence reads are
+	// durable; a failed append prevents the manifest from leaving the service.
+	return s.audit.Record(ctx, AuditFactInput{Source: "aero-id", Action: "audit.anchor.manifest_viewed",
+		ResourceType: "audit_anchor", ResourceID: source + ":" + partition,
+		Payload: map[string]any{"source": source, "partition": partition}})
 }

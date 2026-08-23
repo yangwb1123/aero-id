@@ -88,7 +88,7 @@ ingest 签名/绑定配置错误（`X-Aero-Event-Signature` 校验失败率）�
 1. 定位断裂点：按 `(source, partition_key, chain_sequence)` 找到第一个 hash/signature 不匹配的事实。
 2. 若为密钥轮换导致（`signature_version` 切换）：用对应版本的密钥验证，更新验证器配置后重验。
 3. 若为真篡改/写坏：**保留现场**（不可修改账本），导出受影响 partition 的事实列表，启动合规流程；
-   在 WORM 归档中比对锚定快照（`GET /v1/audit/anchors/manifest/:source/:partition`）。
+   在 WORM 归档中比对锚定快照（`GET /v1/admin/audit/anchor/manifest/:source/:partition`）。
 4. 检查 audit hold 是否误配（hold 只阻止清理，不阻止写入）。
 
 **根因排查**：双写冲突（两个 writer 同 partition）、迁移/回填绕过 append-only 触发器

@@ -14,8 +14,7 @@
 | grant | Authorization Code + PKCE（S256，强制） |
 | scopes | `openid profile account:read` 起步；按需加 `account:write account:manage audit:read audit:replay operation:read callback:manage source:sync` |
 
-前端已选用 Iris UI 的 React 适配器，首个可运行客户端位于
-`/home/u1/iris-ui/apps/aero-platform-console`。本契约与 OpenAPI
+前端已选用 Iris UI 的 React 适配器，可运行客户端位于本仓库 `web/`。本契约与 OpenAPI
 （`api/openapi/aero-id-account.yaml`，仓库有守卫测试防漂移）仍保持技术栈无关；
 客户端不复用 `snaplink-console` 的 OAuth client，也不把 aero-id audience 的 token
 转发给 Audit Governance、Aero IM 或 Aero Vault。
@@ -93,6 +92,12 @@ POST /v1/admin/regions/promote
 GET  /v1/audit/events
 GET  /v1/audit/operations/:id
 GET  /v1/audit/verify?source=&partition=
+GET  /v1/admin/audit/holds
+POST /v1/admin/audit/holds
+DELETE /v1/admin/audit/holds/:scope_type/:scope_id
+POST /v1/admin/audit/anchor
+GET  /v1/admin/audit/anchor/manifest/:source/:partition
+POST /v1/audit/export
 POST /v1/audit/replays
 GET  /v1/audit/replays/:id
 GET  /v1/admin/callback-subscriptions
@@ -104,6 +109,11 @@ POST /v1/admin/callback-subscriptions/deliveries/:id/replay
 审计查询返回脱敏 payload、链序号、hash/signature 版本、`request_id`、`trace_id`、`operation_id` 和因果 ID。
 Forensic replay 不产生副作用；dry-run 只模拟；controlled replay 必须重新授权、使用新的幂等键并产生新的
 审计事实。
+
+WORM Anchor POST 需要 `system.config` 权限，扫描并校验全部当前审计链，且必须在一次确认流程中保持同一个
+`Idempotency-Key`；服务端在写入任何不可变归档对象前先持久化 `audit.anchor.requested`，审计不可用时不产生归档。
+后续单链失败会停止本轮执行，但之前写入的不可变锚点不会回滚；超时也不是远端失败证明，应先查询 Manifest。Manifest GET 只返回
+指定 `(source, partition)` 的最新锚点，并在成功返回敏感证据前持久化 `audit.anchor.manifest_viewed`。
 
 ## 分页、区域和安全约束
 

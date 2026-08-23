@@ -14,6 +14,7 @@ import {
   ComplianceCommandDialog,
   type ComplianceCommand,
 } from "../components/ComplianceCommandDialog";
+import { AuditAnchorsPanel } from "../components/AuditAnchorsPanel";
 import { JobDetails, syncJobID } from "../components/JobDetails";
 import { PageHeader } from "../components/PageHeader";
 import { PageError, PageLoading } from "../components/PageState";
@@ -239,6 +240,7 @@ export function CompliancePage({
           }}
         />
       </IrisCard>
+      <AuditAnchorsPanel client={client} />
       {jobID ? (
         <JobDetails
           client={client}

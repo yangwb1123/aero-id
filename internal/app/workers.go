@@ -155,8 +155,8 @@ func buildWorkers(deps workerDependencies) (workerBundle, error) {
 
 	health := buildHealthHandler(deps.cfg, deps.sqlDB, deps.ssoClient, deps.billingRuntime.probe)
 	holdSvc, anchorSvc, cutoverFacadeSvc := buildAuditComplianceServices(deps.gdb, deps.auditLedger, deps.auditLedgerRepo, deps.store, deps.holdRepo)
-	// REQ-4/5 fail-closed wiring: hold/cutover services must not run with a nil audit service.
-	assertComplianceAuditWiring(holdSvc, deps.cutoverSvc, cutoverFacadeSvc)
+	// Fail-closed wiring: compliance services must not run with a nil audit service.
+	assertComplianceAuditWiring(holdSvc, anchorSvc, deps.cutoverSvc, cutoverFacadeSvc)
 
 	return workerBundle{
 		redisClient: redisClient, idemStore: idemStore,

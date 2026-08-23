@@ -92,4 +92,44 @@ describe("ComplianceClient", () => {
       idempotency_key: headerKey,
     });
   });
+
+  it("runs an idempotent anchor pass and reads an encoded manifest path", async () => {
+    const requests: Array<{ url: URL; method?: string; headers: Headers }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({
+          url: new URL(String(input)),
+          method: init?.method,
+          headers: new Headers(init?.headers),
+        });
+        if (requests.length === 1)
+          return json({ data: { anchored: 1, chains: [] } });
+        return json({
+          data: { source: "aero/id", partition: "tenant/a", chain_sequence: 7 },
+        });
+      },
+    );
+    const client = new ComplianceClient(
+      new AeroIdTransport(
+        "https://accounts.example.test/v1",
+        () => "token",
+        fetcher as typeof fetch,
+      ),
+    );
+
+    await expect(client.runAuditAnchors("anchor-run-1")).resolves.toMatchObject(
+      {
+        anchored: 1,
+      },
+    );
+    await expect(
+      client.getAuditAnchorManifest("aero/id", "tenant/a"),
+    ).resolves.toMatchObject({ chain_sequence: 7 });
+
+    expect(requests[0].method).toBe("POST");
+    expect(requests[0].headers.get("Idempotency-Key")).toBe("anchor-run-1");
+    expect(requests[1].url.pathname).toBe(
+      "/v1/admin/audit/anchor/manifest/aero%2Fid/tenant%2Fa",
+    );
+  });
 });

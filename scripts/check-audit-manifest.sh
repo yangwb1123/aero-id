@@ -34,6 +34,8 @@ ROOT="internal/service"
 MANIFEST=(
   "internal/service/account.go|account.viewed|standalone-fact|-"
   "internal/service/account.go|account.listed|standalone-fact|-"
+  "internal/service/audit_anchor.go|audit.anchor.requested|standalone-fact|-"
+  "internal/service/audit_anchor.go|audit.anchor.manifest_viewed|standalone-fact|-"
   "internal/service/operation_state.go|operation.reconciled|standalone-fact|-"
   "internal/service/replay.go|audit.replay.dry_run|standalone-fact|-"
   "internal/service/replay.go|audit.replay.requested|standalone-fact|-"

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"sort"
 	"strings"
@@ -23,6 +24,22 @@ type fakeChainLedger struct {
 	facts []*domain.AuditFact
 	bad   bool
 }
+
+type anchorAuditSpy struct {
+	inputs []AuditFactInput
+	err    error
+}
+
+func (s *anchorAuditSpy) Record(_ context.Context, input AuditFactInput) error {
+	s.inputs = append(s.inputs, input)
+	return s.err
+}
+
+func (*anchorAuditSpy) Log(context.Context, *domain.AuditEvent) error { return nil }
+func (*anchorAuditSpy) List(context.Context, domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
+	return nil, "", nil
+}
+func (*anchorAuditSpy) VerifyChain(context.Context, string, string) error { return nil }
 
 func (f *fakeChainLedger) Append(ctx context.Context, fact *domain.AuditFact) error { return nil }
 func (f *fakeChainLedger) List(ctx context.Context, filter domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
@@ -115,6 +132,22 @@ func TestAuditAnchor_RefusesBrokenChain(t *testing.T) {
 	}
 }
 
+func TestAuditAnchor_AuditFailureWritesNoArchiveObject(t *testing.T) {
+	store := &memoryStore{objects: map[string][]byte{}}
+	audit := &anchorAuditSpy{err: errors.New("ledger unavailable")}
+	ledger := &fakeChainLedger{facts: []*domain.AuditFact{anchorFact(1)}}
+	svc := NewAuditAnchorService(ledger, store, WithAuditAnchorAudit(audit)).(*auditAnchorService)
+	if _, err := svc.AnchorOnce(context.Background()); err == nil {
+		t.Fatal("audit failure must refuse the anchor pass")
+	}
+	if len(store.objects) != 0 {
+		t.Fatal("audit failure must occur before any archive object is written")
+	}
+	if len(audit.inputs) != 1 || audit.inputs[0].Action != "audit.anchor.requested" {
+		t.Fatalf("audit inputs = %+v, want one anchor request", audit.inputs)
+	}
+}
+
 // TestAuditAnchor_ManifestReadback: the anchor manifest can be read back by
 // chain identity.
 func TestAuditAnchor_ManifestReadback(t *testing.T) {
@@ -130,6 +163,37 @@ func TestAuditAnchor_ManifestReadback(t *testing.T) {
 	}
 	if manifest["record_hash"] != "record-3" {
 		t.Errorf("manifest hash = %v, want record-3", manifest["record_hash"])
+	}
+}
+
+func TestAuditAnchor_ManifestReadIsAudited(t *testing.T) {
+	store := &memoryStore{objects: map[string][]byte{}}
+	ledger := &fakeChainLedger{facts: []*domain.AuditFact{anchorFact(3)}}
+	svc := anchorTestService(ledger, store)
+	if _, err := svc.AnchorOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	audit := &anchorAuditSpy{}
+	svc.audit = audit
+	if _, err := svc.AnchorManifest(context.Background(), "aero-id", "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.inputs) != 1 || audit.inputs[0].Action != "audit.anchor.manifest_viewed" {
+		t.Fatalf("audit inputs = %+v, want one manifest read", audit.inputs)
+	}
+}
+
+func TestAuditAnchor_ManifestAuditFailureReturnsNoEvidence(t *testing.T) {
+	store := &memoryStore{objects: map[string][]byte{}}
+	ledger := &fakeChainLedger{facts: []*domain.AuditFact{anchorFact(3)}}
+	svc := anchorTestService(ledger, store)
+	if _, err := svc.AnchorOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.audit = &anchorAuditSpy{err: errors.New("ledger unavailable")}
+	manifest, err := svc.AnchorManifest(context.Background(), "aero-id", "tenant-a")
+	if err == nil || manifest != nil {
+		t.Fatalf("manifest, err = %v, %v; want no evidence and an audit error", manifest, err)
 	}
 }
 

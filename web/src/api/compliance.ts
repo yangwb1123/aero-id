@@ -62,4 +62,26 @@ export class ComplianceClient {
       }),
     );
   }
+
+  async runAuditAnchors(idempotencyKey: string): Promise<JsonRecord> {
+    return dataOf(
+      await this.transport.request("POST", "/admin/audit/anchor", {
+        idempotencyKey,
+        timeoutMs: 60_000,
+      }),
+    );
+  }
+
+  async getAuditAnchorManifest(
+    source: string,
+    partition: string,
+  ): Promise<JsonRecord> {
+    return dataOf(
+      await this.transport.request(
+        "GET",
+        `/admin/audit/anchor/manifest/${encodeURIComponent(source)}/${encodeURIComponent(partition)}`,
+        { timeoutMs: 30_000 },
+      ),
+    );
+  }
 }

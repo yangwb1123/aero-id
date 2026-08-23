@@ -296,18 +296,19 @@ func buildAuditComplianceServices(gdb *gorm.DB, auditLedger service.AuditLedgerS
 	holds repository.AuditHoldRepository) (
 	service.AuditHoldService, service.AuditAnchorService, service.LegacyCutoverService) {
 	holdSvc := service.NewAuditHoldService(holds, auditLedger)
-	return holdSvc, service.NewAuditAnchorService(ledgerRepo, store),
+	return holdSvc, service.NewAuditAnchorService(ledgerRepo, store, service.WithAuditAnchorAudit(auditLedger)),
 		service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(gdb, ledgerRepo),
 			repository.NewLegacyCleanupRepository(gdb), auditLedger)
 }
 
-// assertComplianceAuditWiring fails fast at startup when the hold or cutover
-// services were constructed without the audit service: their `if s.audit !=
-// nil` skip guards would otherwise let hold/cutover mutations commit without
-// their durable facts (REQ-4/5, pattern: assertAuditWiring).
-func assertComplianceAuditWiring(holdSvc service.AuditHoldService, cutoverSvc, cutoverFacadeSvc service.LegacyCutoverService) {
+// assertComplianceAuditWiring fails fast at startup when the hold, anchor, or
+// cutover services were constructed without the audit service: their nil
+// compatibility guards are allowed only in unit tests.
+func assertComplianceAuditWiring(holdSvc service.AuditHoldService, anchorSvc service.AuditAnchorService,
+	cutoverSvc, cutoverFacadeSvc service.LegacyCutoverService) {
 	assertAuditWiring(
 		auditWiredService{name: "audit_hold", svc: holdSvc},
+		auditWiredService{name: "audit_anchor", svc: anchorSvc},
 		auditWiredService{name: "legacy_cutover", svc: cutoverSvc},
 		auditWiredService{name: "legacy_cutover_facade", svc: cutoverFacadeSvc},
 	)

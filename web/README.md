@@ -13,6 +13,7 @@
 - 账户详情展示 durable Region Directory，并通过观察到的 Fenced Epoch、Account ID 二次确认执行 Home Region Writer CAS 提升；
 - 审计台账支持过滤、keyset 分页、脱敏证据详情和来源分区哈希链验证；
 - 审计合规管理支持 Legal Hold 查询、设置、经 Scope ID 二次确认的解除，以及带一次性下载保护的审计导出；
+- WORM Anchor 操作会使用固定幂等键、全链二次确认和 fail-closed 管理意图审计；单链 Manifest 敏感读取也会留存审计事实；
 - Callback 治理支持 challenge 注册、一次性 Secret、订阅删除和经确认的失败投递重放；
 - Replay 管理严格区分 forensic、dry-run、controlled，并为真实命令强制新幂等键和 Account ID 二次确认；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；

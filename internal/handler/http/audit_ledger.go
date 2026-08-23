@@ -16,7 +16,7 @@ import (
 
 type AuditLedgerHandler struct {
 	audit      service.AuditLedgerService
-	holds      service.AuditHoldService  // optional; nil disables legal-hold routes (P4-07)
+	holds      service.AuditHoldService   // optional; nil disables legal-hold routes (P4-07)
 	anchor     service.AuditAnchorService // optional; nil disables anchor routes (P4-03)
 	jobs       service.SyncJobService     // optional; nil disables the audit export route (P4-08)
 	permission middleware.PermissionChecker
@@ -51,13 +51,7 @@ func (h *AuditLedgerHandler) RegisterRoutes(r Routes) {
 		export.POST("", h.CreateAuditExport)
 	}
 	if h.anchor != nil {
-		// P4-03: tamper-evidence anchoring.
-		anchor := r.Auth.Group("/admin/audit/anchor")
-		if h.permission != nil {
-			anchor.Use(middleware.RequirePermission(domain.PermAuditRead, h.permission))
-		}
-		anchor.POST("", h.AnchorChains)
-		anchor.GET("/manifest/:source/:partition", h.AnchorManifest)
+		h.registerAnchorRoutes(r)
 	}
 	if h.holds != nil {
 		// P4-07: legal-hold administration.
@@ -69,6 +63,20 @@ func (h *AuditLedgerHandler) RegisterRoutes(r Routes) {
 		holds.POST("", h.PutHold)
 		holds.DELETE("/:scope_type/:scope_id", h.RemoveHold)
 	}
+}
+
+func (h *AuditLedgerHandler) registerAnchorRoutes(r Routes) {
+	anchor := r.Auth.Group("/admin/audit/anchor")
+	if h.permission == nil {
+		anchor.POST("", h.AnchorChains)
+		anchor.GET("/manifest/:source/:partition", h.AnchorManifest)
+		return
+	}
+	// Manifest evidence is read-authorized; creating immutable objects across
+	// every chain is a system-wide administrative mutation.
+	anchor.POST("", middleware.RequirePermission(domain.PermSystemConfig, h.permission), h.AnchorChains)
+	anchor.GET("/manifest/:source/:partition",
+		middleware.RequirePermission(domain.PermAuditRead, h.permission), h.AnchorManifest)
 }
 
 func (h *AuditLedgerHandler) OperationTimeline(c *gin.Context) {
