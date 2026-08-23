@@ -211,6 +211,32 @@ section > [data-iris-card] {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.replay-scope-grid,
+.replay-command-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--iris-space-md, 16px);
+  align-items: start;
+}
+
+.replay-command-list {
+  display: grid;
+  gap: var(--iris-space-md, 16px);
+}
+
+.replay-key-row,
+.replay-submit-row {
+  display: flex;
+  align-items: end;
+  justify-content: flex-end;
+  gap: var(--iris-space-md, 16px);
+  margin-block-start: var(--iris-space-md, 16px);
+}
+
+.replay-key-row > [data-iris-form-field] {
+  flex: 1;
+}
+
 .admin-filter-actions {
   display: flex;
   gap: var(--iris-space-sm, 12px);
@@ -331,8 +357,15 @@ section > [data-iris-card] {
   }
 
   .callback-create-grid,
-  .callback-replay-row {
+  .callback-replay-row,
+  .replay-scope-grid,
+  .replay-command-grid {
     grid-template-columns: 1fr;
+  }
+
+  .replay-key-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .admin-filter-actions {

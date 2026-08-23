@@ -21,6 +21,7 @@ import { JobsPage } from "./pages/JobsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { ProfilePage } from "./pages/ProfilePage";
+import { ReplaysPage } from "./pages/ReplaysPage";
 import { ResourcesPage } from "./pages/ResourcesPage";
 import { ServiceLinksPage } from "./pages/ServiceLinksPage";
 
@@ -35,6 +36,7 @@ const menus: NavNode[] = [
   { key: "admin-accounts", title: "账户管理", icon: "user" },
   { key: "audit", title: "审计台账", icon: "shield" },
   { key: "callbacks", title: "Callback 治理", icon: "link" },
+  { key: "replays", title: "审计 Replay", icon: "clock" },
   { key: "services", title: "平台服务", icon: "grid" },
 ];
 
@@ -68,6 +70,8 @@ function PageHost({
       return <AuditPage client={client} />;
     case "callbacks":
       return <CallbacksPage client={client} />;
+    case "replays":
+      return <ReplaysPage client={client} />;
     case "services":
       return <ServiceLinksPage config={config} />;
     default:

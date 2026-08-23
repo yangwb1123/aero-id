@@ -7,6 +7,7 @@ import type {
   Profile,
 } from "../types";
 import { CallbackClient } from "./callback";
+import { ReplayClient } from "./replay";
 import { AeroIdTransport, type RequestOptions } from "./transport";
 export { AeroIdError } from "./transport";
 
@@ -67,6 +68,7 @@ function activityPage(data: JsonRecord): PageData<JsonRecord> {
 export class AeroIdClient {
   private readonly transport: AeroIdTransport;
   readonly callbacks: CallbackClient;
+  readonly replays: ReplayClient;
 
   constructor(
     baseUrl: string,
@@ -75,6 +77,7 @@ export class AeroIdClient {
   ) {
     this.transport = new AeroIdTransport(baseUrl, accessToken, fetcher);
     this.callbacks = new CallbackClient(this.transport);
+    this.replays = new ReplayClient(this.transport);
   }
 
   async listDatasets(): Promise<Dataset[]> {
