@@ -165,8 +165,8 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 	replaySvc := service.NewReplayService(deps.auditLedger, operationSvc,
 		service.WithReplayAccountRepository(deps.accountRepo), service.WithReplaySnapshotRepository(deps.snapshotRepo),
 		service.WithReplayPermission(permissionChecker))
-	projectionReplaySvc := service.NewProjectionReplayService(repository.NewEventStoreRepository(deps.gdb), deps.snapshotRepo,
-		service.WithProjectionReplayAudit(deps.auditLedger))
+	projectionReplaySvc := service.NewProjectionReplayService(repository.NewEventStoreRepository(deps.gdb),
+		deps.snapshotRepo, deps.accountRepo, permissionChecker, service.WithProjectionReplayAudit(deps.auditLedger))
 	syncJobSvc := service.NewSyncJobServiceWithOptions(deps.syncJobRepo, accountSvc, deps.accountRepo, deps.snapshotRepo, deps.store, deps.sourceConnectors,
 		service.WithSyncJobPermission(permissionChecker),
 		service.WithSyncJobAudit(deps.auditLedger),

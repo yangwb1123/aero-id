@@ -10,6 +10,7 @@ import {
 import type { AeroIdClient } from "../api/aeroId";
 import type { ReplayCreateInput, ReplayMode } from "../api/replay";
 import { PageHeader } from "../components/PageHeader";
+import { ProjectionReplayPanel } from "../components/ProjectionReplayPanel";
 import {
   ReplayCommandEditor,
   newReplayCommand,
@@ -196,6 +197,7 @@ export function ReplaysPage({
           clear={() => setResult(undefined)}
         />
       ) : null}
+      <ProjectionReplayPanel client={client} />
       <ReplayConfirmationDialog
         input={pending}
         confirmation={confirmation}

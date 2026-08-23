@@ -16,7 +16,7 @@
 - 审计合规管理支持 Legal Hold 查询、设置、经 Scope ID 二次确认的解除，以及带一次性下载保护的审计导出；
 - WORM Anchor 操作会使用固定幂等键、全链二次确认和 fail-closed 管理意图审计；单链 Manifest 敏感读取也会留存审计事实；
 - Callback 治理支持 challenge 注册、一次性 Secret、订阅删除和经确认的失败投递重放；
-- Replay 管理严格区分 forensic、dry-run、controlled，并为真实命令强制新幂等键和 Account ID 二次确认；
+- Replay 管理严格区分 forensic、dry-run、controlled，并为真实命令强制新幂等键和 Account ID 二次确认；另提供按 Tenant/Account 鉴权、逐窗口审计且绝不自动修复的 Shadow Projection Replay；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；
 - 使用独立链接进入 Audit Governance、Aero IM 和 Aero Vault 控制台，不跨 audience 转发 token。
 

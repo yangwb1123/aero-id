@@ -107,6 +107,7 @@ func (h *ReplayHandler) Create(c *gin.Context) {
 type projectionReplayRequest struct {
 	AccountID string `json:"account_id" binding:"required"`
 	Source    string `json:"source" binding:"required"`
+	Cursor    string `json:"cursor"`
 	Limit     int    `json:"limit"`
 }
 
@@ -121,9 +122,13 @@ func (h *ReplayHandler) ReplayProjection(c *gin.Context) {
 		httpx.WriteError(c, err)
 		return
 	}
-	tenantID := service.TenantFrom(c.Request.Context())
+	cursor, err := parseOptionalID(body.Cursor, "cursor")
+	if err != nil {
+		httpx.WriteError(c, err)
+		return
+	}
 	result, err := h.projection.ReplayProjection(c.Request.Context(), service.ReplayProjectionInput{
-		AccountID: accountID, TenantID: tenantID, Source: body.Source, Limit: body.Limit,
+		AccountID: accountID, Source: body.Source, Cursor: cursor, Limit: body.Limit,
 	})
 	if err != nil {
 		httpx.WriteError(c, err)

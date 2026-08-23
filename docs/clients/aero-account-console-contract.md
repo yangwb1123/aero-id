@@ -104,6 +104,7 @@ POST /v1/admin/audit/anchor
 GET  /v1/admin/audit/anchor/manifest/:source/:partition
 POST /v1/audit/export
 POST /v1/audit/replays
+POST /v1/audit/replays/projection
 GET  /v1/audit/replays/:id
 GET  /v1/admin/callback-subscriptions
 POST /v1/admin/callback-subscriptions
@@ -113,7 +114,10 @@ POST /v1/admin/callback-subscriptions/deliveries/:id/replay
 
 审计查询返回脱敏 payload、链序号、hash/signature 版本、`request_id`、`trace_id`、`operation_id` 和因果 ID。
 Forensic replay 不产生副作用；dry-run 只模拟；controlled replay 必须重新授权、使用新的幂等键并产生新的
-审计事实。
+审计事实。Projection replay 只接受 `snaplink | aero-im | aero-vault | aero-id`，服务端再次校验 `audit.replay`
+权限和当前认证 Tenant 下的 Account；每个窗口限制为 1–10000 条脱敏事件并独立审计。`completed=false` 时客户端只能
+用服务端返回的 opaque `next_cursor` 手动读取下一窗口，不能自动全量扫描，也不能把单窗口 matched 当作全局一致；
+该工具永远不写入或修复 live projection。
 
 Legacy backfill 每批限制为 1–1000 个 UID，使用固定 `Idempotency-Key`，并在任何账户创建前记录独立的管理意图；
 shadow compare 只接受 `aero-vault | aero-im`，最多读取 5000 条 content-free digest 输入，来源失败只返回稳定错误，

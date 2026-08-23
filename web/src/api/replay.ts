@@ -2,6 +2,8 @@ import type { JsonRecord } from "../types";
 import { AeroIdTransport } from "./transport";
 
 export type ReplayMode = "forensic" | "dry-run" | "controlled";
+export type ProjectionReplaySource =
+  "snaplink" | "aero-im" | "aero-vault" | "aero-id";
 
 export interface ReplayCommand {
   source: "snaplink" | "aero-im" | "aero-vault";
@@ -18,6 +20,13 @@ export interface ReplayCreateInput {
   idempotencyKey?: string;
   confirmed: boolean;
   commands: ReplayCommand[];
+}
+
+export interface ProjectionReplayInput {
+  accountID: string;
+  source: ProjectionReplaySource;
+  cursor?: string;
+  limit: number;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -57,6 +66,20 @@ export class ReplayClient {
         "GET",
         `/audit/replays/${encodeURIComponent(id)}`,
       ),
+    );
+  }
+
+  async replayProjection(input: ProjectionReplayInput): Promise<JsonRecord> {
+    return dataOf(
+      await this.transport.request("POST", "/audit/replays/projection", {
+        body: {
+          account_id: input.accountID,
+          source: input.source,
+          cursor: input.cursor,
+          limit: input.limit,
+        },
+        timeoutMs: 60_000,
+      }),
     );
   }
 }

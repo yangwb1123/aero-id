@@ -454,12 +454,17 @@ func TestStandaloneSiteReplicationDedup(t *testing.T) {
 func TestStandaloneSiteReplayRun(t *testing.T) {
 	ctx := context.Background()
 	h := startStandaloneHarness(t)
+	accounts := repository.NewAccountRepository(h.db, h.repo)
+	account, err := accounts.EnsureByIdentity(ctx, "tenant-a", "snaplink", "u-replay", "u-replay", "local")
+	if err != nil {
+		t.Fatalf("seed replay account: %v", err)
+	}
 	svc := NewProjectionReplayService(repository.NewEventStoreRepository(h.db),
-		repository.NewAccountSnapshotRepository(h.db), WithProjectionReplayAudit(h.ledger))
+		repository.NewAccountSnapshotRepository(h.db), accounts, allowAllPermission{},
+		WithProjectionReplayAudit(h.ledger))
 	actorCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
-	accountID := idgen.NewID()
 	for i := 0; i < 2; i++ {
-		if _, err := svc.ReplayProjection(actorCtx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"}); err != nil {
+		if _, err := svc.ReplayProjection(actorCtx, ReplayProjectionInput{AccountID: account.ID, Source: "aero-vault"}); err != nil {
 			t.Fatalf("replay run %d: %v", i, err)
 		}
 	}

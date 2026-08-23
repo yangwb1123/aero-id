@@ -99,4 +99,38 @@ describe("ReplayClient", () => {
 
     expect(headers.has("Idempotency-Key")).toBe(false);
   });
+
+  it("continues projection replay with the opaque server cursor", async () => {
+    let requestURL = new URL("https://invalid.test");
+    let requestBody: unknown;
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requestURL = new URL(String(input));
+        requestBody = JSON.parse(String(init?.body));
+        return json({ data: { completed: true, replayed_events: 12 } });
+      },
+    );
+    const client = new ReplayClient(
+      new AeroIdTransport(
+        "https://accounts.example.test/v1",
+        () => "token",
+        fetcher as typeof fetch,
+      ),
+    );
+
+    await client.replayProjection({
+      accountID: "01991c87-8dc8-7b45-b868-8b741fc984ef",
+      source: "aero-id",
+      cursor: "01991c87-8dc8-7b45-b868-8b741fc98400",
+      limit: 250,
+    });
+
+    expect(requestURL.pathname).toBe("/v1/audit/replays/projection");
+    expect(requestBody).toEqual({
+      account_id: "01991c87-8dc8-7b45-b868-8b741fc984ef",
+      source: "aero-id",
+      cursor: "01991c87-8dc8-7b45-b868-8b741fc98400",
+      limit: 250,
+    });
+  });
 });

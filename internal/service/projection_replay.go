@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"gorm.io/gorm"
+
+	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/event"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -20,47 +24,52 @@ type ReplayProjectionService interface {
 
 type ReplayProjectionInput struct {
 	AccountID domain.ID
-	TenantID  string
 	Source    string
+	Cursor    domain.ID
 	Limit     int // max events replayed per run; 0 => service default
 }
 
 // ProjectionReplayResult reports shadow-vs-live comparison outcomes.
 type ProjectionReplayResult struct {
-	AccountID      string             `json:"account_id"`
-	Source         string             `json:"source"`
-	ReplayedEvents int64              `json:"replayed_events"`
-	Completed      bool               `json:"completed"` // false => more events remain; run again with the returned cursor
-	NextCursor     string             `json:"next_cursor,omitempty"`
-	Matched        []ReplayedDataset  `json:"matched,omitempty"`
-	Divergent      []ReplayedDataset  `json:"divergent,omitempty"`
-	ShadowOnly     []ReplayedDataset  `json:"shadow_only,omitempty"` // in event stream but absent from live projection
-	LiveOnly       []ReplayedDataset  `json:"live_only,omitempty"`   // in live projection but never seen in events
+	AccountID      string            `json:"account_id"`
+	Source         string            `json:"source"`
+	ReplayedEvents int64             `json:"replayed_events"`
+	Completed      bool              `json:"completed"` // false => more events remain; inspect the next bounded window with NextCursor
+	NextCursor     string            `json:"next_cursor,omitempty"`
+	Matched        []ReplayedDataset `json:"matched,omitempty"`
+	Divergent      []ReplayedDataset `json:"divergent,omitempty"`
+	ShadowOnly     []ReplayedDataset `json:"shadow_only,omitempty"` // in event stream but absent from live projection
+	LiveOnly       []ReplayedDataset `json:"live_only,omitempty"`   // in live projection but never seen in events
 }
 
 // ReplayedDataset is one dataset's shadow state after replay.
 type ReplayedDataset struct {
-	Dataset      domain.AccountDataset `json:"dataset"`
-	Status       domain.SnapshotStatus `json:"status"`
-	Version      int64                 `json:"version"`
-	GeneratedAt  string                `json:"generated_at,omitempty"`
-	Digest       string                `json:"digest"`
-	LiveDigest   string                `json:"live_digest,omitempty"`
-	LiveVersion  int64                 `json:"live_version,omitempty"`
+	Dataset     domain.AccountDataset `json:"dataset"`
+	Status      domain.SnapshotStatus `json:"status"`
+	Version     int64                 `json:"version"`
+	GeneratedAt string                `json:"generated_at,omitempty"`
+	Digest      string                `json:"digest"`
+	LiveDigest  string                `json:"live_digest,omitempty"`
+	LiveVersion int64                 `json:"live_version,omitempty"`
 }
 
-// DefaultProjectionReplayBatch caps one replay run; callers loop on NextCursor.
+// DefaultProjectionReplayBatch caps one replay run; callers may inspect the
+// next bounded window with NextCursor.
 const DefaultProjectionReplayBatch = 1000
+const MaxProjectionReplayBatch = 10000
 
 type projectionReplayService struct {
-	events    repository.EventStoreRepository
-	snapshots repository.SnapshotRepository
-	audit     AuditLedgerService // nil => audit inactive
+	events     repository.EventStoreRepository
+	snapshots  repository.SnapshotRepository
+	accounts   repository.AccountRepository
+	permission PermissionChecker
+	audit      AuditLedgerService // nil => audit inactive
 }
 
 func NewProjectionReplayService(events repository.EventStoreRepository,
-	snapshots repository.SnapshotRepository, opts ...func(*projectionReplayService)) ReplayProjectionService {
-	s := &projectionReplayService{events: events, snapshots: snapshots}
+	snapshots repository.SnapshotRepository, accounts repository.AccountRepository,
+	permission PermissionChecker, opts ...func(*projectionReplayService)) ReplayProjectionService {
+	s := &projectionReplayService{events: events, snapshots: snapshots, accounts: accounts, permission: permission}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -75,22 +84,23 @@ func WithProjectionReplayAudit(a AuditLedgerService) func(*projectionReplayServi
 }
 
 func (s *projectionReplayService) ReplayProjection(ctx context.Context, input ReplayProjectionInput) (*ProjectionReplayResult, error) {
-	input.Source = strings.TrimSpace(input.Source)
-	input.TenantID = strings.TrimSpace(input.TenantID)
-	if input.AccountID == (domain.ID{}) || input.Source == "" || input.TenantID == "" {
-		return nil, apperr.BadRequest("replay.invalid_input", "account_id, tenant and source are required")
+	input, err := normalizeProjectionReplayInput(input)
+	if err != nil {
+		return nil, err
 	}
-	if input.Limit <= 0 {
-		input.Limit = DefaultProjectionReplayBatch
+	tenantID, err := s.authorizeProjectionReplay(ctx, input.AccountID)
+	if err != nil {
+		return nil, err
 	}
-	envelopes, next, err := s.events.ListByAccount(ctx, input.TenantID, input.Source, input.AccountID.String(), domain.ID{}, input.Limit)
+	envelopes, next, err := s.events.ListByAccount(ctx, tenantID, input.Source,
+		input.AccountID.String(), input.Cursor, input.Limit)
 	if err != nil {
 		return nil, apperr.Internal("replay.event_lookup_failed", "failed to read the event store").Wrap(err)
 	}
 	result := &ProjectionReplayResult{AccountID: input.AccountID.String(), Source: input.Source}
 	if len(envelopes) == 0 {
 		result.Completed = true
-		return s.replayProjectionFinish(ctx, input, result)
+		return s.replayProjectionFinish(ctx, tenantID, input, result)
 	}
 	shadow, err := rebuildShadowProjection(envelopes)
 	if err != nil {
@@ -106,15 +116,81 @@ func (s *projectionReplayService) ReplayProjection(ctx context.Context, input Re
 		result.NextCursor = next.String()
 	}
 	compareProjections(result, shadow, live)
-	return s.replayProjectionFinish(ctx, input, result)
+	return s.replayProjectionFinish(ctx, tenantID, input, result)
+}
+
+func normalizeProjectionReplayInput(input ReplayProjectionInput) (ReplayProjectionInput, error) {
+	input.Source = strings.TrimSpace(input.Source)
+	if input.AccountID == (domain.ID{}) || input.Source == "" {
+		return ReplayProjectionInput{}, apperr.BadRequest("replay.invalid_input", "account_id and source are required")
+	}
+	if !allowedProjectionReplaySource(input.Source) {
+		return ReplayProjectionInput{}, apperr.BadRequest("replay.source_invalid", "source is not supported for projection replay")
+	}
+	if input.Limit <= 0 {
+		input.Limit = DefaultProjectionReplayBatch
+	}
+	if input.Limit > MaxProjectionReplayBatch {
+		return ReplayProjectionInput{}, apperr.BadRequest("replay.limit_invalid", "limit exceeds the maximum replay batch size")
+	}
+	return input, nil
+}
+
+func allowedProjectionReplaySource(source string) bool {
+	switch source {
+	case string(connector.SourceSnaplink), string(connector.SourceAeroIM),
+		string(connector.SourceAeroVault), "aero-id":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *projectionReplayService) authorizeProjectionReplay(ctx context.Context, accountID domain.ID) (string, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return "", err
+	}
+	tenantID, err := mustTenant(ctx)
+	if err != nil {
+		return "", err
+	}
+	if s.permission == nil {
+		return "", apperr.Forbidden("replay.permission_unavailable", "replay permission is not configured")
+	}
+	allowed, err := s.permission.HasPermission(ctx, actor, domain.PermAuditReplay)
+	if err != nil {
+		return "", apperr.Internal("replay.permission_check_failed", "failed to verify replay permission").Wrap(err)
+	}
+	if !allowed {
+		return "", apperr.Forbidden("replay.forbidden", "replay permission is required")
+	}
+	if s.accounts == nil {
+		return "", apperr.Internal("replay.account_repository_unavailable", "replay account lookup is unavailable")
+	}
+	account, err := s.accounts.GetByID(ctx, tenantID, accountID)
+	if err != nil {
+		return "", mapProjectionReplayAccountError(err)
+	}
+	if account.Status == domain.AccountErased {
+		return "", apperr.Forbidden("replay.account_erased", "replay account is erased")
+	}
+	return tenantID, nil
+}
+
+func mapProjectionReplayAccountError(err error) error {
+	if errors.Is(err, repository.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+		return apperr.NotFound("replay.account_not_found", "replay account not found").Wrap(err)
+	}
+	return apperr.Internal("replay.account_lookup_failed", "failed to resolve replay account").Wrap(err)
 }
 
 // replayProjectionFinish records the per-run fact (shared by the zero-event
 // branch and the normal path) and returns the result, failing closed on an
 // audit error.
-func (s *projectionReplayService) replayProjectionFinish(ctx context.Context, input ReplayProjectionInput,
+func (s *projectionReplayService) replayProjectionFinish(ctx context.Context, tenantID string, input ReplayProjectionInput,
 	result *ProjectionReplayResult) (*ProjectionReplayResult, error) {
-	if err := s.auditProjectionReplay(ctx, input, result); err != nil {
+	if err := s.auditProjectionReplay(ctx, tenantID, input, result); err != nil {
 		return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
 	}
 	return result, nil
@@ -127,15 +203,16 @@ func (s *projectionReplayService) replayProjectionFinish(ctx context.Context, in
 // service is wired (nil => audit inactive).
 //
 // audit-site: standalone-fact — projection.replay.run, fresh per-execution.
-func (s *projectionReplayService) auditProjectionReplay(ctx context.Context, input ReplayProjectionInput, result *ProjectionReplayResult) error {
+func (s *projectionReplayService) auditProjectionReplay(ctx context.Context, tenantID string,
+	input ReplayProjectionInput, result *ProjectionReplayResult) error {
 	if s.audit == nil {
 		return nil
 	}
 	return s.audit.Record(ctx, AuditFactInput{Source: "aero-id", SourceRegion: "local",
-		AccountID: input.AccountID, TenantID: input.TenantID, ActorUID: actorFromContext(ctx),
+		AccountID: input.AccountID, TenantID: tenantID, ActorUID: actorFromContext(ctx),
 		Action: domain.AuditProjectionReplay, ResourceType: "projection", ResourceID: input.AccountID.String(),
 		Payload: map[string]any{"source": input.Source, "limit": input.Limit,
-			"replayed_events": result.ReplayedEvents, "completed": result.Completed}})
+			"cursor": input.Cursor.String(), "replayed_events": result.ReplayedEvents, "completed": result.Completed}})
 }
 
 // rebuildShadowProjection folds events in received order, keeping the highest

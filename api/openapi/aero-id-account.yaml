@@ -297,13 +297,17 @@ paths:
               required: [account_id, source]
               properties:
                 account_id: {type: string, format: uuid}
-                source: {type: string}
+                source: {type: string, enum: [snaplink, aero-im, aero-vault, aero-id]}
+                cursor: {type: string, format: uuid, description: Opaque next_cursor returned by the previous bounded window.}
                 limit: {type: integer, minimum: 1, maximum: 10000}
       responses:
         '200':
-          description: Shadow projection rebuilt from the event store, compared with live.
+          description: One bounded, tenant-scoped shadow projection window rebuilt from the event store and compared with live; every successful sensitive read is durably audited.
           content: {application/json: {schema: {$ref: '#/components/schemas/ProjectionReplayEnvelope'}}}
+        '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /audit/export:
     post:
       operationId: createAuditExport

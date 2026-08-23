@@ -14,7 +14,13 @@ import (
 )
 
 type fakeEventStore struct {
-	events []*event.Envelope
+	events      []*event.Envelope
+	calls       int
+	lastTenant  string
+	lastSource  string
+	lastAccount string
+	lastCursor  domain.ID
+	lastLimit   int
 }
 
 func (f *fakeEventStore) Append(ctx context.Context, envelope *event.Envelope) error { return nil }
@@ -26,6 +32,9 @@ func (f *fakeEventStore) ListByCursor(ctx context.Context, tenantID, source stri
 	return f.events, domain.ID{}, nil
 }
 func (f *fakeEventStore) ListByAccount(ctx context.Context, tenantID, source, accountID string, cursor domain.ID, limit int) ([]*event.Envelope, domain.ID, error) {
+	f.calls++
+	f.lastTenant, f.lastSource, f.lastAccount = tenantID, source, accountID
+	f.lastCursor, f.lastLimit = cursor, limit
 	if cursor != (domain.ID{}) {
 		return nil, domain.ID{}, nil
 	}
@@ -33,6 +42,41 @@ func (f *fakeEventStore) ListByAccount(ctx context.Context, tenantID, source, ac
 		return f.events[:limit], f.events[limit-1].EventID, nil
 	}
 	return f.events, domain.ID{}, nil
+}
+
+type projectionReplayAccountRepo struct {
+	repository.AccountRepository
+	account *domain.Account
+}
+
+func (f *projectionReplayAccountRepo) GetByID(_ context.Context, tenantID string,
+	id domain.ID) (*domain.Account, error) {
+	if f.account == nil || f.account.TenantID != tenantID || f.account.ID != id {
+		return nil, repository.ErrNotFound
+	}
+	return f.account, nil
+}
+
+type projectionReplayPermission struct {
+	allowed bool
+	err     error
+}
+
+func (p projectionReplayPermission) HasPermission(context.Context, string, string) (bool, error) {
+	return p.allowed, p.err
+}
+
+func projectionReplayContext() context.Context {
+	return WithIdentity(context.Background(), &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink",
+		Subject: "admin-1", TenantID: "tenant-a"})
+}
+
+func newProjectionReplayTestService(accountID domain.ID, events repository.EventStoreRepository,
+	snapshots repository.SnapshotRepository, opts ...func(*projectionReplayService)) ReplayProjectionService {
+	accounts := &projectionReplayAccountRepo{account: &domain.Account{ID: accountID, TenantID: "tenant-a",
+		CanonicalUID: "u-1", Status: domain.AccountActive}}
+	return NewProjectionReplayService(events, snapshots, accounts,
+		projectionReplayPermission{allowed: true}, opts...)
 }
 
 type fakeSnapshotStore struct {
@@ -79,15 +123,15 @@ func TestReplayProjection_MatchesLive(t *testing.T) {
 		replayEnvelope(accountID, "aero-vault.buckets", 2, 20, now.Add(-time.Hour)),
 		replayEnvelope(accountID, "aero-vault.buckets", 3, 30, now),
 	}
-	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{
+	svc := newProjectionReplayTestService(accountID, &fakeEventStore{events: events}, &fakeSnapshotStore{
 		snapshots: []*domain.AccountSnapshot{{
 			AccountID: accountID, Source: "aero-vault", SourceRegion: "us-west",
 			Dataset: "aero-vault.buckets", Status: domain.SnapshotFresh, Version: 3,
 			GeneratedAt: now, Data: map[string]any{"usage_bytes": float64(30)},
 		}},
 	})
-	result, err := svc.ReplayProjection(context.Background(), ReplayProjectionInput{
-		AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault",
+	result, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault",
 	})
 	if err != nil {
 		t.Fatalf("replay: %v", err)
@@ -116,15 +160,15 @@ func TestReplayProjection_DetectsDrift(t *testing.T) {
 		replayEnvelope(accountID, "aero-vault.buckets", 3, 30, now),
 	}
 	// Live projection missed the latest event (v3) — drifted at v2 with old data.
-	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{
+	svc := newProjectionReplayTestService(accountID, &fakeEventStore{events: events}, &fakeSnapshotStore{
 		snapshots: []*domain.AccountSnapshot{{
 			AccountID: accountID, Source: "aero-vault", SourceRegion: "us-west",
 			Dataset: "aero-vault.buckets", Status: domain.SnapshotFresh, Version: 2,
 			GeneratedAt: now.Add(-time.Hour), Data: map[string]any{"usage_bytes": float64(20)},
 		}},
 	})
-	result, err := svc.ReplayProjection(context.Background(), ReplayProjectionInput{
-		AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault",
+	result, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault",
 	})
 	if err != nil {
 		t.Fatalf("replay: %v", err)
@@ -145,9 +189,9 @@ func TestReplayProjection_OutOfOrderKeepsNewest(t *testing.T) {
 		replayEnvelope(accountID, "aero-vault.buckets", 5, 50, now),
 		replayEnvelope(accountID, "aero-vault.buckets", 4, 40, now.Add(-time.Minute)),
 	}
-	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{})
-	result, err := svc.ReplayProjection(context.Background(), ReplayProjectionInput{
-		AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault",
+	svc := newProjectionReplayTestService(accountID, &fakeEventStore{events: events}, &fakeSnapshotStore{})
+	result, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault",
 	})
 	if err != nil {
 		t.Fatalf("replay: %v", err)
@@ -167,9 +211,10 @@ func TestReplayProjection_Paginates(t *testing.T) {
 		replayEnvelope(accountID, "aero-vault.buckets", 1, 10, now),
 		replayEnvelope(accountID, "aero-vault.buckets", 2, 20, now),
 	}
-	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{})
-	result, err := svc.ReplayProjection(context.Background(), ReplayProjectionInput{
-		AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault", Limit: 1,
+	store := &fakeEventStore{events: events}
+	svc := newProjectionReplayTestService(accountID, store, &fakeSnapshotStore{})
+	result, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault", Limit: 1,
 	})
 	if err != nil {
 		t.Fatalf("replay: %v", err)
@@ -180,19 +225,64 @@ func TestReplayProjection_Paginates(t *testing.T) {
 	if result.NextCursor == "" {
 		t.Error("next_cursor missing")
 	}
+	cursor, err := idgen.Parse(result.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault", Cursor: cursor, Limit: 1,
+	})
+	if err != nil || !second.Completed {
+		t.Fatalf("continued replay = %+v, %v; want completed", second, err)
+	}
+	if store.lastCursor != cursor || store.lastTenant != "tenant-a" || store.lastLimit != 1 {
+		t.Fatalf("continued lookup cursor/tenant/limit = %v/%q/%d", store.lastCursor, store.lastTenant, store.lastLimit)
+	}
 }
 
 func TestReplayProjection_RequiresValidInput(t *testing.T) {
-	svc := NewProjectionReplayService(&fakeEventStore{}, &fakeSnapshotStore{})
-	if _, err := svc.ReplayProjection(context.Background(), ReplayProjectionInput{
-		AccountID: domain.ID{}, TenantID: "tenant-a", Source: "aero-vault",
+	accountID := idgen.NewID()
+	svc := newProjectionReplayTestService(accountID, &fakeEventStore{}, &fakeSnapshotStore{})
+	if _, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: domain.ID{}, Source: "aero-vault",
 	}); err == nil {
 		t.Fatal("empty account_id must be rejected")
 	}
-	if _, err := svc.ReplayProjection(context.Background(), ReplayProjectionInput{
-		AccountID: idgen.NewID(), TenantID: "", Source: "aero-vault",
+	if _, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "unknown",
 	}); err == nil {
-		t.Fatal("empty tenant must be rejected")
+		t.Fatal("unknown source must be rejected")
+	}
+	if _, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault", Limit: MaxProjectionReplayBatch + 1,
+	}); err == nil {
+		t.Fatal("oversized replay batch must be rejected")
+	}
+}
+
+func TestReplayProjection_AuthorizesTenantAccountBeforeReads(t *testing.T) {
+	accountID := idgen.NewID()
+	store := &fakeEventStore{}
+	foreign := &projectionReplayAccountRepo{account: &domain.Account{ID: accountID,
+		TenantID: "tenant-b", Status: domain.AccountActive}}
+	svc := NewProjectionReplayService(store, &fakeSnapshotStore{}, foreign,
+		projectionReplayPermission{allowed: true})
+	_, err := svc.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault",
+	})
+	if !apperrIs(err, "replay.account_not_found") || store.calls != 0 {
+		t.Fatalf("foreign replay err/calls = %v/%d, want not found/0", err, store.calls)
+	}
+
+	local := &projectionReplayAccountRepo{account: &domain.Account{ID: accountID,
+		TenantID: "tenant-a", Status: domain.AccountActive}}
+	denied := NewProjectionReplayService(store, &fakeSnapshotStore{}, local,
+		projectionReplayPermission{allowed: false})
+	_, err = denied.ReplayProjection(projectionReplayContext(), ReplayProjectionInput{
+		AccountID: accountID, Source: "aero-vault",
+	})
+	if !apperrIs(err, "replay.forbidden") || store.calls != 0 {
+		t.Fatalf("denied replay err/calls = %v/%d, want forbidden/0", err, store.calls)
 	}
 }
 
@@ -205,10 +295,10 @@ func TestReplayProjectionAuditFactCommitted(t *testing.T) {
 		replayEnvelope(accountID, "aero-vault.buckets", 1, 10, now.Add(-time.Hour)),
 	}
 	spy := &recordingLedgerSpy{}
-	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{},
+	svc := newProjectionReplayTestService(accountID, &fakeEventStore{events: events}, &fakeSnapshotStore{},
 		WithProjectionReplayAudit(NewAuditLedgerService(spy)))
-	ctx := WithIdentity(context.Background(), &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
-	result, err := svc.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"})
+	ctx := projectionReplayContext()
+	result, err := svc.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, Source: "aero-vault"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,9 +327,9 @@ func TestReplayProjectionAuditFactCommitted(t *testing.T) {
 
 	// A zero-event run records its fact through the same helper (single bare site).
 	spy2 := &recordingLedgerSpy{}
-	svc2 := NewProjectionReplayService(&fakeEventStore{}, &fakeSnapshotStore{},
+	svc2 := newProjectionReplayTestService(accountID, &fakeEventStore{}, &fakeSnapshotStore{},
 		WithProjectionReplayAudit(NewAuditLedgerService(spy2)))
-	if _, err := svc2.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"}); err != nil {
+	if _, err := svc2.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, Source: "aero-vault"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(spy2.facts) != 1 {
@@ -254,10 +344,10 @@ func TestReplayProjectionAuditFailureFailsClosed(t *testing.T) {
 		replayEnvelope(accountID, "aero-vault.buckets", 1, 10, now.Add(-time.Hour)),
 	}
 	spy := &recordingLedgerSpy{err: errors.New("ledger down")}
-	svc := NewProjectionReplayService(&fakeEventStore{events: events}, &fakeSnapshotStore{},
+	svc := newProjectionReplayTestService(accountID, &fakeEventStore{events: events}, &fakeSnapshotStore{},
 		WithProjectionReplayAudit(NewAuditLedgerService(spy)))
-	ctx := WithIdentity(context.Background(), &domain.TokenIdentity{UID: "admin-1", Issuer: "snaplink", Subject: "admin-1", TenantID: "tenant-a"})
-	_, err := svc.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, TenantID: "tenant-a", Source: "aero-vault"})
+	ctx := projectionReplayContext()
+	_, err := svc.ReplayProjection(ctx, ReplayProjectionInput{AccountID: accountID, Source: "aero-vault"})
 	var ae *apperr.AppError
 	if !errors.As(err, &ae) {
 		t.Fatalf("expected *AppError, got %v", err)
