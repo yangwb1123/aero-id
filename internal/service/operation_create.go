@@ -42,11 +42,11 @@ func (s *operationService) prepareOperation(ctx context.Context, actor, tenantID
 	if err := validateOperationInput(&input); err != nil {
 		return nil, nil, err
 	}
-	if existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey); err == nil {
-		return nil, existing, nil
-	}
 	if err := s.authorizeOperationCreate(ctx, actor, input); err != nil {
 		return nil, nil, err
+	}
+	if existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey); err == nil {
+		return nil, existing, nil
 	}
 	if err := s.resolveOperationRegion(ctx, tenantID, &input); err != nil {
 		return nil, nil, err

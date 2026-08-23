@@ -163,19 +163,9 @@ func (s *replayService) createDryRun(ctx context.Context, actor string, input Re
 
 //nolint:cyclop // replay scope authorization is deliberately fail-closed across account and operation targets.
 func (s *replayService) authorizeScope(ctx context.Context, actor string, accountID, operationID domain.ID) (domain.ID, map[string]any, bool, error) {
-	state := map[string]any{}
-	if operationID != (domain.ID{}) {
-		operation, err := s.operations.Get(ctx, operationID)
-		if err != nil {
-			return domain.ID{}, nil, false, err
-		}
-		if accountID == (domain.ID{}) {
-			accountID = operation.AccountID
-		}
-		if operation.TenantID != TenantFrom(ctx) {
-			return domain.ID{}, nil, false, apperr.NotFound("replay.operation_not_found", "replay operation not found")
-		}
-		state["operation_status"] = operation.Status
+	accountID, state, err := s.resolveOperationScope(ctx, accountID, operationID)
+	if err != nil {
+		return domain.ID{}, nil, false, err
 	}
 	authorized := false
 	if s.permission == nil {
@@ -210,6 +200,30 @@ func (s *replayService) authorizeScope(ctx context.Context, actor string, accoun
 	return accountID, state, authorized, nil
 }
 
+func (s *replayService) resolveOperationScope(ctx context.Context, accountID,
+	operationID domain.ID) (domain.ID, map[string]any, error) {
+	state := map[string]any{}
+	if operationID == (domain.ID{}) {
+		return accountID, state, nil
+	}
+	if s.operations == nil {
+		return domain.ID{}, nil, apperr.Internal("replay.operation_unavailable", "replay operation service is unavailable")
+	}
+	operation, err := s.operations.Get(ctx, operationID)
+	if err != nil {
+		return domain.ID{}, nil, err
+	}
+	if operation.TenantID != TenantFrom(ctx) {
+		return domain.ID{}, nil, apperr.NotFound("replay.operation_not_found", "replay operation not found")
+	}
+	if accountID != (domain.ID{}) && accountID != operation.AccountID {
+		return domain.ID{}, nil, apperr.BadRequest("replay.scope_mismatch", "operation does not belong to replay account")
+	}
+	state["operation_id"] = operation.ID.String()
+	state["operation_status"] = operation.Status
+	return operation.AccountID, state, nil
+}
+
 func replayDatasetState(snapshots []*domain.AccountSnapshot) []map[string]any {
 	result := make([]map[string]any, 0, len(snapshots))
 	for _, snapshot := range snapshots {
@@ -234,6 +248,9 @@ func (s *replayService) createControlled(ctx context.Context, actor string, inpu
 	if len(input.Commands) == 0 || len(input.Commands) > 32 {
 		return nil, apperr.BadRequest("replay.invalid_commands", "controlled replay must contain one to thirty-two commands")
 	}
+	if _, _, err := s.resolveOperationScope(ctx, input.AccountID, input.OperationID); err != nil {
+		return nil, err
+	}
 	steps := make([]OperationStepInput, 0, len(input.Commands))
 	for i, command := range input.Commands {
 		if !allowedReplayCommand(command.Source, command.Action) {
@@ -241,19 +258,25 @@ func (s *replayService) createControlled(ctx context.Context, actor string, inpu
 		}
 		steps = append(steps, OperationStepInput{StepKey: replayStepKey(i), Source: command.Source, Action: command.Action, RequestPayload: command.Payload})
 	}
+	requestPayload := map[string]any{"mode": "controlled", "actor_uid": actor}
+	if input.OperationID != (domain.ID{}) {
+		requestPayload["historical_operation_id"] = input.OperationID.String()
+	}
 	operation, err := s.operations.Create(ctx, OperationInput{AccountID: input.AccountID, OperationType: "replay",
-		IdempotencyKey: input.IdempotencyKey, RequestPayload: map[string]any{"mode": "controlled", "actor_uid": actor}, Steps: steps})
+		IdempotencyKey: input.IdempotencyKey, RequestPayload: requestPayload, Steps: steps})
 	if err != nil {
 		return nil, err
 	}
 	if s.audit != nil {
 		// audit-site: standalone-fact — controlled-replay intent fact anchored
 		// on the operation ID (retry-dedup).
+		auditPayload := map[string]any{"mode": input.Mode, "step_count": len(steps)}
+		if input.OperationID != (domain.ID{}) {
+			auditPayload["historical_operation_id"] = input.OperationID.String()
+		}
 		if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", EventID: operation.ID,
 			OperationID: operation.ID, ActorUID: actor, AccountID: input.AccountID, Action: "audit.replay.requested",
-			ResourceType: "replay", ResourceID: operation.ID.String(), Payload: map[string]any{
-				"mode": input.Mode, "step_count": len(steps),
-			}}); err != nil {
+			ResourceType: "replay", ResourceID: operation.ID.String(), Payload: auditPayload}); err != nil {
 			return nil, apperr.Internal("replay.audit_failed", "failed to record replay audit fact").Wrap(err)
 		}
 	}

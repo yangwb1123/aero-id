@@ -161,7 +161,14 @@ export function ReplaysPage({
                 onChange={(event) => setAccountID(event.target.value)}
               />
             </IrisFormField>
-            <IrisFormField label="Operation ID">
+            <IrisFormField
+              label="Operation ID"
+              hint={
+                mode === "controlled"
+                  ? "可选历史来源；服务端要求它属于同一 Account"
+                  : "可单独作为审计事实重建作用域"
+              }
+            >
               <IrisInput
                 value={operationID}
                 onChange={(event) => setOperationID(event.target.value)}

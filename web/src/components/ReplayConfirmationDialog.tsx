@@ -44,6 +44,12 @@ export function ReplayConfirmationDialog({
           先执行 dry-run 并核对当前来源状态；超时结果会保留为
           unknown，禁止当作失败盲目重发。
         </IrisAlert>
+        {input?.operationID ? (
+          <IrisAlert tone="info" title="历史 Operation 来源">
+            {input.operationID}。服务端会重新读取并校验它属于当前 Tenant
+            下的目标 Account，只将 ID 作为新 Operation 的脱敏 provenance。
+          </IrisAlert>
+        ) : null}
         <IrisFormField
           label="输入完整 Account ID 以确认"
           hint={input?.accountID}

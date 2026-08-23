@@ -657,7 +657,7 @@ paths:
         - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
-          description: Replay operation timeline (forensic/dry-run/controlled).
+          description: Controlled replay operation timeline; forensic and dry-run windows are returned synchronously and are not persisted as operations.
           content: {application/json: {schema: {$ref: '#/components/schemas/OperationEnvelope'}}}
         '403': {$ref: '#/components/responses/Error'}
   /admin/audit/holds:
@@ -937,7 +937,7 @@ components:
       properties:
         mode: {type: string, enum: [forensic, dry-run, controlled]}
         account_id: {type: string, format: uuid}
-        operation_id: {type: string, format: uuid}
+        operation_id: {type: string, format: uuid, description: Optional historical operation scope; controlled replay requires it to belong to account_id and records it only as provenance.}
         from: {type: string, format: date-time}
         to: {type: string, format: date-time}
         cursor: {type: string, maxLength: 512, description: Opaque next_cursor from the previous forensic or dry-run window; forbidden for controlled replay.}
