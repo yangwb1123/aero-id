@@ -208,6 +208,14 @@ section > [data-iris-card] {
   margin-block-start: var(--iris-space-md, 16px);
 }
 
+.region-promotion-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+  margin-block-start: var(--iris-space-md, 16px);
+}
+
 .secret-value {
   display: block;
   padding: var(--iris-space-md, 16px);
@@ -366,6 +374,7 @@ section > [data-iris-card] {
   .callback-create-grid,
   .callback-replay-row,
   .compliance-create-grid,
+  .region-promotion-row,
   .replay-scope-grid,
   .replay-command-grid {
     grid-template-columns: 1fr;

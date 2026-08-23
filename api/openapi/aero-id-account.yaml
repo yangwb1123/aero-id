@@ -701,6 +701,8 @@ paths:
     post:
       operationId: promoteHomeRegion
       security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         content:
           application/json:
@@ -714,6 +716,10 @@ paths:
       responses:
         '200':
           description: Fencing-epoch CAS promotion result.
+          headers:
+            X-Aero-Write-Epoch:
+              description: The promoted target writer and its new fencing epoch.
+              schema: {type: string, example: 'eu-west:8'}
           content: {application/json: {schema: {$ref: '#/components/schemas/PromoteResultEnvelope'}}}
         '409': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
@@ -722,7 +728,7 @@ paths:
       operationId: getRegionDirectory
       security: [{snaplinkBearer: []}]
       parameters:
-        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/AccountID'}
       responses:
         '200':
           description: Durable home-region directory entry with fencing epoch.

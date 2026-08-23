@@ -88,6 +88,8 @@ GET  /v1/admin/accounts/:id/overview
 POST /v1/admin/accounts/:id/sync
 POST /v1/admin/accounts/:id/export
 POST /v1/admin/accounts/:id/erase
+GET  /v1/admin/regions/directory/:account_id
+POST /v1/admin/regions/promote
 GET  /v1/audit/events
 GET  /v1/audit/operations/:id
 GET  /v1/audit/verify?source=&partition=
@@ -107,6 +109,9 @@ Forensic replay 不产生副作用；dry-run 只模拟；controlled replay 必�
 
 - 高基数列表使用 keyset `cursor`，不要使用 offset；客户端应原样保存并回传 `next_cursor`。
 - `home_region` 是账户写入路由依据；读取可来自本地区域的版本化投影，并展示来源区域和新鲜度。
+- Region 提升必须使用刚读取的 `fenced_epoch` 做 CAS、携带固定 `Idempotency-Key` 并二次确认
+  Account ID；成功响应的 `X-Aero-Write-Epoch` 指向目标 Writer，冲突后必须重新读取而不是自动重试旧
+  Epoch。
 - Snaplink 决定全局权限，IM/Vault 仍决定其资源 ACL；缓存 miss 或授权不确定不能当作允许。
 - 客户端不得显示或记录 bearer token、callback secret、源凭据、对象字节、消息正文或 MFA/恢复材料。
 

@@ -39,6 +39,22 @@ export class AeroIdTransport {
     private readonly fetcher: typeof fetch,
   ) {}
 
+  pinWriteEpoch(region: string, epoch: number): void {
+    const target = region.trim();
+    if (
+      !target ||
+      target.includes(":") ||
+      !Number.isSafeInteger(epoch) ||
+      epoch < 0
+    )
+      throw new AeroIdError(
+        0,
+        "response.invalid",
+        "aero-id 返回了无效的 Writer Epoch",
+      );
+    this.writeEpoch = `${target}:${epoch}`;
+  }
+
   async request(
     method: string,
     path: string,

@@ -6,6 +6,7 @@ import type { JsonRecord } from "../types";
 import { AdminAccountActions } from "./AdminAccountActions";
 import { PageError, PageLoading } from "./PageState";
 import { RecordTable } from "./RecordTable";
+import { RegionDirectoryPanel } from "./RegionDirectoryPanel";
 
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value)
@@ -33,6 +34,7 @@ export function AdminAccountDetails({
     return { account, overview };
   }, [accountID, client]);
   const resource = useAsyncResource(load);
+  const [promotionMessage, setPromotionMessage] = React.useState<string>();
   if (resource.loading) return <PageLoading />;
   if (resource.error)
     return <PageError error={resource.error} retry={resource.reload} />;
@@ -107,6 +109,19 @@ export function AdminAccountDetails({
           empty="该账户没有成员关系"
         />
       </IrisCard>
+      {promotionMessage ? (
+        <IrisAlert tone="success">{promotionMessage}</IrisAlert>
+      ) : null}
+      <RegionDirectoryPanel
+        client={client}
+        accountID={accountID}
+        promoted={(result) => {
+          setPromotionMessage(
+            `Writer 已提升到 ${String(result.target_region)}，新 Fenced Epoch 为 ${String(result.fenced_epoch)}。`,
+          );
+          resource.reload();
+        }}
+      />
       <AdminAccountActions client={client} accountID={accountID} />
     </>
   );

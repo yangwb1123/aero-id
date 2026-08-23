@@ -10,6 +10,7 @@
 - 展示 Operation/Saga 步骤、来源 operation ID、补偿状态与追加式脱敏审计时间线；
 - 管理员可按关键词、状态和 home region 查询账户，并检查来源与投影的新鲜度；
 - 管理员账户同步、导出和擦除均创建幂等任务；导出与擦除要求二次确认；
+- 账户详情展示 durable Region Directory，并通过观察到的 Fenced Epoch、Account ID 二次确认执行 Home Region Writer CAS 提升；
 - 审计台账支持过滤、keyset 分页、脱敏证据详情和来源分区哈希链验证；
 - 审计合规管理支持 Legal Hold 查询、设置、经 Scope ID 二次确认的解除，以及带一次性下载保护的审计导出；
 - Callback 治理支持 challenge 注册、一次性 Secret、订阅删除和经确认的失败投递重放；

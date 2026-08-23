@@ -78,8 +78,18 @@ func (h *RegionEpochHeader) tagWrites(c *gin.Context, epoch int64, ok bool) {
 		return
 	}
 	if c.Writer.Status() >= 200 && c.Writer.Status() < 300 {
+		if c.Writer.Header().Get("X-Aero-Write-Epoch") != "" {
+			return // the handler selected a different writer generation
+		}
 		c.Header("X-Aero-Write-Epoch", writeEpochHeader(h.localRegion, epoch))
 	}
+}
+
+// SetWriteEpoch pins a successful response to a writer selected by the
+// handler. Region promotion uses it because the new writer differs from the
+// API cell that executed the administrative CAS.
+func SetWriteEpoch(c *gin.Context, region string, epoch int64) {
+	c.Header("X-Aero-Write-Epoch", writeEpochHeader(region, epoch))
 }
 
 // currentEpoch returns the cached region epoch, refreshing the cache after TTL.

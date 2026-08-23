@@ -190,6 +190,7 @@ func (h *AccountHandler) PromoteRegion(c *gin.Context) {
 		httpx.WriteError(c, err)
 		return
 	}
+	middleware.SetWriteEpoch(c, body.TargetRegion, newEpoch)
 	httpx.OK(c, gin.H{"account_id": accountID.String(), "target_region": body.TargetRegion, "fenced_epoch": newEpoch})
 }
 

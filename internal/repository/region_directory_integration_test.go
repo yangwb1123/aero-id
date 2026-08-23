@@ -52,6 +52,13 @@ func TestRegionDirectoryPromotionWithFencing(t *testing.T) {
 	if entry.HomeRegion != "us-east" || entry.FencedEpoch != 1 {
 		t.Fatalf("after promote: %+v", entry)
 	}
+	account, err = accounts.GetByID(t.Context(), "tenant-a", account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.HomeRegion != "us-east" {
+		t.Fatalf("account routing region = %s, want us-east", account.HomeRegion)
+	}
 	if epoch, err := directory.RegionEpoch(t.Context(), "us-east"); err != nil || epoch != 1 {
 		t.Fatalf("us-east epoch = %d, %v; want 1", epoch, err)
 	}
@@ -74,6 +81,13 @@ func TestRegionDirectoryPromotionWithFencing(t *testing.T) {
 	}
 	if _, err := directory.PromoteWithFencing(t.Context(), "tenant-b", account.ID, "us-west", 1); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("cross-tenant promote error = %v, want not found", err)
+	}
+	account, err = accounts.GetByID(t.Context(), "tenant-a", account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.HomeRegion != "eu-west" {
+		t.Fatalf("account routing region after second promotion = %s, want eu-west", account.HomeRegion)
 	}
 }
 

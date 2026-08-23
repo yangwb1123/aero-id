@@ -392,6 +392,13 @@ func TestStandaloneSiteRegionPromoteInTx(t *testing.T) {
 	if entry.HomeRegion != "us-east" || entry.FencedEpoch != 1 {
 		t.Fatalf("rolled-back promotion must leave the directory untouched: %+v", entry)
 	}
+	account, aerr := accounts.GetByID(ctx, "tenant-a", account.ID)
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	if account.HomeRegion != "us-east" {
+		t.Fatalf("rolled-back promotion changed account routing region: %s", account.HomeRegion)
+	}
 	if epoch, eerr := directory.RegionEpoch(ctx, "eu-west"); eerr != nil || epoch != 0 {
 		t.Fatalf("eu-west epoch = %d, %v; want 0 (rollback)", epoch, eerr)
 	}

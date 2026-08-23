@@ -30,6 +30,10 @@ func runEpochRequest(t *testing.T, header *RegionEpochHeader, method, path strin
 	router.GET("/v1/me", func(c *gin.Context) { c.Status(http.StatusOK) })
 	router.PATCH("/v1/me/profile", func(c *gin.Context) { c.Status(http.StatusOK) })
 	router.POST("/v1/me/erase", func(c *gin.Context) { c.Status(http.StatusBadRequest) })
+	router.POST("/v1/admin/regions/promote", func(c *gin.Context) {
+		SetWriteEpoch(c, "eu-west", 9)
+		c.Status(http.StatusOK)
+	})
 	req := httptest.NewRequest(method, path, nil)
 	if requestEpoch != "" {
 		req.Header.Set("X-Aero-Write-Epoch", requestEpoch)
@@ -37,6 +41,14 @@ func runEpochRequest(t *testing.T, header *RegionEpochHeader, method, path strin
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestRegionEpochHeader_PreservesPromotedWriter(t *testing.T) {
+	header := NewRegionEpochHeader(&fakeEpochProvider{epoch: 3}, "us-east")
+	rec := runEpochRequest(t, header, http.MethodPost, "/v1/admin/regions/promote", "")
+	if got := rec.Header().Get("X-Aero-Write-Epoch"); got != "eu-west:9" {
+		t.Fatalf("promoted write epoch = %q, want eu-west:9", got)
+	}
 }
 
 // TestRegionEpochHeader_WritesCarryEpoch: successful writes are tagged with

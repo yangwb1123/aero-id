@@ -218,7 +218,27 @@ func promoteWithFencingTx(tx *gorm.DB, tenantID string, accountID domain.ID,
 	if update.RowsAffected != 1 {
 		return 0, ErrRegionEpochConflict
 	}
+	if err := updateAccountHomeRegion(tx, tenantID, accountID, targetRegion, now); err != nil {
+		return 0, err
+	}
 	return newEpoch, nil
+}
+
+// updateAccountHomeRegion keeps the routing column consumed by account,
+// operation, sync-job, and replication reads consistent with the authoritative
+// directory CAS. It runs in the same transaction, so neither view can commit
+// without the other.
+func updateAccountHomeRegion(tx *gorm.DB, tenantID string, accountID domain.ID,
+	targetRegion string, now time.Time) error {
+	update := tx.Model(&accountRow{}).Where("tenant_id = ? AND id = ?", tenantID, accountID).
+		Updates(map[string]any{"home_region": targetRegion, "updated_at": now})
+	if update.Error != nil {
+		return fmt.Errorf("update account home region: %w", update.Error)
+	}
+	if update.RowsAffected != 1 {
+		return fmt.Errorf("update account home region: account row not found")
+	}
+	return nil
 }
 
 // ensureRegionEpochRow creates the region's epoch row at 0 when it does not
