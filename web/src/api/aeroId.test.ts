@@ -296,6 +296,50 @@ describe("AeroIdClient", () => {
     expect(requests[2].url.searchParams.get("limit")).toBe("50");
   });
 
+  it("filters audit facts and verifies a source partition chain", async () => {
+    const requests: URL[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(new URL(String(input)));
+      if (requests.length === 1)
+        return json({
+          data: { events: [{ event_id: "event-1" }], next_cursor: "event-1" },
+        });
+      return json({
+        data: { source: "aero-id", partition: "tenant-1", verified: true },
+      });
+    });
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.listAuditEvents(
+      {
+        source: "aero-id",
+        action: "operation.completed",
+        operationID: "operation-1",
+        accountID: "account-1",
+        requestID: "request-1",
+      },
+      "event:cursor",
+    );
+    await expect(
+      client.verifyAuditChain("aero-id", "tenant/partition"),
+    ).resolves.toMatchObject({ verified: true });
+
+    expect(requests[0].pathname).toBe("/v1/audit/events");
+    expect(requests[0].searchParams.get("source")).toBe("aero-id");
+    expect(requests[0].searchParams.get("action")).toBe("operation.completed");
+    expect(requests[0].searchParams.get("operation_id")).toBe("operation-1");
+    expect(requests[0].searchParams.get("account_id")).toBe("account-1");
+    expect(requests[0].searchParams.get("request_id")).toBe("request-1");
+    expect(requests[0].searchParams.get("cursor")).toBe("event:cursor");
+    expect(requests[1].pathname).toBe("/v1/audit/verify");
+    expect(requests[1].searchParams.get("source")).toBe("aero-id");
+    expect(requests[1].searchParams.get("partition")).toBe("tenant/partition");
+  });
+
   it("downloads an export with authorization and one-time semantics", async () => {
     let requested = new URL("https://invalid.test");
     let headers = new Headers();

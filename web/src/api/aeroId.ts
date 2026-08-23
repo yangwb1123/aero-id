@@ -19,6 +19,14 @@ export interface AdminAccountFilters {
 
 export type AdminAccountJobType = "sync" | "export" | "erase";
 
+export interface AuditEventFilters {
+  source?: string;
+  action?: string;
+  operationID?: string;
+  accountID?: string;
+  requestID?: string;
+}
+
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -283,6 +291,39 @@ export class AeroIdClient {
         ),
       ),
       "events",
+    );
+  }
+
+  async listAuditEvents(
+    filters: AuditEventFilters = {},
+    cursor?: string,
+  ): Promise<PageData<JsonRecord>> {
+    return pageOf(
+      dataOf(
+        await this.request("GET", "/audit/events", {
+          query: {
+            source: filters.source,
+            action: filters.action,
+            operation_id: filters.operationID,
+            account_id: filters.accountID,
+            request_id: filters.requestID,
+            cursor,
+            limit: 50,
+          },
+        }),
+      ),
+      "events",
+    );
+  }
+
+  async verifyAuditChain(
+    source: string,
+    partition: string,
+  ): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("GET", "/audit/verify", {
+        query: { source, partition },
+      }),
     );
   }
 

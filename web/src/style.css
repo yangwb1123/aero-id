@@ -179,6 +179,13 @@ section > [data-iris-card] {
   align-items: end;
 }
 
+.audit-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+}
+
 .admin-filter-actions {
   display: flex;
   gap: var(--iris-space-sm, 12px);
@@ -291,6 +298,10 @@ section > [data-iris-card] {
   }
 
   .admin-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-filter-grid {
     grid-template-columns: 1fr;
   }
 
