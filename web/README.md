@@ -11,6 +11,7 @@
 - 管理员可按关键词、状态和 home region 查询账户，并检查来源与投影的新鲜度；
 - 管理员账户同步、导出和擦除均创建幂等任务；导出与擦除要求二次确认；
 - 审计台账支持过滤、keyset 分页、脱敏证据详情和来源分区哈希链验证；
+- Callback 治理支持 challenge 注册、一次性 Secret、订阅删除和经确认的失败投递重放；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；
 - 使用独立链接进入 Audit Governance、Aero IM 和 Aero Vault 控制台，不跨 audience 转发 token。
 

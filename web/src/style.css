@@ -186,6 +186,31 @@ section > [data-iris-card] {
   align-items: end;
 }
 
+.callback-create-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr)) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+}
+
+.callback-replay-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+  margin-block-start: var(--iris-space-md, 16px);
+}
+
+.secret-value {
+  display: block;
+  padding: var(--iris-space-md, 16px);
+  overflow-wrap: anywhere;
+  border: 1px solid var(--iris-border);
+  border-radius: var(--iris-radius-md, 8px);
+  background: var(--iris-muted-background);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .admin-filter-actions {
   display: flex;
   gap: var(--iris-space-sm, 12px);
@@ -302,6 +327,11 @@ section > [data-iris-card] {
   }
 
   .audit-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .callback-create-grid,
+  .callback-replay-row {
     grid-template-columns: 1fr;
   }
 

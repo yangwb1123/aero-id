@@ -42,12 +42,19 @@ func (h *CallbackHandler) List(c *gin.Context) {
 	httpx.OK(c, gin.H{"subscriptions": result, "next_cursor": next})
 }
 
+type callbackCreateRequest struct {
+	Endpoint   string   `json:"endpoint"`
+	TenantID   string   `json:"tenant_id"`
+	EventTypes []string `json:"event_types"`
+}
+
 func (h *CallbackHandler) Create(c *gin.Context) {
-	var input service.CallbackInput
-	if err := c.ShouldBindJSON(&input); err != nil {
+	var body callbackCreateRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
 		httpx.WriteError(c, err)
 		return
 	}
+	input := service.CallbackInput{Endpoint: body.Endpoint, TenantID: body.TenantID, EventTypes: body.EventTypes}
 	item, secret, err := h.callbacks.Register(c.Request.Context(), input)
 	if err != nil {
 		httpx.WriteError(c, err)

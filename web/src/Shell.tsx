@@ -15,6 +15,7 @@ import { useHashRoute } from "./router";
 import { ActivityPage } from "./pages/ActivityPage";
 import { AdminAccountsPage } from "./pages/AdminAccountsPage";
 import { AuditPage } from "./pages/AuditPage";
+import { CallbacksPage } from "./pages/CallbacksPage";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { JobsPage } from "./pages/JobsPage";
 import { OperationsPage } from "./pages/OperationsPage";
@@ -33,6 +34,7 @@ const menus: NavNode[] = [
   { key: "operations", title: "跨系统操作", icon: "settings" },
   { key: "admin-accounts", title: "账户管理", icon: "user" },
   { key: "audit", title: "审计台账", icon: "shield" },
+  { key: "callbacks", title: "Callback 治理", icon: "link" },
   { key: "services", title: "平台服务", icon: "grid" },
 ];
 
@@ -64,6 +66,8 @@ function PageHost({
       return <AdminAccountsPage client={client} />;
     case "audit":
       return <AuditPage client={client} />;
+    case "callbacks":
+      return <CallbacksPage client={client} />;
     case "services":
       return <ServiceLinksPage config={config} />;
     default:

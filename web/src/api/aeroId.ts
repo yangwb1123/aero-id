@@ -6,6 +6,7 @@ import type {
   PageData,
   Profile,
 } from "../types";
+import { CallbackClient } from "./callback";
 import { AeroIdTransport, type RequestOptions } from "./transport";
 export { AeroIdError } from "./transport";
 
@@ -65,6 +66,7 @@ function activityPage(data: JsonRecord): PageData<JsonRecord> {
 
 export class AeroIdClient {
   private readonly transport: AeroIdTransport;
+  readonly callbacks: CallbackClient;
 
   constructor(
     baseUrl: string,
@@ -72,6 +74,7 @@ export class AeroIdClient {
     fetcher: typeof fetch = window.fetch.bind(window),
   ) {
     this.transport = new AeroIdTransport(baseUrl, accessToken, fetcher);
+    this.callbacks = new CallbackClient(this.transport);
   }
 
   async listDatasets(): Promise<Dataset[]> {
