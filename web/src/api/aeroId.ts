@@ -17,6 +17,8 @@ export interface AdminAccountFilters {
   homeRegion?: string;
 }
 
+export type AdminAccountJobType = "sync" | "export" | "erase";
+
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -137,6 +139,23 @@ export class AeroIdClient {
         { query: { consistency: "eventual" } },
       ),
     ) as AggregateView;
+  }
+
+  async createAdminAccountJob(
+    id: string,
+    jobType: AdminAccountJobType,
+  ): Promise<JsonRecord> {
+    const key = crypto.randomUUID();
+    return dataOf(
+      await this.request(
+        "POST",
+        `/admin/accounts/${encodeURIComponent(id)}/${jobType}`,
+        {
+          idempotencyKey: key,
+          body: { datasets: [], idempotency_key: key },
+        },
+      ),
+    );
   }
 
   async listSources(cursor?: string): Promise<PageData<JsonRecord>> {

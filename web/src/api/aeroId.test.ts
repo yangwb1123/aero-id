@@ -193,6 +193,42 @@ describe("AeroIdClient", () => {
     expect(requests[2].searchParams.get("consistency")).toBe("eventual");
   });
 
+  it("creates idempotent admin sync, export and erase jobs", async () => {
+    const requests: Array<{ url: URL; headers: Headers; body: string }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({
+          url: new URL(String(input)),
+          headers: new Headers(init?.headers),
+          body: String(init?.body),
+        });
+        return json({
+          data: { job_id: `job-${requests.length}`, status: "pending" },
+        });
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.createAdminAccountJob("account/1", "sync");
+    await client.createAdminAccountJob("account/1", "export");
+    await client.createAdminAccountJob("account/1", "erase");
+
+    expect(requests.map((request) => request.url.pathname)).toEqual([
+      "/v1/admin/accounts/account%2F1/sync",
+      "/v1/admin/accounts/account%2F1/export",
+      "/v1/admin/accounts/account%2F1/erase",
+    ]);
+    for (const request of requests) {
+      const body = JSON.parse(request.body);
+      expect(body.datasets).toEqual([]);
+      expect(body.idempotency_key).toBe(request.headers.get("Idempotency-Key"));
+    }
+  });
+
   it("loads and reconciles a sync job through its encoded resource path", async () => {
     const requests: Array<{ url: URL; method?: string }> = [];
     const fetcher = vi.fn(
