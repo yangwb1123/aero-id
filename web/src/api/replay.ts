@@ -16,6 +16,8 @@ export interface ReplayCreateInput {
   mode: ReplayMode;
   accountID?: string;
   operationID?: string;
+  from?: string;
+  to?: string;
   cursor?: string;
   limit: number;
   idempotencyKey?: string;
@@ -51,6 +53,8 @@ export class ReplayClient {
           mode: input.mode,
           account_id: input.accountID,
           operation_id: input.operationID,
+          from: input.from,
+          to: input.to,
           cursor: input.cursor,
           limit: input.limit,
           idempotency_key: input.idempotencyKey,

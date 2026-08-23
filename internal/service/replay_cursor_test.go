@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -45,14 +46,19 @@ func TestReplayForensicPassesOpaqueCursorToAuditQuery(t *testing.T) {
 	audit := &replayCursorAudit{}
 	service := NewReplayService(audit, nil, WithReplayPermission(replayCursorPermission{}))
 	accountID := idgen.NewID()
+	from := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
 
 	result, err := service.Create(replayCursorContext(), ReplayInput{Mode: "forensic", AccountID: accountID,
-		Cursor: " opaque-window-2 ", Limit: 25})
+		From: &from, To: &to, Cursor: " opaque-window-2 ", Limit: 25})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if audit.filter.Page.Cursor != "opaque-window-2" || audit.filter.Page.Limit != 25 {
 		t.Fatalf("page = %#v", audit.filter.Page)
+	}
+	if audit.filter.From != &from || audit.filter.To != &to {
+		t.Fatalf("time window = %v to %v", audit.filter.From, audit.filter.To)
 	}
 	if result.NextCursor != "opaque-window-3" || len(result.Facts) != 1 {
 		t.Fatalf("result = %#v", result)
@@ -93,5 +99,28 @@ func TestReplayRejectsOversizedCursor(t *testing.T) {
 	var appError *apperr.AppError
 	if !errors.As(err, &appError) || appError.Code != "replay.invalid_cursor" {
 		t.Fatalf("error = %v, want replay.invalid_cursor", err)
+	}
+}
+
+func TestReplayRejectsInvalidTimeRange(t *testing.T) {
+	service := NewReplayService(&replayCursorAudit{}, nil, WithReplayPermission(replayCursorPermission{}))
+	from := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	to := from
+
+	_, err := service.Create(replayCursorContext(), ReplayInput{Mode: "forensic", From: &from, To: &to})
+	var appError *apperr.AppError
+	if !errors.As(err, &appError) || appError.Code != "replay.invalid_time_range" {
+		t.Fatalf("error = %v, want replay.invalid_time_range", err)
+	}
+}
+
+func TestReplayControlledRejectsTimeFilters(t *testing.T) {
+	service := NewReplayService(&replayCursorAudit{}, nil, WithReplayPermission(replayCursorPermission{}))
+	from := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+
+	_, err := service.Create(replayCursorContext(), ReplayInput{Mode: "controlled", From: &from})
+	var appError *apperr.AppError
+	if !errors.As(err, &appError) || appError.Code != "replay.filters_not_allowed" {
+		t.Fatalf("error = %v, want replay.filters_not_allowed", err)
 	}
 }

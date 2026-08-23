@@ -94,6 +94,8 @@ describe("ReplayClient", () => {
     await client.create({
       mode: "forensic",
       operationID: "operation-1",
+      from: "2026-08-20T10:00:00.000Z",
+      to: "2026-08-21T10:00:00.000Z",
       cursor: "opaque-window-2",
       limit: 100,
       confirmed: false,
@@ -104,6 +106,8 @@ describe("ReplayClient", () => {
     expect(requestBody).toMatchObject({
       mode: "forensic",
       operation_id: "operation-1",
+      from: "2026-08-20T10:00:00.000Z",
+      to: "2026-08-21T10:00:00.000Z",
       cursor: "opaque-window-2",
       limit: 100,
     });

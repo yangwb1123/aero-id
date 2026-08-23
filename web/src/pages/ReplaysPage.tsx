@@ -42,6 +42,45 @@ export function replayContinuation(
   return { ...input, cursor };
 }
 
+function replayTimestamp(value: string, label: string): string | undefined {
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  const timestamp = new Date(normalized);
+  if (Number.isNaN(timestamp.getTime())) throw new Error(`${label} 时间无效`);
+  return timestamp.toISOString();
+}
+
+export function replayTimeWindow(
+  fromValue: string,
+  toValue: string,
+): {
+  from?: string;
+  to?: string;
+} {
+  const from = replayTimestamp(fromValue, "开始");
+  const to = replayTimestamp(toValue, "结束");
+  if (from && to && Date.parse(from) >= Date.parse(to))
+    throw new Error("Replay 开始时间必须早于结束时间");
+  return { from, to };
+}
+
+function validateReplayScope(accountID: string, operationID: string): void {
+  if (!accountID && !operationID)
+    throw new Error("Forensic 和 Dry-run 至少需要 Account ID 或 Operation ID");
+}
+
+function validateControlledReplay(
+  mode: ReplayMode,
+  accountID: string,
+  idempotencyKey: string,
+  commandCount: number,
+): void {
+  if (mode !== "controlled") return;
+  if (!accountID) throw new Error("Controlled Replay 必须指定 Account ID");
+  if (commandCount === 0) throw new Error("Controlled Replay 至少需要一个命令");
+  if (!idempotencyKey) throw new Error("Controlled Replay 必须使用新的幂等键");
+}
+
 export function ReplaysPage({
   client,
 }: {
@@ -50,6 +89,8 @@ export function ReplaysPage({
   const [mode, setMode] = React.useState<ReplayMode>("forensic");
   const [accountID, setAccountID] = React.useState("");
   const [operationID, setOperationID] = React.useState("");
+  const [fromTime, setFromTime] = React.useState("");
+  const [toTime, setToTime] = React.useState("");
   const [limit, setLimit] = React.useState(100);
   const [idempotencyKey, setIdempotencyKey] = React.useState("");
   const [commands, setCommands] = React.useState<ReplayCommandDraft[]>([]);
@@ -72,25 +113,28 @@ export function ReplaysPage({
     }
   };
   const buildInput = (): ReplayCreateInput => {
-    if (!accountID.trim() && !operationID.trim())
-      throw new Error(
-        "Forensic 和 Dry-run 至少需要 Account ID 或 Operation ID",
-      );
+    const normalizedAccountID = accountID.trim();
+    const normalizedOperationID = operationID.trim();
+    const normalizedKey = idempotencyKey.trim();
+    validateReplayScope(normalizedAccountID, normalizedOperationID);
     if (limit < 1 || limit > 100)
       throw new Error("单次重建事实数量必须在 1–100 之间");
     const parsedCommands = parseReplayCommands(commands);
-    if (mode === "controlled" && !accountID.trim())
-      throw new Error("Controlled Replay 必须指定 Account ID");
-    if (mode === "controlled" && parsedCommands.length === 0)
-      throw new Error("Controlled Replay 至少需要一个命令");
-    if (mode === "controlled" && !idempotencyKey.trim())
-      throw new Error("Controlled Replay 必须使用新的幂等键");
+    validateControlledReplay(
+      mode,
+      normalizedAccountID,
+      normalizedKey,
+      parsedCommands.length,
+    );
+    const window =
+      mode === "controlled" ? {} : replayTimeWindow(fromTime, toTime);
     return {
       mode,
-      accountID: accountID.trim() || undefined,
-      operationID: operationID.trim() || undefined,
+      accountID: normalizedAccountID || undefined,
+      operationID: normalizedOperationID || undefined,
+      ...window,
       limit,
-      idempotencyKey: mode === "controlled" ? idempotencyKey.trim() : undefined,
+      idempotencyKey: mode === "controlled" ? normalizedKey : undefined,
       confirmed: false,
       commands: mode === "forensic" ? [] : parsedCommands,
     };
@@ -183,6 +227,27 @@ export function ReplaysPage({
                 onChange={(event) => setLimit(Number(event.target.value))}
               />
             </IrisFormField>
+            {mode !== "controlled" ? (
+              <>
+                <IrisFormField
+                  label="开始时间"
+                  hint="包含；输入本地时间或 RFC3339"
+                >
+                  <IrisInput
+                    placeholder="2026-08-20T10:00"
+                    value={fromTime}
+                    onChange={(event) => setFromTime(event.target.value)}
+                  />
+                </IrisFormField>
+                <IrisFormField label="结束时间" hint="不包含；必须晚于开始时间">
+                  <IrisInput
+                    placeholder="2026-08-21T10:00"
+                    value={toTime}
+                    onChange={(event) => setToTime(event.target.value)}
+                  />
+                </IrisFormField>
+              </>
+            ) : null}
           </div>
           {mode === "controlled" ? (
             <div className="replay-key-row">

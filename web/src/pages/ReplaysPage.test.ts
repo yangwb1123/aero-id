@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ReplayCreateInput } from "../api/replay";
-import { replayContinuation } from "./ReplaysPage";
+import { replayContinuation, replayTimeWindow } from "./ReplaysPage";
 
 describe("replayContinuation", () => {
   it("preserves the bounded dry-run scope and commands while replacing the cursor", () => {
@@ -33,5 +33,27 @@ describe("replayContinuation", () => {
         "window-2",
       ),
     ).toThrow("只有 Forensic 或 Dry-run");
+  });
+});
+
+describe("replayTimeWindow", () => {
+  it("normalizes an optional half-open time window to RFC3339", () => {
+    const result = replayTimeWindow(
+      "2026-08-20T10:00:00Z",
+      "2026-08-21T10:00:00Z",
+    );
+    expect(result).toEqual({
+      from: "2026-08-20T10:00:00.000Z",
+      to: "2026-08-21T10:00:00.000Z",
+    });
+  });
+
+  it("rejects an empty or reversed interval", () => {
+    expect(() =>
+      replayTimeWindow("2026-08-21T10:00:00Z", "2026-08-21T10:00:00Z"),
+    ).toThrow("开始时间必须早于结束时间");
+    expect(() =>
+      replayTimeWindow("2026-08-22T10:00:00Z", "2026-08-21T10:00:00Z"),
+    ).toThrow("开始时间必须早于结束时间");
   });
 });

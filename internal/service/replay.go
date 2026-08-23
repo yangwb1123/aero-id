@@ -93,6 +93,9 @@ func (s *replayService) Create(ctx context.Context, input ReplayInput) (*ReplayR
 	if len(input.Cursor) > 512 {
 		return nil, apperr.BadRequest("replay.invalid_cursor", "replay cursor is too long")
 	}
+	if err := validateReplayWindow(input); err != nil {
+		return nil, err
+	}
 	if input.Mode == "controlled" {
 		return s.createControlled(ctx, actor, input)
 	}
@@ -114,6 +117,16 @@ func (s *replayService) Create(ctx context.Context, input ReplayInput) (*ReplayR
 		return nil, apperr.Internal("replay.query_failed", "failed to load replay facts").Wrap(err)
 	}
 	return &ReplayResult{ReplayID: idgen.NewID(), Mode: input.Mode, Status: "completed", Facts: facts, NextCursor: next}, nil
+}
+
+func validateReplayWindow(input ReplayInput) error {
+	if input.Mode == "controlled" && (input.From != nil || input.To != nil) {
+		return apperr.BadRequest("replay.filters_not_allowed", "controlled replay does not accept time filters")
+	}
+	if input.From != nil && input.To != nil && !input.From.Before(*input.To) {
+		return apperr.BadRequest("replay.invalid_time_range", "replay from must be earlier than to")
+	}
+	return nil
 }
 
 //nolint:cyclop // dry-run replay validates scope, auditability, and source availability together.

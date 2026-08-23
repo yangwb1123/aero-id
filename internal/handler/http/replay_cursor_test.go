@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -34,7 +35,7 @@ func TestReplayHandlerPassesOpaqueCursor(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/audit/replays", bytes.NewBufferString(
-		`{"mode":"forensic","account_id":"01991c87-8dc8-7b45-b868-8b741fc98400","cursor":"opaque-window-2","limit":25}`))
+		`{"mode":"forensic","account_id":"01991c87-8dc8-7b45-b868-8b741fc98400","from":"2026-08-20T10:00:00Z","to":"2026-08-21T10:00:00Z","cursor":"opaque-window-2","limit":25}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	service := &replayCursorService{}
 
@@ -45,5 +46,10 @@ func TestReplayHandlerPassesOpaqueCursor(t *testing.T) {
 	}
 	if service.input.Cursor != "opaque-window-2" || service.input.Limit != 25 {
 		t.Fatalf("input = %#v", service.input)
+	}
+	if service.input.From == nil || service.input.To == nil ||
+		service.input.From.Format(time.RFC3339) != "2026-08-20T10:00:00Z" ||
+		service.input.To.Format(time.RFC3339) != "2026-08-21T10:00:00Z" {
+		t.Fatalf("time window = %v to %v", service.input.From, service.input.To)
 	}
 }
