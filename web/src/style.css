@@ -193,6 +193,13 @@ section > [data-iris-card] {
   align-items: end;
 }
 
+.compliance-create-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+}
+
 .callback-replay-row {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) auto;
@@ -358,6 +365,7 @@ section > [data-iris-card] {
 
   .callback-create-grid,
   .callback-replay-row,
+  .compliance-create-grid,
   .replay-scope-grid,
   .replay-command-grid {
     grid-template-columns: 1fr;

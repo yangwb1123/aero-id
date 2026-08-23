@@ -55,7 +55,8 @@ export function JobDetails({
 
   const job = resource.data!;
   const status = String(job.status ?? "");
-  const isExport = job.job_type === "export" || job.type === "export";
+  const jobType = String(job.job_type ?? job.type ?? "");
+  const isExport = jobType === "export" || jobType === "audit_export";
   const reconcile = async () => {
     setAction("reconcile");
     setActionError(undefined);
