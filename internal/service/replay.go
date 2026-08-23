@@ -23,6 +23,7 @@ type ReplayInput struct {
 	OperationID    domain.ID
 	From           *time.Time
 	To             *time.Time
+	Cursor         string
 	Limit          int
 	IdempotencyKey string
 	Confirmed      bool
@@ -85,6 +86,13 @@ func (s *replayService) Create(ctx context.Context, input ReplayInput) (*ReplayR
 	if input.Mode != "forensic" && input.Mode != "dry-run" && input.Mode != "controlled" {
 		return nil, apperr.BadRequest("replay.invalid_mode", "replay mode is not supported")
 	}
+	input.Cursor = strings.TrimSpace(input.Cursor)
+	if input.Mode == "controlled" && input.Cursor != "" {
+		return nil, apperr.BadRequest("replay.cursor_not_allowed", "controlled replay does not accept a cursor")
+	}
+	if len(input.Cursor) > 512 {
+		return nil, apperr.BadRequest("replay.invalid_cursor", "replay cursor is too long")
+	}
 	if input.Mode == "controlled" {
 		return s.createControlled(ctx, actor, input)
 	}
@@ -101,7 +109,7 @@ func (s *replayService) Create(ctx context.Context, input ReplayInput) (*ReplayR
 		input.Limit = domain.MaxPageLimit
 	}
 	facts, next, err := s.audit.List(ctx, domain.AuditFactFilter{AccountID: input.AccountID, OperationID: input.OperationID,
-		From: input.From, To: input.To, Page: domain.Page{Limit: input.Limit}})
+		From: input.From, To: input.To, Page: domain.Page{Limit: input.Limit, Cursor: input.Cursor}})
 	if err != nil {
 		return nil, apperr.Internal("replay.query_failed", "failed to load replay facts").Wrap(err)
 	}
@@ -134,7 +142,7 @@ func (s *replayService) createDryRun(ctx context.Context, actor string, input Re
 		limit = domain.MaxPageLimit
 	}
 	facts, next, err := s.audit.List(ctx, domain.AuditFactFilter{AccountID: input.AccountID, OperationID: input.OperationID,
-		From: input.From, To: input.To, Page: domain.Page{Limit: limit}})
+		From: input.From, To: input.To, Page: domain.Page{Limit: limit, Cursor: input.Cursor}})
 	if err != nil {
 		return nil, apperr.Internal("replay.query_failed", "failed to load replay facts").Wrap(err)
 	}

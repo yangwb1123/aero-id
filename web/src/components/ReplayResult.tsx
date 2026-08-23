@@ -22,10 +22,14 @@ export function ReplayResult({
   client,
   result,
   clear,
+  continueWindow,
+  continuing,
 }: {
   client: AeroIdClient;
   result: JsonRecord;
   clear(): void;
+  continueWindow(cursor: string): void;
+  continuing: boolean;
 }): React.ReactElement {
   const replayID = String(result.replay_id ?? "");
   const controlled = result.mode === "controlled";
@@ -50,6 +54,16 @@ export function ReplayResult({
                 查看 Operation 时间线
               </IrisButton>
             ) : null}
+            {!controlled && result.next_cursor ? (
+              <IrisButton
+                size="sm"
+                variant="outline"
+                loading={continuing}
+                onClick={() => continueWindow(String(result.next_cursor))}
+              >
+                手动读取下一窗口
+              </IrisButton>
+            ) : null}
           </div>
         }
       >
@@ -64,8 +78,7 @@ export function ReplayResult({
         />
         {result.next_cursor ? (
           <IrisAlert tone="warning" title="重建结果仍有后续事实">
-            当前 Replay API 返回了下一游标，但没有继续 Replay
-            的路由；请使用审计台账按相同作用域继续 keyset 查询。
+            当前仅展示一个有界窗口。继续时会原样回传游标、重新鉴权并写入新的审计读取事实；页面不会自动全量扫描。
           </IrisAlert>
         ) : null}
         {result.simulation ? (

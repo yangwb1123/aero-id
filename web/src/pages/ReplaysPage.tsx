@@ -33,6 +33,15 @@ function actionLabel(mode: ReplayMode): string {
   return "执行 Forensic 重建";
 }
 
+export function replayContinuation(
+  input: ReplayCreateInput | undefined,
+  cursor: string,
+): ReplayCreateInput {
+  if (!input || input.mode === "controlled")
+    throw new Error("只有 Forensic 或 Dry-run 结果可以继续读取下一窗口");
+  return { ...input, cursor };
+}
+
 export function ReplaysPage({
   client,
 }: {
@@ -49,6 +58,7 @@ export function ReplaysPage({
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState<Error>();
   const [result, setResult] = React.useState<JsonRecord>();
+  const [lastInput, setLastInput] = React.useState<ReplayCreateInput>();
 
   const changeMode = (value: unknown) => {
     const next = String(value) as ReplayMode;
@@ -89,7 +99,9 @@ export function ReplaysPage({
     setRunning(true);
     setError(undefined);
     try {
-      setResult(await client.replays.create(input));
+      const nextResult = await client.replays.create(input);
+      setResult(nextResult);
+      setLastInput(input);
       setPending(undefined);
       setConfirmation("");
     } catch (reason) {
@@ -110,6 +122,13 @@ export function ReplaysPage({
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason : new Error("Replay 输入无效"));
+    }
+  };
+  const continueWindow = (cursor: string) => {
+    try {
+      void execute(replayContinuation(lastInput, cursor));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason : new Error("Replay 游标无效"));
     }
   };
   return (
@@ -194,7 +213,12 @@ export function ReplaysPage({
         <ReplayResult
           client={client}
           result={result}
-          clear={() => setResult(undefined)}
+          clear={() => {
+            setResult(undefined);
+            setLastInput(undefined);
+          }}
+          continueWindow={continueWindow}
+          continuing={running}
         />
       ) : null}
       <ProjectionReplayPanel client={client} />

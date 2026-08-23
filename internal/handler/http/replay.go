@@ -49,6 +49,7 @@ type replayRequest struct {
 	OperationID    string                 `json:"operation_id"`
 	From           string                 `json:"from"`
 	To             string                 `json:"to"`
+	Cursor         string                 `json:"cursor"`
 	Limit          int                    `json:"limit"`
 	IdempotencyKey string                 `json:"idempotency_key"`
 	Confirmed      bool                   `json:"confirmed"`
@@ -96,7 +97,8 @@ func (h *ReplayHandler) Create(c *gin.Context) {
 		commands[i] = service.ReplayCommand{Source: command.Source, Action: command.Action, Payload: command.Payload}
 	}
 	result, err := h.replays.Create(c.Request.Context(), service.ReplayInput{Mode: body.Mode, AccountID: accountID,
-		OperationID: operationID, From: from, To: to, Limit: body.Limit, IdempotencyKey: key, Confirmed: body.Confirmed, Commands: commands})
+		OperationID: operationID, From: from, To: to, Cursor: body.Cursor, Limit: body.Limit,
+		IdempotencyKey: key, Confirmed: body.Confirmed, Commands: commands})
 	if err != nil {
 		httpx.WriteError(c, err)
 		return

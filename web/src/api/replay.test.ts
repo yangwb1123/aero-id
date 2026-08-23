@@ -71,11 +71,13 @@ describe("ReplayClient", () => {
     expect(requests[1].url.pathname).toBe("/v1/audit/replays/replay%2F1");
   });
 
-  it("does not attach a command idempotency key to forensic reconstruction", async () => {
+  it("continues forensic reconstruction with the opaque cursor and no command idempotency key", async () => {
     let headers = new Headers();
+    let requestBody: unknown;
     const fetcher = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
         headers = new Headers(init?.headers);
+        requestBody = JSON.parse(String(init?.body));
         return json({
           data: { replay_id: "replay-1", mode: "forensic", events: [] },
         });
@@ -92,12 +94,19 @@ describe("ReplayClient", () => {
     await client.create({
       mode: "forensic",
       operationID: "operation-1",
+      cursor: "opaque-window-2",
       limit: 100,
       confirmed: false,
       commands: [],
     });
 
     expect(headers.has("Idempotency-Key")).toBe(false);
+    expect(requestBody).toMatchObject({
+      mode: "forensic",
+      operation_id: "operation-1",
+      cursor: "opaque-window-2",
+      limit: 100,
+    });
   });
 
   it("continues projection replay with the opaque server cursor", async () => {
