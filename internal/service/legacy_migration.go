@@ -46,10 +46,21 @@ type LegacyDigestSummary struct {
 type legacyMigrationService struct {
 	legacy       repository.LegacyMigrationRepository
 	connectors   map[connector.Source]connector.Connector
+	audit        AuditLedgerService
 	defaultLimit int
 }
 
 func NewLegacyMigrationService(legacy repository.LegacyMigrationRepository,
+	connectors ...connector.Connector) LegacyMigrationService {
+	return newLegacyMigrationService(legacy, nil, connectors...)
+}
+
+func NewLegacyMigrationServiceWithAudit(legacy repository.LegacyMigrationRepository,
+	audit AuditLedgerService, connectors ...connector.Connector) LegacyMigrationService {
+	return newLegacyMigrationService(legacy, audit, connectors...)
+}
+
+func newLegacyMigrationService(legacy repository.LegacyMigrationRepository, audit AuditLedgerService,
 	connectors ...connector.Connector) LegacyMigrationService {
 	bySource := make(map[connector.Source]connector.Connector, len(connectors))
 	for _, client := range connectors {
@@ -57,11 +68,13 @@ func NewLegacyMigrationService(legacy repository.LegacyMigrationRepository,
 			bySource[client.Source()] = client
 		}
 	}
-	return &legacyMigrationService{legacy: legacy, connectors: bySource, defaultLimit: defaultLegacyMigrationLimit}
+	return &legacyMigrationService{legacy: legacy, connectors: bySource, audit: audit,
+		defaultLimit: defaultLegacyMigrationLimit}
 }
 
 // defaultLegacyMigrationLimit caps one compare run.
 const defaultLegacyMigrationLimit = 1000
+const maxLegacyMigrationLimit = 5000
 
 // compareWithSource fills the source counters when the connector is configured
 // and reachable. A missing connector is a partial result (no error); a source
@@ -70,7 +83,7 @@ func (s *legacyMigrationService) compareWithSource(ctx context.Context, input Le
 	client, ok := s.connectors[input.Source]
 	if !ok {
 		result.SourceAvailable = false
-		result.SourceErrors["source"] = "connector not configured for " + string(input.Source)
+		result.SourceErrors["source"] = "source summary unavailable"
 		return nil
 	}
 	summary, err := client.Summary(ctx, connector.SummaryRequest{
@@ -86,36 +99,82 @@ func (s *legacyMigrationService) compareWithSource(ctx context.Context, input Le
 }
 
 func (s *legacyMigrationService) Compare(ctx context.Context, input LegacyCompareInput) (*LegacyCompareResult, error) {
-	if strings.TrimSpace(input.OwnerUID) == "" {
-		return nil, apperr.BadRequest("migration.owner_required", "owner_uid is required")
-	}
-	limit := input.Limit
-	if limit <= 0 {
-		limit = s.defaultLimit
-	}
-	result := &LegacyCompareResult{OwnerUID: input.OwnerUID, SourceErrors: map[string]string{}}
-	files, err := s.legacy.LegacyFileDigest(ctx, input.OwnerUID, limit)
+	input, err := s.normalizeCompareInput(input)
 	if err != nil {
-		return nil, apperr.Internal("migration.legacy_scan_failed", "failed to digest legacy files").Wrap(err)
+		return nil, err
 	}
-	messages, err := s.legacy.LegacyMessageDigest(ctx, input.OwnerUID, limit)
+	legacy, partial, err := s.loadLegacyDigests(ctx, input)
 	if err != nil {
-		return nil, apperr.Internal("migration.legacy_scan_failed", "failed to digest legacy messages").Wrap(err)
+		return nil, err
 	}
-	comments, err := s.legacy.LegacyCommentDigest(ctx, input.OwnerUID, limit)
-	if err != nil {
-		return nil, apperr.Internal("migration.legacy_scan_failed", "failed to digest legacy comments").Wrap(err)
-	}
-	result.Legacy = LegacyDigestSummary{Files: files, Messages: messages, Comments: comments}
-	result.Partial = files.Truncated || messages.Truncated || comments.Truncated
+	result := &LegacyCompareResult{OwnerUID: input.OwnerUID, Legacy: legacy, Partial: partial,
+		SourceErrors: map[string]string{}}
 
 	// A missing connector or a source failure is a partial result: the legacy
-	// digest is still returned with SourceAvailable=false and the detail.
+	// digest is still returned with SourceAvailable=false and a stable detail.
 	if err := s.compareWithSource(ctx, input, result); err != nil {
 		result.SourceAvailable = false
-		result.SourceErrors["source"] = err.Error()
+		result.SourceErrors["source"] = "source summary unavailable"
+	}
+	if err := s.recordCompare(ctx, input, result); err != nil {
+		return nil, err
 	}
 	return result, nil
+}
+
+func (s *legacyMigrationService) normalizeCompareInput(input LegacyCompareInput) (LegacyCompareInput, error) {
+	input.OwnerUID = strings.TrimSpace(input.OwnerUID)
+	if input.OwnerUID == "" {
+		return LegacyCompareInput{}, apperr.BadRequest("migration.owner_required", "owner_uid is required")
+	}
+	if input.Source != connector.SourceAeroVault && input.Source != connector.SourceAeroIM {
+		return LegacyCompareInput{}, apperr.BadRequest("migration.source_invalid", "source must be aero-vault or aero-im")
+	}
+	if input.Limit <= 0 {
+		input.Limit = s.defaultLimit
+	}
+	if input.Limit > maxLegacyMigrationLimit {
+		return LegacyCompareInput{}, apperr.BadRequest("migration.limit_invalid", "limit exceeds the maximum batch size")
+	}
+	return input, nil
+}
+
+func (s *legacyMigrationService) loadLegacyDigests(ctx context.Context,
+	input LegacyCompareInput) (LegacyDigestSummary, bool, error) {
+	files, err := s.legacy.LegacyFileDigest(ctx, input.OwnerUID, input.Limit)
+	if err != nil {
+		return LegacyDigestSummary{}, false,
+			apperr.Internal("migration.legacy_scan_failed", "failed to digest legacy files").Wrap(err)
+	}
+	messages, err := s.legacy.LegacyMessageDigest(ctx, input.OwnerUID, input.Limit)
+	if err != nil {
+		return LegacyDigestSummary{}, false,
+			apperr.Internal("migration.legacy_scan_failed", "failed to digest legacy messages").Wrap(err)
+	}
+	comments, err := s.legacy.LegacyCommentDigest(ctx, input.OwnerUID, input.Limit)
+	if err != nil {
+		return LegacyDigestSummary{}, false,
+			apperr.Internal("migration.legacy_scan_failed", "failed to digest legacy comments").Wrap(err)
+	}
+	legacy := LegacyDigestSummary{Files: files, Messages: messages, Comments: comments}
+	return legacy, files.Truncated || messages.Truncated || comments.Truncated, nil
+}
+
+func (s *legacyMigrationService) recordCompare(ctx context.Context, input LegacyCompareInput,
+	result *LegacyCompareResult) error {
+	if s.audit == nil {
+		return nil // unit-test compatibility; composition wiring forbids this
+	}
+	// audit-site: standalone-fact — the comparison reads content-derived
+	// digests and source counters; a failed append prevents evidence leaving.
+	if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", Action: "legacy.migration.compared",
+		ResourceType: "legacy_identity", ResourceID: input.OwnerUID,
+		Payload: map[string]any{"source": string(input.Source), "limit": input.Limit,
+			"matched": result.Matched, "partial": result.Partial,
+			"source_available": result.SourceAvailable, "drift_count": len(result.Drift)}}); err != nil {
+		return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+	}
+	return nil
 }
 
 // sourceMigrationCounters extracts comparable counters from the connector's

@@ -19,6 +19,7 @@ import { CallbacksPage } from "./pages/CallbacksPage";
 import { CompliancePage } from "./pages/CompliancePage";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { JobsPage } from "./pages/JobsPage";
+import { MigrationPage } from "./pages/MigrationPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { ProfilePage } from "./pages/ProfilePage";
@@ -35,6 +36,7 @@ const menus: NavNode[] = [
   { key: "jobs", title: "同步与导出", icon: "download" },
   { key: "operations", title: "跨系统操作", icon: "settings" },
   { key: "admin-accounts", title: "账户管理", icon: "user" },
+  { key: "migration", title: "Legacy 迁移与切换", icon: "link" },
   { key: "audit", title: "审计台账", icon: "shield" },
   { key: "compliance", title: "审计合规管理", icon: "shield" },
   { key: "callbacks", title: "Callback 治理", icon: "link" },
@@ -68,6 +70,8 @@ function PageHost({
       return <OperationsPage client={client} />;
     case "admin-accounts":
       return <AdminAccountsPage client={client} />;
+    case "migration":
+      return <MigrationPage client={client} />;
     case "audit":
       return <AuditPage client={client} />;
     case "compliance":

@@ -63,6 +63,55 @@ func TestLegacyCutoverSetWithAuditHappyPath(t *testing.T) {
 	}
 }
 
+// TestLegacyCutoverCASRejectsStaleDecision proves a stale admin decision can
+// neither overwrite the winning status nor append an audit fact. The status
+// CAS and ledger append share one PostgreSQL transaction.
+func TestLegacyCutoverCASRejectsStaleDecision(t *testing.T) {
+	ctx := context.Background()
+	db, auditRepo := startCutoverAuditRepo(t, cutoverAuditTestKey)
+	casRepo, ok := auditRepo.(repository.LegacyCutoverCASAuditRepository)
+	if !ok {
+		t.Fatal("cutover repo must implement LegacyCutoverCASAuditRepository")
+	}
+	shadowEvent := idgen.Anchor("legacy.cutover.set", "tenant-a", "shadow", "legacy")
+	shadow := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("shadow"),
+		DecidedBy: "admin-1", Note: "dual read"}
+	if err := casRepo.CompareAndSetCutoverWithAudit(ctx, shadow, domain.LegacyCutoverStatusLegacy,
+		cutoverFact(shadowEvent, "tenant-a")); err != nil {
+		t.Fatalf("initial CAS: %v", err)
+	}
+
+	cutOverEvent := idgen.Anchor("legacy.cutover.set", "tenant-a", "cut_over", "shadow")
+	cutOver := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatusCutOver,
+		DecidedBy: "admin-2", Note: "winner"}
+	if err := casRepo.CompareAndSetCutoverWithAudit(ctx, cutOver, domain.LegacyCutoverStatus("shadow"),
+		cutoverFact(cutOverEvent, "tenant-a")); err != nil {
+		t.Fatalf("winning CAS: %v", err)
+	}
+
+	staleEvent := idgen.Anchor("legacy.cutover.set", "tenant-a", "rolled_back", "shadow")
+	stale := &repository.LegacyCutover{TenantID: "tenant-a", Status: domain.LegacyCutoverStatus("rolled_back"),
+		DecidedBy: "admin-3", Note: "stale"}
+	err := casRepo.CompareAndSetCutoverWithAudit(ctx, stale, domain.LegacyCutoverStatus("shadow"),
+		cutoverFact(staleEvent, "tenant-a"))
+	if !errors.Is(err, repository.ErrInvalidCutoverTransition) {
+		t.Fatalf("stale CAS error = %v, want ErrInvalidCutoverTransition", err)
+	}
+
+	var stored struct{ Status, DecidedBy, Note string }
+	if err := db.Raw(`SELECT status, decided_by, note FROM legacy_cutover WHERE tenant_id = 'tenant-a'`).
+		Scan(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "cut_over" || stored.DecidedBy != "admin-2" || stored.Note != "winner" {
+		t.Fatalf("stale decision overwrote winner: %+v", stored)
+	}
+	ledgerRows, publicationRows := countCallbackAuditRows(t, db, staleEvent)
+	if ledgerRows != 0 || publicationRows != 0 {
+		t.Fatalf("stale CAS audit rows = %d/%d, want 0/0", ledgerRows, publicationRows)
+	}
+}
+
 // TestLegacyCutoverSetWithAuditRollbackWithoutSigningKey (REQ-5 / keyless): a
 // keyless ledger fails the append and the whole decision rolls back — the
 // pre-existing row stays byte-identical and no ledger/publication rows appear.

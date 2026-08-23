@@ -83,8 +83,12 @@ func (s *legacyCutoverService) Set(ctx context.Context, tenantID string,
 	}
 	entry := &repository.LegacyCutover{TenantID: tenantID, Status: status, DecidedBy: s.actor(ctx), Note: note}
 	input := cutoverSetFactInput(ctx, tenantID, status, current, entry.DecidedBy, note)
-	atomicAudit, err := s.setWithAudit(ctx, entry, input)
+	atomicAudit, err := s.setWithAudit(ctx, entry, current, input)
 	if err != nil {
+		if errors.Is(err, repository.ErrInvalidCutoverTransition) {
+			return nil, apperr.Conflict("cutover.concurrent_transition",
+				"cutover status changed concurrently; reload before retrying").Wrap(err)
+		}
 		// With the WithAudit surface this is an ATOMIC failure: the ledger
 		// append rolled the whole decision back, so neither the cutover nor
 		// its fact committed. save_failed is truthful and fail-closed — a
@@ -113,9 +117,13 @@ func (s *legacyCutoverService) Set(ctx context.Context, tenantID string,
 // a plain write whose fact the caller's post-commit Record fallback appends.
 // It returns atomicAudit=true when the fact was appended in the same
 // transaction as the decision write.
-func (s *legacyCutoverService) setWithAudit(ctx context.Context, entry *repository.LegacyCutover, input AuditFactInput) (bool, error) {
+func (s *legacyCutoverService) setWithAudit(ctx context.Context, entry *repository.LegacyCutover,
+	expected domain.LegacyCutoverStatus, input AuditFactInput) (bool, error) {
 	if s.audit == nil {
 		return false, s.cutover.SetCutover(ctx, entry) // 0 = disabled convention
+	}
+	if repo, ok := s.cutover.(repository.LegacyCutoverCASAuditRepository); ok {
+		return true, repo.CompareAndSetCutoverWithAudit(ctx, entry, expected, buildAuditFact(ctx, input))
 	}
 	repo, ok := s.cutover.(repository.LegacyCutoverAuditRepository)
 	if !ok {

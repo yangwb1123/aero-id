@@ -87,6 +87,11 @@ GET  /v1/admin/accounts/:id/overview
 POST /v1/admin/accounts/:id/sync
 POST /v1/admin/accounts/:id/export
 POST /v1/admin/accounts/:id/erase
+POST /v1/admin/accounts/backfill/legacy-identities
+POST /v1/admin/migration/legacy/compare
+GET  /v1/admin/migration/legacy/cutover/:tenant_id
+POST /v1/admin/migration/legacy/cutover
+GET  /v1/admin/migration/legacy/cleanup-readiness/:tenant_id
 GET  /v1/admin/regions/directory/:account_id
 POST /v1/admin/regions/promote
 GET  /v1/audit/events
@@ -109,6 +114,12 @@ POST /v1/admin/callback-subscriptions/deliveries/:id/replay
 审计查询返回脱敏 payload、链序号、hash/signature 版本、`request_id`、`trace_id`、`operation_id` 和因果 ID。
 Forensic replay 不产生副作用；dry-run 只模拟；controlled replay 必须重新授权、使用新的幂等键并产生新的
 审计事实。
+
+Legacy backfill 每批限制为 1–1000 个 UID，使用固定 `Idempotency-Key`，并在任何账户创建前记录独立的管理意图；
+shadow compare 只接受 `aero-vault | aero-im`，最多读取 5000 条 content-free digest 输入，来源失败只返回稳定错误，
+成功结果在离开服务前写入敏感读取审计。Cutover 只允许服务端状态机定义的下一跳，写命令使用固定幂等键和 Tenant ID
+二次确认；服务端以读取到的旧状态做事务内 CAS，并与审计事实原子提交，`409 cutover.concurrent_transition` 后必须重新读取，
+不能拿旧决策自动重试。cleanup readiness 只报告删除前置条件，不执行 legacy 数据清理。
 
 WORM Anchor POST 需要 `system.config` 权限，扫描并校验全部当前审计链，且必须在一次确认流程中保持同一个
 `Idempotency-Key`；服务端在写入任何不可变归档对象前先持久化 `audit.anchor.requested`，审计不可用时不产生归档。

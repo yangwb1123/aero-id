@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/repository/testpg"
 	"github.com/aero/aero-id/internal/service"
@@ -106,7 +107,8 @@ func TestLegacyUIDBackfillScan(t *testing.T) {
 
 	// Shadow backfill via the service path: creates identities, no legacy writes.
 	svc := newTestAccountService(t, db)
-	result, err := svc.BackfillLegacyIdentities(t.Context(), 1000)
+	adminCtx := service.WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "legacy"})
+	result, err := svc.BackfillLegacyIdentities(adminCtx, 1000)
 	if err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestLegacyUIDBackfillScan(t *testing.T) {
 	}
 	// Second run: the union scan already excludes mapped uids, so nothing to do
 	// (idempotent; "existing" only counts uids still returned by the scan).
-	second, err := svc.BackfillLegacyIdentities(t.Context(), 1000)
+	second, err := svc.BackfillLegacyIdentities(adminCtx, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

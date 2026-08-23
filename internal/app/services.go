@@ -66,6 +66,7 @@ type serviceBundle struct {
 	accountSvc          service.AccountService
 	regionFencingSvc    service.RegionFencingService
 	cutoverSvc          service.LegacyCutoverService
+	legacyMigrationSvc  service.LegacyMigrationService
 	aggregationSvc      service.AggregationService
 	eventIngestSvc      service.EventIngestService
 	operationSvc        service.OperationService
@@ -130,6 +131,8 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithRegionFencingAllowedRegions(deps.cfg.Account.Regions))
 	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(deps.gdb, deps.auditLedgerRepo),
 		repository.NewLegacyCleanupRepository(deps.gdb), deps.auditLedger)
+	legacyMigrationSvc := service.NewLegacyMigrationServiceWithAudit(
+		repository.NewLegacyMigrationRepository(deps.gdb), deps.auditLedger, deps.sourceConnectors...)
 	aggregationSvc := service.NewAggregationService(accountSvc, deps.snapshotRepo, deps.sourceConnectors...)
 	eventIngestSvc := service.NewEventIngestService(deps.eventReceiptRepo,
 		service.WithEventAllowedRegions(deps.cfg.EventIngest.AllowedRegions),
@@ -189,6 +192,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		auditWiredService{name: "admin", svc: adminSvc},
 		auditWiredService{name: "ban", svc: banSvc},
 		auditWiredService{name: "account", svc: accountSvc},
+		auditWiredService{name: "legacy_migration", svc: legacyMigrationSvc},
 		auditWiredService{name: "preference", svc: prefSvc},
 		auditWiredService{name: "region_fencing", svc: regionFencingSvc},
 		auditWiredService{name: "projection_replay", svc: projectionReplaySvc},
@@ -206,7 +210,8 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		fileSvc: fileSvc, msgSvc: msgSvc, commentSvc: commentSvc, notifSvc: notifSvc,
 		blockSvc: blockSvc, prefSvc: prefSvc, searchSvc: searchSvc, adminSvc: adminSvc,
 		accountSvc: accountSvc, regionFencingSvc: regionFencingSvc, cutoverSvc: cutoverSvc,
-		aggregationSvc: aggregationSvc, eventIngestSvc: eventIngestSvc,
+		legacyMigrationSvc: legacyMigrationSvc,
+		aggregationSvc:     aggregationSvc, eventIngestSvc: eventIngestSvc,
 		operationSvc: operationSvc, replaySvc: replaySvc, projectionReplaySvc: projectionReplaySvc,
 		syncJobSvc: syncJobSvc, banSvc: banSvc, replicationSvc: replicationSvc,
 		permissionChecker: permissionChecker,

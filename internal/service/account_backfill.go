@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"gorm.io/gorm"
@@ -19,6 +20,7 @@ const LegacyBackfillTenant = "legacy"
 // DefaultBackfillBatch caps a single backfill run so the union scan stays
 // bounded; callers loop until Completed is true.
 const DefaultBackfillBatch = 500
+const MaxBackfillBatch = 1000
 
 // BackfillResult reports one backfill run (P1-07). The backfill is shadow-only:
 // it creates account identities for legacy uids and never mutates legacy rows
@@ -58,6 +60,12 @@ func (s *accountService) BackfillLegacyIdentities(ctx context.Context, limit int
 	if limit <= 0 {
 		limit = DefaultBackfillBatch
 	}
+	if limit > MaxBackfillBatch {
+		return nil, apperr.BadRequest("backfill.limit_invalid", "limit exceeds the maximum batch size")
+	}
+	if err := s.recordBackfillRequest(ctx, limit); err != nil {
+		return nil, err
+	}
 	total, err := backfill.CountLegacyUIDs(ctx)
 	if err != nil {
 		return nil, mapAccountError(err, "backfill.count_failed", "failed to count legacy uids")
@@ -72,6 +80,20 @@ func (s *accountService) BackfillLegacyIdentities(ctx context.Context, limit int
 	}
 	result.Completed = int64(len(uids)) < int64(limit)
 	return result, nil
+}
+
+func (s *accountService) recordBackfillRequest(ctx context.Context, limit int) error {
+	if s.audit == nil {
+		return nil // unit-test compatibility; composition wiring forbids this
+	}
+	// audit-site: standalone-fact — records every administrative batch intent,
+	// including runs that discover no identities and create no account facts.
+	if err := s.audit.Record(ctx, AuditFactInput{Source: "aero-id", Action: "account.legacy_backfill.requested",
+		ResourceType: "legacy_identity_batch", ResourceID: s.backfillTenant,
+		Payload: map[string]any{"issuer": s.issuer, "limit": limit}}); err != nil {
+		return apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
+	}
+	return nil
 }
 
 // backfillOne resolves one legacy uid into a shadow account identity. Each

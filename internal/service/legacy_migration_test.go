@@ -33,7 +33,22 @@ type fakeMigrationConnector struct {
 	err     error
 }
 
-func (f *fakeMigrationConnector) Source() connector.Source { return f.source }
+type migrationAuditSpy struct {
+	inputs []AuditFactInput
+	err    error
+}
+
+func (s *migrationAuditSpy) Record(_ context.Context, input AuditFactInput) error {
+	s.inputs = append(s.inputs, input)
+	return s.err
+}
+func (*migrationAuditSpy) Log(context.Context, *domain.AuditEvent) error { return nil }
+func (*migrationAuditSpy) List(context.Context, domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
+	return nil, "", nil
+}
+func (*migrationAuditSpy) VerifyChain(context.Context, string, string) error { return nil }
+
+func (f *fakeMigrationConnector) Source() connector.Source         { return f.source }
 func (f *fakeMigrationConnector) Health(ctx context.Context) error { return nil }
 func (f *fakeMigrationConnector) Summary(ctx context.Context, req connector.SummaryRequest) (*connector.Summary, error) {
 	return f.summary, f.err
@@ -103,7 +118,8 @@ func TestLegacyMigrationCompare_SourceUnavailable(t *testing.T) {
 	}
 
 	// Connector present but the source is down.
-	down := &fakeMigrationConnector{source: connector.SourceAeroVault, err: errors.New("source down")}
+	down := &fakeMigrationConnector{source: connector.SourceAeroVault,
+		err: errors.New("dial https://vault.internal.example/summary?token=secret")}
 	svc = NewLegacyMigrationService(repo, down)
 	result, err = svc.Compare(context.Background(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault})
 	if err != nil {
@@ -112,13 +128,16 @@ func TestLegacyMigrationCompare_SourceUnavailable(t *testing.T) {
 	if result.SourceAvailable || result.SourceErrors["source"] == "" {
 		t.Errorf("source outage must be reported: %+v", result.SourceErrors)
 	}
+	if result.SourceErrors["source"] != "source summary unavailable" {
+		t.Fatalf("source error leaked dependency detail: %q", result.SourceErrors["source"])
+	}
 }
 
 // TestLegacyMigrationCompare_TruncatedIsPartial: a limit-hit digest flags
 // partial comparison instead of a false match.
 func TestLegacyMigrationCompare_TruncatedIsPartial(t *testing.T) {
 	repo := &fakeLegacyMigrationRepo{
-		files: &repository.LegacyDataDigest{Count: 1000, Digest: "x", Truncated: true},
+		files:    &repository.LegacyDataDigest{Count: 1000, Digest: "x", Truncated: true},
 		messages: migrationDigest(0), comments: migrationDigest(0),
 	}
 	client := &fakeMigrationConnector{source: connector.SourceAeroVault, summary: &connector.Summary{
@@ -142,5 +161,47 @@ func TestLegacyMigrationCompare_RequiresOwner(t *testing.T) {
 	svc := NewLegacyMigrationService(&fakeLegacyMigrationRepo{})
 	if _, err := svc.Compare(context.Background(), LegacyCompareInput{Source: connector.SourceAeroVault}); err == nil {
 		t.Fatal("missing owner_uid must be rejected")
+	}
+}
+
+func TestLegacyMigrationCompare_ValidatesSourceAndBatchLimit(t *testing.T) {
+	svc := NewLegacyMigrationService(&fakeLegacyMigrationRepo{})
+	if _, err := svc.Compare(context.Background(), LegacyCompareInput{
+		OwnerUID: "u-1", Source: connector.Source("unknown"),
+	}); err == nil {
+		t.Fatal("unknown source must be rejected")
+	}
+	if _, err := svc.Compare(context.Background(), LegacyCompareInput{
+		OwnerUID: "u-1", Source: connector.SourceAeroIM, Limit: maxLegacyMigrationLimit + 1,
+	}); err == nil {
+		t.Fatal("oversized comparison batch must be rejected")
+	}
+}
+
+func TestLegacyMigrationCompare_AuditsSensitiveResultFailClosed(t *testing.T) {
+	repo := &fakeLegacyMigrationRepo{
+		files: migrationDigest(0), messages: migrationDigest(2), comments: migrationDigest(1),
+	}
+	connectorClient := &fakeMigrationConnector{source: connector.SourceAeroIM, summary: &connector.Summary{
+		Source: connector.SourceAeroIM,
+		Snapshots: []*domain.AccountSnapshot{{Source: string(connector.SourceAeroIM),
+			Data: map[string]any{"message_count": 2, "comment_count": 1}}},
+	}}
+	audit := &migrationAuditSpy{}
+	svc := NewLegacyMigrationServiceWithAudit(repo, audit, connectorClient)
+	if _, err := svc.Compare(context.Background(), LegacyCompareInput{
+		OwnerUID: "u-1", Source: connector.SourceAeroIM,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.inputs) != 1 || audit.inputs[0].Action != "legacy.migration.compared" {
+		t.Fatalf("audit inputs = %+v", audit.inputs)
+	}
+
+	audit.err = errors.New("ledger unavailable")
+	if result, err := svc.Compare(context.Background(), LegacyCompareInput{
+		OwnerUID: "u-1", Source: connector.SourceAeroIM,
+	}); err == nil || result != nil {
+		t.Fatalf("result, err = %+v, %v; audit failure must release no comparison", result, err)
 	}
 }

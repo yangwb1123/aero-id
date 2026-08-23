@@ -22,6 +22,21 @@ type fakeBackfillRepo struct {
 	facts      []*domain.AuditFact // account.provisioned facts recorded via EnsureByIdentityWithAudit
 }
 
+type backfillAuditSpy struct {
+	inputs []AuditFactInput
+	err    error
+}
+
+func (s *backfillAuditSpy) Record(_ context.Context, input AuditFactInput) error {
+	s.inputs = append(s.inputs, input)
+	return s.err
+}
+func (*backfillAuditSpy) Log(context.Context, *domain.AuditEvent) error { return nil }
+func (*backfillAuditSpy) List(context.Context, domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
+	return nil, "", nil
+}
+func (*backfillAuditSpy) VerifyChain(context.Context, string, string) error { return nil }
+
 func (f *fakeBackfillRepo) EnsureByIdentity(ctx context.Context, tenantID, issuer, subject, canonicalUID, homeRegion string) (*domain.Account, error) {
 	key := tenantID + "|" + issuer + "|" + subject
 	f.mu.Lock()
@@ -210,6 +225,31 @@ func TestBackfillLegacyIdentities_BoundedBatch(t *testing.T) {
 	}
 	if result.Completed {
 		t.Error("completed = true, want false (5 uids > limit 3; another run needed)")
+	}
+}
+
+func TestBackfillLegacyIdentities_RejectsOversizedBatch(t *testing.T) {
+	f := &fakeBackfillRepo{uids: []string{"u1"}, identities: map[string]bool{}, created: map[string]string{}}
+	if result, err := newBackfillService(f).BackfillLegacyIdentities(context.Background(), MaxBackfillBatch+1); err == nil || result != nil {
+		t.Fatalf("result, err = %+v, %v; oversized batch must be rejected", result, err)
+	}
+	if len(f.created) != 0 {
+		t.Fatalf("oversized batch created accounts: %v", f.created)
+	}
+}
+
+func TestBackfillLegacyIdentities_AuditsBatchIntentFailClosed(t *testing.T) {
+	f := &fakeBackfillRepo{uids: []string{"u1"}, identities: map[string]bool{}, created: map[string]string{}}
+	audit := &backfillAuditSpy{err: errors.New("ledger unavailable")}
+	svc := NewAccountService(f, WithAccountAudit(audit))
+	if result, err := svc.BackfillLegacyIdentities(context.Background(), 0); err == nil || result != nil {
+		t.Fatalf("result, err = %+v, %v; audit failure must abort the batch", result, err)
+	}
+	if len(audit.inputs) != 1 || audit.inputs[0].Action != "account.legacy_backfill.requested" {
+		t.Fatalf("audit inputs = %+v", audit.inputs)
+	}
+	if len(f.created) != 0 {
+		t.Fatalf("audit failure created accounts: %v", f.created)
 	}
 }
 

@@ -392,16 +392,18 @@ paths:
     post:
       operationId: backfillLegacyIdentities
       security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                limit: {type: integer, minimum: 1}
+                limit: {type: integer, minimum: 1, maximum: 1000}
       responses:
         '200':
-          description: Shadow backfill result for legacy uids (P1-07).
+          description: Bounded shadow backfill result for legacy uids; the administrative batch intent is durably audited before account creation (P1-07).
           content: {application/json: {schema: {type: object}}}
         '403': {$ref: '#/components/responses/Error'}
   /admin/accounts/{id}/overview:
@@ -487,11 +489,11 @@ paths:
               required: [owner_uid, source]
               properties:
                 owner_uid: {type: string}
-                source: {type: string}
-                limit: {type: integer, minimum: 1}
+                source: {type: string, enum: [aero-vault, aero-im]}
+                limit: {type: integer, minimum: 1, maximum: 5000}
       responses:
         '200':
-          description: Shadow migration comparison result (P8-02).
+          description: Redacted shadow migration comparison result, released only after a durable sensitive-read audit fact (P8-02).
           content: {application/json: {schema: {type: object}}}
         '403': {$ref: '#/components/responses/Error'}
   /admin/migration/legacy/cutover/{tenant_id}:
@@ -509,6 +511,8 @@ paths:
     post:
       operationId: setLegacyCutover
       security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         content:
           application/json:
@@ -517,12 +521,15 @@ paths:
               required: [tenant_id, status]
               properties:
                 tenant_id: {type: string}
-                status: {type: string}
+                status: {type: string, enum: [legacy, shadow, cut_over, rolled_back]}
                 note: {type: string}
       responses:
         '200':
-          description: Cutover decision recorded (P8-04).
+          description: Cutover decision and its audit fact atomically recorded with a server-side expected-status CAS (P8-04).
           content: {application/json: {schema: {type: object}}}
+        '409':
+          description: The transition is invalid or the observed cutover status changed concurrently; reload status before retrying.
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
         '403': {$ref: '#/components/responses/Error'}
   /admin/migration/legacy/cleanup-readiness/{tenant_id}:
     get:

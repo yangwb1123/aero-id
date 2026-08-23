@@ -207,6 +207,29 @@ section > [data-iris-card] {
   align-items: end;
 }
 
+.migration-command-row,
+.migration-inspect-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+}
+
+.migration-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(190px, 1fr)) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+}
+
+.migration-cutover-grid {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.6fr) minmax(280px, 1.4fr) auto;
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+  margin-block-start: var(--iris-space-md, 16px);
+}
+
 .callback-replay-row {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) auto;
@@ -382,6 +405,10 @@ section > [data-iris-card] {
   .callback-replay-row,
   .anchor-query-grid,
   .compliance-create-grid,
+  .migration-command-row,
+  .migration-compare-grid,
+  .migration-cutover-grid,
+  .migration-inspect-grid,
   .region-promotion-row,
   .replay-scope-grid,
   .replay-command-grid {

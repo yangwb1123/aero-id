@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 
 	"github.com/aero/aero-id/internal/config"
 	"github.com/aero/aero-id/internal/connector"
@@ -24,7 +23,6 @@ import (
 type routerDependencies struct {
 	cfg              *config.Config
 	log              *zap.Logger
-	gdb              *gorm.DB
 	metricsReg       *metrics.Registry
 	tokenValidator   grpcsrv.TokenValidator
 	downloader       httpapi.SignedDownloader
@@ -79,7 +77,7 @@ func buildRouter(deps routerDependencies) http.Handler {
 			deps.svcs.permissionChecker),
 		httpapi.NewSearchHandler(deps.svcs.searchSvc),
 		httpapi.NewAccountHandlerWithExtensions(deps.svcs.accountSvc, deps.svcs.regionFencingSvc,
-			service.NewLegacyMigrationService(repository.NewLegacyMigrationRepository(deps.gdb), deps.sourceConnectors...),
+			deps.svcs.legacyMigrationSvc,
 			deps.workers.cutoverFacadeSvc,
 			deps.svcs.permissionChecker),
 		httpapi.NewAggregationHandler(deps.svcs.aggregationSvc, deps.svcs.permissionChecker),

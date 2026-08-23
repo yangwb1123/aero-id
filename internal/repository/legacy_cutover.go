@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"strconv"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -41,6 +41,14 @@ type LegacyCutoverRepository interface {
 // implements it; the service type-asserts.
 type LegacyCutoverAuditRepository interface {
 	SetCutoverWithAudit(ctx context.Context, cutover *LegacyCutover, fact *domain.AuditFact) error
+}
+
+// LegacyCutoverCASAuditRepository prevents concurrent decisions that observed
+// the same state from overwriting each other. The status CAS and audit append
+// commit in one transaction.
+type LegacyCutoverCASAuditRepository interface {
+	CompareAndSetCutoverWithAudit(ctx context.Context, cutover *LegacyCutover,
+		expected domain.LegacyCutoverStatus, fact *domain.AuditFact) error
 }
 
 // CleanupReadinessItem is one checklist item of the P8-05 cleanup guard.
@@ -125,6 +133,47 @@ func (r *legacyCutoverRepo) SetCutoverWithAudit(ctx context.Context, cutover *Le
 		}
 		return nil
 	})
+}
+
+func (r *legacyCutoverRepo) CompareAndSetCutoverWithAudit(ctx context.Context, cutover *LegacyCutover,
+	expected domain.LegacyCutoverStatus, fact *domain.AuditFact) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := r.compareAndSetCutoverInTx(tx, cutover, expected); err != nil {
+			return err
+		}
+		if err := r.audit.AppendInTx(ctx, tx, fact); err != nil && !errors.Is(err, ErrAuditDuplicate) {
+			return fmt.Errorf("append legacy cutover audit: %w", err)
+		}
+		return nil
+	})
+}
+
+// compareAndSetCutoverInTx updates only the status observed by the service.
+// A missing legacy row is created once; an existing row or stale status loses
+// the race deterministically instead of overwriting another admin's decision.
+func (r *legacyCutoverRepo) compareAndSetCutoverInTx(tx *gorm.DB, cutover *LegacyCutover,
+	expected domain.LegacyCutoverStatus) error {
+	now := time.Now().UTC()
+	updates := map[string]any{"status": string(cutover.Status), "decided_at": now,
+		"decided_by": cutover.DecidedBy, "note": cutover.Note, "updated_at": now}
+	result := tx.Model(&legacyCutoverRow{}).Where("tenant_id = ? AND status = ?", cutover.TenantID, expected).
+		Updates(updates)
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.Error
+	}
+	if expected != domain.LegacyCutoverStatusLegacy {
+		return ErrInvalidCutoverTransition
+	}
+	row := &legacyCutoverRow{TenantID: cutover.TenantID, Status: string(cutover.Status),
+		DecidedAt: now, DecidedBy: cutover.DecidedBy, Note: cutover.Note, UpdatedAt: now}
+	created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+	if created.Error != nil {
+		return created.Error
+	}
+	if created.RowsAffected != 1 {
+		return ErrInvalidCutoverTransition
+	}
+	return nil
 }
 
 func legacyCutoverRowToDomain(row *legacyCutoverRow) *LegacyCutover {

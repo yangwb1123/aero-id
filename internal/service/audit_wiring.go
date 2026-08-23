@@ -16,6 +16,9 @@ func (s *blockService) AuditLoggerWired() bool   { return true } // WithAudit su
 func (s *adminService) AuditLoggerWired() bool   { return s.audit != nil }
 func (s *banService) AuditLoggerWired() bool     { return s.audit != nil }
 func (s *accountService) AuditLoggerWired() bool { return s.audit != nil }
+func (s *legacyMigrationService) AuditLoggerWired() bool {
+	return s.audit != nil
+}
 func (s *preferenceService) AuditLoggerWired() bool {
 	return s.audit != nil
 }

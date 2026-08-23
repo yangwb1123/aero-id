@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { CallbackClient } from "./callback";
 import { ComplianceClient } from "./compliance";
+import { MigrationClient } from "./migration";
 import { RegionClient } from "./region";
 import { ReplayClient } from "./replay";
 import { AeroIdTransport, type RequestOptions } from "./transport";
@@ -71,6 +72,7 @@ export class AeroIdClient {
   private readonly transport: AeroIdTransport;
   readonly callbacks: CallbackClient;
   readonly compliance: ComplianceClient;
+  readonly migration: MigrationClient;
   readonly regions: RegionClient;
   readonly replays: ReplayClient;
 
@@ -82,6 +84,7 @@ export class AeroIdClient {
     this.transport = new AeroIdTransport(baseUrl, accessToken, fetcher);
     this.callbacks = new CallbackClient(this.transport);
     this.compliance = new ComplianceClient(this.transport);
+    this.migration = new MigrationClient(this.transport);
     this.regions = new RegionClient(this.transport);
     this.replays = new ReplayClient(this.transport);
   }

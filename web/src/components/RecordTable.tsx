@@ -19,7 +19,14 @@ function statusTone(
   value: string,
 ): "success" | "warning" | "danger" | "neutral" | "primary" {
   if (
-    ["fresh", "active", "completed", "delivered", "succeeded"].includes(value)
+    [
+      "fresh",
+      "active",
+      "completed",
+      "delivered",
+      "succeeded",
+      "ready",
+    ].includes(value)
   )
     return "success";
   if (

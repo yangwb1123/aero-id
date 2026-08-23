@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/repository"
 )
 
@@ -157,6 +159,39 @@ type fakeCutoverAuditRepo struct {
 	fakeCutoverRepo
 	setFact *domain.AuditFact
 	setErr  error
+}
+
+type fakeCutoverCASAuditRepo struct {
+	fakeCutoverRepo
+	expected domain.LegacyCutoverStatus
+	setErr   error
+}
+
+func (f *fakeCutoverCASAuditRepo) CompareAndSetCutoverWithAudit(_ context.Context,
+	_ *repository.LegacyCutover, expected domain.LegacyCutoverStatus, _ *domain.AuditFact) error {
+	f.expected = expected
+	return f.setErr
+}
+
+func TestCutoverConcurrentTransitionReturnsConflict(t *testing.T) {
+	cutover := &fakeCutoverCASAuditRepo{fakeCutoverRepo: *newFakeCutoverRepo(),
+		setErr: repository.ErrInvalidCutoverTransition}
+	ledger := &auditLedgerRepoSpy{}
+	svc := NewLegacyCutoverService(cutover, &fakeCleanupRepo{}, NewAuditLedgerService(ledger)).(*legacyCutoverService)
+	svc.actor = func(context.Context) string { return "admin-1" }
+
+	_, err := svc.Set(t.Context(), "tenant-a", domain.LegacyCutoverStatus("shadow"), "dual read")
+	var appErr *apperr.AppError
+	if !errors.As(err, &appErr) || appErr.Code != "cutover.concurrent_transition" ||
+		appErr.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("Set error = %v, want cutover.concurrent_transition HTTP 409", err)
+	}
+	if cutover.expected != domain.LegacyCutoverStatusLegacy {
+		t.Fatalf("CAS expected = %q, want legacy", cutover.expected)
+	}
+	if ledger.appended != nil {
+		t.Fatal("CAS conflict must not use the post-commit audit fallback")
+	}
 }
 
 func (f *fakeCutoverAuditRepo) SetCutoverWithAudit(ctx context.Context, cutover *repository.LegacyCutover, fact *domain.AuditFact) error {

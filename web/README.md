@@ -11,6 +11,7 @@
 - 管理员可按关键词、状态和 home region 查询账户，并检查来源与投影的新鲜度；
 - 管理员账户同步、导出和擦除均创建幂等任务；导出与擦除要求二次确认；
 - 账户详情展示 durable Region Directory，并通过观察到的 Fenced Epoch、Account ID 二次确认执行 Home Region Writer CAS 提升；
+- Legacy 迁移控制面支持有界 shadow identity backfill、content-free digest 对比、cleanup readiness 和经 Tenant ID 二次确认的状态机 Cutover；
 - 审计台账支持过滤、keyset 分页、脱敏证据详情和来源分区哈希链验证；
 - 审计合规管理支持 Legal Hold 查询、设置、经 Scope ID 二次确认的解除，以及带一次性下载保护的审计导出；
 - WORM Anchor 操作会使用固定幂等键、全链二次确认和 fail-closed 管理意图审计；单链 Manifest 敏感读取也会留存审计事实；

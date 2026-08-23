@@ -224,7 +224,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	}
 
 	router := buildRouter(routerDependencies{
-		cfg: cfg, log: log, gdb: gdb, metricsReg: metricsReg,
+		cfg: cfg, log: log, metricsReg: metricsReg,
 		tokenValidator: tokenValidator, downloader: downloader,
 		sseHub: sseHub, sourceConnectors: sourceConnectors,
 		callbackSvc: callbackSvc, auditLedger: auditLedger,
