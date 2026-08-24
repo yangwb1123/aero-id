@@ -111,6 +111,7 @@ func (r *connectorOperationRunner) reconcile(ctx context.Context, operation *dom
 	if result == nil {
 		return domain.StepUnknown, "", nil, fmt.Errorf("source operation status is empty")
 	}
+	result.Result = connector.RedactSummaryData(result.Result)
 	status := strings.ToLower(strings.TrimSpace(result.Status))
 	switch status {
 	case "succeeded", "success", "completed", "complete", "done":
@@ -138,6 +139,7 @@ func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.
 	if result == nil {
 		return "", nil, fmt.Errorf("source erase result is empty")
 	}
+	result.Result = connector.RedactSummaryData(result.Result)
 	outcome := map[string]any{"status": result.Status}
 	if result.SourceOperationID != "" {
 		outcome["source_operation_id"] = result.SourceOperationID

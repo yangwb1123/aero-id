@@ -117,6 +117,7 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 	if result == nil {
 		return "unknown", sourceOperationID(value), nil, remoteUnknownError(source, "source.empty_command_result")
 	}
+	result.Result = connector.RedactSummaryData(result.Result)
 	status := normalizedCommandStatus(result.Status)
 	operationID := strings.TrimSpace(result.SourceOperationID)
 	if operationID == "" {

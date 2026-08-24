@@ -108,7 +108,8 @@ func (c *JSONSummaryConnector) decodeCommandResult(body io.Reader) (*CommandResu
 	if strings.TrimSpace(payload.Status) == "" {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.operation_status_missing"}
 	}
-	return &CommandResult{SourceOperationID: payload.SourceOperationID, Status: strings.ToLower(payload.Status), Result: payload.Result}, nil
+	return &CommandResult{SourceOperationID: payload.SourceOperationID, Status: strings.ToLower(payload.Status),
+		Result: RedactSummaryData(payload.Result)}, nil
 }
 
 func (c *JSONSummaryConnector) remoteRequestError(ctx context.Context, code string, err error) *RemoteError {

@@ -152,6 +152,7 @@ func TestConnector_OperationStatusMapsRemoteOutcome(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status": "failed", "source_operation_id": "op-7", "error_code": "source.rejected",
+			"result": map[string]any{"deleted_count": 3, "accessKey": "source-secret", "content": "message-body"},
 		})
 	}))
 	defer server.Close()
@@ -170,5 +171,14 @@ func TestConnector_OperationStatusMapsRemoteOutcome(t *testing.T) {
 	}
 	if result.SourceOperationID != "op-7" {
 		t.Fatalf("result = %+v, want source operation op-7", result)
+	}
+	if result.Result["deleted_count"] != float64(3) {
+		t.Fatalf("safe result = %#v, want deleted_count", result.Result)
+	}
+	if _, leaked := result.Result["accessKey"]; leaked {
+		t.Fatalf("command result leaked accessKey: %#v", result.Result)
+	}
+	if _, leaked := result.Result["content"]; leaked {
+		t.Fatalf("command result leaked content: %#v", result.Result)
 	}
 }
