@@ -168,26 +168,27 @@ type SourcesConfig struct {
 }
 
 type SourceEndpointConfig struct {
-	Endpoint       string        `mapstructure:"endpoint"`
-	SummaryPath    string        `mapstructure:"summary_path"`
-	ErasePath      string        `mapstructure:"erase_path"`
-	StatusPath     string        `mapstructure:"status_path"`
-	Region         string        `mapstructure:"region"`
-	BearerToken    string        `mapstructure:"bearer_token"` // compatibility only; prefer OAuth client credentials
-	OAuthTokenURL  string        `mapstructure:"oauth_token_url"`
-	OAuthClientID  string        `mapstructure:"oauth_client_id"`
-	OAuthSecret    string        `mapstructure:"oauth_client_secret"` // secret provider/env only
-	OAuthScope     string        `mapstructure:"oauth_scope"`
-	OAuthResource  string        `mapstructure:"oauth_resource"`
-	Timeout        time.Duration `mapstructure:"timeout"`
-	MaxBodyBytes   int64         `mapstructure:"max_body_bytes"`
-	MaxConcurrency int           `mapstructure:"max_concurrency"`
-	MaxAttempts    int           `mapstructure:"max_attempts"`
-	RetryBackoff   time.Duration `mapstructure:"retry_backoff"`
-	TLSCAFile      string        `mapstructure:"tls_ca_file"`
-	TLSCertFile    string        `mapstructure:"tls_cert_file"`
-	TLSKeyFile     string        `mapstructure:"tls_key_file"`
-	TLSServerName  string        `mapstructure:"tls_server_name"`
+	Endpoint              string        `mapstructure:"endpoint"`
+	AllowInsecureLoopback bool          `mapstructure:"allow_insecure_loopback"`
+	SummaryPath           string        `mapstructure:"summary_path"`
+	ErasePath             string        `mapstructure:"erase_path"`
+	StatusPath            string        `mapstructure:"status_path"`
+	Region                string        `mapstructure:"region"`
+	BearerToken           string        `mapstructure:"bearer_token"` // compatibility only; prefer OAuth client credentials
+	OAuthTokenURL         string        `mapstructure:"oauth_token_url"`
+	OAuthClientID         string        `mapstructure:"oauth_client_id"`
+	OAuthSecret           string        `mapstructure:"oauth_client_secret"` // secret provider/env only
+	OAuthScope            string        `mapstructure:"oauth_scope"`
+	OAuthResource         string        `mapstructure:"oauth_resource"`
+	Timeout               time.Duration `mapstructure:"timeout"`
+	MaxBodyBytes          int64         `mapstructure:"max_body_bytes"`
+	MaxConcurrency        int           `mapstructure:"max_concurrency"`
+	MaxAttempts           int           `mapstructure:"max_attempts"`
+	RetryBackoff          time.Duration `mapstructure:"retry_backoff"`
+	TLSCAFile             string        `mapstructure:"tls_ca_file"`
+	TLSCertFile           string        `mapstructure:"tls_cert_file"`
+	TLSKeyFile            string        `mapstructure:"tls_key_file"`
+	TLSServerName         string        `mapstructure:"tls_server_name"`
 }
 
 type ServerConfig struct {
@@ -402,6 +403,9 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("AERO_ID")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	if err := v.BindEnv("sources.aero_im.allow_insecure_loopback"); err != nil {
+		return nil, fmt.Errorf("bind source authentication environment: %w", err)
+	}
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config: %w", err)

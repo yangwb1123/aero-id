@@ -40,9 +40,10 @@ type Registry struct {
 	requests map[string]uint64     // "transport|method|route|status" -> count
 	latency  map[string]*histogram // "transport|route" -> histogram
 
-	sourceMu       sync.Mutex
-	sourceCalls    map[string]*sourceMetric
-	sourceCircuits map[string]string
+	sourceMu                sync.Mutex
+	sourceCalls             map[string]*sourceMetric
+	sourceCircuits          map[string]string
+	sourceAuthCompatibility uint64
 
 	control controlPlaneMetrics
 	idem    idempotencyMetrics

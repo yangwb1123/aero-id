@@ -2,40 +2,40 @@ package connector
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aero/aero-id/internal/pkg/bulkhead"
 	"github.com/aero/aero-id/internal/pkg/metrics"
+	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
 
 type HTTPConfig struct {
-	Endpoint            string
-	SummaryPath         string
-	ErasePath           string
-	OperationStatusPath string
-	Region              string
-	BearerToken         string
-	OAuth               OAuthClientCredentialsConfig
-	Timeout             time.Duration
-	MaxBodyBytes        int64
-	MaxConcurrency      int
-	MaxAttempts         int
-	RetryBackoff        time.Duration
-	TLSCAFile           string
-	TLSCertFile         string
-	TLSKeyFile          string
-	TLSServerName       string
-	Client              *http.Client
-	Metrics             *metrics.Registry
+	Endpoint              string
+	AllowInsecureLoopback bool
+	Environment           string
+	SummaryPath           string
+	ErasePath             string
+	OperationStatusPath   string
+	Region                string
+	BearerToken           string
+	OAuth                 OAuthClientCredentialsConfig
+	Timeout               time.Duration
+	MaxBodyBytes          int64
+	MaxConcurrency        int
+	MaxAttempts           int
+	RetryBackoff          time.Duration
+	TLSCAFile             string
+	TLSCertFile           string
+	TLSKeyFile            string
+	TLSServerName         string
+	Client                *http.Client
+	Metrics               *metrics.Registry
 }
 
 // JSONSummaryConnector implements the small, versioned summary seam expected
@@ -68,19 +68,77 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 	if err := validateHTTPConfigBounds(cfg); err != nil {
 		return nil, err
 	}
-	client, err := sourceClient(cfg)
+	if err := validateHTTPConfigPaths(cfg); err != nil {
+		return nil, err
+	}
+	decision, err := sourceAuthDecision(source, cfg)
 	if err != nil {
 		return nil, err
 	}
-	tokens, err := newOAuthClientCredentials(cfg.OAuth, client, cfg.Timeout)
+	cfg = applySourceAuth(source, cfg, decision)
+	client, tokens, err := sourceClientAndOAuth(source, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("%s connector OAuth: %w", source, err)
+		return nil, err
 	}
-	if tokens != nil && strings.TrimSpace(cfg.BearerToken) != "" {
-		return nil, fmt.Errorf("%s connector must configure either bearer token or OAuth client credentials", source)
+	if decision.Compatibility && cfg.Metrics != nil {
+		cfg.Metrics.ObserveSourceAuthCompatibility(source.String(), string(decision.Mode))
 	}
 	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, tokens: tokens,
 		bulkhead: bulkhead.New(clampedSummaryConcurrency(cfg.MaxConcurrency))}, nil
+}
+
+func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, error) {
+	decision, err := sourceauth.Evaluate(sourceauth.Config{
+		Source: source.String(), Label: sourceLabel(source), Endpoint: cfg.Endpoint, Environment: cfg.Environment,
+		AllowInsecureLoopback: cfg.AllowInsecureLoopback, BearerToken: cfg.BearerToken,
+		OAuth: sourceauth.OAuthConfig{TokenURL: cfg.OAuth.TokenURL, ClientID: cfg.OAuth.ClientID,
+			ClientSecret: cfg.OAuth.ClientSecret, Scope: cfg.OAuth.Scope, Resource: cfg.OAuth.Resource},
+		TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile,
+	})
+	if err != nil {
+		return sourceauth.Decision{}, fmt.Errorf("%s connector authentication: %w", source, err)
+	}
+	return decision, nil
+}
+
+func applySourceAuth(source Source, cfg HTTPConfig, decision sourceauth.Decision) HTTPConfig {
+	if source == SourceAeroIM {
+		cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
+		cfg.BearerToken = decision.BearerToken
+	}
+	return cfg
+}
+
+func sourceClientAndOAuth(source Source, cfg HTTPConfig) (*http.Client, *oauthClientCredentials, error) {
+	client, err := sourceClient(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	tokens, err := newOAuthClientCredentials(cfg.OAuth, client, cfg.Timeout)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s connector OAuth: %w", source, err)
+	}
+	if tokens != nil && strings.TrimSpace(cfg.BearerToken) != "" {
+		return nil, nil, fmt.Errorf("%s connector must configure either bearer token or OAuth client credentials", source)
+	}
+	return client, tokens, nil
+}
+
+func sourceLabel(source Source) string {
+	if source == SourceAeroIM {
+		return "sources.aero-im"
+	}
+	return string(source)
+}
+
+func validateHTTPConfigPaths(cfg HTTPConfig) error {
+	paths := []string{cfg.SummaryPath, cfg.ErasePath, cfg.OperationStatusPath}
+	for _, path := range paths {
+		if path != "" && (!strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\x00\r\n")) {
+			return fmt.Errorf("source connector paths must be absolute and free of control characters")
+		}
+	}
+	return nil
 }
 
 func defaultHTTPConfig(cfg HTTPConfig) HTTPConfig {
@@ -103,18 +161,6 @@ func defaultHTTPConfig(cfg HTTPConfig) HTTPConfig {
 		cfg.RetryBackoff = 50 * time.Millisecond
 	}
 	return cfg
-}
-
-func sourceClient(cfg HTTPConfig) (*http.Client, error) {
-	client := cfg.Client
-	if client == nil {
-		var err error
-		client, err = newSourceHTTPClient(cfg)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return client, nil
 }
 
 func validateHTTPConfigBounds(cfg HTTPConfig) error {
@@ -145,54 +191,6 @@ func clampedSummaryConcurrency(limit int) int {
 		return 32
 	}
 	return limit
-}
-
-func newSourceHTTPClient(cfg HTTPConfig) (*http.Client, error) {
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.TLSServerName}
-	if cfg.TLSCAFile != "" {
-		pool, err := sourceCertPool(cfg.TLSCAFile)
-		if err != nil {
-			return nil, err
-		}
-		tlsConfig.RootCAs = pool
-	}
-	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
-		cert, err := sourceClientCertificate(cfg.TLSCertFile, cfg.TLSKeyFile)
-		if err != nil {
-			return nil, err
-		}
-		tlsConfig.Certificates = []tls.Certificate{cert}
-	}
-	transport := &http.Transport{TLSClientConfig: tlsConfig, Proxy: http.ProxyFromEnvironment,
-		MaxIdleConns: cfg.MaxConcurrency, MaxIdleConnsPerHost: cfg.MaxConcurrency}
-	return &http.Client{Timeout: cfg.Timeout, Transport: transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
-}
-
-func sourceCertPool(path string) (*x509.CertPool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read source CA file: %w", err)
-	}
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
-	if !pool.AppendCertsFromPEM(data) {
-		return nil, fmt.Errorf("source CA file contains no certificates")
-	}
-	return pool, nil
-}
-
-func sourceClientCertificate(certFile, keyFile string) (tls.Certificate, error) {
-	if certFile == "" || keyFile == "" {
-		return tls.Certificate{}, fmt.Errorf("source mTLS requires both client certificate and key")
-	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("load source client certificate: %w", err)
-	}
-	return cert, nil
 }
 
 func (c *JSONSummaryConnector) Source() Source { return c.source }
@@ -252,6 +250,9 @@ func (c *JSONSummaryConnector) fetchSummary(ctx context.Context, req SummaryRequ
 }
 
 func (c *JSONSummaryConnector) summaryRequestError(ctx context.Context, err error) error {
+	if remote, ok := IsRemote(err); ok {
+		return remote
+	}
 	kind := ErrorUnavailable
 	if ctx.Err() != nil {
 		kind = ErrorTimeout
@@ -284,6 +285,9 @@ func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
 	}
 	response, err := c.doHTTP(ctx, func() (*http.Request, error) { return request.Clone(ctx), nil })
 	if err != nil {
+		if remote, ok := IsRemote(err); ok {
+			return remote
+		}
 		return &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.health_failed", Temporary: true, Cause: err}
 	}
 	defer response.Body.Close()
@@ -294,15 +298,15 @@ func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
 }
 
 func (c *JSONSummaryConnector) Erase(ctx context.Context, req EraseRequest) (result *CommandResult, resultErr error) {
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.idempotency_key_missing", Temporary: false}
+	}
 	if strings.TrimSpace(c.cfg.ErasePath) == "" {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.erase_not_configured"}
 	}
 	started := time.Now()
-	release, err := c.begin(ctx)
+	release, err := c.beginObserved(ctx, "erase", started)
 	if err != nil {
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCall(string(c.source), "erase", time.Since(started), err)
-		}
 		return nil, err
 	}
 	defer func() {
@@ -322,17 +326,24 @@ func (c *JSONSummaryConnector) Erase(ctx context.Context, req EraseRequest) (res
 		return cloneEraseRequest(ctx, httpReq, body)
 	})
 	if err != nil {
-		kind := ErrorUnavailable
-		if ctx.Err() != nil {
-			kind = ErrorTimeout
-		}
-		return nil, &RemoteError{Source: c.source, Kind: kind, Code: "source.erase_failed", Temporary: true, Cause: err}
+		return nil, c.eraseRequestError(ctx, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, remoteHTTPError(c.source, response.StatusCode)
 	}
 	return c.decodeEraseResult(response.Body)
+}
+
+func (c *JSONSummaryConnector) eraseRequestError(ctx context.Context, err error) *RemoteError {
+	if remote, ok := IsRemote(err); ok {
+		return remote
+	}
+	kind := ErrorUnavailable
+	if ctx.Err() != nil {
+		kind = ErrorTimeout
+	}
+	return &RemoteError{Source: c.source, Kind: kind, Code: "source.erase_failed", Temporary: true, Cause: err}
 }
 
 func cloneEraseRequest(ctx context.Context, template *http.Request, body []byte) (*http.Request, error) {

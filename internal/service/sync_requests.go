@@ -24,7 +24,14 @@ func eraseRequestForJob(account *domain.Account, job *domain.SyncJob, source con
 	datasets []domain.AccountDataset) connector.EraseRequest {
 	return connector.EraseRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: job.ActorUID,
 		TenantID: job.TenantID, RequestID: job.RequestID, Region: account.HomeRegion, Datasets: datasets,
-		IdempotencyKey: job.IdempotencyKey + ":" + string(source), OperationID: job.ID.String()}
+		IdempotencyKey: syncEraseIdempotencyKey(job, source), OperationID: job.ID.String()}
+}
+
+func syncEraseIdempotencyKey(job *domain.SyncJob, source connector.Source) string {
+	if job == nil {
+		return ""
+	}
+	return job.IdempotencyKey + ":" + string(source)
 }
 
 func isUnknownRemote(err error) bool {

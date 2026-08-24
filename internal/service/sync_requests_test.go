@@ -16,6 +16,12 @@ func TestEraseRequestForJobCarriesAccountHomeRegion(t *testing.T) {
 	if request.Region != account.HomeRegion {
 		t.Fatalf("region = %q, want account home region %q", request.Region, account.HomeRegion)
 	}
+	if request.IdempotencyKey != "erase-1:aero-vault" {
+		t.Fatalf("idempotency key = %q, want stable source-qualified key", request.IdempotencyKey)
+	}
+	if retry := eraseRequestForJob(account, job, connector.SourceAeroVault, nil).IdempotencyKey; retry != request.IdempotencyKey {
+		t.Fatalf("retry key = %q, want %q", retry, request.IdempotencyKey)
+	}
 }
 
 func TestEraseCallOutcomeDoesNotTurnUnknownIntoFailure(t *testing.T) {

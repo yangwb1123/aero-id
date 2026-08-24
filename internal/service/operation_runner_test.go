@@ -8,6 +8,30 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 )
 
+func TestOperationCommandKeysAreStableAndDistinctForCompensation(t *testing.T) {
+	operation := &domain.Operation{ID: domain.ID{1}}
+	step := &domain.OperationStep{ID: domain.ID{2}}
+	forward := operationEraseIdempotencyKey(operation, step, "")
+	compensation := operationEraseIdempotencyKey(operation, step, ":compensation")
+	reconcile := operationReconcileIdempotencyKey(operation, step)
+	compensationReconcile := operationCompensationReconcileIdempotencyKey(operation, step)
+	if forward == "" || reconcile == "" || compensation == "" || compensationReconcile == "" {
+		t.Fatal("operation command keys must be non-empty")
+	}
+	if forward != reconcile {
+		t.Fatalf("reconciliation key = %q, want forward key %q", reconcile, forward)
+	}
+	if compensation == forward || compensationReconcile == forward {
+		t.Fatal("compensation keys must be distinct from the forward key")
+	}
+	if compensationReconcile != compensation {
+		t.Fatalf("compensation reconciliation key = %q, want compensation key %q", compensationReconcile, compensation)
+	}
+	if retry := operationReconcileIdempotencyKey(operation, step); retry != reconcile {
+		t.Fatalf("reconciliation retry key = %q, want %q", retry, reconcile)
+	}
+}
+
 func TestCommandResultOutcome(t *testing.T) {
 	cases := []struct {
 		name      string

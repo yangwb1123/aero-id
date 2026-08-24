@@ -26,6 +26,15 @@ func (c *JSONSummaryConnector) begin(ctx context.Context) (func(), error) {
 	return token, nil
 }
 
+func (c *JSONSummaryConnector) beginObserved(ctx context.Context, operation string, started time.Time) (func(), error) {
+	release, err := c.begin(ctx)
+	if err != nil {
+		c.observeCall(operation, started, err)
+		return nil, err
+	}
+	return release, nil
+}
+
 func (c *JSONSummaryConnector) finish(err error) {
 	c.breakerMu.Lock()
 	defer c.breakerMu.Unlock()

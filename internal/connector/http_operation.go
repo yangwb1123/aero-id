@@ -112,6 +112,9 @@ func (c *JSONSummaryConnector) decodeCommandResult(body io.Reader) (*CommandResu
 }
 
 func (c *JSONSummaryConnector) remoteRequestError(ctx context.Context, code string, err error) *RemoteError {
+	if remote, ok := IsRemote(err); ok {
+		return remote
+	}
 	kind := ErrorUnavailable
 	if ctx.Err() != nil {
 		kind = ErrorTimeout

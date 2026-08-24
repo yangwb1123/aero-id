@@ -43,9 +43,13 @@ func (r *connectorOperationRunner) RunCompensation(ctx context.Context, operatio
 
 func (r *connectorOperationRunner) ReconcileCompensation(ctx context.Context, operation *domain.Operation,
 	step *domain.OperationStep) (domain.OperationStepStatus, string, map[string]any, error) {
+	if step == nil {
+		return domain.StepUnknown, "", nil, fmt.Errorf("operation step is required")
+	}
 	compensationStep := *step
 	compensationStep.SourceOperationID = step.CompensationSourceOperationID
-	return r.Reconcile(ctx, operation, &compensationStep)
+	return r.reconcile(ctx, operation, &compensationStep,
+		operationCompensationReconcileIdempotencyKey(operation, step))
 }
 
 func (r *connectorOperationRunner) run(ctx context.Context, operation *domain.Operation,
@@ -74,6 +78,12 @@ func (r *connectorOperationRunner) run(ctx context.Context, operation *domain.Op
 //nolint:cyclop // source status normalization is an explicit remote outcome matrix.
 func (r *connectorOperationRunner) Reconcile(ctx context.Context, operation *domain.Operation,
 	step *domain.OperationStep) (domain.OperationStepStatus, string, map[string]any, error) {
+	return r.reconcile(ctx, operation, step, operationReconcileIdempotencyKey(operation, step))
+}
+
+//nolint:cyclop // source status normalization is an explicit remote outcome matrix.
+func (r *connectorOperationRunner) reconcile(ctx context.Context, operation *domain.Operation,
+	step *domain.OperationStep, idempotencyKey string) (domain.OperationStepStatus, string, map[string]any, error) {
 	if operation == nil || step == nil || operation.AccountID == (domain.ID{}) {
 		return domain.StepUnknown, "", nil, fmt.Errorf("operation account is required")
 	}
@@ -93,7 +103,7 @@ func (r *connectorOperationRunner) Reconcile(ctx context.Context, operation *dom
 		AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: operation.ActorUID,
 		TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, OperationID: operation.ID.String(),
 		SourceOperationID: step.SourceOperationID,
-		IdempotencyKey:    operation.ID.String() + ":" + step.ID.String(),
+		IdempotencyKey:    idempotencyKey,
 	})
 	if err != nil {
 		return domain.StepUnknown, "", nil, err
@@ -121,7 +131,7 @@ func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.
 	datasets := operationDatasets(step.RequestPayload)
 	result, err := command.Erase(ctx, connector.EraseRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
 		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, Datasets: datasets,
-		IdempotencyKey: operation.ID.String() + ":" + step.ID.String() + suffix, OperationID: operation.ID.String()})
+		IdempotencyKey: operationEraseIdempotencyKey(operation, step, suffix), OperationID: operation.ID.String()})
 	if err != nil {
 		return "", nil, err
 	}
@@ -136,6 +146,21 @@ func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.
 		return result.SourceOperationID, outcome, err
 	}
 	return result.SourceOperationID, outcome, nil
+}
+
+func operationEraseIdempotencyKey(operation *domain.Operation, step *domain.OperationStep, suffix string) string {
+	if operation == nil || step == nil {
+		return ""
+	}
+	return operation.ID.String() + ":" + step.ID.String() + suffix
+}
+
+func operationReconcileIdempotencyKey(operation *domain.Operation, step *domain.OperationStep) string {
+	return operationEraseIdempotencyKey(operation, step, "")
+}
+
+func operationCompensationReconcileIdempotencyKey(operation *domain.Operation, step *domain.OperationStep) string {
+	return operationEraseIdempotencyKey(operation, step, ":compensation")
 }
 
 func commandResultOutcome(source connector.Source, result *connector.CommandResult) error {

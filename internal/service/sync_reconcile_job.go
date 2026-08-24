@@ -109,7 +109,7 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 	result, err := statusClient.OperationStatus(ctx, connector.OperationStatusRequest{
 		AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: job.ActorUID, TenantID: job.TenantID,
 		RequestID: job.RequestID, Region: account.HomeRegion, OperationID: job.ID.String(), SourceOperationID: sourceOperationID(value),
-		IdempotencyKey: job.IdempotencyKey + ":" + source,
+		IdempotencyKey: syncEraseIdempotencyKey(job, connector.Source(source)),
 	})
 	if err != nil {
 		return "unknown", sourceOperationID(value), nil, err

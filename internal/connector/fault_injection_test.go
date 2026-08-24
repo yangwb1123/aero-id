@@ -2,6 +2,7 @@ package connector
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,6 +65,19 @@ func TestConnector_TimeoutIsUnknownOutcome(t *testing.T) {
 	}
 	if remote.Kind != ErrorTimeout || !remote.Temporary {
 		t.Errorf("remote = %+v, want timeout/temporary", remote)
+	}
+}
+
+func TestConnector_KeyedEraseTimeoutRemainsUnknown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(2 * time.Second)
+	}))
+	defer server.Close()
+	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", Timeout: 30 * time.Millisecond, MaxAttempts: 1})
+	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-timeout"})
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Kind != ErrorTimeout || !remote.Temporary {
+		t.Fatalf("err = %+v, want temporary timeout", err)
 	}
 }
 
@@ -155,18 +169,24 @@ func TestConnector_DoesNotRetryEraseWithoutIdempotency(t *testing.T) {
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxAttempts: 3, RetryBackoff: time.Millisecond})
 	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, OperationID: "op-1"})
-	if err == nil {
-		t.Fatal("erase failure must surface")
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Kind != ErrorInvalid || remote.Code != "source.idempotency_key_missing" || remote.Temporary {
+		t.Fatalf("err = %+v, want non-temporary idempotency_key_missing", err)
 	}
-	if calls != 1 {
-		t.Fatalf("erase calls = %d, want 1 without idempotency key", calls)
+	if calls != 0 {
+		t.Fatalf("erase calls = %d, want 0 without idempotency key", calls)
 	}
 }
 
 func TestConnector_RetriesEraseWithIdempotency(t *testing.T) {
 	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var headers []string
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
+		headers = append(headers, r.Header.Get("Idempotency-Key"))
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
 		if calls == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -183,6 +203,11 @@ func TestConnector_RetriesEraseWithIdempotency(t *testing.T) {
 	}
 	if result.Status != "completed" || calls != 2 {
 		t.Fatalf("result=%+v calls=%d, want completed/2", result, calls)
+	}
+	for i := range headers {
+		if headers[i] != "erase-1" || bodies[i] != bodies[0] {
+			t.Fatalf("attempt %d key/body = %q/%q, want stable key and body %q", i, headers[i], bodies[i], bodies[0])
+		}
 	}
 }
 
@@ -217,6 +242,8 @@ func newTestConnector(t *testing.T, endpoint string, cfg HTTPConfig) *JSONSummar
 	t.Helper()
 	cfg.Endpoint = endpoint
 	cfg.SummaryPath = "/summary"
+	cfg.AllowInsecureLoopback = true
+	cfg.Environment = "test"
 	cfg.Client = http.DefaultClient
 	if cfg.MaxBodyBytes == 0 {
 		cfg.MaxBodyBytes = 1 << 20

@@ -21,6 +21,16 @@ The connector also propagates `X-Request-ID`, `X-Aero-Operation-ID`,
 resource permissions; these headers are attribution and correlation context,
 not an authorization bypass.
 
+## Source authentication
+
+An enabled Aero IM connector must use OAuth client credentials, a transitional static bearer token, or mTLS.
+The static token is trimmed and control-character values are rejected. mTLS requires HTTPS and its configured
+certificate is installed even when a custom HTTP client is injected; mTLS-only mode requires HTTPS. Unauthenticated access is available only
+with `allow_insecure_loopback: true` in a non-production-like environment (`prod`, `production`, or `staging`
+are never allowed) and only for the exact hosts `localhost`, `127.0.0.1`, or `::1`. The corresponding
+configuration override is `AERO_ID_SOURCES_AERO_IM_ALLOW_INSECURE_LOOPBACK`; it is intended only for local/test
+compatibility and emits a bounded construction metric.
+
 ## Summary response
 
 ```json
@@ -84,6 +94,13 @@ The optional `status_path` is a `GET` accepting `account_id`, `operation_id`,
 and `source_operation_id`. It returns a terminal or non-terminal `status` and
 the source operation ID. A lost response is `unknown`, never an inferred
 failure. Commands must be safe to repeat with the same idempotency key.
+
+`idempotency_key` is mandatory for erase commands. Empty or whitespace-only
+keys are rejected locally before request construction, token acquisition, or
+any source call. Automatic retries and reconciliation reuse the exact same key
+in both the JSON field and `Idempotency-Key` header. A timeout, transport
+failure, or exhausted retry budget remains an unknown outcome until the source
+status endpoint confirms it.
 
 ## Failure and version rules
 

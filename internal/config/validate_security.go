@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
 
 // validateEnvironmentSecurity applies the production safety contract at the
@@ -36,12 +38,7 @@ func eventIngestHMACConfigured(value EventIngestConfig) bool {
 }
 
 func productionLikeEnvironment(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "prod", "production", "staging":
-		return true
-	default:
-		return false
-	}
+	return sourceauth.ProductionLikeEnvironment(value)
 }
 
 // wellKnownPlaceholderSecrets are signing-key literals that were shipped in

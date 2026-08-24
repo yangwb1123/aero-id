@@ -51,6 +51,18 @@ func (r *Registry) ObserveSourceCircuit(source, state string) {
 	r.sourceMu.Unlock()
 }
 
+// ObserveSourceAuthCompatibility records the explicitly enabled, unauthenticated
+// loopback compatibility mode. The accepted label pair is fixed so this signal
+// cannot become an endpoint, token, or request-identity cardinality leak.
+func (r *Registry) ObserveSourceAuthCompatibility(source, mode string) {
+	if source != "aero-im" || mode != "loopback" {
+		return
+	}
+	r.sourceMu.Lock()
+	r.sourceAuthCompatibility++
+	r.sourceMu.Unlock()
+}
+
 func (r *Registry) writeSourceText(w io.Writer) {
 	r.sourceMu.Lock()
 	defer r.sourceMu.Unlock()
@@ -87,6 +99,11 @@ func (r *Registry) writeSourceText(w io.Writer) {
 		for _, source := range sortedStringKeys(r.sourceCircuits) {
 			fmt.Fprintf(w, "aeroid_source_circuit_state{source=%q,state=%q} 1\n", source, r.sourceCircuits[source])
 		}
+	}
+	if r.sourceAuthCompatibility > 0 {
+		fmt.Fprintln(w, "# HELP aeroid_source_auth_compatibility_total Explicit unauthenticated source compatibility constructions.")
+		fmt.Fprintln(w, "# TYPE aeroid_source_auth_compatibility_total counter")
+		fmt.Fprintf(w, "aeroid_source_auth_compatibility_total{source=\"aero-im\",mode=\"loopback\"} %d\n", r.sourceAuthCompatibility)
 	}
 }
 

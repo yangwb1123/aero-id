@@ -98,6 +98,50 @@ func TestLoadSSOUserBatchSize(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnauthenticatedAeroIM(t *testing.T) {
+	content := sample + `
+sources:
+  aero_im:
+    endpoint: http://127.0.0.1:8080
+`
+	_, err := Load(writeTemp(t, content))
+	if err == nil || !strings.Contains(err.Error(), "sources.aero-im service authentication is required") {
+		t.Fatalf("error = %v, want fail-closed Aero IM authentication error", err)
+	}
+}
+
+func TestLoadAllowsExplicitNonProductionAeroIMLoopbackCompatibility(t *testing.T) {
+	content := sample + `
+sources:
+  aero_im:
+    endpoint: http://127.0.0.1:8080
+    allow_insecure_loopback: true
+`
+	cfg, err := Load(writeTemp(t, content))
+	if err != nil {
+		t.Fatalf("explicit test loopback compatibility rejected: %v", err)
+	}
+	if !cfg.Sources.AeroIM.AllowInsecureLoopback {
+		t.Fatal("loopback compatibility flag was not loaded")
+	}
+}
+
+func TestLoadAeroIMLoopbackEnvironmentOverride(t *testing.T) {
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_ALLOW_INSECURE_LOOPBACK", "true")
+	content := sample + `
+sources:
+  aero_im:
+    endpoint: http://127.0.0.1:8080
+`
+	cfg, err := Load(writeTemp(t, content))
+	if err != nil {
+		t.Fatalf("environment override rejected: %v", err)
+	}
+	if !cfg.Sources.AeroIM.AllowInsecureLoopback {
+		t.Fatal("environment override did not enable loopback compatibility")
+	}
+}
+
 func TestLoad_fromFile(t *testing.T) {
 	cfg, err := Load(writeTemp(t, sample))
 	if err != nil {

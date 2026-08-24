@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aero/aero-id/internal/config"
 	"github.com/aero/aero-id/internal/connector"
@@ -13,22 +14,22 @@ import (
 
 func buildSourceConnectors(cfg *config.Config, metricsReg *metrics.Registry) ([]connector.Connector, error) {
 	result := make([]connector.Connector, 0, 3)
-	if cfg.Sources.Snaplink.Endpoint != "" {
-		item, err := snaplink.New(sourceHTTPConfig(cfg.Sources.Snaplink, metricsReg))
+	if strings.TrimSpace(cfg.Sources.Snaplink.Endpoint) != "" {
+		item, err := snaplink.New(sourceHTTPConfig(cfg.Sources.Snaplink, cfg.App.Env, metricsReg))
 		if err != nil {
 			return nil, fmt.Errorf("snaplink connector: %w", err)
 		}
 		result = append(result, item)
 	}
-	if cfg.Sources.AeroIM.Endpoint != "" {
-		item, err := aeroim.New(sourceHTTPConfig(cfg.Sources.AeroIM, metricsReg))
+	if strings.TrimSpace(cfg.Sources.AeroIM.Endpoint) != "" {
+		item, err := aeroim.New(sourceHTTPConfig(cfg.Sources.AeroIM, cfg.App.Env, metricsReg))
 		if err != nil {
 			return nil, fmt.Errorf("aero-im connector: %w", err)
 		}
 		result = append(result, item)
 	}
-	if cfg.Sources.AeroVault.Endpoint != "" {
-		item, err := aerovault.New(sourceHTTPConfig(cfg.Sources.AeroVault, metricsReg))
+	if strings.TrimSpace(cfg.Sources.AeroVault.Endpoint) != "" {
+		item, err := aerovault.New(sourceHTTPConfig(cfg.Sources.AeroVault, cfg.App.Env, metricsReg))
 		if err != nil {
 			return nil, fmt.Errorf("aero-vault connector: %w", err)
 		}
@@ -37,8 +38,10 @@ func buildSourceConnectors(cfg *config.Config, metricsReg *metrics.Registry) ([]
 	return result, nil
 }
 
-func sourceHTTPConfig(value config.SourceEndpointConfig, metricsReg *metrics.Registry) connector.HTTPConfig {
-	return connector.HTTPConfig{Endpoint: value.Endpoint, SummaryPath: value.SummaryPath, ErasePath: value.ErasePath, Region: value.Region,
+func sourceHTTPConfig(value config.SourceEndpointConfig, environment string, metricsReg *metrics.Registry) connector.HTTPConfig {
+	return connector.HTTPConfig{
+		Endpoint: value.Endpoint, AllowInsecureLoopback: value.AllowInsecureLoopback,
+		Environment: environment, SummaryPath: value.SummaryPath, ErasePath: value.ErasePath, Region: value.Region,
 		OperationStatusPath: value.StatusPath,
 		BearerToken:         value.BearerToken,
 		OAuth: connector.OAuthClientCredentialsConfig{TokenURL: value.OAuthTokenURL, ClientID: value.OAuthClientID,

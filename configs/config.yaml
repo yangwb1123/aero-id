@@ -24,6 +24,7 @@ sources:
     tls_server_name: ""
   aero_im:
     endpoint: ""
+    allow_insecure_loopback: false # env: AERO_ID_SOURCES_AERO_IM_ALLOW_INSECURE_LOOPBACK; local/test only
     summary_path: /internal/account-summary
     erase_path: ""
     status_path: ""

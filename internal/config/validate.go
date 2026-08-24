@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
 
 const maxSSOUserBatchSize = 2048
@@ -123,6 +125,11 @@ func (c *Config) validateConfiguredSources(regions map[string]struct{}) error {
 	} {
 		if err := validateSourceEndpoint(name, source); err != nil {
 			return err
+		}
+		if name == "aero-im" {
+			if err := c.validateAeroIMSource(source); err != nil {
+				return err
+			}
 		}
 		if !regionConfigured(source.Region, regions) {
 			return fmt.Errorf("sources.%s.region must be listed in account.regions", name)
@@ -387,7 +394,21 @@ func validateSourceEndpoint(name string, source SourceEndpointConfig) error {
 	if err := validateSourceOAuth(name, source); err != nil {
 		return err
 	}
-	return validateSourcePaths(name, source)
+	if err := validateSourcePaths(name, source); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) validateAeroIMSource(source SourceEndpointConfig) error {
+	_, err := sourceauth.Evaluate(sourceauth.Config{
+		Source: "aero-im", Label: "sources.aero-im", Endpoint: source.Endpoint, Environment: c.App.Env,
+		AllowInsecureLoopback: source.AllowInsecureLoopback, BearerToken: source.BearerToken,
+		OAuth: sourceauth.OAuthConfig{TokenURL: source.OAuthTokenURL, ClientID: source.OAuthClientID,
+			ClientSecret: source.OAuthSecret, Scope: source.OAuthScope, Resource: source.OAuthResource},
+		TLSCertFile: source.TLSCertFile, TLSKeyFile: source.TLSKeyFile,
+	})
+	return err
 }
 
 func validateSourceOAuth(name string, source SourceEndpointConfig) error {
