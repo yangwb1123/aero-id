@@ -23,17 +23,18 @@ import (
 // root stays under the file-size gate (C-7). Mirrors the
 // outboxDependencies/grpcDependencies struct pattern.
 type serviceDependencies struct {
-	cfg              *config.Config
-	log              *zap.Logger
-	gdb              *gorm.DB
-	store            storage.FileStorage
-	ssoClient        *sso.Client
-	sourceConnectors []connector.Connector
-	controlMetrics   service.ControlPlaneMetrics
-	metricsReg       *metrics.Registry
-	billingRuntime   billingRuntime
-	auditLedger      service.AuditLedgerService
-	auditLedgerRepo  repository.FullAuditLedgerRepository
+	cfg                *config.Config
+	log                *zap.Logger
+	gdb                *gorm.DB
+	store              storage.FileStorage
+	ssoClient          *sso.Client
+	sourceConnectors   []connector.Connector
+	controlMetrics     service.ControlPlaneMetrics
+	metricsReg         *metrics.Registry
+	billingRuntime     billingRuntime
+	summaryApplication repository.SummaryApplication
+	auditLedger        service.AuditLedgerService
+	auditLedgerRepo    repository.FullAuditLedgerRepository
 
 	fileRepo         repository.FileRepository
 	fileShareRepo    repository.FileShareRepository
@@ -133,7 +134,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		repository.NewLegacyCleanupRepository(deps.gdb), deps.auditLedger)
 	legacyMigrationSvc := service.NewLegacyMigrationServiceWithAudit(
 		repository.NewLegacyMigrationRepository(deps.gdb), deps.auditLedger, deps.sourceConnectors...)
-	aggregationSvc := service.NewAggregationService(accountSvc, deps.snapshotRepo, deps.sourceConnectors...)
+	aggregationSvc := service.NewAggregationService(accountSvc, deps.snapshotRepo, deps.summaryApplication, deps.sourceConnectors...)
 	eventIngestSvc := service.NewEventIngestService(deps.eventReceiptRepo,
 		service.WithEventAllowedRegions(deps.cfg.EventIngest.AllowedRegions),
 		service.WithEventIngestAudit(deps.auditLedger),
@@ -150,7 +151,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 	if err != nil {
 		return serviceBundle{}, err
 	}
-	operationRunner := service.NewConnectorOperationRunner(deps.accountRepo, deps.snapshotRepo, deps.sourceConnectors...)
+	operationRunner := service.NewConnectorOperationRunner(deps.accountRepo, deps.summaryApplication, deps.sourceConnectors...)
 	operationSvc := service.NewOperationService(deps.operationRepo,
 		service.WithOperationAudit(deps.auditLedger),
 		service.WithOperationRegion(deps.cfg.Account.Region),
@@ -167,7 +168,8 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithReplayPermission(permissionChecker))
 	projectionReplaySvc := service.NewProjectionReplayService(repository.NewEventStoreRepository(deps.gdb),
 		deps.snapshotRepo, deps.accountRepo, permissionChecker, service.WithProjectionReplayAudit(deps.auditLedger))
-	syncJobSvc := service.NewSyncJobServiceWithOptions(deps.syncJobRepo, accountSvc, deps.accountRepo, deps.snapshotRepo, deps.store, deps.sourceConnectors,
+	syncJobSvc := service.NewSyncJobServiceWithOptions(deps.syncJobRepo, accountSvc, deps.accountRepo, deps.snapshotRepo,
+		deps.summaryApplication, deps.store, deps.sourceConnectors,
 		service.WithSyncJobPermission(permissionChecker),
 		service.WithSyncJobAudit(deps.auditLedger),
 		service.WithSyncJobAuditLedger(repository.NewAuditLedgerRepository(deps.gdb,

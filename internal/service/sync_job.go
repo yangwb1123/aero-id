@@ -38,6 +38,7 @@ type syncJobService struct {
 	accounts    AccountService
 	accountRepo repository.AccountRepository
 	snapshots   repository.SnapshotRepository
+	application repository.SummaryApplication
 	store       storage.FileStorage
 	connectors  map[connector.Source]connector.Connector
 	permission  PermissionChecker
@@ -91,20 +92,22 @@ func WithSyncJobRegion(region string) SyncJobOption {
 }
 
 func NewSyncJobService(repo repository.SyncJobRepository, accounts AccountService, accountRepo repository.AccountRepository,
-	snapshots repository.SnapshotRepository, store storage.FileStorage, connectors ...connector.Connector) SyncJobService {
-	return NewSyncJobServiceWithOptions(repo, accounts, accountRepo, snapshots, store, connectors)
+	snapshots repository.SnapshotRepository, application repository.SummaryApplication, store storage.FileStorage,
+	connectors ...connector.Connector) SyncJobService {
+	return NewSyncJobServiceWithOptions(repo, accounts, accountRepo, snapshots, application, store, connectors)
 }
 
 func NewSyncJobServiceWithOptions(repo repository.SyncJobRepository, accounts AccountService, accountRepo repository.AccountRepository,
-	snapshots repository.SnapshotRepository, store storage.FileStorage, connectors []connector.Connector, opts ...SyncJobOption) SyncJobService {
+	snapshots repository.SnapshotRepository, application repository.SummaryApplication, store storage.FileStorage,
+	connectors []connector.Connector, opts ...SyncJobOption) SyncJobService {
 	bySource := make(map[connector.Source]connector.Connector, len(connectors))
 	for _, item := range connectors {
 		if item != nil {
 			bySource[item.Source()] = item
 		}
 	}
-	service := &syncJobService{repo: repo, accounts: accounts, accountRepo: accountRepo, snapshots: snapshots, store: store,
-		connectors: bySource, exportTTL: 15 * time.Minute, maxExport: 64 << 20, region: "local"}
+	service := &syncJobService{repo: repo, accounts: accounts, accountRepo: accountRepo, snapshots: snapshots,
+		application: application, store: store, connectors: bySource, exportTTL: 15 * time.Minute, maxExport: 64 << 20, region: "local"}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -288,103 +291,6 @@ func (s *syncJobService) execute(ctx context.Context, job *domain.SyncJob) (*dom
 		return s.executeErase(ctx, job)
 	}
 	return s.executeSync(ctx, job)
-}
-
-//nolint:cyclop,funlen // sync execution aggregates concurrent source outcomes into a durable partial result.
-func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
-	datasets := datasetsFromRequest(job.Request)
-	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
-	if err != nil {
-		cause := apperr.Internal("sync.account_load_failed", "failed to load account").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.account_load_failed", "failed to load account", nil, cause)
-	}
-	result := map[string]any{"mode": string(job.JobType), "sources": map[string]any{}}
-	required := datasetsBySource(datasets)
-	var wait sync.WaitGroup
-	var mu sync.Mutex
-	var failures int
-	var incomplete int
-	var missing int
-	for source, requested := range required {
-		if _, configured := s.connectors[source]; configured {
-			continue
-		}
-		missing++
-		result["sources"].(map[string]any)[string(source)] = map[string]any{
-			"status": "not_configured", "error_code": "source.not_configured", "datasets": requested,
-		}
-	}
-	for source, client := range s.connectors {
-		requested := required[source]
-		if len(requested) == 0 {
-			continue
-		}
-		wait.Add(1)
-		go func(source connector.Source, client connector.Connector, requested []domain.AccountDataset) {
-			defer wait.Done()
-			before, listErr := s.snapshots.ListSnapshots(ctx, account.ID, requested)
-			if listErr != nil {
-				mu.Lock()
-				failures++
-				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "projection_read_failed"}
-				mu.Unlock()
-				return
-			}
-			summary, callErr := client.Summary(ctx, syncSummaryRequest(account, job, requested))
-			if callErr != nil {
-				mu.Lock()
-				failures++
-				result["sources"].(map[string]any)[string(source)] = map[string]any{
-					"status": "unavailable", "error_code": sourceErrorCode(callErr),
-				}
-				mu.Unlock()
-				return
-			}
-			if summary == nil {
-				mu.Lock()
-				failures++
-				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "invalid_response", "error_code": "source.empty_summary"}
-				mu.Unlock()
-				return
-			}
-			if persistErr := s.persistSyncSummary(ctx, job, account, source, requested, summary); persistErr != nil {
-				mu.Lock()
-				failures++
-				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "projection_error"}
-				mu.Unlock()
-				return
-			}
-			statusName, partial := syncSummaryStatus(summary)
-			status := map[string]any{"status": statusName, "count": len(summary.Snapshots), "complete": summary.Complete}
-			if partial {
-				status["error_code"] = "source.summary_incomplete"
-			}
-			if len(summary.SkippedDatasets) > 0 {
-				status["skipped_datasets"] = summary.SkippedDatasets
-			}
-			if job.JobType == domain.SyncJobReconcile {
-				drift := snapshotDrift(before, summary.Snapshots)
-				status["drift_count"] = drift
-				if summary.Complete {
-					status["repaired_count"] = drift
-				} else {
-					status["repaired_count"] = 0
-				}
-			}
-			mu.Lock()
-			if partial {
-				incomplete++
-			}
-			result["sources"].(map[string]any)[string(source)] = status
-			mu.Unlock()
-		}(source, client, requested)
-	}
-	wait.Wait()
-	status := domain.SyncJobCompleted
-	if missing > 0 || failures > 0 || incomplete > 0 {
-		status = domain.SyncJobPartiallyComplete
-	}
-	return s.finishJobAndLoad(ctx, job, status, "", "", result)
 }
 
 //nolint:cyclop,funlen // erase execution preserves unknown remote outcomes before local deletion.

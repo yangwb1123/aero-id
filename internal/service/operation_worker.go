@@ -86,6 +86,10 @@ func operationRunStatus(runErr error) (domain.OperationStepStatus, string, strin
 		return domain.StepSucceeded, "", ""
 	}
 	status, code, message := domain.StepFailed, "operation.step_failed", "operation step failed"
+	var summaryErr *repository.SummaryApplicationError
+	if errors.As(runErr, &summaryErr) && summaryErr.Kind == repository.SummaryApplyCommitUnknown {
+		return domain.StepUnknown, "projection.commit_unknown", "projection commit outcome is unknown"
+	}
 	remoteUnknown := false
 	if remote, ok := connector.IsRemote(runErr); ok {
 		remoteUnknown = remote.Kind == connector.ErrorTimeout || remote.Kind == connector.ErrorUnavailable || remote.Kind == connector.ErrorUnknown

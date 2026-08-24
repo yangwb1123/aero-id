@@ -46,7 +46,7 @@ func TestSyncOperationResultPreservesPartialSummary(t *testing.T) {
 		Complete:        false,
 		SkippedDatasets: []string{"aero-vault.objects"},
 		Snapshots:       []*domain.AccountSnapshot{{}},
-	})
+	}, domain.SummaryApplicationResult{Outcome: domain.SummaryIncomplete})
 	if got := result["status"]; got != string(domain.OperationPartiallyCompleted) {
 		t.Fatalf("status = %v, want %q", got, domain.OperationPartiallyCompleted)
 	}

@@ -55,15 +55,23 @@ func (fakeAccountService) UpsertMembership(context.Context, *domain.AccountMembe
 	return nil
 }
 
-func newSyncProjectionHarness() (*syncJobService, *fakeSnapshotRepo, *fakeAccountRepo) {
+type fakeSummaryApplication struct {
+	requests []domain.SummaryApplicationRequest
+}
+
+func (f *fakeSummaryApplication) ApplySummary(_ context.Context, request domain.SummaryApplicationRequest) (domain.SummaryApplicationResult, error) {
+	f.requests = append(f.requests, request)
+	return domain.SummaryApplicationResult{Outcome: domain.SummaryApplied, Applied: true}, nil
+}
+
+func newSyncProjectionHarness() (*syncJobService, *fakeSnapshotRepo, *fakeAccountRepo, *fakeSummaryApplication) {
 	snapshots := &fakeSnapshotRepo{}
 	accountRepo := &fakeAccountRepo{}
+	application := &fakeSummaryApplication{}
 	svc := &syncJobService{
-		accounts:    fakeAccountService{},
-		accountRepo: accountRepo,
-		snapshots:   snapshots,
+		accounts: fakeAccountService{}, accountRepo: accountRepo, snapshots: snapshots, application: application,
 	}
-	return svc, snapshots, accountRepo
+	return svc, snapshots, accountRepo, application
 }
 
 var vaultDatasets = []domain.AccountDataset{
@@ -101,7 +109,7 @@ func TestDatasetsBySourceKeepsMissingConnectorDetectionScoped(t *testing.T) {
 // is a reconcile job. This pins the fail-closed gate: a source that silently
 // dropped data must never be acknowledged as reconciled.
 func TestPersistSyncSummary_SkipsSuppressReconcileMarking(t *testing.T) {
-	svc, snapshots, accountRepo := newSyncProjectionHarness()
+	svc, snapshots, accountRepo, application := newSyncProjectionHarness()
 	accountID := idgen.NewID()
 	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile}
 	account := &domain.Account{ID: accountID}
@@ -115,14 +123,15 @@ func TestPersistSyncSummary_SkipsSuppressReconcileMarking(t *testing.T) {
 	if err := svc.persistSyncSummary(context.Background(), job, account, connector.SourceAeroVault, vaultDatasets, summary); err != nil {
 		t.Fatalf("persistSyncSummary: %v", err)
 	}
-	if snapshots.markUnavailableCalls != 0 {
-		t.Errorf("MarkUnavailable calls = %d, want 0 (reconcile marking must be suppressed)", snapshots.markUnavailableCalls)
-	}
-	if accountRepo.markMissingCalls != 0 {
-		t.Errorf("MarkMissingReferences calls = %d, want 0 (reconcile marking must be suppressed)", accountRepo.markMissingCalls)
+	if snapshots.markUnavailableCalls != 0 || accountRepo.markMissingCalls != 0 {
+		t.Errorf("legacy reconciliation calls = snapshot:%d references:%d, want 0", snapshots.markUnavailableCalls, accountRepo.markMissingCalls)
 	}
 	if len(snapshots.upserted) != 0 {
-		t.Errorf("upserted snapshots = %d, want 0", len(snapshots.upserted))
+		t.Errorf("direct snapshot upserts = %d, want 0", len(snapshots.upserted))
+	}
+	if len(application.requests) != 1 || !application.requests[0].Reconcile ||
+		len(application.requests[0].SkippedDatasets) != 1 {
+		t.Fatalf("summary application requests = %+v, want one reconciled incomplete request", application)
 	}
 }
 
@@ -130,7 +139,7 @@ func TestPersistSyncSummary_SkipsSuppressReconcileMarking(t *testing.T) {
 // caused by the source's own flag (no skips) must equally suppress reconcile
 // marking, pinning that the gate is summary.Complete, not SkippedDatasets.
 func TestPersistSyncSummary_GateIsOnCompleteNotOnSkips(t *testing.T) {
-	svc, snapshots, accountRepo := newSyncProjectionHarness()
+	svc, snapshots, accountRepo, application := newSyncProjectionHarness()
 	accountID := idgen.NewID()
 	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile}
 	account := &domain.Account{ID: accountID}
@@ -140,8 +149,10 @@ func TestPersistSyncSummary_GateIsOnCompleteNotOnSkips(t *testing.T) {
 		t.Fatalf("persistSyncSummary: %v", err)
 	}
 	if snapshots.markUnavailableCalls != 0 || accountRepo.markMissingCalls != 0 {
-		t.Errorf("reconcile marking ran on an incomplete summary: MarkUnavailable=%d MarkMissingReferences=%d",
-			snapshots.markUnavailableCalls, accountRepo.markMissingCalls)
+		t.Errorf("legacy reconciliation calls = snapshot:%d references:%d, want 0", snapshots.markUnavailableCalls, accountRepo.markMissingCalls)
+	}
+	if len(application.requests) != 1 || !application.requests[0].Reconcile {
+		t.Fatalf("summary application requests = %+v, want one reconciled incomplete request", application)
 	}
 }
 
@@ -151,7 +162,7 @@ func TestPersistSyncSummary_GateIsOnCompleteNotOnSkips(t *testing.T) {
 // This proves the fakes can observe reconcile marking and only the Complete
 // gate suppressed it in the negative cases above.
 func TestPersistSyncSummary_CompleteSummaryRunsReconcileMarking(t *testing.T) {
-	svc, snapshots, accountRepo := newSyncProjectionHarness()
+	svc, snapshots, accountRepo, application := newSyncProjectionHarness()
 	accountID := idgen.NewID()
 	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile}
 	account := &domain.Account{ID: accountID}
@@ -167,17 +178,14 @@ func TestPersistSyncSummary_CompleteSummaryRunsReconcileMarking(t *testing.T) {
 	if err := svc.persistSyncSummary(context.Background(), job, account, connector.SourceAeroVault, vaultDatasets, summary); err != nil {
 		t.Fatalf("persistSyncSummary: %v", err)
 	}
-	if snapshots.markUnavailableCalls != 1 {
-		t.Errorf("MarkUnavailable calls = %d, want 1", snapshots.markUnavailableCalls)
+	if snapshots.markUnavailableCalls != 0 || accountRepo.markMissingCalls != 0 {
+		t.Errorf("legacy reconciliation calls = snapshot:%d references:%d, want 0", snapshots.markUnavailableCalls, accountRepo.markMissingCalls)
 	}
-	if len(snapshots.markedUnavailable) != 2 {
-		t.Errorf("marked unavailable datasets = %v, want the two requested-but-absent vault datasets",
-			snapshots.markedUnavailable)
+	if len(snapshots.upserted) != 0 {
+		t.Errorf("direct snapshot upserts = %d, want 0", len(snapshots.upserted))
 	}
-	if accountRepo.markMissingCalls != 1 {
-		t.Errorf("MarkMissingReferences calls = %d, want 1", accountRepo.markMissingCalls)
-	}
-	if len(snapshots.upserted) != 1 {
-		t.Errorf("upserted snapshots = %d, want 1", len(snapshots.upserted))
+	if len(application.requests) != 1 || !application.requests[0].Reconcile ||
+		len(application.requests[0].Snapshots) != 1 {
+		t.Fatalf("summary application requests = %+v, want one reconciled request", application)
 	}
 }

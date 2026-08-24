@@ -24,6 +24,7 @@ type accountMembershipRow struct {
 	Status         string            `gorm:"column:status"`
 	Version        int64             `gorm:"column:version"`
 	LastSyncedAt   *time.Time        `gorm:"column:last_synced_at"`
+	ErrorCode      string            `gorm:"column:error_code"`
 	Data           datatypes.JSONMap `gorm:"column:data"`
 	CreatedAt      time.Time         `gorm:"column:created_at"`
 	UpdatedAt      time.Time         `gorm:"column:updated_at"`
@@ -44,6 +45,7 @@ func membershipRowToDomain(row *accountMembershipRow) *domain.AccountMembership 
 		Status:         row.Status,
 		Version:        row.Version,
 		LastSyncedAt:   row.LastSyncedAt,
+		ErrorCode:      row.ErrorCode,
 		Data:           map[string]any(row.Data),
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
@@ -63,6 +65,7 @@ func membershipDomainToRow(membership *domain.AccountMembership) *accountMembers
 		Status:         membership.Status,
 		Version:        membership.Version,
 		LastSyncedAt:   membership.LastSyncedAt,
+		ErrorCode:      membership.ErrorCode,
 		Data:           datatypes.JSONMap(membership.Data),
 		CreatedAt:      membership.CreatedAt,
 		UpdatedAt:      membership.UpdatedAt,
@@ -104,7 +107,7 @@ func (r *accountRepo) UpsertMembership(ctx context.Context, membership *domain.A
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "scope_type"}, {Name: "scope_id"}, {Name: "source_member_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"source_region", "role", "status", "version", "last_synced_at", "data", "updated_at",
+			"source_region", "role", "status", "version", "last_synced_at", "error_code", "data", "updated_at",
 		}),
 		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_memberships.version <= EXCLUDED.version"}}},
 	}).Create(row).Error

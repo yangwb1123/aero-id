@@ -48,7 +48,7 @@ func TestPrivilegedOperationReadCannotCrossTenant(t *testing.T) {
 func TestPrivilegedSyncJobReadCannotCrossTenant(t *testing.T) {
 	id := idgen.NewID()
 	repo := &syncJobGetRepo{job: &domain.SyncJob{ID: id, ActorUID: "other", TenantID: "tenant-b"}}
-	jobs := NewSyncJobServiceWithOptions(repo, nil, nil, nil, nil, nil, WithSyncJobPermission(allowAllPermission{}))
+	jobs := NewSyncJobServiceWithOptions(repo, nil, nil, nil, nil, nil, nil, WithSyncJobPermission(allowAllPermission{}))
 	assertTenantNotFound(t, func(ctx context.Context) error {
 		_, err := jobs.Get(ctx, id)
 		return err

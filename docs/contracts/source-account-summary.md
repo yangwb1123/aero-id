@@ -29,6 +29,11 @@ not an authorization bypass.
   "version": 42,
   "generated_at": "2026-08-20T12:00:00Z",
   "complete": true,
+  "coverage": {
+    "datasets": ["aero-im.profile"],
+    "sources": true,
+    "memberships": true
+  },
   "datasets": {
     "aero-im.profile": {"display_name": "Ada"}
   },
@@ -54,9 +59,14 @@ not an authorization bypass.
 }
 ```
 
-`version` is monotonic for the source aggregate/summary cursor. `generated_at`
-and `source_region` are mandatory for production responses. `complete=false`
-means the source itself could not produce the requested set. aero-id also marks
+`version` is an immutable, globally monotonic source revision for the
+`account/source/coverage` stream; a source-region move must not reset it.
+`generated_at` and `source_region` are mandatory for production responses.
+The optional `coverage` object explicitly declares which dataset, source-reference,
+and membership classes the revision covers. When present, aero-id never infers
+omission authority for an undeclared class. Legacy responses without `coverage`
+use the requested datasets and source-wide reference compatibility semantics.
+`complete=false` means the source itself could not produce the requested set. aero-id also marks
 the result incomplete when it receives an unknown or wrong-source dataset.
 Payload data is allow-listed and redacted at the connector boundary; sources
 must never return passwords, tokens, cookies, MFA/recovery material, object

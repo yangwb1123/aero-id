@@ -151,6 +151,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		return nil, err
 	}
 	snapshotRepo := repository.NewAccountSnapshotRepository(gdb)
+	summaryApplication := repository.NewAccountSummaryApplication(gdb)
 	eventReceiptRepo := repository.NewEventReceiptRepositoryWithStore(gdb,
 		repository.NewEventStoreRepository(gdb), auditLedgerRepo)
 	operationRepo := repository.NewOperationRepository(gdb, auditLedgerRepo)
@@ -183,8 +184,8 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		cfg: cfg, log: log, gdb: gdb, store: store,
 		ssoClient: ssoClient, sourceConnectors: sourceConnectors,
 		controlMetrics: controlMetrics, metricsReg: metricsReg,
-		billingRuntime: billingRuntime,
-		auditLedger:    auditLedger, auditLedgerRepo: auditLedgerRepo,
+		billingRuntime: billingRuntime, summaryApplication: summaryApplication,
+		auditLedger: auditLedger, auditLedgerRepo: auditLedgerRepo,
 		fileRepo: fileRepo, fileShareRepo: fileShareRepo,
 		msgRepo: msgRepo, commentRepo: commentRepo, notifRepo: notifRepo,
 		blockRepo: blockRepo, banRepo: banRepo, prefRepo: prefRepo,

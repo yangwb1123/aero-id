@@ -11,12 +11,12 @@ import (
 )
 
 type connectorOperationRunner struct {
-	accounts  repository.AccountRepository
-	snapshots repository.SnapshotRepository
-	clients   map[connector.Source]connector.Connector
+	accounts    repository.AccountRepository
+	application repository.SummaryApplication
+	clients     map[connector.Source]connector.Connector
 }
 
-func NewConnectorOperationRunner(accounts repository.AccountRepository, snapshots repository.SnapshotRepository,
+func NewConnectorOperationRunner(accounts repository.AccountRepository, application repository.SummaryApplication,
 	clients ...connector.Connector) OperationRunner {
 	bySource := make(map[connector.Source]connector.Connector, len(clients))
 	for _, client := range clients {
@@ -24,7 +24,7 @@ func NewConnectorOperationRunner(accounts repository.AccountRepository, snapshot
 			bySource[client.Source()] = client
 		}
 	}
-	return &connectorOperationRunner{accounts: accounts, snapshots: snapshots, clients: bySource}
+	return &connectorOperationRunner{accounts: accounts, application: application, clients: bySource}
 }
 
 func (r *connectorOperationRunner) Run(ctx context.Context, operation *domain.Operation, step *domain.OperationStep) (string, map[string]any, error) {
@@ -165,39 +165,26 @@ func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.O
 	if summary == nil {
 		return "", nil, &connector.RemoteError{Source: client.Source(), Kind: connector.ErrorInvalid, Code: "source.empty_summary"}
 	}
-	for _, snapshot := range summary.Snapshots {
-		if snapshot != nil {
-			snapshot.AccountID = account.ID
-			if err := r.snapshots.UpsertSnapshot(ctx, snapshot); err != nil {
-				return "", nil, err
-			}
-		}
+	if r.application == nil {
+		return "", nil, repository.ErrSummaryApplicationUnavailable
 	}
-	for _, sourceRef := range summary.Sources {
-		if sourceRef == nil {
-			continue
-		}
-		sourceRef.AccountID = account.ID
-		if err := r.accounts.UpsertSource(ctx, sourceRef); err != nil {
-			return "", nil, err
-		}
+	applicationResult, err := r.application.ApplySummary(ctx, domain.SummaryApplicationRequest{
+		AccountID: account.ID, Source: string(client.Source()), SourceRegion: summary.SourceRegion, Version: summary.Version,
+		RequestedDatasets: append([]domain.AccountDataset(nil), datasets...), Coverage: summary.Coverage,
+		Complete: summary.Complete, SkippedDatasets: append([]string(nil), summary.SkippedDatasets...),
+		Snapshots: summary.Snapshots, Sources: summary.Sources, Memberships: summary.Memberships,
+	})
+	if err != nil {
+		return "", nil, err
 	}
-	for _, membership := range summary.Memberships {
-		if membership == nil {
-			continue
-		}
-		membership.AccountID = account.ID
-		if err := r.accounts.UpsertMembership(ctx, membership); err != nil {
-			return "", nil, err
-		}
-	}
-	return "", syncOperationResult(summary), nil
+	return "", syncOperationResult(summary, applicationResult), nil
 }
 
-func syncOperationResult(summary *connector.Summary) map[string]any {
+func syncOperationResult(summary *connector.Summary, applicationResult domain.SummaryApplicationResult) map[string]any {
 	status := "synced"
-	result := map[string]any{"status": status, "count": len(summary.Snapshots), "complete": summary.Complete}
-	if !summary.Complete {
+	result := map[string]any{"status": status, "count": len(summary.Snapshots), "complete": summaryIsComplete(summary),
+		"application_outcome": string(applicationResult.Outcome)}
+	if !summaryIsComplete(summary) {
 		result["status"] = string(domain.OperationPartiallyCompleted)
 		result["error_code"] = "source.summary_incomplete"
 	}

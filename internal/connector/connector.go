@@ -31,8 +31,12 @@ type SummaryRequest struct {
 
 type Summary struct {
 	Source       Source
+	// SourceRegion is the authority region for Version. Version values must be
+	// globally monotonic for an account/source/coverage stream; a region move
+	// cannot restart the counter.
 	SourceRegion string
 	Version      int64
+	Coverage     domain.SummaryCoverage
 	Snapshots    []*domain.AccountSnapshot
 	Sources      []*domain.AccountSource
 	Memberships  []*domain.AccountMembership

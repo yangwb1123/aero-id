@@ -240,7 +240,14 @@ func (c *JSONSummaryConnector) fetchSummary(ctx context.Context, req SummaryRequ
 	if expected := strings.TrimSpace(req.Region); expected != "" && result.SourceRegion != expected {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_mismatch"}
 	}
-	markMissingRequestedDatasets(result, req.Datasets)
+	requested := req.Datasets
+	if len(requested) == 0 {
+		requested = sourceDatasets(c.source)
+	}
+	markMissingRequestedDatasets(result, requested)
+	if err := normalizeSummaryCoverage(result, requested); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -360,9 +367,16 @@ type summaryPayload struct {
 	Version      int64                      `json:"version"`
 	GeneratedAt  time.Time                  `json:"generated_at"`
 	Complete     bool                       `json:"complete"`
+	Coverage     *summaryCoveragePayload    `json:"coverage"`
 	Datasets     map[string]json.RawMessage `json:"datasets"`
 	Sources      []summarySourcePayload     `json:"sources"`
 	Memberships  []summaryMembershipPayload `json:"memberships"`
+}
+
+type summaryCoveragePayload struct {
+	Datasets    []string `json:"datasets"`
+	Sources     bool     `json:"sources"`
+	Memberships bool     `json:"memberships"`
 }
 
 type summarySourcePayload struct {

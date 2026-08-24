@@ -76,6 +76,7 @@ type AccountMembership struct {
 	Status         string
 	Version        int64
 	LastSyncedAt   *time.Time
+	ErrorCode      string
 	Data           map[string]any
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

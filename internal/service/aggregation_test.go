@@ -36,11 +36,13 @@ func (f *aggregationSnapshotFixture) UpsertSnapshot(_ context.Context, snapshot 
 
 type aggregationAccountFixture struct{ AccountService }
 
-func (aggregationAccountFixture) UpsertSource(context.Context, *domain.AccountSource) error {
-	return nil
+type aggregationSummaryApplicationFixture struct {
+	requests []domain.SummaryApplicationRequest
 }
-func (aggregationAccountFixture) UpsertMembership(context.Context, *domain.AccountMembership) error {
-	return nil
+
+func (f *aggregationSummaryApplicationFixture) ApplySummary(_ context.Context, request domain.SummaryApplicationRequest) (domain.SummaryApplicationResult, error) {
+	f.requests = append(f.requests, request)
+	return domain.SummaryApplicationResult{Outcome: domain.SummaryApplied, Applied: true}, nil
 }
 
 type activityAccountFixture struct {
@@ -65,7 +67,8 @@ func (f activitySnapshotFixture) ListSnapshots(context.Context, domain.ID,
 func TestAggregationRefreshMarksIncompleteSummaryPartial(t *testing.T) {
 	accountID := idgen.NewID()
 	snapshots := &aggregationSnapshotFixture{}
-	service := &aggregationService{accounts: aggregationAccountFixture{}, snapshots: snapshots}
+	application := &aggregationSummaryApplicationFixture{}
+	service := &aggregationService{accounts: aggregationAccountFixture{}, snapshots: snapshots, application: application}
 	result := &domain.AggregateOverview{SourceErrors: map[string]string{}}
 	summary := &connector.Summary{
 		Source: connector.SourceAeroVault, Complete: false,
@@ -77,20 +80,28 @@ func TestAggregationRefreshMarksIncompleteSummaryPartial(t *testing.T) {
 	if got := result.SourceErrors[string(connector.SourceAeroVault)]; got != "source.summary_incomplete" {
 		t.Fatalf("source error = %q, want source.summary_incomplete", got)
 	}
-	if len(snapshots.upserted) != 1 || snapshots.upserted[0].AccountID != accountID {
-		t.Fatalf("upserted snapshots = %+v, want one snapshot owned by account", snapshots.upserted)
+	if len(snapshots.upserted) != 0 {
+		t.Fatalf("direct snapshot upserts = %d, want 0", len(snapshots.upserted))
+	}
+	if len(application.requests) != 1 || len(application.requests[0].Snapshots) != 1 ||
+		application.requests[0].AccountID != accountID {
+		t.Fatalf("summary application requests = %+v, want one account-owned snapshot batch", application)
 	}
 }
 
 func TestAggregationRefreshLeavesCompleteSummaryHealthy(t *testing.T) {
 	snapshots := &aggregationSnapshotFixture{}
-	service := &aggregationService{accounts: aggregationAccountFixture{}, snapshots: snapshots}
+	application := &aggregationSummaryApplicationFixture{}
+	service := &aggregationService{accounts: aggregationAccountFixture{}, snapshots: snapshots, application: application}
 	result := &domain.AggregateOverview{SourceErrors: map[string]string{}}
 	service.refreshSource(context.Background(), &domain.Account{ID: idgen.NewID()}, connector.SourceAeroVault,
 		aggregationConnectorFixture{summary: &connector.Summary{Source: connector.SourceAeroVault, Complete: true}},
 		nil, result, &sync.Mutex{})
 	if len(result.SourceErrors) != 0 {
 		t.Fatalf("complete summary produced source errors: %v", result.SourceErrors)
+	}
+	if len(application.requests) != 1 || !application.requests[0].Complete {
+		t.Fatalf("summary application requests = %+v, want one complete request", application.requests)
 	}
 }
 

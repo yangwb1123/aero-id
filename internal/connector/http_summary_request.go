@@ -130,38 +130,63 @@ func (c *JSONSummaryConnector) decodeEraseResult(body io.Reader) (*CommandResult
 }
 
 func (c *JSONSummaryConnector) summaryFromPayload(payload *summaryPayload) (*Summary, error) {
-	region := strings.TrimSpace(payload.SourceRegion)
-	if region == "" {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_missing"}
+	region, err := c.validateSummaryPayload(payload)
+	if err != nil {
+		return nil, err
 	}
-	if c.cfg.Region != "" && region != c.cfg.Region {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_mismatch"}
-	}
-	if payload.GeneratedAt.IsZero() {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.generated_at_missing"}
-	}
-	if payload.Version < 1 {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.version_invalid"}
-	}
-	result := &Summary{Source: c.source, SourceRegion: region, Version: payload.Version, Complete: payload.Complete}
+	result := newSummaryResult(c.source, region, payload)
 	if err := c.appendDatasetSnapshots(result, payload.Datasets, region, payload.GeneratedAt); err != nil {
 		return nil, err
 	}
-	// Fail closed: a summary that dropped any received dataset is not complete
-	// from aero-id's perspective, regardless of the source's own flag. Downgrade
-	// only; a payload already marked incomplete stays incomplete.
 	result.Complete = payload.Complete && len(result.SkippedDatasets) == 0
+	if err := c.attachSummaryReferences(result, region, payload); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *JSONSummaryConnector) validateSummaryPayload(payload *summaryPayload) (string, error) {
+	region := strings.TrimSpace(payload.SourceRegion)
+	if region == "" {
+		return "", &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_missing"}
+	}
+	if c.cfg.Region != "" && region != c.cfg.Region {
+		return "", &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_mismatch"}
+	}
+	if payload.GeneratedAt.IsZero() {
+		return "", &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.generated_at_missing"}
+	}
+	if payload.Version < 1 {
+		return "", &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.version_invalid"}
+	}
+	return region, nil
+}
+
+func newSummaryResult(source Source, region string, payload *summaryPayload) *Summary {
+	result := &Summary{Source: source, SourceRegion: region, Version: payload.Version, Complete: payload.Complete}
+	if payload.Coverage == nil {
+		return result
+	}
+	result.Coverage = domain.SummaryCoverage{Sources: payload.Coverage.Sources,
+		Memberships: payload.Coverage.Memberships, Explicit: true}
+	for _, name := range payload.Coverage.Datasets {
+		result.Coverage.Datasets = append(result.Coverage.Datasets, domain.AccountDataset(strings.TrimSpace(name)))
+	}
+	return result
+}
+
+func (c *JSONSummaryConnector) attachSummaryReferences(result *Summary, region string,
+	payload *summaryPayload) error {
 	sources, err := sourceReferences(c.source, region, payload)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	memberships, err := membershipReferences(c.source, region, payload)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	result.Sources = sources
-	result.Memberships = memberships
-	return result, nil
+	result.Sources, result.Memberships = sources, memberships
+	return nil
 }
 
 func (c *JSONSummaryConnector) appendDatasetSnapshots(result *Summary, datasets map[string]json.RawMessage,
@@ -186,6 +211,44 @@ func (c *JSONSummaryConnector) appendDatasetSnapshots(result *Summary, datasets 
 	}
 	sort.Strings(result.SkippedDatasets)
 	return nil
+}
+
+func normalizeSummaryCoverage(result *Summary, requested []domain.AccountDataset) error {
+	if result == nil {
+		return &RemoteError{Source: SourceSnaplink, Kind: ErrorInvalid, Code: "source.empty_summary"}
+	}
+	if len(result.Coverage.Datasets) == 0 && !result.Coverage.Explicit {
+		result.Coverage.Datasets = append([]domain.AccountDataset(nil), requested...)
+	}
+	seen := make(map[domain.AccountDataset]struct{}, len(result.Coverage.Datasets))
+	for _, dataset := range result.Coverage.Datasets {
+		descriptor, ok := domain.DatasetDescriptorOf(dataset)
+		if !ok || descriptor.Source != string(result.Source) {
+			return &RemoteError{Source: result.Source, Kind: ErrorInvalid, Code: "source.coverage_invalid"}
+		}
+		if _, duplicate := seen[dataset]; duplicate {
+			return &RemoteError{Source: result.Source, Kind: ErrorInvalid, Code: "source.coverage_invalid"}
+		}
+		seen[dataset] = struct{}{}
+	}
+	if !result.Coverage.Explicit {
+		// Legacy summaries did not declare reference coverage. Returned rows are
+		// still safe to project, and the application will retain the legacy
+		// source-wide revision fence for this response.
+		result.Coverage.Sources = len(result.Sources) > 0
+		result.Coverage.Memberships = len(result.Memberships) > 0
+	}
+	return nil
+}
+
+func sourceDatasets(source Source) []domain.AccountDataset {
+	result := make([]domain.AccountDataset, 0)
+	for _, descriptor := range domain.AccountDatasetRegistry() {
+		if descriptor.Source == string(source) {
+			result = append(result, descriptor.Name)
+		}
+	}
+	return result
 }
 
 func markMissingRequestedDatasets(result *Summary, requested []domain.AccountDataset) {

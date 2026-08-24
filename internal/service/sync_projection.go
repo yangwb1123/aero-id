@@ -2,60 +2,50 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/repository"
 )
 
+func summaryIsComplete(summary *connector.Summary) bool {
+	return summary != nil && summary.Complete && len(summary.SkippedDatasets) == 0
+}
+
 func syncSummaryStatus(summary *connector.Summary) (string, bool) {
-	if summary != nil && !summary.Complete {
+	if !summaryIsComplete(summary) {
 		return "partial", true
 	}
 	return "synced", false
 }
 
-//nolint:cyclop // source projection persistence applies version, freshness, and partial-result rules together.
+func summaryPersistenceStatus(err error) (string, string, bool) {
+	var summaryErr *repository.SummaryApplicationError
+	if errors.As(err, &summaryErr) && summaryErr.Kind == repository.SummaryApplyCommitUnknown {
+		return "unknown", "projection.commit_unknown", true
+	}
+	return "projection_error", "projection.write_failed", false
+}
+
 func (s *syncJobService) persistSyncSummary(ctx context.Context, job *domain.SyncJob, account *domain.Account,
 	source connector.Source, requested []domain.AccountDataset, summary *connector.Summary) error {
 	if summary == nil {
 		return &connector.RemoteError{Source: source, Kind: connector.ErrorInvalid, Code: "source.empty_summary"}
 	}
-	for _, snapshot := range summary.Snapshots {
-		if snapshot == nil {
-			continue
-		}
-		snapshot.AccountID = job.AccountID
-		if err := s.snapshots.UpsertSnapshot(ctx, snapshot); err != nil {
-			return err
-		}
+	if s.application == nil {
+		return repository.ErrSummaryApplicationUnavailable
 	}
-	if job.JobType == domain.SyncJobReconcile && summary.Complete {
-		if err := markReconciledSnapshots(ctx, s.snapshots, account.ID, string(source), requested,
-			summary.Snapshots, summary.Version); err != nil {
-			return err
-		}
+	accountID := job.AccountID
+	if account != nil && account.ID != (domain.ID{}) {
+		accountID = account.ID
 	}
-	for _, sourceRef := range summary.Sources {
-		if sourceRef == nil {
-			continue
-		}
-		sourceRef.AccountID = job.AccountID
-		if err := s.accounts.UpsertSource(ctx, sourceRef); err != nil {
-			return err
-		}
-	}
-	for _, membership := range summary.Memberships {
-		if membership == nil {
-			continue
-		}
-		membership.AccountID = job.AccountID
-		if err := s.accounts.UpsertMembership(ctx, membership); err != nil {
-			return err
-		}
-	}
-	if job.JobType == domain.SyncJobReconcile && summary.Complete {
-		return markReconciledReferences(ctx, s.accountRepo, account.ID, string(source),
-			summary.Sources, summary.Memberships, summary.Version)
-	}
-	return nil
+	_, err := s.application.ApplySummary(ctx, domain.SummaryApplicationRequest{
+		AccountID: accountID, Source: string(source), SourceRegion: summary.SourceRegion, Version: summary.Version,
+		RequestedDatasets: append([]domain.AccountDataset(nil), requested...), Coverage: summary.Coverage,
+		Complete: summary.Complete, SkippedDatasets: append([]string(nil), summary.SkippedDatasets...),
+		Reconcile: job.JobType == domain.SyncJobReconcile, Snapshots: summary.Snapshots,
+		Sources: summary.Sources, Memberships: summary.Memberships,
+	})
+	return err
 }

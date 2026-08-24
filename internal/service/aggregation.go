@@ -25,21 +25,23 @@ type AggregationInput struct {
 }
 
 type aggregationService struct {
-	accounts   AccountService
-	snapshots  repository.SnapshotRepository
-	connectors map[connector.Source]connector.Connector
+	accounts    AccountService
+	snapshots   repository.SnapshotRepository
+	application repository.SummaryApplication
+	connectors  map[connector.Source]connector.Connector
 }
 
 const defaultAggregationMaxAge = 5 * time.Minute
 
-func NewAggregationService(accounts AccountService, snapshots repository.SnapshotRepository, connectors ...connector.Connector) AggregationService {
+func NewAggregationService(accounts AccountService, snapshots repository.SnapshotRepository,
+	application repository.SummaryApplication, connectors ...connector.Connector) AggregationService {
 	bySource := make(map[connector.Source]connector.Connector, len(connectors))
 	for _, item := range connectors {
 		if item != nil {
 			bySource[item.Source()] = item
 		}
 	}
-	return &aggregationService{accounts: accounts, snapshots: snapshots, connectors: bySource}
+	return &aggregationService{accounts: accounts, snapshots: snapshots, application: application, connectors: bySource}
 }
 
 func (s *aggregationService) GetMeOverview(ctx context.Context, input AggregationInput) (*domain.AggregateOverview, error) {
@@ -126,11 +128,11 @@ func (s *aggregationService) refreshSource(ctx context.Context, account *domain.
 		s.setSourceError(result, mu, source, "source.empty_summary")
 		return
 	}
-	if err := s.persistSummary(ctx, account.ID, summary); err != nil {
+	if err := s.persistSummary(ctx, account.ID, source, requested, summary); err != nil {
 		s.setSourceError(result, mu, source, "projection.write_failed")
 		return
 	}
-	if !summary.Complete {
+	if !summaryIsComplete(summary) {
 		s.setSourceError(result, mu, source, "source.summary_incomplete")
 	}
 }
@@ -149,35 +151,18 @@ func (s *aggregationService) setSourceError(result *domain.AggregateOverview, mu
 	result.SourceErrors[string(source)] = code
 }
 
-func (s *aggregationService) persistSummary(ctx context.Context, accountID domain.ID, summary *connector.Summary) error {
-	for _, snapshot := range summary.Snapshots {
-		if snapshot == nil {
-			continue
-		}
-		snapshot.AccountID = accountID
-		if err := s.snapshots.UpsertSnapshot(ctx, snapshot); err != nil {
-			return err
-		}
+func (s *aggregationService) persistSummary(ctx context.Context, accountID domain.ID, source connector.Source,
+	requested []domain.AccountDataset, summary *connector.Summary) error {
+	if s.application == nil {
+		return repository.ErrSummaryApplicationUnavailable
 	}
-	for _, sourceRef := range summary.Sources {
-		if sourceRef == nil {
-			continue
-		}
-		sourceRef.AccountID = accountID
-		if err := s.accounts.UpsertSource(ctx, sourceRef); err != nil {
-			return err
-		}
-	}
-	for _, membership := range summary.Memberships {
-		if membership == nil {
-			continue
-		}
-		membership.AccountID = accountID
-		if err := s.accounts.UpsertMembership(ctx, membership); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := s.application.ApplySummary(ctx, domain.SummaryApplicationRequest{
+		AccountID: accountID, Source: string(source), SourceRegion: summary.SourceRegion, Version: summary.Version,
+		RequestedDatasets: append([]domain.AccountDataset(nil), requested...), Coverage: summary.Coverage,
+		Complete: summary.Complete, SkippedDatasets: append([]string(nil), summary.SkippedDatasets...),
+		Snapshots: summary.Snapshots, Sources: summary.Sources, Memberships: summary.Memberships,
+	})
+	return err
 }
 
 func normalizeDatasets(values []domain.AccountDataset) ([]domain.AccountDataset, error) {
