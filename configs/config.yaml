@@ -7,7 +7,12 @@ sources:
     erase_path: ""              # opt-in idempotent source deletion command
     status_path: ""              # optional command outcome endpoint
     region: local
-    bearer_token: ""            # secret provider/env only
+    bearer_token: ""            # compatibility only; prefer OAuth below
+    oauth_token_url: ""
+    oauth_client_id: ""
+    oauth_client_secret: ""     # secret provider/env only
+    oauth_scope: ""
+    oauth_resource: ""
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
@@ -24,6 +29,11 @@ sources:
     status_path: ""
     region: local
     bearer_token: ""
+    oauth_token_url: ""
+    oauth_client_id: ""
+    oauth_client_secret: ""
+    oauth_scope: ""
+    oauth_resource: ""
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
@@ -40,6 +50,11 @@ sources:
     status_path: ""
     region: local
     bearer_token: ""
+    oauth_token_url: ""
+    oauth_client_id: ""
+    oauth_client_secret: ""
+    oauth_scope: ""
+    oauth_resource: ""
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32

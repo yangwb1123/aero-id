@@ -24,6 +24,7 @@ type HTTPConfig struct {
 	OperationStatusPath string
 	Region              string
 	BearerToken         string
+	OAuth               OAuthClientCredentialsConfig
 	Timeout             time.Duration
 	MaxBodyBytes        int64
 	MaxConcurrency      int
@@ -44,6 +45,7 @@ type JSONSummaryConnector struct {
 	source         Source
 	cfg            HTTPConfig
 	client         *http.Client
+	tokens         *oauthClientCredentials
 	bulkhead       *bulkhead.Bulkhead
 	breakerMu      sync.Mutex
 	consecutiveErr int
@@ -70,7 +72,14 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 	if err != nil {
 		return nil, err
 	}
-	return &JSONSummaryConnector{source: source, cfg: cfg, client: client,
+	tokens, err := newOAuthClientCredentials(cfg.OAuth, client, cfg.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s connector OAuth: %w", source, err)
+	}
+	if tokens != nil && strings.TrimSpace(cfg.BearerToken) != "" {
+		return nil, fmt.Errorf("%s connector must configure either bearer token or OAuth client credentials", source)
+	}
+	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, tokens: tokens,
 		bulkhead: bulkhead.New(clampedSummaryConcurrency(cfg.MaxConcurrency))}, nil
 }
 

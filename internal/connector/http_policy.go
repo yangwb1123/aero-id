@@ -47,27 +47,65 @@ func (c *JSONSummaryConnector) finish(err error) {
 }
 
 func (c *JSONSummaryConnector) doHTTP(ctx context.Context, factory func() (*http.Request, error)) (*http.Response, error) {
+	authRetried := false
 	for attempt := 0; attempt < c.cfg.MaxAttempts; attempt++ {
 		request, err := factory()
 		if err != nil {
 			return nil, err
 		}
-		canRetry := retryableRequest(request)
-		response, err := c.client.Do(request)
-		if err == nil {
-			if !canRetry || !retryableStatus(response.StatusCode) || attempt+1 >= c.cfg.MaxAttempts {
-				return response, nil
-			}
-			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.cfg.MaxBodyBytes))
-			_ = response.Body.Close()
-		} else if !canRetry || attempt+1 >= c.cfg.MaxAttempts {
+		if err := c.authorize(ctx, request); err != nil {
 			return nil, err
+		}
+		response, err := c.client.Do(request)
+		retry, refreshed := c.retryDecision(response, err, retryableRequest(request), attempt, authRetried)
+		if refreshed {
+			authRetried = true
+			attempt-- // token refresh does not consume the transport retry budget
+			continue
+		}
+		if !retry {
+			if err != nil {
+				return nil, err
+			}
+			return response, nil
 		}
 		if err := waitRetry(ctx, c.cfg.RetryBackoff, attempt); err != nil {
 			return nil, err
 		}
 	}
 	return nil, errors.New("source request retry budget exhausted")
+}
+
+func (c *JSONSummaryConnector) retryDecision(response *http.Response, requestErr error, canRetry bool,
+	attempt int, authRetried bool) (retry, refreshed bool) {
+	if requestErr != nil {
+		return canRetry && attempt+1 < c.cfg.MaxAttempts, false
+	}
+	if response.StatusCode == http.StatusUnauthorized && c.tokens != nil && !authRetried {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.cfg.MaxBodyBytes))
+		_ = response.Body.Close()
+		c.tokens.invalidate()
+		return false, true
+	}
+	if !canRetry || !retryableStatus(response.StatusCode) || attempt+1 >= c.cfg.MaxAttempts {
+		return false, false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.cfg.MaxBodyBytes))
+	_ = response.Body.Close()
+	return true, false
+}
+
+func (c *JSONSummaryConnector) authorize(ctx context.Context, request *http.Request) error {
+	if c.tokens == nil {
+		setBearer(request, c.cfg.BearerToken)
+		return nil
+	}
+	token, err := c.tokens.accessToken(ctx)
+	if err != nil {
+		return &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.oauth_token_unavailable", Temporary: true, Cause: err}
+	}
+	setBearer(request, token)
+	return nil
 }
 
 func retryableStatus(status int) bool { return status == http.StatusTooManyRequests || status >= 500 }

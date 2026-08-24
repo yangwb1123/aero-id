@@ -167,6 +167,32 @@ func sourceEndpointCases() []sourceEndpointCase {
 			s.TLSKeyFile = "/certs/client.key"
 		}, ""},
 		{"neither", nil, ""},
+		{"complete OAuth client credentials", func(s *SourceEndpointConfig) {
+			s.OAuthTokenURL = "https://sso.example/token"
+			s.OAuthClientID = "aero-id"
+			s.OAuthSecret = "source-secret"
+			s.OAuthScope = "account:summary:read"
+			s.OAuthResource = "snaplink"
+		}, ""},
+		{"partial OAuth client credentials", func(s *SourceEndpointConfig) {
+			s.OAuthTokenURL = "https://sso.example/token"
+			s.OAuthClientID = "aero-id"
+		}, "OAuth token URL, client ID, client secret, scope, and resource are required together"},
+		{"mixed static and OAuth credentials", func(s *SourceEndpointConfig) {
+			s.BearerToken = "legacy-token"
+			s.OAuthTokenURL = "https://sso.example/token"
+			s.OAuthClientID = "aero-id"
+			s.OAuthSecret = "source-secret"
+			s.OAuthScope = "account:summary:read"
+			s.OAuthResource = "snaplink"
+		}, "must configure either bearer_token or OAuth client credentials"},
+		{"blank normalized OAuth scope", func(s *SourceEndpointConfig) {
+			s.OAuthTokenURL = "https://sso.example/token"
+			s.OAuthClientID = "aero-id"
+			s.OAuthSecret = "source-secret"
+			s.OAuthScope = "   "
+			s.OAuthResource = "snaplink"
+		}, "OAuth token URL, client ID, client secret, scope, and resource are required together"},
 		{"relative summary_path", func(s *SourceEndpointConfig) { s.SummaryPath = "internal/account-summary" }, sourcePathSummaryErr}, // CANARY: path shape
 		{"newline in summary_path", func(s *SourceEndpointConfig) { s.SummaryPath = "/internal\naccount-summary" }, sourcePathSummaryErr},
 		{"carriage return in erase_path", func(s *SourceEndpointConfig) { s.ErasePath = "/internal/erase\r" }, sourcePathEraseErr},

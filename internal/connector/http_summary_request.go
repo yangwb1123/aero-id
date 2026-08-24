@@ -35,7 +35,6 @@ func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req Summar
 	}
 	request.Header.Set("X-Request-ID", req.RequestID)
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
-	setBearer(request, c.cfg.BearerToken)
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
 	return request, nil
 }
@@ -97,7 +96,6 @@ func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseReq
 	request.Header.Set("X-Request-ID", req.RequestID)
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
 	request.Header.Set("Idempotency-Key", req.IdempotencyKey)
-	setBearer(request, c.cfg.BearerToken)
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
 	return request, body, nil
 }

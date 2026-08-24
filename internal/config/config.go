@@ -173,7 +173,12 @@ type SourceEndpointConfig struct {
 	ErasePath      string        `mapstructure:"erase_path"`
 	StatusPath     string        `mapstructure:"status_path"`
 	Region         string        `mapstructure:"region"`
-	BearerToken    string        `mapstructure:"bearer_token"`
+	BearerToken    string        `mapstructure:"bearer_token"` // compatibility only; prefer OAuth client credentials
+	OAuthTokenURL  string        `mapstructure:"oauth_token_url"`
+	OAuthClientID  string        `mapstructure:"oauth_client_id"`
+	OAuthSecret    string        `mapstructure:"oauth_client_secret"` // secret provider/env only
+	OAuthScope     string        `mapstructure:"oauth_scope"`
+	OAuthResource  string        `mapstructure:"oauth_resource"`
 	Timeout        time.Duration `mapstructure:"timeout"`
 	MaxBodyBytes   int64         `mapstructure:"max_body_bytes"`
 	MaxConcurrency int           `mapstructure:"max_concurrency"`

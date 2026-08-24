@@ -40,7 +40,10 @@ func buildSourceConnectors(cfg *config.Config, metricsReg *metrics.Registry) ([]
 func sourceHTTPConfig(value config.SourceEndpointConfig, metricsReg *metrics.Registry) connector.HTTPConfig {
 	return connector.HTTPConfig{Endpoint: value.Endpoint, SummaryPath: value.SummaryPath, ErasePath: value.ErasePath, Region: value.Region,
 		OperationStatusPath: value.StatusPath,
-		BearerToken:         value.BearerToken, Timeout: value.Timeout, MaxBodyBytes: value.MaxBodyBytes, MaxConcurrency: value.MaxConcurrency,
+		BearerToken:         value.BearerToken,
+		OAuth: connector.OAuthClientCredentialsConfig{TokenURL: value.OAuthTokenURL, ClientID: value.OAuthClientID,
+			ClientSecret: value.OAuthSecret, Scope: value.OAuthScope, Resource: value.OAuthResource},
+		Timeout: value.Timeout, MaxBodyBytes: value.MaxBodyBytes, MaxConcurrency: value.MaxConcurrency,
 		MaxAttempts: value.MaxAttempts, RetryBackoff: value.RetryBackoff, TLSCAFile: value.TLSCAFile, TLSCertFile: value.TLSCertFile,
 		TLSKeyFile: value.TLSKeyFile, TLSServerName: value.TLSServerName, Metrics: metricsReg}
 }

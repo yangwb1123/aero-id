@@ -82,9 +82,6 @@ func (c *JSONSummaryConnector) operationStatusRequest(ctx context.Context, endpo
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
 	request.Header.Set("Idempotency-Key", req.IdempotencyKey)
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
-	if c.cfg.BearerToken != "" {
-		request.Header.Set("Authorization", "Bearer "+c.cfg.BearerToken)
-	}
 	return request, nil
 }
 

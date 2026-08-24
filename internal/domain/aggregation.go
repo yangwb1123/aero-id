@@ -43,6 +43,7 @@ const (
 	datasetAeroIMProfile         AccountDataset = "aero-im.profile"
 	datasetAeroIMWorkspaces      AccountDataset = "aero-im.workspaces"
 	DatasetAeroIMActivitySummary AccountDataset = "aero-im.activity_summary"
+	datasetAeroIMNotifications   AccountDataset = "aero-im.notifications"
 	datasetAeroVaultTenants      AccountDataset = "aero-vault.tenants"
 	datasetAeroVaultBuckets      AccountDataset = "aero-vault.buckets"
 	datasetAeroVaultUsage        AccountDataset = "aero-vault.usage"
@@ -62,6 +63,7 @@ var accountDatasetRegistry = []datasetDescriptor{
 	{Name: datasetAeroIMProfile, Source: "aero-im"},
 	{Name: datasetAeroIMWorkspaces, Source: "aero-im"},
 	{Name: DatasetAeroIMActivitySummary, Source: "aero-im"},
+	{Name: datasetAeroIMNotifications, Source: "aero-im"},
 	{Name: datasetAeroVaultTenants, Source: "aero-vault"},
 	{Name: datasetAeroVaultBuckets, Source: "aero-vault"},
 	{Name: datasetAeroVaultUsage, Source: "aero-vault"},

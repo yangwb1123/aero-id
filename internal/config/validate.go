@@ -384,7 +384,34 @@ func validateSourceEndpoint(name string, source SourceEndpointConfig) error {
 	if (source.TLSCertFile == "") != (source.TLSKeyFile == "") {
 		return fmt.Errorf("sources.%s mTLS requires both tls_cert_file and tls_key_file", name)
 	}
+	if err := validateSourceOAuth(name, source); err != nil {
+		return err
+	}
 	return validateSourcePaths(name, source)
+}
+
+func validateSourceOAuth(name string, source SourceEndpointConfig) error {
+	scope := strings.Join(strings.Fields(source.OAuthScope), " ")
+	resource := strings.TrimSpace(source.OAuthResource)
+	values := []string{source.OAuthTokenURL, source.OAuthClientID, source.OAuthSecret, scope, resource}
+	configured := false
+	complete := true
+	for _, value := range values {
+		configured = configured || strings.TrimSpace(value) != ""
+		complete = complete && strings.TrimSpace(value) != ""
+	}
+	if configured && !complete {
+		return fmt.Errorf("sources.%s OAuth token URL, client ID, client secret, scope, and resource are required together", name)
+	}
+	if configured && strings.TrimSpace(source.BearerToken) != "" {
+		return fmt.Errorf("sources.%s must configure either bearer_token or OAuth client credentials", name)
+	}
+	if configured {
+		if err := validateSourceURL(name, source.OAuthTokenURL); err != nil {
+			return fmt.Errorf("sources.%s.oauth_token_url: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func validateSourceURL(name, raw string) error {

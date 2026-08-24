@@ -44,6 +44,16 @@ GET  /v1/me/activity
 ```
 
 `/v1/account-datasets` 是 allow-list；客户端只能请求返回的 dataset 名称，不能拼接源系统路径或 SQL。
+`aero-im.notifications` 是 Aero IM 通知收件箱的有界、无正文投影；只含通知与关联资源 ID、类型、时间、
+聚合数、重要度、未读总数和截断标记。账户控制台不通过 aero-id 修改通知状态，处理动作仍进入 Aero IM，
+避免在账户系统中建立第二套通知权威。尚未在 Aero IM 完成首次 Snaplink JIT 关联时，投影保持相同结构并以
+`source_account_status=not_found` 明确标记；只读摘要请求不得隐式创建 Aero IM 账户。
+`aero-vault.tenants`、`aero-vault.buckets` 和 `aero-vault.usage` 只提供租户状态、桶名称及
+容量/对象数配额用量，不包含文件正文、对象内容或下载凭据。账户控制台只读展示这些投影；上传、下载、
+删除、分享和保留策略仍由 Aero Vault 执行，aero-id audience 的 access token 不得转发给 Aero Vault。
+`snaplink.identity`、`snaplink.tenants`、`snaplink.permissions` 和 `snaplink.security` 仅按 Snaplink
+明确响应字段展示身份、账户状态、租户、角色与权限。客户端不得通用展开未知字段，也不得显示密码、
+MFA 密钥、会话令牌或其他凭据；身份验证和授权写操作必须回到 Snaplink 管理端执行。
 聚合快照包含 `source`、`source_region`、`status`、`version`、`generated_at`、`last_synced_at` 和可选
 `expires_at`。`status` 可能为 `fresh`、`stale`、`unavailable` 或 `unknown`。聚合响应中的 `partial`、
 `source_errors` 和 `stale_datasets` 必须在界面上明确展示。
