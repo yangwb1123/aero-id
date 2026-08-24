@@ -367,6 +367,11 @@ func PermissionInterceptor(checker middleware.PermissionChecker) grpc.UnaryServe
 func requiredPermForMethod(fullMethod string) (string, bool) {
 	m := map[string]string{
 		"/aero_id.v1.AdminService/ListAudit":                 domain.PermAuditRead,
+		"/aero_id.v1.AdminService/ListRoles":                 domain.PermAuditRead,
+		"/aero_id.v1.AdminService/ListUserRoles":             domain.PermAuditRead,
+		"/aero_id.v1.AdminService/Ban":                       domain.PermUserBan,
+		"/aero_id.v1.AdminService/Unban":                     domain.PermUserBan,
+		"/aero_id.v1.AdminService/ListBans":                  domain.PermUserBan,
 		"/aero_id.v1.AuditLedgerService/ListAuditFacts":      domain.PermAuditRead,
 		"/aero_id.v1.AccountService/GetAccount":              service.AccountReadPermission,
 		"/aero_id.v1.AccountService/ListAccounts":            service.AccountReadPermission,

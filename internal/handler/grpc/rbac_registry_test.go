@@ -29,6 +29,11 @@ import (
 // list (or vice versa) fails TestRequiredPermForMethod_KeysResolveToRealMethods.
 var pinnedGatedMethods = []string{
 	"/aero_id.v1.AdminService/ListAudit",
+	"/aero_id.v1.AdminService/ListRoles",
+	"/aero_id.v1.AdminService/ListUserRoles",
+	"/aero_id.v1.AdminService/Ban",
+	"/aero_id.v1.AdminService/Unban",
+	"/aero_id.v1.AdminService/ListBans",
 	"/aero_id.v1.AdminService/GrantRole",
 	"/aero_id.v1.AdminService/RevokeRole",
 	"/aero_id.v1.AuditLedgerService/ListAuditFacts",
@@ -50,6 +55,7 @@ var pinnedGatedMethods = []string{
 // speaks (internal/domain/admin.go + internal/service/account.go).
 var permissionVocabulary = map[string]bool{
 	domain.PermAuditRead:          true,
+	domain.PermUserBan:            true,
 	domain.PermOperationManage:    true,
 	domain.PermSourceSync:         true,
 	domain.PermSourceEventIngest:  true,
@@ -125,6 +131,7 @@ func TestRequiredPermForMethod_PermissionsInKnownVocabulary(t *testing.T) {
 	}
 	literalPin := map[string]string{
 		"audit.read":          domain.PermAuditRead,
+		"user.ban":            domain.PermUserBan,
 		"operation.manage":    domain.PermOperationManage,
 		"source.sync":         domain.PermSourceSync,
 		"source.event.ingest": domain.PermSourceEventIngest,
