@@ -42,6 +42,17 @@ var sensitiveSummaryParts = []string{
 // per-key matching never re-canonicalizes the constant set.
 var sensitiveSummaryCanonicalParts = canonicalSummaryParts()
 
+// summaryIdentifierKeys are opaque resource references, not source content.
+// They are explicitly retained even when their names contain a sensitive
+// shape such as "conversation"; account projections may expose the reference
+// while never copying the referenced message or object body.
+var summaryIdentifierKeys = map[string]struct{}{
+	"id": {}, "accountid": {}, "actorid": {}, "channelid": {}, "commentid": {},
+	"conversationid": {}, "fileid": {}, "messageid": {}, "notificationid": {},
+	"objectid": {}, "resourceid": {}, "subjectid": {}, "threadid": {},
+	"workspaceid": {},
+}
+
 func canonicalSummaryParts() []string {
 	parts := make([]string, len(sensitiveSummaryParts))
 	for i, part := range sensitiveSummaryParts {
@@ -89,6 +100,9 @@ func canonicalSummaryKey(key string) string {
 
 func sensitiveSummaryKey(key string) bool {
 	canonical := canonicalSummaryKey(key)
+	if _, ok := summaryIdentifierKeys[canonical]; ok {
+		return false
+	}
 	for _, part := range sensitiveSummaryCanonicalParts {
 		if strings.Contains(canonical, part) {
 			return true

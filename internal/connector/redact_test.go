@@ -106,6 +106,35 @@ func TestRedactSummaryDataNestedArrays(t *testing.T) {
 	}
 }
 
+func TestRedactSummaryDataRetainsOpaqueNotificationReferences(t *testing.T) {
+	input := map[string]any{
+		"notifications": []any{map[string]any{
+			"notification_id": "n-1", "conversation_id": "c-1", "message_id": "m-1",
+			"resource_type": "message", "message_preview": "secret body",
+		}},
+		"unread_count": 2,
+	}
+	got := RedactSummaryData(input)
+	notifications, ok := got["notifications"].([]any)
+	if !ok || len(notifications) != 1 {
+		t.Fatalf("notifications = %#v, want one redacted item", got["notifications"])
+	}
+	item, ok := notifications[0].(map[string]any)
+	if !ok {
+		t.Fatalf("notification item = %#v, want object", notifications[0])
+	}
+	for key, want := range map[string]string{
+		"notification_id": "n-1", "conversation_id": "c-1", "message_id": "m-1", "resource_type": "message",
+	} {
+		if item[key] != want {
+			t.Fatalf("notification %s = %#v, want %q; item=%#v", key, item[key], want, item)
+		}
+	}
+	if _, leaked := item["message_preview"]; leaked {
+		t.Fatalf("notification body preview survived redaction: %#v", item)
+	}
+}
+
 func TestRedactSummaryDataDoesNotBroadenGenericKey(t *testing.T) {
 	input := map[string]any{"keyboard": "a", "monkey": "b", "keynote": "c", "display_name": "Ada"}
 	got := RedactSummaryData(input)
