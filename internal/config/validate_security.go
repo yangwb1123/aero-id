@@ -27,6 +27,9 @@ func (c *Config) validateEnvironmentSecurity() error {
 	if strings.TrimSpace(c.Database.SSLMode) == "" || strings.EqualFold(strings.TrimSpace(c.Database.SSLMode), "disable") {
 		return fmt.Errorf("database.sslmode must enable TLS in production-like environments")
 	}
+	if len(c.Server.HTTP.CORSOrigins) == 0 {
+		return fmt.Errorf("server.http.cors_origins must be configured in production-like environments")
+	}
 	if eventIngestHMACConfigured(c.EventIngest) && !c.EventIngest.RequireTimestamp {
 		return fmt.Errorf("event_ingest.require_timestamp must be true when signed event ingestion is configured in production-like environments")
 	}

@@ -14,6 +14,7 @@ func secureProductionConfig() Config {
 			AuthZRequired:       true,
 			AuthZLegacyFallback: false,
 		},
+		Server: ServerConfig{HTTP: HTTPConfig{CORSOrigins: []string{"https://console.example"}}},
 	}
 }
 
@@ -35,6 +36,7 @@ func TestValidateEnvironmentSecurity(t *testing.T) {
 		{"authz not required", func(c *Config) { c.SSO.AuthZRequired = false }, "sso.authz_required"},
 		{"legacy authz fallback", func(c *Config) { c.SSO.AuthZLegacyFallback = true }, "sso.authz_legacy_fallback"},
 		{"database tls disabled", func(c *Config) { c.Database.SSLMode = "disable" }, "database.sslmode"},
+		{"cors origins required", func(c *Config) { c.Server.HTTP.CORSOrigins = nil }, "server.http.cors_origins"},
 		{"signed events require timestamp", func(c *Config) {
 			c.EventIngest.SigningKey = strings.Repeat("s", 32)
 		}, "event_ingest.require_timestamp"},
