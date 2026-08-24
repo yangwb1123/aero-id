@@ -5,6 +5,7 @@ package idempotency
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 // reservationTTL bounds how long an in-progress reservation is honored before it is
 // considered stale (its leader likely crashed) and may be reclaimed by a retry.
 const reservationTTL = 2 * time.Minute
+
+// ErrReservationLost means a completion or release no longer owns a live
+// reservation. Callers must not treat it as a successful durable transition.
+var ErrReservationLost = errors.New("idempotency reservation lost")
 
 // Record is the stored outcome of a request. Completed is false while a reservation
 // is in flight; once the leader finishes, Status/Body/ContentType hold the response.
@@ -121,14 +126,21 @@ func (s *GormStore) Complete(ctx context.Context, uid, endpoint, key string, rec
 	if res.Error != nil {
 		return fmt.Errorf("idempotency complete: %w", res.Error)
 	}
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("idempotency complete: %w", ErrReservationLost)
+	}
 	return nil
 }
 
 func (s *GormStore) Release(ctx context.Context, uid, endpoint, key string) error {
-	if err := s.db.WithContext(ctx).
+	res := s.db.WithContext(ctx).
 		Where("uid = ? AND endpoint = ? AND idem_key = ?", uid, endpoint, key).
-		Delete(&idempotencyRow{}).Error; err != nil {
-		return fmt.Errorf("idempotency release: %w", err)
+		Delete(&idempotencyRow{})
+	if res.Error != nil {
+		return fmt.Errorf("idempotency release: %w", res.Error)
+	}
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("idempotency release: %w", ErrReservationLost)
 	}
 	return nil
 }

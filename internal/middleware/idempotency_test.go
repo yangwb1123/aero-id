@@ -191,6 +191,82 @@ func postExportWithKey(e *gin.Engine, key string) *httptest.ResponseRecorder {
 	return w
 }
 
+func TestIdempotency_CallbackReplayStoresOnlySafeBody(t *testing.T) {
+	store := newMemStore()
+	calls := 0
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) { c.Set("actor_uid", "u1"); c.Next() })
+	e.Use(middleware.Idempotency(store, time.Hour, nil))
+	e.POST("/v1/admin/callback-subscriptions", func(c *gin.Context) {
+		calls++
+		middleware.RequireIdempotencyReplayOnSuccess(c)
+		if err := middleware.SetIdempotencyReplayBody(c, []byte(`{"data":{"subscription":{"id":"sub-1"}}}`)); err != nil {
+			t.Fatalf("safe replay body: %v", err)
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusCreated, gin.H{"subscription": gin.H{"id": "sub-1"}, "secret": "callback-secret-sentinel"})
+	})
+
+	first := postWithPathAndKey(e, "/v1/admin/callback-subscriptions", "callback-key")
+	second := postWithPathAndKey(e, "/v1/admin/callback-subscriptions", "callback-key")
+	third := postWithPathAndKey(e, "/v1/admin/callback-subscriptions", "callback-key")
+	if calls != 1 {
+		t.Fatalf("callback handler calls = %d, want 1", calls)
+	}
+	if !strings.Contains(first.Body.String(), "callback-secret-sentinel") {
+		t.Fatalf("initial response lost one-time secret: %s", first.Body.String())
+	}
+	for i, replay := range []*httptest.ResponseRecorder{second, third} {
+		if replay.Code != http.StatusCreated || replay.Header().Get("Idempotent-Replayed") != "true" ||
+			replay.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("replay %d status/headers = %d/%v, want 201/replay/no-store", i, replay.Code, replay.Header())
+		}
+		if strings.Contains(replay.Body.String(), "callback-secret-sentinel") || strings.Contains(replay.Body.String(), `"secret"`) {
+			t.Fatalf("replay %d leaked secret: %s", i, replay.Body.String())
+		}
+	}
+	store.mu.Lock()
+	record := store.records[store.key("u1", "POST /v1/admin/callback-subscriptions", "callback-key")]
+	stored := append([]byte(nil), record.Body...)
+	store.mu.Unlock()
+	if strings.Contains(string(stored), "callback-secret-sentinel") || strings.Contains(string(stored), `"secret"`) {
+		t.Fatalf("stored replay body leaked secret: %s", stored)
+	}
+}
+
+func TestIdempotency_CallbackLegacySecretRecordDoesNotReplay(t *testing.T) {
+	store := newMemStore()
+	store.records[store.key("u1", "POST /v1/admin/callback-subscriptions", "legacy")] = &idempotency.Record{
+		Status: 201, Completed: true, ContentType: "application/json",
+		Body: []byte(`{"data":{"subscription":{"id":"sub-1"},"secret":"legacy-secret"}}`),
+	}
+	calls := 0
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) { c.Set("actor_uid", "u1"); c.Next() })
+	e.Use(middleware.Idempotency(store, time.Hour, nil))
+	e.POST("/v1/admin/callback-subscriptions", func(c *gin.Context) {
+		calls++
+		c.Status(http.StatusCreated)
+	})
+	response := postWithPathAndKey(e, "/v1/admin/callback-subscriptions", "legacy")
+	if response.Code != http.StatusServiceUnavailable || calls != 0 {
+		t.Fatalf("legacy callback replay = status %d/calls %d, want 503/0", response.Code, calls)
+	}
+	if strings.Contains(response.Body.String(), "legacy-secret") {
+		t.Fatal("legacy callback secret was returned")
+	}
+}
+
+func postWithPathAndKey(e *gin.Engine, path, key string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	req.Header.Set("Idempotency-Key", key)
+	e.ServeHTTP(w, req)
+	return w
+}
+
 func TestIdempotency_ReplaysStoredResponse(t *testing.T) {
 	calls := 0
 	e := setupIdemRouter(newMemStore(), nil, &calls)

@@ -114,6 +114,12 @@ func (s *RedisStore) getExisting(ctx context.Context, key string) (*Record, bool
 // once per key.
 func (s *RedisStore) Complete(ctx context.Context, uid, endpoint, key string, rec Record, ttl time.Duration) error {
 	k := redisKey(uid, endpoint, key)
+	if _, err := s.client.Do(ctx, s.client.B().Get().Key(k).Build()).AsBytes(); err != nil {
+		if rueidis.IsRedisNil(err) {
+			return fmt.Errorf("redis complete: %w", ErrReservationLost)
+		}
+		return fmt.Errorf("redis complete get reservation: %w", err)
+	}
 	if ttl <= 0 {
 		ttl = recordTTL
 	}
@@ -136,10 +142,12 @@ func (s *RedisStore) Complete(ctx context.Context, uid, endpoint, key string, re
 }
 
 // Release implements Store.Release. It deletes the idempotency key so a
-// subsequent retry starts fresh. Errors are silently dropped because a
-// best-effort delete is safe: the key will expire via TTL regardless.
+// subsequent retry starts fresh. Redis errors remain observable; a failed
+// delete is not equivalent to a released reservation.
 func (s *RedisStore) Release(ctx context.Context, uid, endpoint, key string) error {
 	k := redisKey(uid, endpoint, key)
-	_ = s.client.Do(ctx, s.client.B().Del().Key(k).Build()).Error()
+	if err := s.client.Do(ctx, s.client.B().Del().Key(k).Build()).Error(); err != nil {
+		return fmt.Errorf("redis release: %w", err)
+	}
 	return nil
 }

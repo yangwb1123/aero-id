@@ -336,12 +336,28 @@ paths:
     post:
       operationId: createCallbackSubscription
       security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         content:
           application/json:
             schema: {$ref: '#/components/schemas/CallbackCreateRequest'}
       responses:
-        '201': {description: Subscription created; challenge verified.}
+        '201':
+          description: Subscription created; challenge verified. The initial response contains the one-time secret; an idempotent replay contains subscription metadata only. Records are replayable only while the configured idempotency retention window is active.
+          headers:
+            Cache-Control:
+              description: Always no-store because the initial response contains a one-time secret.
+              schema: {type: string, example: no-store}
+            Idempotent-Replayed:
+              description: Present with value true only when the response is an idempotent replay.
+              schema: {type: string, enum: ["true"]}
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: '#/components/schemas/CallbackCreateInitialEnvelope'}
+                  - {$ref: '#/components/schemas/CallbackCreateReplayEnvelope'}
         '403': {$ref: '#/components/responses/Error'}
   /admin/callback-subscriptions/{id}:
     delete:
@@ -1004,6 +1020,36 @@ components:
         endpoint: {type: string, format: uri}
         event_types: {type: array, items: {type: string}}
         tenant_id: {type: string}
+    CallbackCreateInitialEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [subscription, secret]
+          properties:
+            subscription: {$ref: '#/components/schemas/CallbackSubscription'}
+            secret: {type: string, description: One-time callback verification secret; never returned by replay.}
+    CallbackCreateReplayEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [subscription]
+          properties:
+            subscription: {$ref: '#/components/schemas/CallbackSubscription'}
+    CallbackSubscription:
+      type: object
+      required: [id, owner_uid, endpoint, event_types, enabled, verified]
+      properties:
+        id: {type: string, format: uuid}
+        owner_uid: {type: string}
+        tenant_id: {type: string}
+        endpoint: {type: string, format: uri}
+        event_types: {type: array, items: {type: string}}
+        enabled: {type: boolean}
+        verified: {type: boolean}
     CallbackListEnvelope:
       type: object
       properties:

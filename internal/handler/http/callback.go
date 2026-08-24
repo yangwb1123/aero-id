@@ -1,6 +1,8 @@
 package http
 
 import (
+	"encoding/json"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -60,7 +62,20 @@ func (h *CallbackHandler) Create(c *gin.Context) {
 		httpx.WriteError(c, err)
 		return
 	}
-	httpx.Created(c, gin.H{"subscription": callbackSubscriptionResponseOf(item), "secret": string(secret)})
+	subscription := callbackSubscriptionResponseOf(item)
+	safeBody, err := json.Marshal(callbackCreateReplayEnvelope{Data: callbackCreateReplayData{Subscription: subscription}})
+	if err != nil {
+		// Registration has already committed a durable callback; retaining the
+		// idempotency reservation is safer than returning a secret-bearing body
+		// that cannot be replayed without duplication.
+		panic(err)
+	}
+	middleware.RequireIdempotencyReplayOnSuccess(c)
+	if err := middleware.SetIdempotencyReplayBody(c, safeBody); err != nil {
+		panic(err)
+	}
+	c.Header("Cache-Control", "no-store")
+	httpx.Created(c, gin.H{"subscription": subscription, "secret": string(secret)})
 }
 
 func (h *CallbackHandler) Delete(c *gin.Context) {
@@ -87,6 +102,14 @@ func (h *CallbackHandler) Replay(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"status": "queued"})
+}
+
+type callbackCreateReplayEnvelope struct {
+	Data callbackCreateReplayData `json:"data"`
+}
+
+type callbackCreateReplayData struct {
+	Subscription callbackSubscriptionResponse `json:"subscription"`
 }
 
 type callbackSubscriptionResponse struct {
