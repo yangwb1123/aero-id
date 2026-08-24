@@ -4,6 +4,7 @@ package idempotency_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -65,6 +66,37 @@ func TestGormStore_ReserveCompleteReplayRelease(t *testing.T) {
 //
 // N exceeds testpg's MaxOpenConns (5) and every goroutine is released by a
 // closed-channel barrier, so read-then-reclaim phases genuinely overlap.
+func TestGormStore_LeaseRejectsStaleLeaderAfterReclaim(t *testing.T) {
+	db := testpg.Start(t)
+	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))
+	store := idempotency.NewGormStore(db)
+	ctx := context.Background()
+	const uid, endpoint, key = "u-lease", "POST /v1/callback", "lease-key"
+	if _, reserved, token, err := store.ReserveLease(ctx, uid, endpoint, key); err != nil || !reserved || token == "" {
+		t.Fatalf("initial lease: reserved=%v token=%q err=%v", reserved, token, err)
+	} else {
+		if err := db.Exec("UPDATE idempotency_keys SET expires_at = ? WHERE uid = ? AND endpoint = ? AND idem_key = ?",
+			time.Now().UTC().Add(-time.Minute), uid, endpoint, key).Error; err != nil {
+			t.Fatalf("expire lease: %v", err)
+		}
+		_, reclaimed, replacement, err := store.ReserveLease(ctx, uid, endpoint, key)
+		if err != nil || !reclaimed || replacement == "" || replacement == token {
+			t.Fatalf("replacement lease: reserved=%v token=%q err=%v", reclaimed, replacement, err)
+		}
+		if err := store.CompleteLease(ctx, uid, endpoint, key, token,
+			idempotency.Record{Status: 201, Body: []byte(`{"old":true}`)}, time.Hour); !errors.Is(err, idempotency.ErrReservationLost) {
+			t.Fatalf("stale complete error = %v, want ErrReservationLost", err)
+		}
+		if err := store.ReleaseLease(ctx, uid, endpoint, key, token); !errors.Is(err, idempotency.ErrReservationLost) {
+			t.Fatalf("stale release error = %v, want ErrReservationLost", err)
+		}
+		if err := store.CompleteLease(ctx, uid, endpoint, key, replacement,
+			idempotency.Record{Status: 201, Body: []byte(`{"new":true}`)}, time.Hour); err != nil {
+			t.Fatalf("replacement complete: %v", err)
+		}
+	}
+}
+
 func TestGormStore_Reserve_ConcurrentReclaimSingleWinner(t *testing.T) {
 	db := testpg.Start(t)
 	testpg.Migrate(t, db, filepath.Join(testpg.RepoRoot(t), "migrations"))

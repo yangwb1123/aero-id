@@ -2,6 +2,7 @@ package idempotency
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -58,6 +59,33 @@ func TestRedisStore_Reserve_then_Complete(t *testing.T) {
 	}
 	if string(rec.Body) != `{"ok":true}` {
 		t.Fatalf("Second Reserve Body=%q, want `{\"ok\":true}`", string(rec.Body))
+	}
+}
+
+func TestRedisStore_LeaseRejectsStaleLeaderAfterExpiry(t *testing.T) {
+	srv, client := newMiniRedis(t)
+	defer srv.Close()
+	defer client.Close()
+	store := NewRedisStore(client)
+	ctx := context.Background()
+	const uid, endpoint, key = "u-lease", "/v1/callback", "lease-key"
+	_, reserved, first, err := store.ReserveLease(ctx, uid, endpoint, key)
+	if err != nil || !reserved || first == "" {
+		t.Fatalf("initial lease: reserved=%v token=%q err=%v", reserved, first, err)
+	}
+	srv.FastForward(3 * time.Minute)
+	_, reclaimed, second, err := store.ReserveLease(ctx, uid, endpoint, key)
+	if err != nil || !reclaimed || second == "" || second == first {
+		t.Fatalf("replacement lease: reserved=%v token=%q err=%v", reclaimed, second, err)
+	}
+	if err := store.CompleteLease(ctx, uid, endpoint, key, first, Record{Status: 201}, time.Hour); !errors.Is(err, ErrReservationLost) {
+		t.Fatalf("stale complete error = %v, want ErrReservationLost", err)
+	}
+	if err := store.ReleaseLease(ctx, uid, endpoint, key, first); !errors.Is(err, ErrReservationLost) {
+		t.Fatalf("stale release error = %v, want ErrReservationLost", err)
+	}
+	if err := store.CompleteLease(ctx, uid, endpoint, key, second, Record{Status: 201, Body: []byte(`{"ok":true}`)}, time.Hour); err != nil {
+		t.Fatalf("replacement complete: %v", err)
 	}
 }
 

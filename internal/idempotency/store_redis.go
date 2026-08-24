@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/redis/rueidis"
 )
@@ -22,7 +25,8 @@ type redisRecord struct {
 	Completed   bool   `json:"c"`
 	// CreatedAt is set on Reserve and used by the stale-reclamation check.
 	// Stored as UnixNano int64 for compact JSON.
-	CreatedAt int64 `json:"t,omitempty"`
+	CreatedAt int64  `json:"t,omitempty"`
+	Owner     string `json:"o,omitempty"`
 }
 
 // RedisStore implements Store backed by Redis. Key format:
@@ -59,27 +63,27 @@ const recordTTL = 24 * time.Hour
 // existing Record so the middleware can replay a completed response or signal
 // an in-flight conflict.
 func (s *RedisStore) Reserve(ctx context.Context, uid, endpoint, key string) (*Record, bool, error) {
+	rec, reserved, _, err := s.ReserveLease(ctx, uid, endpoint, key)
+	return rec, reserved, err
+}
+
+// ReserveLease stores a random owner token inside the reservation payload. The
+// token is compared atomically by the lease completion/release scripts.
+func (s *RedisStore) ReserveLease(ctx context.Context, uid, endpoint, key string) (*Record, bool, string, error) {
 	k := redisKey(uid, endpoint, key)
 	now := time.Now().UTC()
-
-	inProgress := &redisRecord{
-		Status:    0,
-		Completed: false,
-		CreatedAt: now.UnixNano(),
-	}
+	owner := uuid.NewString()
+	inProgress := &redisRecord{Status: 0, Completed: false, CreatedAt: now.UnixNano(), Owner: owner}
 	payload, err := json.Marshal(inProgress)
 	if err != nil {
-		return nil, false, fmt.Errorf("redis reserve marshal: %w", err)
+		return nil, false, "", fmt.Errorf("redis reserve marshal: %w", err)
 	}
-
-	// SET NX EX — only succeeds when the key does not exist.
 	cmd := s.client.B().Set().Key(k).Value(string(payload)).Nx().Ex(redisReservationTTL).Build()
 	if err := s.client.Do(ctx, cmd).Error(); err != nil {
-		// NX returned nil (key already exists). Fetch existing record.
-		return s.getExisting(ctx, k)
+		rec, reserved, getErr := s.getExisting(ctx, k)
+		return rec, reserved, "", getErr
 	}
-	// Successfully reserved.
-	return nil, true, nil
+	return nil, true, owner, nil
 }
 
 // getExisting retrieves the existing record for a key. Returns (rec, false, nil)
@@ -112,6 +116,52 @@ func (s *RedisStore) getExisting(ctx context.Context, key string) (*Record, bool
 // was deleted or expired the store silently creates a new key — this is safe
 // because the caller still has the reservation and will only call Complete
 // once per key.
+var redisCompleteLeaseScript = rueidis.NewLuaScript(`
+local value = redis.call("GET", KEYS[1])
+if not value or not string.find(value, ARGV[1], 1, true) then return 0 end
+redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+return 1
+`)
+
+var redisReleaseLeaseScript = rueidis.NewLuaScript(`
+local value = redis.call("GET", KEYS[1])
+if not value or not string.find(value, ARGV[1], 1, true) then return 0 end
+redis.call("DEL", KEYS[1])
+return 1
+`)
+
+func (s *RedisStore) CompleteLease(ctx context.Context, uid, endpoint, key, owner string,
+	rec Record, ttl time.Duration) error {
+	if ttl <= 0 {
+		ttl = recordTTL
+	}
+	payload, err := json.Marshal(&redisRecord{Status: rec.Status, ContentType: rec.ContentType,
+		Body: rec.Body, Completed: true, CreatedAt: time.Now().UTC().UnixNano()})
+	if err != nil {
+		return fmt.Errorf("redis complete marshal: %w", err)
+	}
+	result, err := redisCompleteLeaseScript.Exec(ctx, s.client, []string{redisKey(uid, endpoint, key)},
+		[]string{owner, string(payload), strconv.FormatInt(int64(ttl/time.Second), 10)}).ToInt64()
+	if err != nil {
+		return fmt.Errorf("redis complete lease: %w", err)
+	}
+	if result != 1 {
+		return fmt.Errorf("redis complete lease: %w", ErrReservationLost)
+	}
+	return nil
+}
+
+func (s *RedisStore) ReleaseLease(ctx context.Context, uid, endpoint, key, owner string) error {
+	result, err := redisReleaseLeaseScript.Exec(ctx, s.client, []string{redisKey(uid, endpoint, key)}, []string{owner}).ToInt64()
+	if err != nil {
+		return fmt.Errorf("redis release lease: %w", err)
+	}
+	if result != 1 {
+		return fmt.Errorf("redis release lease: %w", ErrReservationLost)
+	}
+	return nil
+}
+
 func (s *RedisStore) Complete(ctx context.Context, uid, endpoint, key string, rec Record, ttl time.Duration) error {
 	k := redisKey(uid, endpoint, key)
 	if _, err := s.client.Do(ctx, s.client.B().Get().Key(k).Build()).AsBytes(); err != nil {

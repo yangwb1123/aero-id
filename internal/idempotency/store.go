@@ -43,6 +43,17 @@ type Store interface {
 	Release(ctx context.Context, uid, endpoint, key string) error
 }
 
+// LeaseStore adds a fencing token to the reservation lifecycle. Production
+// stores implement it so a leader whose reservation expired cannot complete or
+// release a newer attempt. Middleware keeps the base Store fallback for small
+// deterministic test stores and legacy adapters.
+type LeaseStore interface {
+	Store
+	ReserveLease(context.Context, string, string, string) (*Record, bool, string, error)
+	CompleteLease(context.Context, string, string, string, string, Record, time.Duration) error
+	ReleaseLease(context.Context, string, string, string, string) error
+}
+
 type idempotencyRow struct {
 	ID          uuid.UUID `gorm:"column:id;primaryKey"`
 	UID         string    `gorm:"column:uid"`
@@ -93,12 +104,8 @@ func (s *GormStore) Reserve(ctx context.Context, uid, endpoint, key string) (*Re
 	// here — Postgres stores microsecond-precision TIMESTAMPTZ, so a freshly
 	// computed time would not round-trip stably.
 	if now.After(existing.ExpiresAt) {
-		updates := map[string]any{"created_at": now, "expires_at": now.Add(reservationTTL)}
-		if existing.Status > 0 {
-			updates["status"] = 0
-			updates["content_type"] = ""
-			updates["response"] = nil
-		}
+		updates := map[string]any{"id": uuid.New(), "status": 0, "content_type": "",
+			"response": nil, "created_at": now, "expires_at": now.Add(reservationTTL)}
 		reclaim := s.db.WithContext(ctx).Model(&idempotencyRow{}).
 			Where("id = ? AND expires_at = ?", existing.ID, existing.ExpiresAt).
 			Updates(updates)
@@ -112,6 +119,50 @@ func (s *GormStore) Reserve(ctx context.Context, uid, endpoint, key string) (*Re
 		Body:        existing.Response,
 		Completed:   existing.Status > 0,
 	}, false, nil
+}
+
+// ReserveLease is Reserve with the row UUID returned as the fencing token.
+func (s *GormStore) ReserveLease(ctx context.Context, uid, endpoint, key string) (*Record, bool, string, error) {
+	rec, reserved, err := s.Reserve(ctx, uid, endpoint, key)
+	if err != nil || !reserved {
+		return rec, reserved, "", err
+	}
+	var row idempotencyRow
+	if err := s.db.WithContext(ctx).
+		Where("uid = ? AND endpoint = ? AND idem_key = ?", uid, endpoint, key).
+		First(&row).Error; err != nil {
+		return nil, false, "", fmt.Errorf("idempotency reserve token: %w", err)
+	}
+	return nil, true, row.ID.String(), nil
+}
+
+func (s *GormStore) CompleteLease(ctx context.Context, uid, endpoint, key, token string,
+	rec Record, ttl time.Duration) error {
+	res := s.db.WithContext(ctx).Model(&idempotencyRow{}).
+		Where("id = ? AND uid = ? AND endpoint = ? AND idem_key = ? AND status = 0 AND expires_at > ?",
+			token, uid, endpoint, key, time.Now().UTC()).
+		Updates(map[string]any{"status": rec.Status, "content_type": rec.ContentType,
+			"response": rec.Body, "expires_at": time.Now().UTC().Add(ttl)})
+	if res.Error != nil {
+		return fmt.Errorf("idempotency complete lease: %w", res.Error)
+	}
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("idempotency complete lease: %w", ErrReservationLost)
+	}
+	return nil
+}
+
+func (s *GormStore) ReleaseLease(ctx context.Context, uid, endpoint, key, token string) error {
+	res := s.db.WithContext(ctx).Where(
+		"id = ? AND uid = ? AND endpoint = ? AND idem_key = ? AND status = 0 AND expires_at > ?",
+		token, uid, endpoint, key, time.Now().UTC()).Delete(&idempotencyRow{})
+	if res.Error != nil {
+		return fmt.Errorf("idempotency release lease: %w", res.Error)
+	}
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("idempotency release lease: %w", ErrReservationLost)
+	}
+	return nil
 }
 
 func (s *GormStore) Complete(ctx context.Context, uid, endpoint, key string, rec Record, ttl time.Duration) error {

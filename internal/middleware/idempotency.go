@@ -49,8 +49,16 @@ func Idempotency(store idempotency.Store, ttl time.Duration, obs IdempotencyObse
 		endpoint := c.Request.Method + " " + c.FullPath()
 		ctx := c.Request.Context()
 
-		rec, reserved, err := store.Reserve(ctx, uid, endpoint, key)
-		handleIdempotencyReservation(c, store, obs, uid, endpoint, key, ttl, rec, reserved, err)
+		var rec *idempotency.Record
+		var reserved bool
+		var leaseToken string
+		var err error
+		if leased, ok := store.(idempotency.LeaseStore); ok {
+			rec, reserved, leaseToken, err = leased.ReserveLease(ctx, uid, endpoint, key)
+		} else {
+			rec, reserved, err = store.Reserve(ctx, uid, endpoint, key)
+		}
+		handleIdempotencyReservation(c, store, obs, uid, endpoint, key, ttl, leaseToken, rec, reserved, err)
 
 	}
 }
@@ -59,7 +67,7 @@ func Idempotency(store idempotency.Store, ttl time.Duration, obs IdempotencyObse
 // in-bounds response, or release on 5xx/overflow so a retry re-executes. Store
 // errors are reported to obs, never silently discarded.
 func handleIdempotencyReservation(c *gin.Context, store idempotency.Store, obs IdempotencyObserver,
-	uid, endpoint, key string, ttl time.Duration, rec *idempotency.Record, reserved bool, reserveErr error) {
+	uid, endpoint, key string, ttl time.Duration, leaseToken string, rec *idempotency.Record, reserved bool, reserveErr error) {
 	if reserveErr != nil || rec == nil && !reserved {
 		c.Next()
 		return
@@ -68,7 +76,7 @@ func handleIdempotencyReservation(c *gin.Context, store idempotency.Store, obs I
 		cw := &captureWriter{ResponseWriter: c.Writer, body: &bytes.Buffer{}}
 		c.Writer = cw
 		c.Next()
-		finalizeIdempotency(c, cw, obs, store, uid, endpoint, key, ttl)
+		finalizeIdempotency(c, cw, obs, store, uid, endpoint, key, ttl, leaseToken)
 		return
 	}
 	if rec.Completed {
@@ -89,22 +97,22 @@ func handleIdempotencyReservation(c *gin.Context, store idempotency.Store, obs I
 }
 
 func finalizeIdempotency(c *gin.Context, cw *captureWriter, obs IdempotencyObserver,
-	store idempotency.Store, uid, endpoint, key string, ttl time.Duration) {
+	store idempotency.Store, uid, endpoint, key string, ttl time.Duration, leaseToken string) {
 	status := c.Writer.Status()
 	ctx := c.Request.Context()
 	required, replayBody := idempotencyReplayPolicy(c)
 	if cw != nil && cw.overflowed {
 		notify(obs, func() { obs.Overflowed() })
-		releaseReservation(ctx, store, obs, uid, endpoint, key)
+		releaseReservation(ctx, store, obs, uid, endpoint, key, leaseToken)
 		return
 	}
 	if status >= http.StatusInternalServerError {
-		releaseReservation(ctx, store, obs, uid, endpoint, key)
+		releaseReservation(ctx, store, obs, uid, endpoint, key, leaseToken)
 		return
 	}
 	if required {
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
-			err := completeExplicitReplay(ctx, store, uid, endpoint, key, status,
+			err := completeExplicitReplay(ctx, store, uid, endpoint, key, leaseToken, status,
 				c.Writer.Header().Get("Content-Type"), replayBody, ttl)
 			notifyCompleteFailure(obs, err)
 			return
@@ -116,21 +124,32 @@ func finalizeIdempotency(c *gin.Context, cw *captureWriter, obs IdempotencyObser
 		notifyCompleteFailure(obs, errors.New("idempotency safe replay body unavailable"))
 		return
 	}
-	completeCapturedReplay(ctx, store, obs, uid, endpoint, key, status,
+	completeCapturedReplay(ctx, store, obs, uid, endpoint, key, leaseToken, status,
 		c.Writer.Header().Get("Content-Type"), capturedBody(cw), ttl)
 }
 
 func releaseReservation(ctx context.Context, store idempotency.Store, obs IdempotencyObserver,
-	uid, endpoint, key string) {
-	if err := store.Release(ctx, uid, endpoint, key); err != nil {
+	uid, endpoint, key, leaseToken string) {
+	var err error
+	if leased, ok := store.(idempotency.LeaseStore); ok && leaseToken != "" {
+		err = leased.ReleaseLease(ctx, uid, endpoint, key, leaseToken)
+	} else {
+		err = store.Release(ctx, uid, endpoint, key)
+	}
+	if err != nil {
 		notify(obs, func() { obs.ReleaseFailed(err) })
 	}
 }
 
 func completeCapturedReplay(ctx context.Context, store idempotency.Store, obs IdempotencyObserver,
-	uid, endpoint, key string, status int, contentType string, body []byte, ttl time.Duration) {
-	err := store.Complete(ctx, uid, endpoint, key, idempotency.Record{Status: status,
-		ContentType: contentType, Body: body}, ttl)
+	uid, endpoint, key, leaseToken string, status int, contentType string, body []byte, ttl time.Duration) {
+	record := idempotency.Record{Status: status, ContentType: contentType, Body: body}
+	var err error
+	if leased, ok := store.(idempotency.LeaseStore); ok && leaseToken != "" {
+		err = leased.CompleteLease(ctx, uid, endpoint, key, leaseToken, record, ttl)
+	} else {
+		err = store.Complete(ctx, uid, endpoint, key, record, ttl)
+	}
 	notifyCompleteFailure(obs, err)
 }
 
@@ -150,14 +169,16 @@ func notifyCompleteFailure(obs IdempotencyObserver, err error) {
 // notify delivers one observation to obs. A nil observer is a no-op; a panic
 // inside the callback is recovered so an observer bug can never alter the
 // request path.
-func completeExplicitReplay(ctx context.Context, store idempotency.Store, uid, endpoint, key string,
+func completeExplicitReplay(ctx context.Context, store idempotency.Store, uid, endpoint, key, leaseToken string,
 	status int, contentType string, body []byte, ttl time.Duration) error {
 	if err := validateReplayBody(body); err != nil {
 		return errors.Join(errors.New("explicit idempotency replay body rejected"), err)
 	}
-	return store.Complete(ctx, uid, endpoint, key, idempotency.Record{
-		Status: status, ContentType: contentType, Body: append([]byte(nil), body...),
-	}, ttl)
+	record := idempotency.Record{Status: status, ContentType: contentType, Body: append([]byte(nil), body...)}
+	if leased, ok := store.(idempotency.LeaseStore); ok && leaseToken != "" {
+		return leased.CompleteLease(ctx, uid, endpoint, key, leaseToken, record, ttl)
+	}
+	return store.Complete(ctx, uid, endpoint, key, record, ttl)
 }
 
 func notify(obs IdempotencyObserver, fn func()) {
