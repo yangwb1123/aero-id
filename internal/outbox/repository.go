@@ -92,50 +92,71 @@ func (r *GormRepository) PurgeDeadLetters(ctx context.Context, cutoff time.Time,
 	}
 	var total int64
 	for {
-		// Purge dead letters past cutoff. The outer dead_letter qual is
-		// re-checked by EPQ against the new row version, so a row concurrently
-		// flipped out of dead_letter (a future requeue surface) survives the
-		// DELETE (mirror the delivery-leg guard in callback_audit.go).
-		sub := r.db.WithContext(ctx).Model(&eventRow{}).
-			Where("dead_letter = true AND created_at < ?", cutoff).
-			Order("created_at ASC, id ASC").
-			Select("id").
-			Limit(batchSize)
-		res := r.db.WithContext(ctx).
-			Where("id IN (?) AND dead_letter = true", sub).
-			Delete(&eventRow{})
-		if res.Error != nil {
-			return total, fmt.Errorf("purge dead letters: %w", res.Error)
+		deadRows, err := r.purgeDeadLetterBatch(ctx, cutoff, batchSize)
+		if err != nil {
+			return total, err
 		}
-		total += res.RowsAffected
-
-		// Also purge published events past publishedCutoff.
-		sub2 := r.db.WithContext(ctx).Model(&eventRow{}).
-			Where("published_at IS NOT NULL AND created_at < ?", publishedCutoff).
-			Order("created_at ASC, id ASC").
-			Select("id").
-			Limit(batchSize)
-		res2 := r.db.WithContext(ctx).
-			Where("id IN (?) AND published_at IS NOT NULL", sub2).
-			Delete(&eventRow{})
-		if res2.Error != nil {
-			return total, fmt.Errorf("purge published events: %w", res2.Error)
+		publishedRows, err := r.purgePublishedBatch(ctx, publishedCutoff, batchSize)
+		if err != nil {
+			return total, err
 		}
-		total += res2.RowsAffected
-
-		if res.RowsAffected == 0 && res2.RowsAffected == 0 {
+		total += deadRows + publishedRows
+		if deadRows == 0 && publishedRows == 0 {
 			break
 		}
-		time.Sleep(outboxPurgeInterval)
+		if err := waitForPurgeBatch(ctx); err != nil {
+			return total, err
+		}
 	}
 	return total, nil
+}
+
+func (r *GormRepository) purgeDeadLetterBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	if cutoff.IsZero() {
+		return 0, nil
+	}
+	// The outer dead_letter predicate is re-checked by EPQ against the new row
+	// version, so a concurrent requeue survives this DELETE.
+	sub := r.db.WithContext(ctx).Model(&eventRow{}).
+		Where("dead_letter = true AND created_at < ?", cutoff).
+		Order("created_at ASC, id ASC").Select("id").Limit(batchSize)
+	res := r.db.WithContext(ctx).Where("id IN (?) AND dead_letter = true", sub).Delete(&eventRow{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("purge dead letters: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
+func (r *GormRepository) purgePublishedBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	if cutoff.IsZero() {
+		return 0, nil
+	}
+	sub := r.db.WithContext(ctx).Model(&eventRow{}).
+		Where("published_at IS NOT NULL AND created_at < ?", cutoff).
+		Order("created_at ASC, id ASC").Select("id").Limit(batchSize)
+	res := r.db.WithContext(ctx).Where("id IN (?) AND published_at IS NOT NULL", sub).Delete(&eventRow{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("purge published events: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
+func waitForPurgeBatch(ctx context.Context) error {
+	timer := time.NewTimer(outboxPurgeInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // outboxCleaner carries the retention bounds and the pause flag; tickOnce and
 // runCleanerLoop are extracted with injected clock/tick sources so scheduling
 // tests drive them deterministically (T-5.2) without wall-clock sleeps.
 type outboxCleaner struct {
-	repo              Repository
+	repo                Repository
 	deadLetterRetention time.Duration
 	publishedRetention  time.Duration
 	purgePaused         bool
@@ -148,9 +169,19 @@ func tickOnce(ctx context.Context, c *outboxCleaner, now time.Time) (int64, erro
 	if c.purgePaused {
 		return 0, nil
 	}
-	deadCutoff := now.Add(-c.deadLetterRetention)
-	pubCutoff := now.Add(-c.publishedRetention)
+	deadCutoff := retentionCutoff(now, c.deadLetterRetention)
+	pubCutoff := retentionCutoff(now, c.publishedRetention)
+	if deadCutoff.IsZero() && pubCutoff.IsZero() {
+		return 0, nil
+	}
 	return c.repo.PurgeDeadLetters(ctx, deadCutoff, pubCutoff, 0)
+}
+
+func retentionCutoff(now time.Time, retention time.Duration) time.Time {
+	if retention <= 0 {
+		return time.Time{}
+	}
+	return now.Add(-retention)
 }
 
 // runCleanerLoop drives purge ticks from an injected tick channel; the caller

@@ -151,6 +151,24 @@ func TestCleanerTick_PausedSkips(t *testing.T) {
 	}
 }
 
+func TestCleanerTick_ZeroPublishedRetentionDisablesOnlyPublishedLeg(t *testing.T) {
+	fixed := time.Now().UTC().Truncate(time.Second)
+	repo := newPurgeRecordingRepo(
+		[]*Event{purgeEvent(true, 10*24*time.Hour)},
+		[]*Event{purgeEvent(false, 40*24*time.Hour)},
+	)
+	deleted, err := tickOnce(context.Background(), cleanerFor(t, repo, 7*24*time.Hour, 0, false), fixed)
+	if err != nil || deleted != 1 {
+		t.Fatalf("zero published retention tick = %d, %v; want one dead-letter deletion", deleted, err)
+	}
+	if len(repo.pubRows) != 1 || repo.callCount() != 1 {
+		t.Fatalf("published rows/calls = %d/%d, want 1/1", len(repo.pubRows), repo.callCount())
+	}
+	if !repo.calls[0].publishedCutoff.IsZero() {
+		t.Fatalf("published cutoff = %v, want zero never-purge sentinel", repo.calls[0].publishedCutoff)
+	}
+}
+
 // TestCleanerLoop_FlagOffPurgesEveryTick (T-5.2 case 2): 3 synthetic ticks
 // drive exactly 3 purge calls in order; this is the positive control proving
 // the loop is live when the flag is off. The loop runs on a goroutine and is

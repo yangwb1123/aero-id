@@ -77,10 +77,11 @@ func buildOutboxRelay(deps outboxDependencies) (stop func()) {
 func buildOutboxCleaner(cfg *config.Config, log *zap.Logger, outboxRepo outbox.Repository) func() {
 	// The wiring gate lives HERE (mirroring the new.go guard it was extracted
 	// from) so no future caller can bypass it: the cleaner is wired only when
-	// both the interval and the dead-letter retention are positive, which is
-	// exactly when validateDataRetention permits purge_paused=true — the flag
-	// is never inert in production.
-	if cfg.DataRetention.OutboxCleanInterval <= 0 || cfg.DataRetention.OutboxDeadLetterRetention <= 0 {
+	// the interval and at least one retention leg are positive. A zero leg is
+	// an explicit never-purge setting for that class, not a reason to disable a
+	// different positive leg.
+	if cfg.DataRetention.OutboxCleanInterval <= 0 ||
+		(cfg.DataRetention.OutboxDeadLetterRetention <= 0 && cfg.DataRetention.OutboxPublishedRetention <= 0) {
 		return func() {}
 	}
 	return outbox.RunOutboxCleaner(

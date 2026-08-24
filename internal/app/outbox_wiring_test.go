@@ -80,11 +80,9 @@ func TestBuildOutboxCleanerWiringPauseFlag(t *testing.T) {
 	}
 }
 
-// TestBuildOutboxCleanerGateConditions (T-5.3): the composition-root gate is
-// not inverted — with the cleaner disabled (interval or dead-letter retention
-// 0) nothing starts and stop is prompt and non-panicking; the flag is never
-// inert in production (a validated config with purge_paused=true always has a
-// wired cleaner, per validateDataRetention).
+// TestBuildOutboxCleanerGateConditions (T-5.3): interval 0 disables the
+// cleaner, while a zero dead-letter retention still wires a cleaner when the
+// published-retention leg remains active.
 func TestBuildOutboxCleanerGateConditions(t *testing.T) {
 	repo := &recordingCleanerRepo{}
 	cfg := outboxCleanerConfig(false)
@@ -98,10 +96,14 @@ func TestBuildOutboxCleanerGateConditions(t *testing.T) {
 
 	cfg2 := outboxCleanerConfig(false)
 	cfg2.DataRetention.OutboxDeadLetterRetention = 0
-	stop2 := buildOutboxCleaner(cfg2, zap.NewNop(), repo)
-	time.Sleep(40 * time.Millisecond)
+	publishedRepo := &recordingCleanerRepo{}
+	stop2 := buildOutboxCleaner(cfg2, zap.NewNop(), publishedRepo)
+	deadline := time.Now().Add(2 * time.Second)
+	for publishedRepo.callCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	stop2()
-	if n := repo.callCount(); n != 0 {
-		t.Fatalf("cleaner with dead-letter retention 0 purged %d times, want 0 (gate not inverted)", n)
+	if n := publishedRepo.callCount(); n == 0 {
+		t.Fatal("cleaner with dead-letter retention 0 did not run the published-retention leg")
 	}
 }
