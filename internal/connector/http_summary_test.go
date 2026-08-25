@@ -150,7 +150,7 @@ func TestJSONSummaryConnectorRejectsMissingFreshnessMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+			_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 			var remote *RemoteError
 			if !errors.As(err, &remote) {
 				t.Fatalf("error = %v, want RemoteError", err)
@@ -182,7 +182,7 @@ func TestJSONSummaryConnectorRejectsInvalidReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+			_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 			var remote *RemoteError
 			if !errors.As(err, &remote) {
 				t.Fatalf("error = %v, want RemoteError", err)
@@ -203,7 +203,7 @@ func TestJSONSummaryConnectorRejectsRequestedRegionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Region: "east"})
+	_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Region: "east", Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	var remote *RemoteError
 	if !errors.As(err, &remote) || remote.Code != "source.region_mismatch" || remote.Kind != ErrorInvalid {
 		t.Fatalf("error = %+v, want invalid/source.region_mismatch", err)

@@ -241,6 +241,13 @@ func normalizeSummaryCoverage(result *Summary, requested []domain.AccountDataset
 	return nil
 }
 
+func requestedSummaryDatasets(source Source, requested []domain.AccountDataset) []domain.AccountDataset {
+	if source != SourceAeroIM && len(requested) == 0 {
+		return sourceDatasets(source)
+	}
+	return requested
+}
+
 func sourceDatasets(source Source) []domain.AccountDataset {
 	result := make([]domain.AccountDataset, 0)
 	for _, descriptor := range domain.AccountDatasetRegistry() {

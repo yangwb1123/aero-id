@@ -23,6 +23,7 @@ import (
 // root stays under the file-size gate (C-7). Mirrors the
 // outboxDependencies/grpcDependencies struct pattern.
 type serviceDependencies struct {
+	workerContext      context.Context
 	cfg                *config.Config
 	log                *zap.Logger
 	gdb                *gorm.DB
@@ -80,6 +81,7 @@ type serviceBundle struct {
 
 	stopEventBus    func()
 	stopReplication func()
+	drainOperations func()
 	stopOperations  func()
 	stopSyncJobs    func()
 }
@@ -160,8 +162,12 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithOperationPermission(permissionChecker),
 		service.WithOperationMetrics(deps.controlMetrics))
 	var stopOperations func()
+	var drainOperations func()
+	if controller, ok := operationSvc.(service.OperationDrainController); ok {
+		drainOperations = func() { controller.SetDraining(true) }
+	}
 	if worker, ok := operationSvc.(service.OperationWorkerService); ok {
-		stopOperations = worker.Start(context.Background(), time.Second)
+		stopOperations = worker.Start(deps.workerContext, time.Second)
 	}
 	replaySvc := service.NewReplayService(deps.auditLedger, operationSvc,
 		service.WithReplayAccountRepository(deps.accountRepo), service.WithReplaySnapshotRepository(deps.snapshotRepo),
@@ -177,7 +183,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithSyncExportConfig(deps.cfg.Export.EncryptionKey, deps.cfg.Export.MaxBytes, deps.cfg.Export.ArtifactTTL),
 		service.WithSyncJobRegion(deps.cfg.Account.Region),
 		service.WithSyncJobMetrics(deps.controlMetrics))
-	stopSyncJobs := syncJobSvc.Start(context.Background(), time.Second)
+	stopSyncJobs := syncJobSvc.Start(deps.workerContext, time.Second)
 	banSvc := service.NewBanService(deps.banRepo, adminSvc,
 		service.WithBanAuditLogger(deps.auditLedger),
 	)
@@ -218,6 +224,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		syncJobSvc: syncJobSvc, banSvc: banSvc, replicationSvc: replicationSvc,
 		permissionChecker: permissionChecker,
 		stopEventBus:      stopEventBus, stopReplication: stopReplication,
-		stopOperations: stopOperations, stopSyncJobs: stopSyncJobs,
+		drainOperations: drainOperations,
+		stopOperations:  stopOperations, stopSyncJobs: stopSyncJobs,
 	}, nil
 }

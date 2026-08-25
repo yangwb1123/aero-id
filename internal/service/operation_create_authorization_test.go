@@ -71,7 +71,7 @@ func TestOperationCreateReturnsExistingAfterReauthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if result != existing || permission.calls != 1 || repo.findCalls != 1 {
+	if result != existing || permission.calls != 2 || repo.findCalls != 1 {
 		t.Fatalf("result = %#v, permission calls = %d, idempotency lookups = %d",
 			result, permission.calls, repo.findCalls)
 	}

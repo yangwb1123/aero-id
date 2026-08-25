@@ -43,6 +43,10 @@ func (s *syncJobService) reconcileClaimed(ctx context.Context, claimed *domain.S
 
 //nolint:cyclop,funlen // erase reconciliation aggregates per-source completed, failed, and unknown states.
 func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
+	if _, scopeErr := parsePersistedDatasets(job.Request, true); scopeErr != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
+			"erase job requires a non-empty valid dataset scope", job.Result, scopeErr)
+	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)

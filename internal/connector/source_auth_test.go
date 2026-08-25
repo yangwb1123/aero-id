@@ -65,10 +65,10 @@ func TestAeroIMStaticBearerAuthenticatesEverySurface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("static bearer constructor: %v", err)
 	}
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}}); err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-1"}); err != nil {
+	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, IdempotencyKey: "erase-1"}); err != nil {
 		t.Fatalf("erase: %v", err)
 	}
 	if _, err := client.OperationStatus(t.Context(), OperationStatusRequest{AccountID: domain.ID{1}, SourceOperationID: "source-op"}); err != nil {
@@ -115,7 +115,7 @@ func TestAeroIMOAuthFailureDoesNotCallSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OAuth constructor: %v", err)
 	}
-	_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	var remote *RemoteError
 	if !errorsAsRemote(err, &remote) || remote.Code != "source.oauth_token_unavailable" || !remote.Temporary {
 		t.Fatalf("OAuth failure = %+v, want temporary source.oauth_token_unavailable", err)
@@ -178,7 +178,11 @@ func TestEraseBlankKeyIsSharedAcrossSourcesAndSkipsTokenIO(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s constructor: %v", source, err)
 		}
-		_, err = item.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: " \t"})
+		eraseRequest := EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: " \t"}
+		if source == SourceAeroIM {
+			eraseRequest.Datasets = []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}
+		}
+		_, err = item.Erase(t.Context(), eraseRequest)
 		var remote *RemoteError
 		if !errorsAsRemote(err, &remote) || remote.Source != source || remote.Kind != ErrorInvalid ||
 			remote.Code != "source.idempotency_key_missing" || remote.Temporary {
@@ -211,7 +215,7 @@ func TestAeroIMMTLSWithInjectedClientPresentsClientCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mTLS constructor: %v", err)
 	}
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}}); err != nil {
 		t.Fatalf("mTLS summary: %v", err)
 	}
 }

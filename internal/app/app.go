@@ -33,6 +33,7 @@ type App struct {
 	httpServer      *http.Server
 	grpcServer      *grpclib.Server
 	grpcHealth      *grpcsrv.HealthServer
+	httpHealth      interface{ SetReady(bool) }
 	grpcLis         net.Listener
 	stopRelay       func()
 	stopGC          func()
@@ -42,6 +43,7 @@ type App struct {
 	stopNotifClean  func()
 	stopOutboxClean func()
 	stopCallbacks   func()
+	drainOperations func()
 	stopOperations  func()
 	stopSyncJobs    func()
 	stopEventBus    func()
@@ -104,8 +106,15 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) shutdown() {
-	// Flip gRPC health to NOT_SERVING first so load balancers drain this instance
-	// before the listener actually closes.
+	// Fence operation writers and mark both transports unready before stopping
+	// workers. In-flight source calls receive cancellation, while their durable
+	// finalization uses an independent persistence context.
+	if a.drainOperations != nil {
+		a.drainOperations()
+	}
+	if a.httpHealth != nil {
+		a.httpHealth.SetReady(false)
+	}
 	if a.grpcHealth != nil {
 		a.grpcHealth.SetServing(false)
 	}

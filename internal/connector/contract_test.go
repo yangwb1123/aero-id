@@ -46,11 +46,12 @@ func TestConnector_PropagatesBearerTokenOnEverySurface(t *testing.T) {
 		MaxAttempts:         1,
 	})
 
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}}); err != nil {
 		t.Fatalf("summary: %v", err)
 	}
 	if _, err := client.Erase(t.Context(), EraseRequest{
 		AccountID: domain.ID{1}, CanonicalUID: "u-1", TenantID: "t-1",
+		Datasets:    []domain.AccountDataset{domain.AccountDataset("aero-im.profile")},
 		OperationID: "op-id-1", IdempotencyKey: "idem-1",
 	}); err != nil {
 		t.Fatalf("erase: %v", err)
@@ -98,7 +99,8 @@ func TestConnector_PropagatesRegionOnCommandSurfaces(t *testing.T) {
 	})
 	const region = "us-west-2"
 	if _, err := client.Erase(t.Context(), EraseRequest{
-		AccountID: domain.ID{1}, Region: region, OperationID: "op-id-1", IdempotencyKey: "idem-1",
+		AccountID: domain.ID{1}, Region: region, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")},
+		OperationID: "op-id-1", IdempotencyKey: "idem-1",
 	}); err != nil {
 		t.Fatalf("erase: %v", err)
 	}
@@ -131,7 +133,7 @@ func TestConnector_ContextDeadlineCancelsInFlightCall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := client.Summary(ctx, SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(ctx, SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	elapsed := time.Since(start)
 	if elapsed > time.Second {
 		t.Fatalf("call took %v, want prompt cancellation by the client deadline", elapsed)

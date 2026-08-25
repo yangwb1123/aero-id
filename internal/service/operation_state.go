@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
+	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"gorm.io/gorm"
@@ -13,6 +13,7 @@ import (
 
 func (s *operationService) reconcileClaimed(ctx context.Context, operation *domain.Operation, worker string,
 	reconciler OperationOutcomeReconciler) (*domain.Operation, error) {
+	worker = operationWorkerRole(worker)
 	if operationTerminalForReconcile(operation.Status) {
 		return operation, nil
 	}
@@ -38,13 +39,17 @@ func (s *operationService) reconcileClaimed(ctx context.Context, operation *doma
 		// audit-site: standalone-fact — A1-class standalone fact with no domain
 		// write of its own (documented above); anchored event_id dedups retries.
 		fact := operationAuditFact(ctx, operation, domain.ID{}, string(operation.Status), "operation.reconciled", map[string]any{"worker": worker})
-		if err := s.audit.Record(ctx, AuditFactInput{Source: fact.Source, SourceRegion: fact.SourceRegion, EventID: fact.EventID,
+		persistCtx, persistCancel := operationPersistenceContext(ctx)
+		defer persistCancel()
+		if err := s.audit.Record(persistCtx, AuditFactInput{Source: fact.Source, SourceRegion: fact.SourceRegion, EventID: fact.EventID,
 			OperationID: fact.OperationID, RequestID: fact.RequestID, ActorUID: fact.ActorUID, AccountID: fact.AccountID,
 			TenantID: fact.TenantID, Action: fact.Action, ResourceType: fact.ResourceType, ResourceID: fact.ResourceID, Payload: fact.Payload}); err != nil {
 			return nil, apperr.Internal("operation.audit_failed", "failed to record operation audit").Wrap(err)
 		}
 	}
-	return s.finishOperation(ctx, operation.ID)
+	finishCtx, finishCancel := operationPersistenceContext(ctx)
+	defer finishCancel()
+	return s.finishOperation(finishCtx, operation.ID)
 }
 
 func operationTerminalForReconcile(status domain.OperationStatus) bool {
@@ -55,16 +60,31 @@ func operationTerminalForReconcile(status domain.OperationStatus) bool {
 func (s *operationService) reconcileForwardSteps(ctx context.Context, operation *domain.Operation, worker string,
 	reconciler OperationOutcomeReconciler) error {
 	for {
-		step, err := s.repo.ClaimUnknownStep(ctx, operation.ID, worker, 2*time.Minute)
+		owner := operationLeaseOwner(worker)
+		claimCtx, claimCancel := operationPersistenceContext(ctx)
+		step, err := s.repo.ClaimUnknownStep(claimCtx, operation.ID, owner, operationLeaseDuration)
+		claimCancel()
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
 		if err != nil {
 			return apperr.Internal("operation.reconcile_claim_failed", "failed to claim unknown operation step").Wrap(err)
 		}
-		status, sourceOperationID, result := reconciledStepResult(ctx, reconciler, operation, step)
-		if err := s.finishStep(ctx, operation, step, worker, status, sourceOperationID,
-			outcomeErrorCode(status), result, outcomeErrorMessage(status)); err != nil {
+		remoteCtx, remoteCancel := operationRemoteContext(ctx)
+		status, sourceOperationID, result, reconcileErr := reconciledStepResult(remoteCtx, reconciler, operation, step)
+		remoteCancel()
+		code, message := outcomeErrorCode(status), outcomeErrorMessage(status)
+		if reconcileErr != nil {
+			status, code, message = operationRunStatus(reconcileErr)
+			if status == domain.StepUnknown {
+				result = map[string]any{"error": "source outcome remains unknown"}
+			}
+		}
+		persistCtx, persistCancel := operationPersistenceContext(ctx)
+		err = s.finishStep(persistCtx, operation, step, owner, status, sourceOperationID,
+			code, result, message)
+		persistCancel()
+		if err != nil {
 			return apperr.Internal("operation.reconcile_step_failed", "failed to reconcile operation step").Wrap(err)
 		}
 		if status == domain.StepFailed {
@@ -74,19 +94,29 @@ func (s *operationService) reconcileForwardSteps(ctx context.Context, operation 
 }
 
 func reconciledStepResult(ctx context.Context, reconciler OperationOutcomeReconciler,
-	operation *domain.Operation, step *domain.OperationStep) (domain.OperationStepStatus, string, map[string]any) {
-	status, sourceOperationID, result, err := reconciler.Reconcile(ctx, operation, step)
+	operation *domain.Operation, step *domain.OperationStep) (domain.OperationStepStatus, string, map[string]any, error) {
+	// Validate durable scope before invoking the reconciler. This is deliberately
+	// independent of connector lookup so a malformed row is deterministic even
+	// when the source adapter is unavailable during a rollout.
+	if _, err := operationDatasetsForStep(step, connector.Source(step.Source)); err != nil {
+		return domain.StepFailed, step.SourceOperationID, nil, err
+	}
+	remoteCtx, cancel := operationRemoteContext(ctx)
+	status, sourceOperationID, result, err := reconciler.Reconcile(remoteCtx, operation, step)
+	cancel()
 	if err != nil {
-		return domain.StepUnknown, step.SourceOperationID, map[string]any{"error": "source outcome remains unknown"}
+		return domain.StepUnknown, step.SourceOperationID, nil, err
 	}
 	if !validReconciledStepStatus(status) {
-		return domain.StepUnknown, sourceOperationID, result
+		return domain.StepUnknown, sourceOperationID, result, nil
 	}
-	return status, sourceOperationID, result
+	return status, sourceOperationID, result, nil
 }
 
 func (s *operationService) abortReconciledOperation(ctx context.Context, operation *domain.Operation, worker string) error {
-	if err := s.repo.SkipPendingSteps(ctx, operation.ID, "operation.aborted", "operation stopped after a failed step"); err != nil {
+	stateCtx, cancel := operationPersistenceContext(ctx)
+	defer cancel()
+	if err := s.repo.SkipPendingSteps(stateCtx, operation.ID, "operation.aborted", "operation stopped after a failed step"); err != nil {
 		return apperr.Internal("operation.skip_steps_failed", "failed to close skipped operation steps").Wrap(err)
 	}
 	if err := s.compensate(ctx, operation, worker); err != nil {

@@ -5,6 +5,7 @@ package http
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,12 +24,22 @@ type Check struct {
 type HealthHandler struct {
 	checks  []Check
 	timeout time.Duration
+	ready   atomic.Bool
 }
 
 // NewHealthHandler wires an ordered set of readiness checks. With no checks,
 // readiness always succeeds.
 func NewHealthHandler(checks ...Check) *HealthHandler {
-	return &HealthHandler{checks: checks, timeout: 2 * time.Second}
+	h := &HealthHandler{checks: checks, timeout: 2 * time.Second}
+	h.ready.Store(true)
+	return h
+}
+
+// SetReady controls transport readiness independently from dependency probes.
+// Shutdown and rollout drains flip this before stopping background workers so
+// new traffic is removed from rotation while in-flight work can finalize.
+func (h *HealthHandler) SetReady(ready bool) {
+	h.ready.Store(ready)
 }
 
 // Live always reports OK as long as the process is serving.
@@ -40,6 +51,10 @@ func (h *HealthHandler) Live(c *gin.Context) {
 // status. A failing critical check returns 503 ("unavailable"); a failing
 // non-critical check still returns 200 but flags the overall status "degraded".
 func (h *HealthHandler) Ready(c *gin.Context) {
+	if !h.ready.Load() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable", "checks": map[string]string{"process": "draining"}})
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
 	defer cancel()
 

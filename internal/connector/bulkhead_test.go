@@ -48,7 +48,7 @@ func TestConnector_SummarySerializesAtMaxConcurrencyOne(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+			_, errs[i] = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 		}(i)
 	}
 	wg.Wait()
@@ -81,14 +81,14 @@ func TestConnector_CancelledAcquireMapsToSourceBulkhead(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+		_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 		firstDone <- err
 	}()
 	<-firstStarted // first call holds the only slot
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := client.Summary(ctx, SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(ctx, SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("err = %v, want RemoteError", err)
@@ -151,7 +151,7 @@ func TestConnector_DefaultConcurrencyAllowsParallel(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+			_, errs[i] = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 		}(i)
 	}
 	select {

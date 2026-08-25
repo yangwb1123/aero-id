@@ -2,12 +2,19 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
+	"github.com/aero/aero-id/internal/repository"
+	"gorm.io/gorm"
 )
+
+func isOperationNotFound(err error) bool {
+	return errors.Is(err, repository.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound)
+}
 
 func validateOperationInput(input *OperationInput) error {
 	input.OperationType = strings.ToLower(strings.TrimSpace(input.OperationType))
@@ -33,8 +40,40 @@ func (s *operationService) authorizeOperationCreate(ctx context.Context, actor s
 			return err
 		}
 	}
-	return authorizeAccountTarget(ctx, s.accounts, s.permission, input.AccountID, actor,
-		operationPermission(input.OperationType))
+	if err := authorizeAccountTarget(ctx, s.accounts, s.permission, input.AccountID, actor,
+		operationPermission(input.OperationType)); err != nil {
+		return err
+	}
+	return s.authorizeEffectiveActions(ctx, actor, input)
+}
+
+func (s *operationService) authorizeEffectiveActions(ctx context.Context, actor string, input OperationInput) error {
+	// source.command and replay are generic workflow envelopes. Their
+	// authorization must follow the effect of every step; operation.manage or
+	// audit.replay alone is not permission to smuggle an erase through them.
+	if input.OperationType != "source.command" && input.OperationType != "replay" {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(input.Steps))
+	for _, step := range input.Steps {
+		permission := operationActionPermission(step.Action)
+		if permission == "" {
+			return apperr.BadRequest("operation.invalid_action", "operation action is not allow-listed")
+		}
+		// Generic source.command/replay envelopes require the permission implied
+		// by every actual remote effect, including reads/syncs and erases.
+		if _, ok := seen[permission]; ok {
+			continue
+		}
+		seen[permission] = struct{}{}
+		if err := s.requireOperationPermission(ctx, actor, permission); err != nil {
+			return err
+		}
+	}
+	if input.OperationType == "source.command" {
+		return s.requireOperationPermission(ctx, actor, domain.PermOperationManage)
+	}
+	return nil
 }
 
 func (s *operationService) prepareOperation(ctx context.Context, actor, tenantID string,
@@ -45,8 +84,15 @@ func (s *operationService) prepareOperation(ctx context.Context, actor, tenantID
 	if err := s.authorizeOperationCreate(ctx, actor, input); err != nil {
 		return nil, nil, err
 	}
-	if existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey); err == nil {
+	if err := validateOperationDatasetScopes(input.Steps); err != nil {
+		return nil, nil, err
+	}
+	existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
+	if err == nil {
 		return nil, existing, nil
+	}
+	if !isOperationNotFound(err) {
+		return nil, nil, apperr.Internal("operation.idempotency_lookup_failed", "failed to check operation idempotency").Wrap(err)
 	}
 	if err := s.resolveOperationRegion(ctx, tenantID, &input); err != nil {
 		return nil, nil, err
@@ -111,6 +157,9 @@ func buildOperationSteps(input OperationInput) ([]*domain.OperationStep, error) 
 func buildOperationStep(operationType string, plan OperationStepInput, keys map[string]struct{}) (*domain.OperationStep, error) {
 	stepKey, source, err := validateOperationStep(operationType, plan, keys)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateOperationStepDatasetScope(plan); err != nil {
 		return nil, err
 	}
 	compensation := strings.ToLower(strings.TrimSpace(plan.CompensationAction))

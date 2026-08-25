@@ -36,8 +36,8 @@ func (r *operationRepo) finishStep(ctx context.Context, stepID domain.ID, worker
 			until := now.Add(ReconcileUnknownRetryDelay)
 			leaseUntil = &until
 		}
-		updated := tx.Model(&operationStepRow{}).Where("id = ? AND status = ? AND lease_owner = ?", stepID,
-			string(domain.StepRunning), worker).Updates(map[string]any{"status": string(status),
+		updated := tx.Model(&operationStepRow{}).Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > ?", stepID,
+			string(domain.StepRunning), worker, now).Updates(map[string]any{"status": string(status),
 			"source_operation_id": sourceOperationID, "error_code": errorCode, "error_message": errorMessage,
 			"result": data, "lease_owner": "", "lease_until": leaseUntil, "lease_kind": "", "updated_at": now})
 		if updated.Error != nil {
@@ -69,8 +69,9 @@ func (r *operationRepo) finishCompensationStep(ctx context.Context, stepID domai
 			return err
 		}
 		now := time.Now().UTC()
-		updated := tx.Model(&operationStepRow{}).Where("id = ? AND compensation_status = ? AND compensation_lease_owner = ?", stepID,
-			string(domain.StepRunning), worker).Updates(map[string]any{"compensation_status": string(status),
+		updated := tx.Model(&operationStepRow{}).Where(
+			"id = ? AND compensation_status = ? AND compensation_lease_owner = ? AND compensation_lease_until > ?",
+			stepID, string(domain.StepRunning), worker, now).Updates(map[string]any{"compensation_status": string(status),
 			"compensation_source_operation_id": sourceOperationID, "compensation_error_code": errorCode,
 			"compensation_error_message": errorMessage, "compensation_result": data,
 			"compensation_lease_owner": "", "compensation_lease_until": nil, "compensation_updated_at": now, "updated_at": now})
@@ -92,6 +93,7 @@ func (r *operationRepo) finishCompensationStep(ctx context.Context, stepID domai
 	})
 }
 
+//nolint:cyclop // terminal transition CAS distinguishes missing rows from stale terminal writers.
 func (r *operationRepo) setStatus(ctx context.Context, id domain.ID, status domain.OperationStatus, code, message string,
 	result map[string]any, fact *domain.AuditFact) error {
 	data, err := jsonMap(result)
@@ -105,12 +107,24 @@ func (r *operationRepo) setStatus(ctx context.Context, id domain.ID, status doma
 		updates["completed_at"] = now
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		updated := tx.Model(&operationRow{}).Where("id = ?", id).Updates(updates)
+		// Terminal state is a one-way boundary. Concurrent workers may both
+		// compute a result from stale projections, but only the first terminal
+		// transition wins; a later non-terminal write can never regress it.
+		terminal := []string{string(domain.OperationUnknown), string(domain.OperationCompleted),
+			string(domain.OperationFailed), string(domain.OperationPartiallyCompleted)}
+		terminalOutcome := status == domain.OperationUnknown || status == domain.OperationCompleted ||
+			status == domain.OperationFailed || status == domain.OperationPartiallyCompleted
+		updated := tx.Model(&operationRow{}).Where("id = ? AND (status NOT IN ? OR ?)", id,
+			terminal, terminalOutcome).Updates(updates)
 		if updated.Error != nil {
 			return updated.Error
 		}
 		if updated.RowsAffected != 1 {
-			return gorm.ErrRecordNotFound
+			var current operationRow
+			if err := tx.Select("status").Where("id = ?", id).First(&current).Error; err != nil {
+				return err
+			}
+			return ErrOperationStateConflict
 		}
 		return r.appendAudit(tx, ctx, fact)
 	})

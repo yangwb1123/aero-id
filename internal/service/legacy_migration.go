@@ -86,9 +86,11 @@ func (s *legacyMigrationService) compareWithSource(ctx context.Context, input Le
 		result.SourceErrors["source"] = "source summary unavailable"
 		return nil
 	}
-	summary, err := client.Summary(ctx, connector.SummaryRequest{
-		CanonicalUID: input.OwnerUID, Datasets: []domain.AccountDataset{}, Region: "",
-	})
+	request := connector.SummaryRequest{CanonicalUID: input.OwnerUID, Region: ""}
+	if input.Source == connector.SourceAeroIM {
+		request.Datasets = []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}
+	}
+	summary, err := client.Summary(ctx, request)
 	if err != nil {
 		return err
 	}

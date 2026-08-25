@@ -22,7 +22,7 @@ func TestConnector_ServiceUnavailableIsTemporary(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 2, RetryBackoff: time.Millisecond})
-	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("error = %v, want RemoteError", err)
@@ -38,7 +38,7 @@ func TestConnector_TooManyRequestsMapsToUnavailable(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 1})
-	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("error = %v, want RemoteError", err)
@@ -55,7 +55,7 @@ func TestConnector_TimeoutIsUnknownOutcome(t *testing.T) {
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{Timeout: 30 * time.Millisecond, MaxAttempts: 1})
 	start := time.Now()
-	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	if time.Since(start) > time.Second {
 		t.Fatalf("timeout took too long: %v", time.Since(start))
 	}
@@ -74,7 +74,7 @@ func TestConnector_KeyedEraseTimeoutRemainsUnknown(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", Timeout: 30 * time.Millisecond, MaxAttempts: 1})
-	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-timeout"})
+	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, IdempotencyKey: "erase-timeout"})
 	var remote *RemoteError
 	if !errors.As(err, &remote) || remote.Kind != ErrorTimeout || !remote.Temporary {
 		t.Fatalf("err = %+v, want temporary timeout", err)
@@ -87,7 +87,7 @@ func TestConnector_MalformedBodyIsInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 1})
-	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("error = %v, want RemoteError", err)
@@ -107,7 +107,7 @@ func TestConnector_RetryBudgetRespected(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 3, RetryBackoff: time.Millisecond})
-	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	if err == nil {
 		t.Fatal("persistent source failure must surface")
 	}
@@ -151,7 +151,7 @@ func TestConnector_RetriesTransientThenSucceeds(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 3, RetryBackoff: time.Millisecond})
-	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	if err != nil {
 		t.Fatalf("retry should recover: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestConnector_DoesNotRetryEraseWithoutIdempotency(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxAttempts: 3, RetryBackoff: time.Millisecond})
-	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, OperationID: "op-1"})
+	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, OperationID: "op-1"})
 	var remote *RemoteError
 	if !errors.As(err, &remote) || remote.Kind != ErrorInvalid || remote.Code != "source.idempotency_key_missing" || remote.Temporary {
 		t.Fatalf("err = %+v, want non-temporary idempotency_key_missing", err)
@@ -196,7 +196,7 @@ func TestConnector_RetriesEraseWithIdempotency(t *testing.T) {
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxAttempts: 3, RetryBackoff: time.Millisecond})
 	result, err := client.Erase(t.Context(), EraseRequest{
-		AccountID: domain.ID{1}, OperationID: "op-1", IdempotencyKey: "erase-1",
+		AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, OperationID: "op-1", IdempotencyKey: "erase-1",
 	})
 	if err != nil {
 		t.Fatalf("idempotent erase should recover: %v", err)
@@ -222,10 +222,10 @@ func TestConnector_CircuitOpensAfterRepeatedFailures(t *testing.T) {
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{MaxAttempts: 1})
 	for i := 0; i < 5; i++ {
-		_, _ = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+		_, _ = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	}
 	before := calls
-	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}})
 	if err == nil {
 		t.Fatal("circuit-open call must fail")
 	}

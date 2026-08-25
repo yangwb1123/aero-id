@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
@@ -10,10 +11,21 @@ import (
 )
 
 func operationRequestedAudit(ctx context.Context, operation *domain.Operation) *domain.AuditFact {
+	steps := make([]map[string]any, 0, len(operation.Steps))
+	for _, step := range operation.Steps {
+		if step == nil {
+			continue
+		}
+		entry := map[string]any{"step_key": step.StepKey, "source": step.Source, "action": step.Action}
+		if datasets, err := operationDatasetsForStep(step, connector.Source(step.Source)); err == nil && len(datasets) > 0 {
+			entry["datasets"] = datasetNames(datasets)
+		}
+		steps = append(steps, entry)
+	}
 	return buildAuditFact(ctx, AuditFactInput{Source: "aero-id", SourceRegion: operation.HomeRegion,
 		EventID: operation.ID, OperationID: operation.ID, RequestID: operation.RequestID, ActorUID: operation.ActorUID,
 		AccountID: operation.AccountID, TenantID: operation.TenantID, Action: "operation.requested",
-		ResourceType: "operation", ResourceID: operation.ID.String(), Payload: map[string]any{"type": operation.OperationType}})
+		ResourceType: "operation", ResourceID: operation.ID.String(), Payload: map[string]any{"type": operation.OperationType, "steps": steps}})
 }
 
 func (s *operationService) createWithAudit(ctx context.Context, operation *domain.Operation) error {
@@ -33,7 +45,11 @@ func (s *operationService) createWithAudit(ctx context.Context, operation *domai
 func (s *operationService) finishStep(ctx context.Context, operation *domain.Operation, step *domain.OperationStep,
 	worker string, status domain.OperationStepStatus, sourceOperationID, code string, result map[string]any, message string) error {
 	payload := map[string]any{"step_id": step.ID.String(), "step_key": step.StepKey, "source": step.Source,
-		"status": status, "error_code": code}
+		"action": step.Action, "status": status, "error_code": code,
+		"source_operation_id": sourceOperationID}
+	if datasets, err := operationDatasetsForStep(step, connector.Source(step.Source)); err == nil && len(datasets) > 0 {
+		payload["datasets"] = datasetNames(datasets)
+	}
 	if s.audit != nil {
 		repo, ok := s.repo.(repository.OperationStateAuditRepository)
 		if !ok {

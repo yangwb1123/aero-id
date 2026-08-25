@@ -18,6 +18,13 @@ type OperationService interface {
 	Reconcile(context.Context, domain.ID, string) (*domain.Operation, error)
 }
 
+// OperationDrainController fences transport-triggered writes and claims during
+// shutdown or a rolling deployment. Durable lease tokens protect attempts that
+// race with the drain.
+type OperationDrainController interface {
+	SetDraining(bool)
+}
+
 type OperationInput struct {
 	AccountID      domain.ID
 	TenantID       string
@@ -60,6 +67,7 @@ type operationService struct {
 	runner     OperationRunner
 	region     string
 	metrics    ControlPlaneMetrics
+	workerGate *operationWorkerGate
 }
 
 type OperationOption func(*operationService)
@@ -97,7 +105,7 @@ func WithOperationPermission(checker PermissionChecker) OperationOption {
 }
 
 func NewOperationService(repo repository.OperationRepository, opts ...OperationOption) OperationService {
-	s := &operationService{repo: repo, metrics: noopControlPlaneMetrics{}}
+	s := &operationService{repo: repo, metrics: noopControlPlaneMetrics{}, workerGate: newOperationWorkerGate()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -113,6 +121,9 @@ func (s *operationService) Create(ctx context.Context, input OperationInput) (*d
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureOperationWorkersAccepting(); err != nil {
+		return nil, err
+	}
 	operation, existing, err := s.prepareOperation(ctx, actor, tenantID, input)
 	if err != nil {
 		return nil, err
@@ -126,8 +137,12 @@ func (s *operationService) Create(ctx context.Context, input OperationInput) (*d
 func (s *operationService) persistCreatedOperation(ctx context.Context, actor string,
 	operation *domain.Operation) (*domain.Operation, error) {
 	if err := s.createWithAudit(ctx, operation); err != nil {
-		if existing, findErr := s.repo.FindByIdempotency(ctx, actor, operation.TenantID, operation.IdempotencyKey); findErr == nil {
+		existing, findErr := s.repo.FindByIdempotency(ctx, actor, operation.TenantID, operation.IdempotencyKey)
+		if findErr == nil {
 			return existing, nil
+		}
+		if !isOperationNotFound(findErr) {
+			return nil, apperr.Internal("operation.idempotency_lookup_failed", "failed to check operation idempotency").Wrap(findErr)
 		}
 		return nil, apperr.Internal("operation.create_failed", "failed to create operation").Wrap(err)
 	}
@@ -175,6 +190,9 @@ func (s *operationService) List(ctx context.Context, page domain.Page) ([]*domai
 }
 
 func (s *operationService) Run(ctx context.Context, id domain.ID, worker string) (*domain.Operation, error) {
+	if err := s.ensureOperationWorkersAccepting(); err != nil {
+		return nil, err
+	}
 	operation, err := s.authorizeRun(ctx, id)
 	if err != nil {
 		return nil, err
@@ -183,6 +201,9 @@ func (s *operationService) Run(ctx context.Context, id domain.ID, worker string)
 }
 
 func (s *operationService) Reconcile(ctx context.Context, id domain.ID, worker string) (*domain.Operation, error) {
+	if err := s.ensureOperationWorkersAccepting(); err != nil {
+		return nil, err
+	}
 	operation, err := s.authorizeRun(ctx, id)
 	if err != nil {
 		return nil, err

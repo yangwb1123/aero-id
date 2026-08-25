@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
@@ -15,9 +14,11 @@ func validReconciledStepStatus(status domain.OperationStepStatus) bool {
 	return status == domain.StepSucceeded || status == domain.StepFailed || status == domain.StepUnknown
 }
 
-//nolint:cyclop // compensation is a durable Saga state machine with unknown-outcome handling.
+//nolint:cyclop,funlen // compensation is a durable Saga state machine with unknown-outcome handling.
 func (s *operationService) compensate(ctx context.Context, operation *domain.Operation, worker string) error {
-	current, err := s.repo.Get(ctx, operation.ID)
+	loadCtx, loadCancel := operationPersistenceContext(ctx)
+	current, err := s.repo.Get(loadCtx, operation.ID)
+	loadCancel()
 	if err != nil {
 		return err
 	}
@@ -25,13 +26,19 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 	if !hasCompensation(operation.Steps) {
 		return nil
 	}
-	if err := s.setOperationStatus(ctx, operation, domain.OperationCompensating, "", "", nil, "operation.compensating",
-		map[string]any{"worker": worker}); err != nil {
+	stateCtx, stateCancel := operationPersistenceContext(ctx)
+	if err := s.setOperationStatus(stateCtx, operation, domain.OperationCompensating, "", "", nil, "operation.compensating",
+		map[string]any{"worker_role": worker}); err != nil {
+		stateCancel()
 		return err
 	}
+	stateCancel()
 	runner, configured := s.runner.(OperationCompensationRunner)
 	for {
-		step, err := s.repo.ClaimCompensationStep(ctx, operation.ID, worker, 2*time.Minute)
+		owner := operationLeaseOwner(worker)
+		claimCtx, claimCancel := operationPersistenceContext(ctx)
+		step, err := s.repo.ClaimCompensationStep(claimCtx, operation.ID, owner, operationLeaseDuration)
+		claimCancel()
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
@@ -45,7 +52,9 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 		if !configured {
 			status, code, message = domain.StepFailed, "operation.compensation_runner_unavailable", "operation compensation runner is not configured"
 		} else {
-			sourceOperationID, result, err = runner.RunCompensation(ctx, operation, step)
+			remoteCtx, remoteCancel := operationRemoteContext(ctx)
+			sourceOperationID, result, err = runner.RunCompensation(remoteCtx, operation, step)
+			remoteCancel()
 			if err != nil {
 				status, code, message = domain.StepFailed, "operation.compensation_step_failed", "operation compensation step failed"
 				if isUnknownOperationError(err) {
@@ -53,8 +62,11 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 				}
 			}
 		}
-		if err := s.finishCompensationStep(ctx, operation, step, worker, status, sourceOperationID, code, result, message,
-			"operation.compensation.finished"); err != nil {
+		finishCtx, finishCancel := operationPersistenceContext(ctx)
+		err = s.finishCompensationStep(finishCtx, operation, step, owner, status, sourceOperationID, code, result, message,
+			"operation.compensation.finished")
+		finishCancel()
+		if err != nil {
 			return err
 		}
 	}
@@ -64,14 +76,19 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 func (s *operationService) reconcileCompensations(ctx context.Context, operation *domain.Operation, worker string,
 	reconciler OperationCompensationOutcomeReconciler) error {
 	for {
-		step, err := s.repo.ClaimUnknownCompensationStep(ctx, operation.ID, worker, 2*time.Minute)
+		owner := operationLeaseOwner(worker)
+		claimCtx, claimCancel := operationPersistenceContext(ctx)
+		step, err := s.repo.ClaimUnknownCompensationStep(claimCtx, operation.ID, owner, operationLeaseDuration)
+		claimCancel()
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		status, sourceOperationID, result, reconcileErr := reconciler.ReconcileCompensation(ctx, operation, step)
+		remoteCtx, remoteCancel := operationRemoteContext(ctx)
+		status, sourceOperationID, result, reconcileErr := reconciler.ReconcileCompensation(remoteCtx, operation, step)
+		remoteCancel()
 		if reconcileErr != nil || !validReconciledStepStatus(status) {
 			status = domain.StepUnknown
 			if sourceOperationID == "" {
@@ -87,8 +104,11 @@ func (s *operationService) reconcileCompensations(ctx context.Context, operation
 		} else if status == domain.StepUnknown {
 			code, message = "operation.compensation_unknown_outcome", "compensation outcome remains unknown"
 		}
-		if err := s.finishCompensationStep(ctx, operation, step, worker, status, sourceOperationID, code, result, message,
-			"operation.compensation.reconciled"); err != nil {
+		finishCtx, finishCancel := operationPersistenceContext(ctx)
+		err = s.finishCompensationStep(finishCtx, operation, step, owner, status, sourceOperationID, code, result, message,
+			"operation.compensation.reconciled")
+		finishCancel()
+		if err != nil {
 			return err
 		}
 	}

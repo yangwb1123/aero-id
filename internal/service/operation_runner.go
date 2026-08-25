@@ -57,7 +57,13 @@ func (r *connectorOperationRunner) run(ctx context.Context, operation *domain.Op
 	if operation == nil || step == nil || operation.AccountID == (domain.ID{}) {
 		return "", nil, fmt.Errorf("operation account is required")
 	}
-	client, ok := r.clients[connector.Source(step.Source)]
+	action := strings.ToLower(step.Action)
+	source := connector.Source(step.Source)
+	datasets, err := operationDatasetsForStep(step, source)
+	if err != nil {
+		return "", nil, err
+	}
+	client, ok := r.clients[source]
 	if !ok {
 		return "", nil, fmt.Errorf("source connector is not configured")
 	}
@@ -65,11 +71,11 @@ func (r *connectorOperationRunner) run(ctx context.Context, operation *domain.Op
 	if err != nil {
 		return "", nil, fmt.Errorf("load operation account: %w", err)
 	}
-	switch strings.ToLower(step.Action) {
+	switch action {
 	case "erase", "delete", "source.erase":
-		return r.erase(ctx, operation, step, client, account, suffix)
+		return r.erase(ctx, operation, step, client, account, datasets, suffix)
 	case "sync", "summary", "source.summary":
-		return r.sync(ctx, operation, step, client, account)
+		return r.sync(ctx, operation, step, client, account, datasets)
 	default:
 		return "", nil, fmt.Errorf("unsupported source action")
 	}
@@ -81,11 +87,30 @@ func (r *connectorOperationRunner) Reconcile(ctx context.Context, operation *dom
 	return r.reconcile(ctx, operation, step, operationReconcileIdempotencyKey(operation, step))
 }
 
+func operationDatasetsForStep(step *domain.OperationStep, source connector.Source) ([]domain.AccountDataset, error) {
+	action := strings.ToLower(strings.TrimSpace(step.Action))
+	if operationActionIsDestructive(action) {
+		return parseOperationDatasetsForSource(step.RequestPayload, source)
+	}
+	switch action {
+	case "sync", "summary", "source.summary":
+		return operationDatasets(step.RequestPayload, source)
+	default:
+		return nil, nil
+	}
+}
+
 //nolint:cyclop // source status normalization is an explicit remote outcome matrix.
 func (r *connectorOperationRunner) reconcile(ctx context.Context, operation *domain.Operation,
 	step *domain.OperationStep, idempotencyKey string) (domain.OperationStepStatus, string, map[string]any, error) {
 	if operation == nil || step == nil || operation.AccountID == (domain.ID{}) {
 		return domain.StepUnknown, "", nil, fmt.Errorf("operation account is required")
+	}
+	// Reconciliation must apply the same local validation as forward execution.
+	// In particular, a malformed Aero IM erase must never turn into a remote
+	// status query merely because the original worker timed out.
+	if _, err := operationDatasetsForStep(step, connector.Source(step.Source)); err != nil {
+		return domain.StepFailed, "", nil, err
 	}
 	client, ok := r.clients[connector.Source(step.Source)]
 	if !ok {
@@ -124,12 +149,11 @@ func (r *connectorOperationRunner) reconcile(ctx context.Context, operation *dom
 }
 
 func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.Operation, step *domain.OperationStep,
-	client connector.Connector, account *domain.Account, suffix string) (string, map[string]any, error) {
+	client connector.Connector, account *domain.Account, datasets []domain.AccountDataset, suffix string) (string, map[string]any, error) {
 	command, ok := client.(connector.CommandConnector)
 	if !ok {
 		return "", nil, fmt.Errorf("source erase command is not configured")
 	}
-	datasets := operationDatasets(step.RequestPayload)
 	result, err := command.Erase(ctx, connector.EraseRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
 		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, Datasets: datasets,
 		IdempotencyKey: operationEraseIdempotencyKey(operation, step, suffix), OperationID: operation.ID.String()})
@@ -178,9 +202,8 @@ func commandResultOutcome(source connector.Source, result *connector.CommandResu
 
 //nolint:cyclop // projection persistence handles each allow-listed source dataset in one operation step.
 func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.Operation, step *domain.OperationStep,
-	client connector.Connector, account *domain.Account) (string, map[string]any, error) {
-	datasets := operationDatasets(step.RequestPayload)
-	if len(datasets) == 0 {
+	client connector.Connector, account *domain.Account, datasets []domain.AccountDataset) (string, map[string]any, error) {
+	if client.Source() != connector.SourceAeroIM && len(datasets) == 0 {
 		datasets = datasetsForSource(allDatasets(), string(client.Source()))
 	}
 	summary, err := client.Summary(ctx, connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
@@ -221,25 +244,32 @@ func syncOperationResult(summary *connector.Summary, applicationResult domain.Su
 	return result
 }
 
-func operationDatasets(payload map[string]any) []domain.AccountDataset {
+func operationDatasets(payload map[string]any, source connector.Source) ([]domain.AccountDataset, error) {
+	if source == connector.SourceAeroIM {
+		return parseAeroIMOperationDatasets(payload)
+	}
+	return legacyOperationDatasets(payload), nil
+}
+
+func legacyOperationDatasets(payload map[string]any) []domain.AccountDataset {
 	raw := payload["datasets"]
 	result := make([]domain.AccountDataset, 0)
 	switch values := raw.(type) {
 	case []any:
 		for _, value := range values {
 			if text, ok := value.(string); ok {
-				result = appendValidDataset(result, text)
+				result = appendLegacyDataset(result, text)
 			}
 		}
 	case []string:
 		for _, text := range values {
-			result = appendValidDataset(result, text)
+			result = appendLegacyDataset(result, text)
 		}
 	}
 	return result
 }
 
-func appendValidDataset(values []domain.AccountDataset, text string) []domain.AccountDataset {
+func appendLegacyDataset(values []domain.AccountDataset, text string) []domain.AccountDataset {
 	dataset := domain.AccountDataset(text)
 	if _, valid := domain.DatasetDescriptorOf(dataset); valid {
 		return append(values, dataset)

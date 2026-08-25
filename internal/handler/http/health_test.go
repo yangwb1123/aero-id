@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -55,5 +56,30 @@ func TestHealthHandler_Ready(t *testing.T) {
 				t.Errorf("status = %q, want %q", body.Status, tc.wantStatus)
 			}
 		})
+	}
+}
+
+func TestHealthHandler_SetReadyRejectsTrafficDuringDrain(t *testing.T) {
+	h := httpapi.NewHealthHandler()
+	h.SetReady(false)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+
+	h.Ready(c)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if !strings.Contains(w.Body.String(), "draining") {
+		t.Fatalf("body = %s, want draining reason", w.Body.String())
+	}
+
+	h.SetReady(true)
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	h.Ready(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restored code = %d, want %d", w.Code, http.StatusOK)
 	}
 }

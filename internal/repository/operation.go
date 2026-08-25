@@ -50,6 +50,7 @@ type operationRepo struct {
 
 var ErrOperationStepLeaseLost = errors.New("operation step lease lost")
 var ErrOperationStepUnknown = errors.New("operation step outcome is unknown")
+var ErrOperationStateConflict = errors.New("operation state transition conflicts with terminal state")
 
 // ReconcileUnknownRetryDelay paces re-queries of steps whose outcome the source
 // still cannot confirm: the step keeps a short lease so the reconciler does not

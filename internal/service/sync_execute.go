@@ -11,7 +11,11 @@ import (
 
 //nolint:cyclop,funlen // sync execution aggregates concurrent source outcomes into a durable partial result.
 func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
-	datasets := datasetsFromRequest(job.Request)
+	datasets, scopeErr := parsePersistedDatasets(job.Request, true)
+	if scopeErr != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.invalid_dataset_scope",
+			"sync job requires a non-empty valid dataset scope", nil, scopeErr)
+	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
 		cause := apperr.Internal("sync.account_load_failed", "failed to load account").Wrap(err)

@@ -130,8 +130,12 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 	if err != nil {
 		return nil, err
 	}
-	if existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey); err == nil {
+	existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
+	if findErr == nil {
 		return existing, nil
+	}
+	if !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+		return nil, apperr.Internal("sync.idempotency_lookup_failed", "failed to check sync idempotency").Wrap(findErr)
 	}
 	if input.AccountID == (domain.ID{}) {
 		view, err := s.accounts.GetMe(ctx)
@@ -146,9 +150,24 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 	if err := requireHomeRegion(ctx, s.accountRepo, input.AccountID, s.region); err != nil {
 		return nil, err
 	}
-	datasets, err := normalizeDatasets(input.Datasets)
-	if err != nil {
-		return nil, err
+	var datasets []domain.AccountDataset
+	if input.JobType == domain.SyncJobErase {
+		// Preserve the public empty erase request as an explicit full-scope
+		// operation, but persist the expanded registry so execution never has
+		// to interpret an empty list as "erase everything".
+		if len(input.Datasets) == 0 {
+			datasets = allDatasets()
+		} else {
+			if err := validateDestructiveDatasetInput(input.Datasets); err != nil {
+				return nil, err
+			}
+			datasets = append([]domain.AccountDataset(nil), input.Datasets...)
+		}
+	} else {
+		datasets, err = normalizeDatasets(input.Datasets)
+		if err != nil {
+			return nil, err
+		}
 	}
 	request := map[string]any{"datasets": datasets}
 	job := &domain.SyncJob{AccountID: input.AccountID, ActorUID: actor, TenantID: tenantID,
@@ -156,8 +175,12 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 		IdempotencyKey: input.IdempotencyKey, Request: request, Result: map[string]any{}}
 	job.ID = idgen.NewID()
 	if err := s.createWithAudit(ctx, job); err != nil {
-		if existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey); findErr == nil {
+		existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
+		if findErr == nil {
 			return existing, nil
+		}
+		if !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			return nil, apperr.Internal("sync.idempotency_lookup_failed", "failed to check sync idempotency").Wrap(findErr)
 		}
 		return nil, apperr.Internal("sync.create_failed", "failed to create sync job").Wrap(err)
 	}
@@ -226,8 +249,11 @@ func (s *syncJobService) Run(ctx context.Context, id domain.ID, worker string) (
 	return s.execute(ctx, claimed)
 }
 
-//nolint:cyclop // the worker loop coordinates normal execution and unknown erase reconciliation.
+//nolint:cyclop,funlen // the worker loop coordinates normal execution and unknown erase reconciliation.
 func (s *syncJobService) Start(ctx context.Context, interval time.Duration) func() {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -295,12 +321,16 @@ func (s *syncJobService) execute(ctx context.Context, job *domain.SyncJob) (*dom
 
 //nolint:cyclop,funlen // erase execution preserves unknown remote outcomes before local deletion.
 func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
+	datasets, scopeErr := parsePersistedDatasets(job.Request, true)
+	if scopeErr != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
+			"erase job requires a non-empty valid dataset scope", nil, scopeErr)
+	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.account_load_failed", "failed to load account", nil, cause)
 	}
-	datasets := datasetsFromRequest(job.Request)
 	result := map[string]any{"sources": map[string]any{}}
 	statuses := result["sources"].(map[string]any)
 	unknown := false

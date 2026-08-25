@@ -24,26 +24,33 @@ func (s *operationService) runClaimed(ctx context.Context, operation *domain.Ope
 	if worker == "" {
 		worker = "inline"
 	}
-	if err := s.setOperationStatus(ctx, operation, domain.OperationRunning, "", "", nil, "operation.started",
-		map[string]any{"status": domain.OperationRunning}); err != nil {
+	worker = operationWorkerRole(worker)
+	startCtx, startCancel := operationPersistenceContext(ctx)
+	if err := s.setOperationStatus(startCtx, operation, domain.OperationRunning, "", "", nil, "operation.started",
+		map[string]any{"status": domain.OperationRunning, "worker_role": worker}); err != nil {
+		startCancel()
 		return nil, apperr.Internal("operation.start_failed", "failed to start operation").Wrap(err)
 	}
+	startCancel()
 	for {
-		step, claimErr := s.repo.ClaimNextStep(ctx, operation.ID, worker, 2*time.Minute)
+		owner := operationLeaseOwner(worker)
+		step, claimErr := s.repo.ClaimNextStep(ctx, operation.ID, owner, operationLeaseDuration)
 		if claimErr != nil {
 			if errors.Is(claimErr, gorm.ErrRecordNotFound) || errors.Is(claimErr, repository.ErrOperationStepUnknown) {
 				break
 			}
 			return nil, apperr.Internal("operation.claim_failed", "failed to claim operation step").Wrap(claimErr)
 		}
-		if err := s.runClaimedStep(ctx, operation, step, worker); err != nil {
+		if err := s.runClaimedStep(ctx, operation, step, owner); err != nil {
 			return nil, err
 		}
 		if step.Status == domain.StepUnknown || step.Status == domain.StepFailed {
 			break
 		}
 	}
-	return s.finishOperation(ctx, operation.ID)
+	finishCtx, finishCancel := operationPersistenceContext(ctx)
+	defer finishCancel()
+	return s.finishOperation(finishCtx, operation.ID)
 }
 
 func terminalOperationStatus(status domain.OperationStatus) bool {
@@ -52,16 +59,20 @@ func terminalOperationStatus(status domain.OperationStatus) bool {
 }
 
 func (s *operationService) runClaimedStep(ctx context.Context, operation *domain.Operation, step *domain.OperationStep, worker string) error {
+	stateCtx, stateCancel := operationPersistenceContext(ctx)
+	defer stateCancel()
 	if s.runner == nil {
-		if err := s.finishStep(ctx, operation, step, worker, domain.StepFailed, "", "operation.runner_unavailable", nil,
+		if err := s.finishStep(stateCtx, operation, step, worker, domain.StepFailed, "", "operation.runner_unavailable", nil,
 			"operation runner is not configured"); err != nil {
 			return apperr.Internal("operation.finish_step_failed", "failed to finish operation step").Wrap(err)
 		}
 		return s.abortOperationSteps(ctx, operation, worker)
 	}
-	sourceOperationID, result, runErr := s.runner.Run(ctx, operation, step)
+	remoteCtx, remoteCancel := operationRemoteContext(ctx)
+	sourceOperationID, result, runErr := s.runner.Run(remoteCtx, operation, step)
+	remoteCancel()
 	status, code, message := operationRunStatus(runErr)
-	if err := s.finishStep(ctx, operation, step, worker, status, sourceOperationID, code, result, message); err != nil {
+	if err := s.finishStep(stateCtx, operation, step, worker, status, sourceOperationID, code, result, message); err != nil {
 		return apperr.Internal("operation.finish_step_failed", "failed to finish operation step").Wrap(err)
 	}
 	step.Status = status
@@ -72,7 +83,9 @@ func (s *operationService) runClaimedStep(ctx context.Context, operation *domain
 }
 
 func (s *operationService) abortOperationSteps(ctx context.Context, operation *domain.Operation, worker string) error {
-	if err := s.repo.SkipPendingSteps(ctx, operation.ID, "operation.aborted", "operation stopped after a failed step"); err != nil {
+	stateCtx, cancel := operationPersistenceContext(ctx)
+	defer cancel()
+	if err := s.repo.SkipPendingSteps(stateCtx, operation.ID, "operation.aborted", "operation stopped after a failed step"); err != nil {
 		return apperr.Internal("operation.skip_steps_failed", "failed to close skipped operation steps").Wrap(err)
 	}
 	if err := s.compensate(ctx, operation, worker); err != nil {
@@ -85,22 +98,35 @@ func operationRunStatus(runErr error) (domain.OperationStepStatus, string, strin
 	if runErr == nil {
 		return domain.StepSucceeded, "", ""
 	}
-	status, code, message := domain.StepFailed, "operation.step_failed", "operation step failed"
+	var appErr *apperr.AppError
+	if errors.As(runErr, &appErr) && appErr.Code == invalidOperationDatasetScopeCode {
+		return domain.StepFailed, invalidOperationDatasetScopeCode, appErr.Message
+	}
 	var summaryErr *repository.SummaryApplicationError
 	if errors.As(runErr, &summaryErr) && summaryErr.Kind == repository.SummaryApplyCommitUnknown {
 		return domain.StepUnknown, "projection.commit_unknown", "projection commit outcome is unknown"
 	}
-	remoteUnknown := false
-	if remote, ok := connector.IsRemote(runErr); ok {
-		remoteUnknown = remote.Kind == connector.ErrorTimeout || remote.Kind == connector.ErrorUnavailable || remote.Kind == connector.ErrorUnknown
+	if operationRunOutcomeUnknown(runErr) {
+		return domain.StepUnknown, "operation.unknown_outcome", "remote outcome is unknown"
 	}
-	if errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, context.Canceled) || remoteUnknown {
-		status, code, message = domain.StepUnknown, "operation.unknown_outcome", "remote outcome is unknown"
+	return domain.StepFailed, "operation.step_failed", "operation step failed"
+}
+
+func operationRunOutcomeUnknown(runErr error) bool {
+	if errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, context.Canceled) {
+		return true
 	}
-	return status, code, message
+	remote, ok := connector.IsRemote(runErr)
+	return ok && (remote.Kind == connector.ErrorTimeout || remote.Kind == connector.ErrorUnavailable || remote.Kind == connector.ErrorUnknown)
 }
 
 func (s *operationService) Start(ctx context.Context, interval time.Duration) func() {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.workerGate != nil {
+		s.workerGate.accepting.Store(true)
+	}
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -119,7 +145,15 @@ func (s *operationService) Start(ctx context.Context, interval time.Duration) fu
 			}
 		}
 	}()
-	return func() { cancel(); <-done }
+	return func() {
+		// Fencing starts before cancellation. New transport calls and the next
+		// worker tick are rejected while the in-flight attempt is finalized.
+		if s.workerGate != nil {
+			s.workerGate.beginDrain()
+		}
+		cancel()
+		<-done
+	}
 }
 
 func (s *operationService) processRunnable(ctx context.Context) {

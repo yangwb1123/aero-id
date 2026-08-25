@@ -196,6 +196,9 @@ func clampedSummaryConcurrency(limit int) int {
 func (c *JSONSummaryConnector) Source() Source { return c.source }
 
 func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) (result *Summary, resultErr error) {
+	if err := validateDatasetScope(c.source, req.Datasets); err != nil {
+		return nil, err
+	}
 	started := time.Now()
 	release, err := c.begin(ctx)
 	if err != nil {
@@ -238,10 +241,7 @@ func (c *JSONSummaryConnector) fetchSummary(ctx context.Context, req SummaryRequ
 	if expected := strings.TrimSpace(req.Region); expected != "" && result.SourceRegion != expected {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.region_mismatch"}
 	}
-	requested := req.Datasets
-	if len(requested) == 0 {
-		requested = sourceDatasets(c.source)
-	}
+	requested := requestedSummaryDatasets(c.source, req.Datasets)
 	markMissingRequestedDatasets(result, requested)
 	if err := normalizeSummaryCoverage(result, requested); err != nil {
 		return nil, err
@@ -298,6 +298,9 @@ func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
 }
 
 func (c *JSONSummaryConnector) Erase(ctx context.Context, req EraseRequest) (result *CommandResult, resultErr error) {
+	if err := validateDatasetScope(c.source, req.Datasets); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.IdempotencyKey) == "" {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.idempotency_key_missing", Temporary: false}
 	}

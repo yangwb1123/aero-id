@@ -181,7 +181,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	// selection, and the fail-closed audit-wiring asserts. Extracted to
 	// services.go so the composition root stays under the file-size gate (C-7).
 	svcs, err := buildServices(serviceDependencies{
-		cfg: cfg, log: log, gdb: gdb, store: store,
+		workerContext: ctx, cfg: cfg, log: log, gdb: gdb, store: store,
 		ssoClient: ssoClient, sourceConnectors: sourceConnectors,
 		controlMetrics: controlMetrics, metricsReg: metricsReg,
 		billingRuntime: billingRuntime, summaryApplication: summaryApplication,
@@ -292,6 +292,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		httpServer:      httpServer,
 		grpcServer:      grpcServer,
 		grpcHealth:      grpcHealth,
+		httpHealth:      workers.health,
 		grpcLis:         grpcLis,
 		stopRelay:       stopRelay,
 		stopGC:          stopGC,
@@ -301,6 +302,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		stopNotifClean:  workers.stopNotifClean,
 		stopOutboxClean: workers.stopOutboxClean,
 		stopCallbacks:   stopCallbacks,
+		drainOperations: svcs.drainOperations,
 		stopOperations:  svcs.stopOperations,
 		stopSyncJobs:    svcs.stopSyncJobs,
 		stopEventBus:    svcs.stopEventBus,

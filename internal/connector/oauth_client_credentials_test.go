@@ -51,7 +51,7 @@ func TestConnectorClientCredentialsCachesAudienceBoundToken(t *testing.T) {
 		Scope: "account:summary:read", Resource: "aero-im",
 	}})
 	for range 2 {
-		if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+		if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}}); err != nil {
 			t.Fatalf("summary: %v", err)
 		}
 	}
@@ -93,10 +93,10 @@ func TestConnectorClientCredentialsPropagatesAcrossAllConnectorSurfaces(t *testi
 		OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token", ClientID: "aero-id",
 			ClientSecret: "source-secret", Scope: "account:summary:read", Resource: "aero-im"},
 	})
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}}); err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "idem-1"}); err != nil {
+	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, IdempotencyKey: "idem-1"}); err != nil {
 		t.Fatalf("erase: %v", err)
 	}
 	if _, err := client.OperationStatus(t.Context(), OperationStatusRequest{AccountID: domain.ID{1}, SourceOperationID: "source-op"}); err != nil {
@@ -139,7 +139,7 @@ func TestConnectorClientCredentialsRefreshesOnceAfterUnauthorized(t *testing.T) 
 		TokenURL: server.URL + "/token", ClientID: "aero-id", ClientSecret: "source-secret",
 		Scope: "account:summary:read", Resource: "aero-im",
 	}})
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}}); err != nil {
 		t.Fatalf("summary after token refresh: %v", err)
 	}
 	if tokenCalls != 2 || sourceCalls != 2 {

@@ -37,7 +37,9 @@ func (f *crashTestRepo) Get(ctx context.Context, id domain.ID) (*domain.Operatio
 func (f *crashTestRepo) List(ctx context.Context, actor, tenant string, page domain.Page) ([]*domain.Operation, string, error) {
 	return nil, "", nil
 }
-func (f *crashTestRepo) ListRunnable(ctx context.Context, limit int) ([]domain.ID, error) { return nil, nil }
+func (f *crashTestRepo) ListRunnable(ctx context.Context, limit int) ([]domain.ID, error) {
+	return nil, nil
+}
 func (f *crashTestRepo) ListReconcileRunnable(ctx context.Context, limit int) ([]domain.ID, error) {
 	return []domain.ID{f.operation.ID}, nil
 }
@@ -134,7 +136,8 @@ func crashedOperation(status domain.OperationStatus, stepStatus domain.Operation
 		Steps: []*domain.OperationStep{{
 			ID: stepID, OperationID: operationID, StepKey: "erase-vault", Source: "aero-vault",
 			Action: "erase", Status: stepStatus, Attempt: 1, LeaseOwner: "dead-worker",
-			LeaseKind: "forward", SourceOperationID: "src-op-1", LeaseUntil: &past,
+			RequestPayload: map[string]any{"datasets": []any{"aero-vault.tenants"}},
+			LeaseKind:      "forward", SourceOperationID: "src-op-1", LeaseUntil: &past,
 		}},
 	}
 }

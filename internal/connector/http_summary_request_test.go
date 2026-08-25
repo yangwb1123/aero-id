@@ -19,7 +19,7 @@ func TestConnector_EraseTruncatedBodyIsTemporaryReadFailure(t *testing.T) {
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxAttempts: 1})
 	_, err := client.Erase(t.Context(), EraseRequest{
-		AccountID: domain.ID{1}, IdempotencyKey: "idem-1", OperationID: "op-1",
+		AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, IdempotencyKey: "idem-1", OperationID: "op-1",
 	})
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
@@ -39,7 +39,7 @@ func TestConnector_EraseRejectsOversizedBody(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestConnector(t, server.URL, HTTPConfig{ErasePath: "/erase", MaxBodyBytes: 16, MaxAttempts: 1})
-	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-oversized"})
+	_, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, Datasets: []domain.AccountDataset{domain.AccountDataset("aero-im.profile")}, IdempotencyKey: "erase-oversized"})
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("err = %v, want RemoteError", err)

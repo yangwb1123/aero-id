@@ -48,6 +48,20 @@ func operationPermission(operationType string) string {
 	}
 }
 
+// operationActionPermission is the permission implied by the remote effect,
+// rather than by the transport-shaped operation type. In particular,
+// source.command is not a wildcard escape hatch for destructive actions.
+func operationActionPermission(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "sync", "summary", "source.summary":
+		return domain.PermSourceSync
+	case "erase", "delete", "source.erase":
+		return domain.PermAccountErase
+	default:
+		return ""
+	}
+}
+
 func operationActionMatchesType(operationType, action string) bool {
 	action = strings.ToLower(strings.TrimSpace(action))
 	switch operationType {
@@ -63,6 +77,9 @@ func operationActionMatchesType(operationType, action string) bool {
 }
 
 func (s *operationService) requireOperationPermission(ctx context.Context, actor, permission string) error {
+	if strings.TrimSpace(permission) == "" {
+		return apperr.BadRequest("operation.invalid_action", "operation action is not allow-listed")
+	}
 	if s.permission == nil {
 		return apperr.Forbidden("operation.permission_unavailable", "operation permission is not configured")
 	}
