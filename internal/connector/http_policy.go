@@ -62,11 +62,12 @@ func (c *JSONSummaryConnector) doHTTP(ctx context.Context, factory func() (*http
 		if err != nil {
 			return nil, err
 		}
-		if err := c.authorize(ctx, request); err != nil {
+		snapshot, err := c.authorize(ctx, request)
+		if err != nil {
 			return nil, err
 		}
 		response, err := c.client.Do(request)
-		retry, refreshed := c.retryDecision(response, err, retryableRequest(request), attempt, authRetried)
+		retry, refreshed := c.retryDecision(response, err, retryableRequest(request), attempt, authRetried, snapshot)
 		if refreshed {
 			authRetried = true
 			attempt-- // token refresh does not consume the transport retry budget
@@ -86,14 +87,14 @@ func (c *JSONSummaryConnector) doHTTP(ctx context.Context, factory func() (*http
 }
 
 func (c *JSONSummaryConnector) retryDecision(response *http.Response, requestErr error, canRetry bool,
-	attempt int, authRetried bool) (retry, refreshed bool) {
+	attempt int, authRetried bool, snapshot oauthTokenSnapshot) (retry, refreshed bool) {
 	if requestErr != nil {
 		return canRetry && attempt+1 < c.cfg.MaxAttempts, false
 	}
 	if response.StatusCode == http.StatusUnauthorized && c.tokens != nil && !authRetried {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.cfg.MaxBodyBytes))
 		_ = response.Body.Close()
-		c.tokens.invalidate()
+		c.tokens.invalidateIf(snapshot)
 		return false, true
 	}
 	if !canRetry || !retryableStatus(response.StatusCode) || attempt+1 >= c.cfg.MaxAttempts {
@@ -104,17 +105,17 @@ func (c *JSONSummaryConnector) retryDecision(response *http.Response, requestErr
 	return true, false
 }
 
-func (c *JSONSummaryConnector) authorize(ctx context.Context, request *http.Request) error {
+func (c *JSONSummaryConnector) authorize(ctx context.Context, request *http.Request) (oauthTokenSnapshot, error) {
 	if c.tokens == nil {
 		setBearer(request, c.cfg.BearerToken)
-		return nil
+		return oauthTokenSnapshot{value: c.cfg.BearerToken}, nil
 	}
-	token, err := c.tokens.accessToken(ctx)
+	snapshot, err := c.tokens.accessTokenSnapshot(ctx)
 	if err != nil {
-		return &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.oauth_token_unavailable", Temporary: true, Cause: err}
+		return oauthTokenSnapshot{}, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.oauth_token_unavailable", Temporary: true, Cause: err}
 	}
-	setBearer(request, token)
-	return nil
+	setBearer(request, snapshot.value)
+	return snapshot, nil
 }
 
 func retryableStatus(status int) bool { return status == http.StatusTooManyRequests || status >= 500 }

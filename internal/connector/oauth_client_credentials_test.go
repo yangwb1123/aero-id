@@ -1,15 +1,90 @@
 package connector
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 )
+
+func TestOAuthAccessTokenWaiterHonorsCancellation(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"source-token","token_type":"Bearer","expires_in":300}`)
+	}))
+	defer server.Close()
+	tokens, err := newOAuthClientCredentials(OAuthClientCredentialsConfig{
+		TokenURL: server.URL, ClientID: "client", ClientSecret: "secret", Scope: "scope", Resource: "aero-im",
+	}, server.Client(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, fetchErr := tokens.accessToken(context.Background())
+		firstDone <- fetchErr
+	}()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := tokens.accessToken(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled waiter error = %v, want deadline exceeded", err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("initial fetch: %v", err)
+	}
+	if token, err := tokens.accessToken(context.Background()); err != nil || token != "source-token" {
+		t.Fatalf("cached token = %q, err=%v", token, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("token calls = %d, want 1", got)
+	}
+}
+
+func TestOAuthInvalidateIfDoesNotEvictNewGeneration(t *testing.T) {
+	tokens := &oauthClientCredentials{token: "new-token", generation: 2, refreshAt: time.Now().Add(time.Hour)}
+	tokens.invalidateIf(oauthTokenSnapshot{value: "old-token", generation: 1})
+	if tokens.token != "new-token" {
+		t.Fatalf("stale invalidation cleared newer token %q", tokens.token)
+	}
+	tokens.invalidateIf(oauthTokenSnapshot{value: "new-token", generation: 2})
+	if tokens.token != "" {
+		t.Fatalf("current invalidation kept token %q", tokens.token)
+	}
+}
+
+func TestOAuthUnauthorizedRetryKeepsNewerToken(t *testing.T) {
+	tokens := &oauthClientCredentials{token: "new-token", generation: 2, refreshAt: time.Now().Add(time.Hour),
+		now: func() time.Time { return time.Now() }}
+	client := &JSONSummaryConnector{tokens: tokens, cfg: HTTPConfig{MaxBodyBytes: 1024}}
+	retry, refreshed := client.retryDecision(&http.Response{StatusCode: http.StatusUnauthorized,
+		Body: io.NopCloser(strings.NewReader(""))}, nil, true, 0, false,
+		oauthTokenSnapshot{value: "old-token", generation: 1})
+	if retry || !refreshed {
+		t.Fatalf("retry/refreshed = %v/%v, want false/true", retry, refreshed)
+	}
+	if got, err := tokens.accessToken(context.Background()); err != nil || got != "new-token" {
+		t.Fatalf("newer token = %q, err=%v", got, err)
+	}
+}
 
 func TestConnectorClientCredentialsCachesAudienceBoundToken(t *testing.T) {
 	var mu sync.Mutex

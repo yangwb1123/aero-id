@@ -36,9 +36,20 @@ type oauthClientCredentials struct {
 	client       *http.Client
 	now          func() time.Time
 
-	mu        sync.Mutex
-	token     string
-	refreshAt time.Time
+	mu         sync.Mutex
+	token      string
+	refreshAt  time.Time
+	generation uint64
+	refresh    *oauthRefresh
+}
+
+type oauthRefresh struct {
+	done chan struct{}
+}
+
+type oauthTokenSnapshot struct {
+	value      string
+	generation uint64
 }
 
 func newOAuthClientCredentials(cfg OAuthClientCredentialsConfig, client *http.Client, timeout time.Duration) (*oauthClientCredentials, error) {
@@ -88,26 +99,68 @@ func oauthLoopbackHost(host string) bool {
 }
 
 func (s *oauthClientCredentials) accessToken(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.token != "" && s.now().Before(s.refreshAt) {
-		return s.token, nil
-	}
-	wire, err := s.fetch(ctx)
-	if err != nil {
-		return "", err
-	}
-	lifetime := time.Duration(min(wire.ExpiresIn, int64((24*time.Hour)/time.Second))) * time.Second
-	skew := min(30*time.Second, lifetime/2)
-	s.token = wire.AccessToken
-	s.refreshAt = s.now().Add(lifetime - skew)
-	return s.token, nil
+	snapshot, err := s.accessTokenSnapshot(ctx)
+	return snapshot.value, err
 }
 
-func (s *oauthClientCredentials) invalidate() {
+//nolint:cyclop // refresh ownership, waiter cancellation, and cache publication are one state machine.
+func (s *oauthClientCredentials) accessTokenSnapshot(ctx context.Context) (oauthTokenSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		s.mu.Lock()
+		if s.token != "" && s.now().Before(s.refreshAt) {
+			snapshot := oauthTokenSnapshot{value: s.token, generation: s.generation}
+			s.mu.Unlock()
+			return snapshot, nil
+		}
+		if current := s.refresh; current != nil {
+			done := current.done
+			s.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return oauthTokenSnapshot{}, ctx.Err()
+			}
+		}
+		refresh := &oauthRefresh{done: make(chan struct{})}
+		s.refresh = refresh
+		s.mu.Unlock()
+
+		wire, err := s.fetch(ctx)
+		s.mu.Lock()
+		if s.refresh == refresh {
+			s.refresh = nil
+			if err == nil {
+				lifetime := time.Duration(min(wire.ExpiresIn, int64((24*time.Hour)/time.Second))) * time.Second
+				skew := min(30*time.Second, lifetime/2)
+				s.token = wire.AccessToken
+				s.refreshAt = s.now().Add(lifetime - skew)
+				s.generation++
+			}
+			close(refresh.done)
+		}
+		generation := s.generation
+		s.mu.Unlock()
+		if err != nil {
+			return oauthTokenSnapshot{}, err
+		}
+		return oauthTokenSnapshot{value: wire.AccessToken, generation: generation}, nil
+	}
+}
+
+func (s *oauthClientCredentials) invalidateIf(snapshot oauthTokenSnapshot) {
+	if snapshot.value == "" {
+		return
+	}
 	s.mu.Lock()
-	s.token = ""
-	s.refreshAt = time.Time{}
+	if s.token == snapshot.value && s.generation == snapshot.generation {
+		s.token = ""
+		s.refreshAt = time.Time{}
+		s.generation++
+	}
 	s.mu.Unlock()
 }
 
