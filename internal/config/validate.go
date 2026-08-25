@@ -400,10 +400,6 @@ func validateSourceEndpoint(name string, source SourceEndpointConfig) error {
 	return nil
 }
 
-func (c *Config) validateAeroIMSource(source SourceEndpointConfig) error {
-	return c.validateAuthenticatedSource("aero-im", source)
-}
-
 func (c *Config) validateAuthenticatedSource(name string, source SourceEndpointConfig) error {
 	_, err := sourceauth.Evaluate(sourceauth.Config{
 		Source: name, Label: "sources." + name, Endpoint: source.Endpoint, Environment: c.App.Env,
