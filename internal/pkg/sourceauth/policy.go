@@ -11,7 +11,10 @@ import (
 	"unicode"
 )
 
-const aeroIMSource = "aero-im"
+const (
+	aeroIMSource   = "aero-im"
+	snaplinkSource = "snaplink"
+)
 
 // Mode identifies the authentication mode selected for a source connector.
 type Mode string
@@ -38,7 +41,7 @@ type OAuthConfig struct {
 	Resource     string
 }
 
-// Config is the minimal input needed by the shared Aero IM authentication
+// Config is the minimal input needed by the shared source authentication
 // policy. It contains no secrets in errors returned by Evaluate.
 type Config struct {
 	Source                string
@@ -64,10 +67,12 @@ type Decision struct {
 	Compatibility bool
 }
 
-// Evaluate validates and classifies an endpoint. The policy is intentionally
-// scoped to Aero IM; other source connectors retain their existing behavior.
+// Evaluate validates and classifies an endpoint. Snaplink and Aero IM are
+// authenticated service-to-service sources; other source connectors retain
+// their existing compatibility behavior until their source-specific contract
+// is migrated.
 func Evaluate(cfg Config) (Decision, error) {
-	if cfg.Source != "" && cfg.Source != aeroIMSource {
+	if cfg.Source != "" && cfg.Source != aeroIMSource && cfg.Source != snaplinkSource {
 		return Decision{Mode: ModeDisabled, BearerToken: cfg.BearerToken}, nil
 	}
 	if strings.TrimSpace(cfg.Endpoint) == "" {

@@ -102,7 +102,7 @@ func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, err
 }
 
 func applySourceAuth(source Source, cfg HTTPConfig, decision sourceauth.Decision) HTTPConfig {
-	if source == SourceAeroIM {
+	if source == SourceAeroIM || source == SourceSnaplink {
 		cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
 		cfg.BearerToken = decision.BearerToken
 	}

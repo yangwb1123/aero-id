@@ -48,7 +48,8 @@ func TestJSONSummaryConnectorRedactsSnaplinkIdentityCredentials(t *testing.T) {
 			"otp":"654321","verification_code":"abc-123","access_token":"tok-1","mfa_secret":"mfa-1"}}}}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
+		AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,8 @@ func TestJSONSummaryConnectorEraseUsesIdempotency(t *testing.T) {
 func TestJSONSummaryConnectorRejectsOversizedBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(strings.Repeat("x", 128))) }))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL, MaxBodyBytes: 16, Client: server.Client()})
+	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL, MaxBodyBytes: 16,
+		AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}

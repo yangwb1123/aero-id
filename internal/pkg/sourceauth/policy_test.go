@@ -51,10 +51,17 @@ func TestEvaluateAeroIMAuthenticationMatrix(t *testing.T) {
 	}
 }
 
-func TestEvaluateDoesNotApplyAeroIMPolicyToOtherSources(t *testing.T) {
-	decision, err := Evaluate(Config{Source: "snaplink", Endpoint: "http://source.example"})
+func TestEvaluateRequiresAuthenticationForSnaplink(t *testing.T) {
+	_, err := Evaluate(Config{Source: "snaplink", Endpoint: "https://source.example"})
+	if err == nil || !strings.Contains(err.Error(), "service authentication is required") {
+		t.Fatalf("Snaplink without authentication error = %v, want service authentication required", err)
+	}
+}
+
+func TestEvaluateKeepsOtherSourceCompatibility(t *testing.T) {
+	decision, err := Evaluate(Config{Source: "aero-vault", Endpoint: "https://source.example"})
 	if err != nil {
-		t.Fatalf("non-Aero IM source was rejected: %v", err)
+		t.Fatalf("non-authenticated compatibility source was rejected: %v", err)
 	}
 	if decision.Mode != ModeDisabled {
 		t.Fatalf("mode = %q, want disabled pass-through", decision.Mode)

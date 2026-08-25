@@ -126,8 +126,8 @@ func (c *Config) validateConfiguredSources(regions map[string]struct{}) error {
 		if err := validateSourceEndpoint(name, source); err != nil {
 			return err
 		}
-		if name == "aero-im" {
-			if err := c.validateAeroIMSource(source); err != nil {
+		if name == "aero-im" || name == "snaplink" {
+			if err := c.validateAuthenticatedSource(name, source); err != nil {
 				return err
 			}
 		}
@@ -401,8 +401,12 @@ func validateSourceEndpoint(name string, source SourceEndpointConfig) error {
 }
 
 func (c *Config) validateAeroIMSource(source SourceEndpointConfig) error {
+	return c.validateAuthenticatedSource("aero-im", source)
+}
+
+func (c *Config) validateAuthenticatedSource(name string, source SourceEndpointConfig) error {
 	_, err := sourceauth.Evaluate(sourceauth.Config{
-		Source: "aero-im", Label: "sources.aero-im", Endpoint: source.Endpoint, Environment: c.App.Env,
+		Source: name, Label: "sources." + name, Endpoint: source.Endpoint, Environment: c.App.Env,
 		AllowInsecureLoopback: source.AllowInsecureLoopback, BearerToken: source.BearerToken,
 		OAuth: sourceauth.OAuthConfig{TokenURL: source.OAuthTokenURL, ClientID: source.OAuthClientID,
 			ClientSecret: source.OAuthSecret, Scope: source.OAuthScope, Resource: source.OAuthResource},

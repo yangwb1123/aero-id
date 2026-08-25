@@ -403,8 +403,10 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("AERO_ID")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	if err := v.BindEnv("sources.aero_im.allow_insecure_loopback"); err != nil {
-		return nil, fmt.Errorf("bind source authentication environment: %w", err)
+	for _, key := range []string{"sources.aero_im.allow_insecure_loopback", "sources.snaplink.allow_insecure_loopback"} {
+		if err := v.BindEnv(key); err != nil {
+			return nil, fmt.Errorf("bind source authentication environment: %w", err)
+		}
 	}
 
 	if err := v.ReadInConfig(); err != nil {

@@ -45,6 +45,59 @@ func TestAeroIMAuthenticationValidationHappensBeforeHTTP(t *testing.T) {
 	}
 }
 
+func TestSnaplinkAuthenticationValidationHappensBeforeHTTP(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: sourceAuthRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, io.ErrUnexpectedEOF
+	})}
+	_, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: "https://snaplink.example", Client: client})
+	if err == nil || !strings.Contains(err.Error(), "snaplink service authentication is required") {
+		t.Fatalf("constructor error = %v, want fail-closed Snaplink auth error", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("HTTP calls = %d, want 0 during validation", calls.Load())
+	}
+}
+
+func TestSnaplinkStaticBearerAuthenticatesEverySurface(t *testing.T) {
+	assertStaticBearerSurfaces(t, SourceSnaplink)
+}
+
+func assertStaticBearerSurfaces(t *testing.T, source Source) {
+	t.Helper()
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer static-source-token" {
+			t.Fatalf("%s Authorization = %q", r.URL.Path, got)
+		}
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/summary" {
+			_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"completed","source_operation_id":"source-op"}`))
+	}))
+	defer server.Close()
+	client, err := NewJSONSummaryConnector(source, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
+		BearerToken: "  static-source-token  ", ErasePath: "/erase", OperationStatusPath: "/status", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("static bearer constructor: %v", err)
+	}
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-1"}); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if _, err := client.OperationStatus(t.Context(), OperationStatusRequest{AccountID: domain.ID{1}, SourceOperationID: "source-op"}); err != nil {
+		t.Fatalf("operation status: %v", err)
+	}
+	if len(paths) != 3 || paths[0] != "/summary" || paths[1] != "/erase" || paths[2] != "/status" {
+		t.Fatalf("authenticated paths = %#v, want summary/erase/status", paths)
+	}
+}
+
 func TestAeroIMStaticBearerAuthenticatesEverySurface(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,9 +221,11 @@ func TestEraseBlankKeyIsSharedAcrossSourcesAndSkipsTokenIO(t *testing.T) {
 	})}
 	for _, source := range []Source{SourceSnaplink, SourceAeroIM, SourceAeroVault} {
 		cfg := HTTPConfig{Endpoint: "http://127.0.0.1", ErasePath: "/erase", Client: client}
-		if source == SourceAeroIM {
+		if source == SourceSnaplink || source == SourceAeroIM {
 			cfg.AllowInsecureLoopback = true
 			cfg.Environment = "test"
+		}
+		if source == SourceAeroIM {
 			cfg.OAuth = OAuthClientCredentialsConfig{TokenURL: "https://token.example/token", ClientID: "client",
 				ClientSecret: "secret", Scope: "summary:read", Resource: "aero-im"}
 		}
