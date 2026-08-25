@@ -2,9 +2,12 @@ package connector
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -79,7 +82,7 @@ func (c *JSONSummaryConnector) doHTTP(ctx context.Context, factory func() (*http
 			}
 			return response, nil
 		}
-		if err := waitRetry(ctx, c.cfg.RetryBackoff, attempt); err != nil {
+		if err := waitRetry(ctx, c.cfg.RetryBackoff, attempt, response); err != nil {
 			return nil, err
 		}
 	}
@@ -136,8 +139,25 @@ func retryableRequest(request *http.Request) bool {
 	}
 }
 
-func waitRetry(ctx context.Context, base time.Duration, attempt int) error {
-	delay := base << attempt
+const maxRetryDelay = 5 * time.Minute
+
+func waitRetry(ctx context.Context, base time.Duration, attempt int, response *http.Response) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	delay := retryDelay(response, base, attempt, time.Now().UTC())
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ctx.Err()
+		}
+		if delay >= remaining {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return context.DeadlineExceeded
+		}
+	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -146,4 +166,100 @@ func waitRetry(ctx context.Context, base time.Duration, attempt int) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func retryDelay(response *http.Response, base time.Duration, attempt int, now time.Time) time.Duration {
+	if base <= 0 {
+		base = 50 * time.Millisecond
+	}
+	delay := base
+	for i := 0; i < attempt && delay < maxRetryDelay; i++ {
+		if delay > maxRetryDelay/2 {
+			delay = maxRetryDelay
+			break
+		}
+		delay *= 2
+	}
+	if delay > maxRetryDelay {
+		delay = maxRetryDelay
+	}
+	if hint, ok := retryAfterDelay(response, now); ok {
+		if hint > maxRetryDelay {
+			hint = maxRetryDelay
+		}
+		// Retry-After is a lower bound from the source. Add only positive,
+		// bounded jitter so a fleet does not retry on the same instant.
+		jitter := hint / 4
+		if jitter > 0 {
+			hint += randomRetryJitter(jitter)
+		}
+		if hint > maxRetryDelay {
+			return maxRetryDelay
+		}
+		return hint
+	}
+	return jitterRetryDelay(delay)
+}
+
+func retryAfterDelay(response *http.Response, now time.Time) (time.Duration, bool) {
+	if response == nil {
+		return 0, false
+	}
+	raw := strings.TrimSpace(response.Header.Get("Retry-After"))
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+		if seconds >= int64(maxRetryDelay/time.Second) {
+			return maxRetryDelay, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	if retryAfterNumeric(raw) {
+		return maxRetryDelay, true
+	}
+	when, err := http.ParseTime(raw)
+	if err != nil {
+		return 0, false
+	}
+	if when.Before(now) {
+		return 0, true
+	}
+	return when.Sub(now), true
+}
+
+func retryAfterNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	digits := 0
+	for i, char := range value {
+		if i == 0 && char == '+' {
+			continue
+		}
+		if char < '0' || char > '9' {
+			return false
+		}
+		digits++
+	}
+	return digits > 0
+}
+
+func jitterRetryDelay(delay time.Duration) time.Duration {
+	if delay <= 1 {
+		return delay
+	}
+	span := delay / 2
+	return delay - span + randomRetryJitter(span*2)
+}
+
+func randomRetryJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	value, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(max)+1))
+	if err != nil {
+		return max / 2
+	}
+	return time.Duration(value.Int64())
 }
