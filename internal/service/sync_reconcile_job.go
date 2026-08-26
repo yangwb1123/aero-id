@@ -91,8 +91,11 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
+		// A reconciliation account-load failure says nothing about any remote
+		// erase outcome. Keep the job unknown so a later pass can retry status
+		// queries instead of converting an infrastructure timeout into failure.
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.account_load_failed", "failed to load account", nil, cause)
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobUnknown, "erase.account_load_failed", "failed to load account", job.Result, cause)
 	}
 	failures := 0
 	for source, rawValue := range sources {
