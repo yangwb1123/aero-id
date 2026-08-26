@@ -897,6 +897,7 @@ func assertGovernanceEnvelope(t *testing.T, db *gorm.DB, body map[string]any, ro
 		"event_id": rowID.String(), "idempotency_key": rowID.String(),
 		"source_system": sourceSystem, "schema_id": "fixture.schema.id",
 		"event_type": "fixture.schema.id", "schema_version": float64(7),
+		"source_region":       "local",
 		"data_classification": "restricted", "retention_class": "fixture_30d",
 		"operation_id": operationID.String(), "correlation_id": correlationID.String(),
 		"causation_id": causationID.String(), "trace_id": traceID,

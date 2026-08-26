@@ -209,6 +209,7 @@ func (p *Publisher) newRequest(
 type governanceEvent struct {
 	EventID            string             `json:"event_id"`
 	SourceSystem       string             `json:"source_system"`
+	SourceRegion       string             `json:"source_region,omitempty"`
 	EventType          string             `json:"event_type"`
 	SchemaID           string             `json:"schema_id"`
 	SchemaVersion      int                `json:"schema_version"`
@@ -245,7 +246,7 @@ func (p *Publisher) event(fact *domain.AuditFact, source string) governanceEvent
 		actor = p.actorID
 	}
 	event := governanceEvent{
-		EventID: fact.ID.String(), SourceSystem: source, EventType: p.schemaID,
+		EventID: fact.ID.String(), SourceSystem: source, SourceRegion: fact.SourceRegion, EventType: p.schemaID,
 		SchemaID: p.schemaID, SchemaVersion: p.schemaVersion, OccurredAt: fact.OccurredAt.UTC(),
 		OperationID: optionalID(fact.OperationID), CorrelationID: optionalID(fact.CorrelationID),
 		CausationID: optionalID(fact.CausationID), TraceID: fact.TraceID,

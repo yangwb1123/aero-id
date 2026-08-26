@@ -22,7 +22,7 @@ func TestPublisherUsesDerivedSourceAndMatchingLedgerReceipt(t *testing.T) {
 	}
 	fact := &domain.AuditFact{
 		ID: idgen.NewID(), TenantID: tenantID, ActorUID: "user-1", Action: "account.profile.updated",
-		ResourceType: "account_profile", ResourceID: "account-1", OccurredAt: time.Now().UTC(),
+		SourceRegion: "region-secondary", ResourceType: "account_profile", ResourceID: "account-1", OccurredAt: time.Now().UTC(),
 		Payload: map[string]any{"changed_fields": []string{"locale"}},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +39,7 @@ func TestPublisherUsesDerivedSourceAndMatchingLedgerReceipt(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"service-token","token_type":"Bearer","expires_in":300}`))
 		case "/api/v1/events":
-			assertGovernanceRequest(t, r, expectedSource)
+			assertGovernanceRequest(t, r, expectedSource, "region-secondary", fact.ID.String())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"receipt": map[string]any{
@@ -71,7 +71,7 @@ func TestPublisherUsesDerivedSourceAndMatchingLedgerReceipt(t *testing.T) {
 	}
 }
 
-func assertGovernanceRequest(t *testing.T, request *http.Request, expectedSource string) {
+func assertGovernanceRequest(t *testing.T, request *http.Request, expectedSource, expectedRegion, expectedEventID string) {
 	t.Helper()
 	if request.URL.Query().Get("wait_for") != "ledgered" || request.Header.Get("Authorization") != "Bearer service-token" {
 		t.Errorf("missing ledger wait or bearer binding")
@@ -82,6 +82,12 @@ func assertGovernanceRequest(t *testing.T, request *http.Request, expectedSource
 	}
 	if body["source_system"] != expectedSource {
 		t.Errorf("source_system = %v", body["source_system"])
+	}
+	if body["source_region"] != expectedRegion {
+		t.Errorf("source_region = %v, want %q", body["source_region"], expectedRegion)
+	}
+	if body["event_id"] != expectedEventID || body["idempotency_key"] != expectedEventID {
+		t.Errorf("event/idempotency pins = %v/%v, want %q", body["event_id"], body["idempotency_key"], expectedEventID)
 	}
 	if body["schema_id"] != "aero.id.audit-fact" || body["event_type"] != "aero.id.audit-fact" {
 		t.Errorf("schema/event contract = %v/%v", body["schema_id"], body["event_type"])
@@ -193,6 +199,23 @@ func TestPublisherConflictReceiptMustEchoTheFact(t *testing.T) {
 	checkInvalid(t, "non-conflict rejected", func() *http.Response {
 		return buildReceipt(fact.ID.String(), "tenant-a", "rejected", false, time.Now().UTC())
 	})
+}
+
+func TestPublisherEventOmitsEmptySourceRegion(t *testing.T) {
+	publisher := &Publisher{schemaID: "aero.id.audit-fact", schemaVersion: 1}
+	fact := &domain.AuditFact{ID: idgen.NewID(), Action: "account.viewed", OccurredAt: time.Now()}
+
+	body, err := json.Marshal(publisher.event(fact, "aero-id.source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, supplied := wire["source_region"]; supplied {
+		t.Fatalf("empty source_region must be omitted, got %v", wire["source_region"])
+	}
 }
 
 func TestPublisherEventTypeDoesNotVaryWithFactAction(t *testing.T) {
