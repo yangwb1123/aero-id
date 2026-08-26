@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	pg "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"gorm.io/gorm"
@@ -16,28 +17,67 @@ import (
 	dbpkg "github.com/aero/aero-id/internal/pkg/db"
 )
 
+const postgresFixtureTimeout = time.Minute
+
+// RegisterCleanup closes the SQL pool before terminating the container. The
+// closePool callback may be nil while setup is still in progress; this lets
+// callers register cleanup immediately after the container starts so setup
+// failures do not leak it.
+func RegisterCleanup(t *testing.T, terminate func(context.Context) error, closePool func() error) {
+	t.Helper()
+	t.Cleanup(func() {
+		cleanupFixture(t, terminate, closePool)
+	})
+}
+
+func cleanupFixture(t *testing.T, terminate func(context.Context) error, closePool func() error) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), postgresFixtureTimeout)
+	defer cancel()
+	if closePool != nil {
+		if err := closePool(); err != nil {
+			t.Errorf("close PostgreSQL pool: %v", err)
+		}
+	}
+	if err := terminate(cleanupCtx); err != nil {
+		t.Errorf("terminate PostgreSQL container: %v", err)
+	}
+}
+
 // Start launches a throwaway PostgreSQL container and returns a connected *gorm.DB.
 // Cleanup is registered with t.Cleanup.
 func Start(t *testing.T) *gorm.DB {
 	t.Helper()
-	ctx := context.Background()
-	c, err := pg.Run(ctx,
+	startCtx, cancelStart := context.WithTimeout(context.Background(), postgresFixtureTimeout)
+	c, err := pg.Run(startCtx,
 		"postgres:16-alpine",
 		pg.WithDatabase("aero_id_test"),
 		pg.WithUsername("aero"),
 		pg.WithPassword("aero"),
 		pg.BasicWaitStrategies(),
 	)
+	cancelStart()
 	if err != nil {
 		t.Fatalf("start pg container: %v", err)
 	}
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
+	var db *gorm.DB
+	RegisterCleanup(t, c.Terminate, func() error {
+		if db == nil {
+			return nil
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.Close()
+	})
 
-	dsn, err := c.ConnectionString(ctx, "sslmode=disable", "TimeZone=UTC")
+	connectionCtx, cancelConnection := context.WithTimeout(context.Background(), postgresFixtureTimeout)
+	dsn, err := c.ConnectionString(connectionCtx, "sslmode=disable", "TimeZone=UTC")
+	cancelConnection()
 	if err != nil {
 		t.Fatalf("conn string: %v", err)
 	}
-	db, err := dbpkg.Open(dbpkg.Options{
+	db, err = dbpkg.Open(dbpkg.Options{
 		DSN:          dsn,
 		MaxOpenConns: 5,
 		LogLevel:     "silent",

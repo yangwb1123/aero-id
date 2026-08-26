@@ -32,25 +32,43 @@ type bootDatabase struct {
 // newBootDatabase launches a throwaway Postgres like testpg.Start but also
 // returns the parsed DatabaseConfig so the boot e2e can override the loaded
 // config's database block with a live endpoint.
+const postgresFixtureTimeout = time.Minute
+
 func newBootDatabase(t *testing.T) bootDatabase {
 	t.Helper()
-	ctx := context.Background()
-	c, err := pg.Run(ctx,
+	startCtx, cancelStart := context.WithTimeout(context.Background(), postgresFixtureTimeout)
+	c, err := pg.Run(startCtx,
 		"postgres:16-alpine",
 		pg.WithDatabase("aero_id_test"),
 		pg.WithUsername("aero"),
 		pg.WithPassword("aero"),
 		pg.BasicWaitStrategies(),
 	)
+	cancelStart()
 	if err != nil {
 		t.Fatalf("start pg container: %v", err)
 	}
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
-	host, err := c.Host(ctx)
+	var db *gorm.DB
+	testpg.RegisterCleanup(t, c.Terminate, func() error {
+		if db == nil {
+			return nil
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.Close()
+	})
+
+	hostCtx, cancelHost := context.WithTimeout(context.Background(), postgresFixtureTimeout)
+	host, err := c.Host(hostCtx)
+	cancelHost()
 	if err != nil {
 		t.Fatalf("pg host: %v", err)
 	}
-	mapped, err := c.MappedPort(ctx, "5432/tcp")
+	portCtx, cancelPort := context.WithTimeout(context.Background(), postgresFixtureTimeout)
+	mapped, err := c.MappedPort(portCtx, "5432/tcp")
+	cancelPort()
 	if err != nil {
 		t.Fatalf("pg port: %v", err)
 	}
@@ -59,7 +77,7 @@ func newBootDatabase(t *testing.T) bootDatabase {
 		DBName: "aero_id_test", SSLMode: "disable", LogLevel: "silent",
 		MaxOpenConns: 5, MaxIdleConns: 2,
 	}
-	db, err := dbpkg.Open(dbpkg.Options{DSN: cfg.DSN(), MaxOpenConns: 5, LogLevel: "silent"})
+	db, err = dbpkg.Open(dbpkg.Options{DSN: cfg.DSN(), MaxOpenConns: 5, LogLevel: "silent"})
 	if err != nil {
 		t.Fatalf("gorm open: %v", err)
 	}
