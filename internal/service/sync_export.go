@@ -136,11 +136,10 @@ func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID, oneTi
 	if job.Status != domain.SyncJobCompleted || len(s.exportKey) == 0 {
 		return nil, apperr.Conflict("export.not_available", "export artifact is not available")
 	}
-	if raw, ok := job.Result["expires_at"].(string); ok && strings.TrimSpace(raw) != "" {
-		if expires, parseErr := time.Parse(time.RFC3339Nano, raw); parseErr == nil && !time.Now().UTC().Before(expires) {
-			s.deleteExpiredExport(ctx, job)
-			return nil, apperr.Conflict("export.expired", "export artifact has expired")
-		}
+	expires, ok := exportExpiry(job.Result["expires_at"])
+	if !ok || !time.Now().UTC().Before(expires) {
+		s.deleteExpiredExport(ctx, job)
+		return nil, apperr.Conflict("export.expired", "export artifact has expired")
 	}
 	plain, key, err := s.readExportArtifact(ctx, job)
 	if err != nil {
@@ -160,6 +159,23 @@ func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID, oneTi
 		}
 	}
 	return bytes.TrimSpace(plain), nil
+}
+
+func exportExpiry(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case time.Time:
+		return typed, !typed.IsZero()
+	case *time.Time:
+		if typed == nil {
+			return time.Time{}, false
+		}
+		return *typed, !typed.IsZero()
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(typed))
+		return parsed, err == nil && !parsed.IsZero()
+	default:
+		return time.Time{}, false
+	}
 }
 
 func (s *syncJobService) readExportArtifact(ctx context.Context, job *domain.SyncJob) ([]byte, string, error) {

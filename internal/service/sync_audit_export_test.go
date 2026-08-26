@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"strconv"
 	"testing"
 	"time"
 
@@ -97,6 +98,50 @@ func auditExportFact(tenantID string) *domain.AuditFact {
 	return &domain.AuditFact{ID: idgen.NewID(), TenantID: tenantID, Source: "aero-id", SourceRegion: "local",
 		ActorUID: "u-1", Action: "account.provisioned", ResourceType: "account", ResourceID: "acc-1",
 		OccurredAt: time.Now().UTC(), RecordHash: hex.EncodeToString(sum[:]), Payload: map[string]any{"outcome": "success"}}
+}
+
+type pagedAuditLedgerRepo struct {
+	facts []*domain.AuditFact
+}
+
+func (r *pagedAuditLedgerRepo) Append(context.Context, *domain.AuditFact) error   { return nil }
+func (r *pagedAuditLedgerRepo) VerifyChain(context.Context, string, string) error { return nil }
+func (r *pagedAuditLedgerRepo) ChainPartitions(context.Context) ([]repository.ChainPartition, error) {
+	return nil, nil
+}
+func (r *pagedAuditLedgerRepo) ChainHead(context.Context, string, string) (*domain.AuditFact, error) {
+	return nil, repository.ErrNotFound
+}
+func (r *pagedAuditLedgerRepo) List(_ context.Context, filter domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
+	facts := make([]*domain.AuditFact, 0, len(r.facts))
+	for _, fact := range r.facts {
+		if fact.TenantID == filter.TenantID {
+			facts = append(facts, fact)
+		}
+	}
+	start := 0
+	if filter.Page.Cursor != "" {
+		parsed, err := strconv.Atoi(filter.Page.Cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		start = parsed
+	}
+	if start >= len(facts) {
+		return nil, "", nil
+	}
+	limit := filter.Page.Limit
+	if limit <= 0 {
+		limit = domain.DefaultPageLimit
+	}
+	end := start + limit
+	next := ""
+	if end < len(facts) {
+		next = strconv.Itoa(end)
+	} else {
+		end = len(facts)
+	}
+	return facts[start:end], next, nil
 }
 
 func newAuditExportService(facts []*domain.AuditFact, store storage.FileStorage) *syncJobService {
@@ -235,6 +280,72 @@ func TestAuditExport_RoundTrip(t *testing.T) {
 
 // TestAuditExport_RequiresLedger: without the ledger repository the job fails
 // explicitly instead of silently succeeding.
+func TestAuditExport_KeysetWindowsAreExactAndLossless(t *testing.T) {
+	facts := []*domain.AuditFact{auditExportFact("tenant-a"), auditExportFact("tenant-a"), auditExportFact("tenant-a"), auditExportFact("tenant-b")}
+	ledger := &pagedAuditLedgerRepo{facts: facts}
+	first, cursor, truncated, err := collectAuditExportEvents(context.Background(), ledger, "tenant-a", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || !truncated || cursor == "" {
+		t.Fatalf("first window = %d events, cursor %q, truncated %v; want 2, cursor, true", len(first), cursor, truncated)
+	}
+	second, cursor, truncated, err := collectAuditExportEvents(context.Background(), ledger, "tenant-a", cursor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || cursor != "" || truncated {
+		t.Fatalf("second window = %d events, cursor %q, truncated %v; want 1, empty, false", len(second), cursor, truncated)
+	}
+	seen := map[string]bool{}
+	for _, event := range append(first, second...) {
+		id := event["event_id"].(string)
+		if seen[id] {
+			t.Fatalf("event %s appeared more than once", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("seen events = %d, want 3 tenant-a facts", len(seen))
+	}
+
+	exact, cursor, truncated, err := collectAuditExportEvents(context.Background(), ledger, "tenant-a", "", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exact) != 3 || cursor != "" || truncated {
+		t.Fatalf("exact-max window = %d events, cursor %q, truncated %v; want 3, empty, false", len(exact), cursor, truncated)
+	}
+}
+
+func TestAuditExport_DownloadExpiryAcceptsTimeValueAndFailsClosed(t *testing.T) {
+	facts := []*domain.AuditFact{auditExportFact("tenant-a")}
+	store := &memoryStore{objects: map[string][]byte{}}
+	svc := newAuditExportService(facts, store)
+	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", AccountID: idgen.NewID(),
+		ActorUID: "admin-1", JobType: domain.SyncJobAuditExport}
+	result, err := svc.executeAuditExport(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Result["expires_at"] = time.Now().UTC().Add(time.Hour)
+	completed := &domain.SyncJob{ID: job.ID, TenantID: job.TenantID, ActorUID: job.ActorUID,
+		JobType: job.JobType, Status: result.Status, Result: result.Result}
+	svc.repo.(*minimalSyncJobRepo).SeedJob(completed)
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, false); err != nil {
+		t.Fatalf("time.Time expiry should be accepted: %v", err)
+	}
+
+	result.Result["expires_at"] = time.Now().UTC().Add(-time.Hour)
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, false); err == nil {
+		t.Fatal("expired time.Time must fail closed")
+	}
+	result.Result["expires_at"] = "not-a-time"
+	if _, err := svc.DownloadExport(auditExportContext(), job.ID, false); err == nil {
+		t.Fatal("malformed expiry must fail closed")
+	}
+}
+
 func TestAuditExport_RequiresLedger(t *testing.T) {
 	svc := &syncJobService{repo: &minimalSyncJobRepo{}, store: &memoryStore{objects: map[string][]byte{}}, exportKey: []byte("k"), exportTTL: time.Hour}
 	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", JobType: domain.SyncJobAuditExport}

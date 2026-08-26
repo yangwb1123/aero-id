@@ -238,7 +238,8 @@ func domainID(value string) (domain.ID, error) {
 }
 
 type auditExportRequest struct {
-	IdempotencyKey string `json:"idempotency_key"`
+	IdempotencyKey    string `json:"idempotency_key"`
+	ContinuationJobID string `json:"continuation_job_id,omitempty"`
 }
 
 // CreateAuditExport starts an asynchronous audit-export job (P4-08). The job id
@@ -253,9 +254,19 @@ func (h *AuditLedgerHandler) CreateAuditExport(c *gin.Context) {
 	if key == "" {
 		key = c.GetHeader("Idempotency-Key")
 	}
+	var continuationID domain.ID
+	if strings.TrimSpace(body.ContinuationJobID) != "" {
+		parsed, err := domainID(body.ContinuationJobID)
+		if err != nil {
+			httpx.WriteError(c, err)
+			return
+		}
+		continuationID = parsed
+	}
 	job, err := h.jobs.Create(c.Request.Context(), service.SyncJobInput{
-		JobType:        domain.SyncJobAuditExport,
-		IdempotencyKey: key,
+		JobType:                   domain.SyncJobAuditExport,
+		IdempotencyKey:            key,
+		AuditExportContinuationID: continuationID,
 	})
 	if err != nil {
 		httpx.WriteError(c, err)

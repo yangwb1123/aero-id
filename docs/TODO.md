@@ -167,7 +167,8 @@ Snaplink OAuth client 实际注册、独立仓库部署 CI/CD。
 
 - [x] P4-08 审计导出：新 job 类型 `audit_export`（`POST /v1/audit/export`，权限 `audit.export`）——
       按租户分页读 durable ledger，清单含每事实 record_hash 与可验证的 manifest_digest，
-      加密 + TTL 落对象存储，复用 `/v1/sync/jobs/:id/export/download`；截断时显式标记；
+      加密 + TTL 落对象存储，复用 `/v1/sync/jobs/:id/export/download`；截断时显式标记；支持租户/账户绑定的服务端 keyset continuation，
+      exact-max 不误报 truncated，并纳入 audit_export TTL cleanup；
       新增权限常量 `PermAuditExport`（`sync_audit_export.go` + 3 个单元测试）
 - [x] 分层健康：`GET /health/sources` 独立上报各 connector 连通性（ok/degraded），
       源故障不影响 `/readyz`（`handler/http/source_health.go` + 测试）

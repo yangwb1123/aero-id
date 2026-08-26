@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -302,7 +303,8 @@ func (r *syncJobRepo) ListExpiredExports(ctx context.Context, now time.Time, lim
 		limit = 50
 	}
 	var rows []syncJobRow
-	if err := r.db.WithContext(ctx).Where("job_type = ? AND status = ?", string(domain.SyncJobExport), string(domain.SyncJobCompleted)).
+	if err := r.db.WithContext(ctx).Where("job_type IN ? AND status = ?",
+		[]string{string(domain.SyncJobExport), string(domain.SyncJobAuditExport)}, string(domain.SyncJobCompleted)).
 		Order("updated_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -312,12 +314,11 @@ func (r *syncJobRepo) ListExpiredExports(ctx context.Context, now time.Time, lim
 		if err != nil {
 			return nil, err
 		}
-		expiresAt, ok := job.Result["expires_at"].(string)
-		if !ok || expiresAt == "" {
-			continue
-		}
-		expires, err := time.Parse(time.RFC3339Nano, expiresAt)
-		if err == nil && !now.Before(expires) {
+		expires, ok := syncJobExpiry(job.Result["expires_at"])
+		if !ok || !now.Before(expires) {
+			// Export artifacts are always TTL-bound. Treat a missing or
+			// malformed legacy expiry as expired so cleanup cannot leave an
+			// artifact that the download path will correctly refuse.
 			result = append(result, job)
 		}
 	}
@@ -381,6 +382,23 @@ func syncJobFromRow(row *syncJobRow) (*domain.SyncJob, error) {
 		Status: domain.SyncJobStatus(row.Status), IdempotencyKey: row.IdempotencyKey, Request: request, Result: result,
 		ErrorCode: row.ErrorCode, ErrorMessage: row.ErrorMessage, Attempt: row.Attempt, LeaseOwner: row.LeaseOwner,
 		LeaseUntil: row.LeaseUntil, LeaseKind: row.LeaseKind, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: row.CompletedAt}, nil
+}
+
+func syncJobExpiry(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case time.Time:
+		return typed, !typed.IsZero()
+	case *time.Time:
+		if typed == nil {
+			return time.Time{}, false
+		}
+		return *typed, !typed.IsZero()
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(typed))
+		return parsed, err == nil && !parsed.IsZero()
+	default:
+		return time.Time{}, false
+	}
 }
 
 func resultOrEmpty(value map[string]any) map[string]any {

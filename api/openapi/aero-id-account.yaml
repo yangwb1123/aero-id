@@ -324,6 +324,11 @@ paths:
       security: [{snaplinkBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AuditExportRequest'}
       responses:
         '202':
           description: Asynchronous audit export accepted; track via /sync/jobs.
@@ -1098,6 +1103,10 @@ components:
           properties:
             subscriptions: {type: array, items: {type: object}}
             next_cursor: {type: string}
+    AuditExportRequest:
+      type: object
+      properties:
+        continuation_job_id: {type: string, format: uuid, description: Resume the next bounded window from a completed audit export job in the same tenant and account.}
     AuditExportEnvelope:
       type: object
       properties:

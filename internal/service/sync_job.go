@@ -27,10 +27,11 @@ type SyncJobService interface {
 }
 
 type SyncJobInput struct {
-	AccountID      domain.ID
-	JobType        domain.SyncJobType
-	Datasets       []domain.AccountDataset
-	IdempotencyKey string
+	AccountID                 domain.ID
+	JobType                   domain.SyncJobType
+	Datasets                  []domain.AccountDataset
+	IdempotencyKey            string
+	AuditExportContinuationID domain.ID
 }
 
 type syncJobService struct {
@@ -123,15 +124,40 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 	if !validSyncJobType(input.JobType) {
 		return nil, apperr.BadRequest("sync.invalid_type", "sync job type is not supported")
 	}
-	if strings.TrimSpace(input.IdempotencyKey) == "" || len(input.IdempotencyKey) > 200 {
+	continuationRequested := input.AuditExportContinuationID != (domain.ID{})
+	if len(input.IdempotencyKey) > 200 || (!continuationRequested && strings.TrimSpace(input.IdempotencyKey) == "") {
 		return nil, apperr.BadRequest("sync.invalid_idempotency_key", "idempotency key is required")
 	}
 	tenantID, err := mustTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var continuation *domain.SyncJob
+	if input.AuditExportContinuationID != (domain.ID{}) {
+		if input.JobType != domain.SyncJobAuditExport {
+			return nil, apperr.BadRequest("sync.invalid_continuation", "audit export continuation is only valid for audit exports")
+		}
+		if input.AccountID == (domain.ID{}) {
+			view, err := s.accounts.GetMe(ctx)
+			if err != nil {
+				return nil, err
+			}
+			input.AccountID = view.Account.ID
+		}
+		continuation, err = s.loadAuditExportContinuation(ctx, input.AuditExportContinuationID, actor, tenantID, input.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		// A continuation is a one-use server-side reference. Deriving its
+		// idempotency key from the parent makes retries return the same child
+		// job instead of re-reading the same cursor into a second window.
+		input.IdempotencyKey = auditExportContinuationKey(continuation.ID)
+	}
 	existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
 	if findErr == nil {
+		if continuation != nil && !auditExportJobReferences(existing, continuation.ID) {
+			return nil, apperr.Conflict("sync.continuation_conflict", "audit export continuation has already been used")
+		}
 		return existing, nil
 	}
 	if !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
@@ -170,6 +196,9 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 		}
 	}
 	request := map[string]any{"datasets": datasets}
+	if continuation != nil {
+		request["audit_export_continuation_job_id"] = continuation.ID.String()
+	}
 	job := &domain.SyncJob{AccountID: input.AccountID, ActorUID: actor, TenantID: tenantID,
 		RequestID: RequestIDFrom(ctx), JobType: input.JobType, Status: domain.SyncJobPending,
 		IdempotencyKey: input.IdempotencyKey, Request: request, Result: map[string]any{}}

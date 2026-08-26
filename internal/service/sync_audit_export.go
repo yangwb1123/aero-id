@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/repository"
 )
 
 // maxAuditExportEvents caps one audit export job; larger tenants export in
@@ -29,22 +31,13 @@ func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.Syn
 	if s.auditLedger == nil {
 		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_unavailable", "audit ledger repository is not configured", nil)
 	}
-	events := make([]map[string]any, 0, auditExportEventsPerPage)
-	cursor := ""
-	for len(events) < maxAuditExportEvents {
-		facts, next, err := s.auditLedger.List(ctx, domain.AuditFactFilter{
-			TenantID: job.TenantID, Page: domain.Page{Limit: auditExportEventsPerPage, Cursor: cursor},
-		})
-		if err != nil {
-			return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_read_failed", "failed to read the audit ledger", nil)
-		}
-		for _, fact := range facts {
-			events = append(events, auditExportEvent(fact))
-		}
-		if next == "" {
-			break
-		}
-		cursor = next
+	cursor, err := s.auditExportStartCursor(ctx, job)
+	if err != nil {
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.invalid_continuation", "audit export continuation state is invalid", nil)
+	}
+	events, next, truncated, err := collectAuditExportEvents(ctx, s.auditLedger, job.TenantID, cursor, maxAuditExportEvents)
+	if err != nil {
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_read_failed", "failed to read the audit ledger", nil)
 	}
 	generatedAt := time.Now().UTC()
 	manifest := map[string]any{
@@ -52,8 +45,13 @@ func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.Syn
 		"account_id": job.AccountID.String(), "generated_at": generatedAt,
 		"event_count": len(events), "events": events,
 	}
-	if len(events) == maxAuditExportEvents {
-		manifest["truncated"] = true // more facts exist; run another export after this window
+	if truncated {
+		// Keep the cursor in the durable server-side result, not in the
+		// download token. The next request references this job id and can only
+		// resume this tenant/account window.
+		manifest["truncated"] = true
+		manifest["continuation_job_id"] = job.ID.String()
+		manifest[auditExportContinuationCursorKey] = next
 	}
 	manifest["manifest_digest"] = auditExportDigest(manifest)
 	return s.writeAuditExportArtifact(ctx, job, manifest, generatedAt)
@@ -72,7 +70,13 @@ func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *doma
 	expiresAt := generatedAt.Add(s.exportTTL)
 	manifest["download_url"] = "/v1/sync/jobs/" + job.ID.String() + "/export/download"
 	manifest["expires_at"] = expiresAt
-	data, err := json.Marshal(manifest)
+	artifactManifest := make(map[string]any, len(manifest))
+	for key, value := range manifest {
+		if len(key) == 0 || key[0] != '_' {
+			artifactManifest[key] = value
+		}
+	}
+	data, err := json.Marshal(artifactManifest)
 	if err != nil {
 		cause := apperr.Internal("audit_export.serialize_failed", "failed to serialize audit export manifest").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.serialize_failed", "failed to serialize audit export manifest", nil, cause)
@@ -93,6 +97,61 @@ func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *doma
 	}
 	manifest["_storage_key"] = key
 	return s.finishJobAndLoad(ctx, job, domain.SyncJobCompleted, "", "", manifest)
+}
+
+// collectAuditExportEvents reads only bounded keyset pages. The final page is
+// fetched with the remaining capacity, so a non-empty repository next cursor
+// is the proof that an exactly-full window has more facts.
+func collectAuditExportEvents(ctx context.Context, ledger repository.AuditLedgerRepository, tenant, cursor string,
+	maxEvents int) ([]map[string]any, string, bool, error) {
+	if maxEvents <= 0 {
+		return nil, "", false, errors.New("audit export event limit must be positive")
+	}
+	events := make([]map[string]any, 0, auditExportEventsPerPage)
+	pages := 0
+	for len(events) < maxEvents {
+		pages++
+		if pages > maxEvents {
+			return nil, "", false, errors.New("audit export exceeded its bounded page budget")
+		}
+		limit := auditExportEventsPerPage
+		if remaining := maxEvents - len(events); remaining < limit {
+			limit = remaining
+		}
+		previous := cursor
+		facts, next, err := listAuditExportPage(ctx, ledger, tenant, cursor, limit)
+		if err != nil {
+			return nil, "", false, err
+		}
+		for _, fact := range facts {
+			events = append(events, auditExportEvent(fact))
+		}
+		if len(events) >= maxEvents {
+			return events, next, next != "", nil
+		}
+		if next == "" {
+			return events, "", false, nil
+		}
+		if next == previous {
+			return nil, "", false, errors.New("audit export ledger cursor did not advance")
+		}
+		cursor = next
+	}
+	return events, "", false, nil
+}
+
+func listAuditExportPage(ctx context.Context, ledger repository.AuditLedgerRepository, tenant, cursor string,
+	limit int) ([]*domain.AuditFact, string, error) {
+	facts, next, err := ledger.List(ctx, domain.AuditFactFilter{
+		TenantID: tenant, Page: domain.Page{Limit: limit, Cursor: cursor},
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if len(facts) > limit {
+		return nil, "", errors.New("audit export ledger returned an oversized page")
+	}
+	return facts, next, nil
 }
 
 // auditExportEvent is the allow-listed per-fact projection: identity fields,
