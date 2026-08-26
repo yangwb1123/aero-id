@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -46,6 +47,14 @@ func TestEraseCallOutcomeDoesNotTurnUnknownIntoFailure(t *testing.T) {
 					tc.status, tc.wantUnknown, tc.wantFailed)
 			}
 		})
+	}
+}
+
+func TestIsUnknownRemoteTreatsCancellationAsUnknown(t *testing.T) {
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
+		if !isUnknownRemote(err) {
+			t.Errorf("isUnknownRemote(%v) = false, want true", err)
+		}
 	}
 }
 

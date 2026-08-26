@@ -1,6 +1,9 @@
 package service
 
 import (
+	"context"
+	"errors"
+
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -35,6 +38,9 @@ func syncEraseIdempotencyKey(job *domain.SyncJob, source connector.Source) strin
 }
 
 func isUnknownRemote(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	remote, ok := connector.IsRemote(err)
 	if !ok {
 		return false
