@@ -346,6 +346,36 @@ func TestAuditExport_DownloadExpiryAcceptsTimeValueAndFailsClosed(t *testing.T) 
 	}
 }
 
+func TestAuditExportOversizedArtifactRetainsContinuationState(t *testing.T) {
+	svc := newAuditExportService(nil, &memoryStore{objects: map[string][]byte{}})
+	svc.maxExport = 1
+	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", AccountID: idgen.NewID(), JobType: domain.SyncJobAuditExport}
+	manifest := map[string]any{
+		"schema_version": 1, "type": "audit_export", "tenant_id": job.TenantID, "account_id": job.AccountID.String(),
+		"generated_at": time.Now().UTC(), "event_count": 100000, "truncated": true,
+		"continuation_job_id": job.ID.String(), "manifest_digest": "digest",
+		auditExportContinuationCursorKey: "cursor-1", "events": []any{"must-not-be-persisted"},
+	}
+	result, err := svc.writeAuditExportArtifact(context.Background(), job, manifest, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.SyncJobPartiallyComplete {
+		t.Fatalf("status = %s, want partially_completed", result.Status)
+	}
+	if got := result.Result[auditExportContinuationCursorKey]; got != "cursor-1" {
+		t.Fatalf("continuation cursor = %v, want cursor-1", got)
+	}
+	if _, ok := result.Result["events"]; ok {
+		t.Fatal("oversized result retained the full event window")
+	}
+	resumable := *job
+	resumable.Status, resumable.Result = result.Status, result.Result
+	if !validAuditExportParent(&resumable, job.ActorUID, job.TenantID, job.AccountID) {
+		t.Fatal("partially completed export with a cursor is not resumable")
+	}
+}
+
 func TestAuditExport_RequiresLedger(t *testing.T) {
 	svc := &syncJobService{repo: &minimalSyncJobRepo{}, store: &memoryStore{objects: map[string][]byte{}}, exportKey: []byte("k"), exportTTL: time.Hour}
 	job := &domain.SyncJob{ID: idgen.NewID(), TenantID: "tenant-a", JobType: domain.SyncJobAuditExport}

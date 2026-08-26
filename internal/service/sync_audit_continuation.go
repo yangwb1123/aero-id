@@ -30,10 +30,12 @@ func (s *syncJobService) loadAuditExportContinuation(ctx context.Context, parent
 	return parent, nil
 }
 
+// validAuditExportParent accepts completed windows and bounded partial windows
+// that retained a continuation cursor after artifact delivery was unavailable.
 func validAuditExportParent(parent *domain.SyncJob, actor, tenant string, accountID domain.ID) bool {
 	return parent != nil && parent.JobType == domain.SyncJobAuditExport &&
-		parent.Status == domain.SyncJobCompleted && parent.ActorUID == actor &&
-		parent.TenantID == tenant && parent.AccountID == accountID
+		(parent.Status == domain.SyncJobCompleted || parent.Status == domain.SyncJobPartiallyComplete) &&
+		parent.ActorUID == actor && parent.TenantID == tenant && parent.AccountID == accountID
 }
 
 func auditExportContinuationCursor(job *domain.SyncJob) (string, bool) {

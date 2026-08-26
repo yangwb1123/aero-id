@@ -18,8 +18,10 @@ import (
 // bounded batches via the keyset cursor in a follow-up run.
 const maxAuditExportEvents = 100_000
 
-// auditExportEventsPerPage bounds each ledger page fetch.
-const auditExportEventsPerPage = 1000
+// auditExportEventsPerPage matches the repository's keyset page ceiling. Keeping
+// the request at that ceiling avoids silently asking a repository to normalize
+// a larger page and makes the bounded page budget explicit.
+const auditExportEventsPerPage = domain.MaxPageLimit
 
 // executeAuditExport implements P4-08: an asynchronous, TTL-bound audit export
 // with a signed-style manifest (every fact's record hash is listed, and the
@@ -83,7 +85,7 @@ func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *doma
 	}
 	if int64(len(data)) > s.maxExport {
 		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "audit_export.too_large",
-			"audit export exceeds the configured limit", nil)
+			"audit export exceeds the configured limit", auditExportContinuationResult(manifest))
 	}
 	encrypted, err := encryptExport(data, s.exportKey)
 	if err != nil {
@@ -138,6 +140,17 @@ func collectAuditExportEvents(ctx context.Context, ledger repository.AuditLedger
 		cursor = next
 	}
 	return events, "", false, nil
+}
+
+func auditExportContinuationResult(manifest map[string]any) map[string]any {
+	result := make(map[string]any, 8)
+	for _, key := range []string{"schema_version", "type", "tenant_id", "account_id", "generated_at", "event_count",
+		"truncated", "continuation_job_id", "manifest_digest", auditExportContinuationCursorKey} {
+		if value, ok := manifest[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func listAuditExportPage(ctx context.Context, ledger repository.AuditLedgerRepository, tenant, cursor string,
