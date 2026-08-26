@@ -23,6 +23,28 @@ sources:
 	}
 }
 
+func TestLoadSourceWorkloadConcurrencyEnvironmentOverrides(t *testing.T) {
+	t.Setenv("AERO_ID_SOURCES_SNAPLINK_QUERY_MAX_CONCURRENCY", "7")
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_COMMAND_MAX_CONCURRENCY", "5")
+	content := sample + `
+sources:
+  snaplink:
+    query_max_concurrency: 1
+  aero_im:
+    command_max_concurrency: 1
+`
+	cfg, err := Load(writeTemp(t, content))
+	if err != nil {
+		t.Fatalf("Load error = %v", err)
+	}
+	if cfg.Sources.Snaplink.QueryMaxConcurrency != 7 {
+		t.Fatalf("Snaplink.QueryMaxConcurrency = %d, want 7", cfg.Sources.Snaplink.QueryMaxConcurrency)
+	}
+	if cfg.Sources.AeroIM.CommandMaxConcurrency != 5 {
+		t.Fatalf("AeroIM.CommandMaxConcurrency = %d, want 5", cfg.Sources.AeroIM.CommandMaxConcurrency)
+	}
+}
+
 func TestLoadRejectsUnauthenticatedSnaplinkWithoutSecrets(t *testing.T) {
 	content := sample + `
 sources:
