@@ -82,7 +82,17 @@ func validConfig(config Config) bool {
 }
 
 func (p *Publisher) Publish(ctx context.Context, fact *domain.AuditFact) error {
-	source, token, err := p.authorization(ctx, fact)
+	binding, err := p.bindingFor(fact)
+	if err != nil {
+		return err
+	}
+	// A scope failure is a grant/configuration problem. Probe at most once per
+	// cooldown rather than refetching the same client-credentials grant on
+	// every publication attempt.
+	if p.tokens.BindingUnhealthy(binding) {
+		return fmt.Errorf("%w: binding unhealthy", ErrTokenScopeMissing)
+	}
+	source, token, err := p.authorizationForBinding(ctx, binding)
 	if err != nil {
 		return err
 	}
@@ -103,7 +113,7 @@ func (p *Publisher) Publish(ctx context.Context, fact *domain.AuditFact) error {
 		// Status-driven invalidation: the cached token is rejected; drop it
 		// and bump the epoch so the next AccessToken refetches immediately
 		// (REQ-3). Runs regardless of whether the body parses.
-		_ = p.tokens.Invalidate(SourceBinding{TenantID: fact.TenantID, SourceSystem: source})
+		_ = p.tokens.Invalidate(binding)
 		// Direction delta over the merged table (C-4): a drained body that
 		// best-effort parses to invalid_scope/insufficient_scope is
 		// ErrTokenScopeMissing — mutually exclusive with ErrTokenRejected.
@@ -113,6 +123,20 @@ func (p *Publisher) Publish(ctx context.Context, fact *domain.AuditFact) error {
 		}
 		return fmt.Errorf("%w: HTTP %d", ErrTokenRejected, response.StatusCode)
 	}
+	if response.StatusCode == http.StatusForbidden {
+		defer response.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes+1))
+		if err == nil && len(body) <= maxReceiptBytes && scopeRejectedCode(tokenErrorCode(body)) {
+			// Keep the cached bearer. A scope-coded 403 identifies an unhealthy
+			// grant and must not be turned into a repeated token refresh loop.
+			p.tokens.MarkBindingUnhealthy(binding)
+			return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
+		}
+		// Preserve the generic non-accepted receipt classification for malformed,
+		// oversized, or non-scope 403 bodies. The body has already been bounded
+		// and closed, and no response content enters the returned error.
+		return fmt.Errorf("audit governance: HTTP %d", response.StatusCode)
+	}
 	return validateReceipt(response, fact)
 }
 
@@ -120,15 +144,30 @@ func (p *Publisher) CanPublishTenant(tenantID string) bool {
 	return p.tokens != nil && p.tokens.HasBinding(tenantID)
 }
 
-func (p *Publisher) authorization(ctx context.Context, fact *domain.AuditFact) (string, string, error) {
-	if !validAuditFact(fact) {
-		return "", "", ErrInvalidEvent
+// BindingUnhealthy exposes the per-tenant cooldown to the durable audit drain.
+// Invalid or unbound tenants are treated as healthy here; CanPublishTenant is
+// the separate binding predicate used by the same pre-filter.
+func (p *Publisher) BindingUnhealthy(tenantID string) bool {
+	if p.tokens == nil {
+		return false
 	}
-	source, err := TenantSourceID(p.sourcePrefix, fact.TenantID)
+	source, err := TenantSourceID(p.sourcePrefix, tenantID)
 	if err != nil {
-		return "", "", ErrInvalidEvent
+		return false
 	}
-	token, err := p.tokens.AccessToken(ctx, SourceBinding{TenantID: fact.TenantID, SourceSystem: source})
+	return p.tokens.BindingUnhealthy(SourceBinding{TenantID: tenantID, SourceSystem: source})
+}
+
+func (p *Publisher) authorization(ctx context.Context, fact *domain.AuditFact) (string, string, error) {
+	binding, err := p.bindingFor(fact)
+	if err != nil {
+		return "", "", err
+	}
+	return p.authorizationForBinding(ctx, binding)
+}
+
+func (p *Publisher) authorizationForBinding(ctx context.Context, binding SourceBinding) (string, string, error) {
+	token, err := p.tokens.AccessToken(ctx, binding)
 	// C-B propagation: the token-endpoint scope classification must escape to
 	// the caller (the service routes it to audit.binding_unavailable); every
 	// other token-source failure keeps the historical collapse.
@@ -138,7 +177,18 @@ func (p *Publisher) authorization(ctx context.Context, fact *domain.AuditFact) (
 	if err != nil || token == "" || strings.ContainsAny(token, "\r\n") {
 		return "", "", ErrTokenUnavailable
 	}
-	return source, token, nil
+	return binding.SourceSystem, token, nil
+}
+
+func (p *Publisher) bindingFor(fact *domain.AuditFact) (SourceBinding, error) {
+	if !validAuditFact(fact) {
+		return SourceBinding{}, ErrInvalidEvent
+	}
+	source, err := TenantSourceID(p.sourcePrefix, fact.TenantID)
+	if err != nil {
+		return SourceBinding{}, ErrInvalidEvent
+	}
+	return SourceBinding{TenantID: fact.TenantID, SourceSystem: source}, nil
 }
 
 func validAuditFact(fact *domain.AuditFact) bool {

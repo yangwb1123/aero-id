@@ -22,6 +22,10 @@ type tenantBoundAuditPublisher interface {
 	CanPublishTenant(string) bool
 }
 
+type tenantUnhealthyAuditPublisher interface {
+	BindingUnhealthy(string) bool
+}
+
 // enqueueFact is the drain-worker-only delivery entry point (REQ-2): after
 // the Publish bypass was deleted, it is reachable solely from publishAuditFact.
 func (s *callbackService) enqueueFact(ctx context.Context, fact *domain.AuditFact) error {
@@ -165,8 +169,13 @@ func (s *callbackService) publishAuditFact(ctx context.Context, fact *domain.Aud
 		if publisher == nil {
 			continue
 		}
-		if bound, ok := publisher.(tenantBoundAuditPublisher); ok && !bound.CanPublishTenant(fact.TenantID) {
-			return errAuditTenantUnbound
+		if bound, ok := publisher.(tenantBoundAuditPublisher); ok {
+			if !bound.CanPublishTenant(fact.TenantID) {
+				return errAuditTenantUnbound
+			}
+			if unhealthy, ok := publisher.(tenantUnhealthyAuditPublisher); ok && unhealthy.BindingUnhealthy(fact.TenantID) {
+				return errAuditTenantUnbound
+			}
 		}
 	}
 	if err := s.enqueueFact(ctx, fact); err != nil {

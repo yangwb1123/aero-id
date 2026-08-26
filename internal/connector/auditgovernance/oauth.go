@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	maxTokenBodyBytes = 64 << 10
-	auditScope        = "audit:event:write"
-	auditResource     = "audit-governance"
+	maxTokenBodyBytes    = 64 << 10
+	auditScope           = "audit:event:write"
+	auditResource        = "audit-governance"
+	scopeMissingCooldown = 5 * time.Minute
 )
 
 type OAuthTokenSource struct {
@@ -43,6 +44,7 @@ type tenantTokenSource struct {
 	token           string
 	refreshAt       time.Time
 	epoch           uint64 // bumped by Invalidate; fences stale singleflight results
+	unhealthyUntil  time.Time
 	fetches         singleflight.Group
 }
 
@@ -131,6 +133,7 @@ func (s *OAuthTokenSource) AccessToken(ctx context.Context, binding SourceBindin
 // AccessToken's validation). The epoch bump is unconditional for a bound
 // tenant — even with an empty cache — so a pre-invalidation in-flight fetch
 // can never repopulate the cache (REQ-1/REQ-2).
+//
 //nolint:nilerr // an unbound or mismatched binding is a documented no-op (mirrors AccessToken's validation)
 func (s *OAuthTokenSource) Invalidate(binding SourceBinding) error {
 	expected, err := TenantSourceID(s.sourcePrefix, binding.TenantID)
@@ -142,12 +145,38 @@ func (s *OAuthTokenSource) Invalidate(binding SourceBinding) error {
 	return nil
 }
 
-// BindingUnhealthy and MarkBindingUnhealthy are the sibling campaign's 403
-// cooldown scope (merged plan §2) — present on the interface so the merged
-// TokenSource is fixed exactly once, with no behavior in this campaign (the
-// 403 path keeps validateReceipt's generic classification).
-func (s *OAuthTokenSource) BindingUnhealthy(SourceBinding) bool { return false }
-func (s *OAuthTokenSource) MarkBindingUnhealthy(SourceBinding)  {}
+func (s *OAuthTokenSource) BindingUnhealthy(binding SourceBinding) bool {
+	expected, err := TenantSourceID(s.sourcePrefix, binding.TenantID)
+	tokens := s.bindings[binding.TenantID]
+	if err != nil || binding.SourceSystem != expected || tokens == nil {
+		return false
+	}
+	return tokens.bindingUnhealthy()
+}
+
+func (s *OAuthTokenSource) MarkBindingUnhealthy(binding SourceBinding) {
+	expected, err := TenantSourceID(s.sourcePrefix, binding.TenantID)
+	tokens := s.bindings[binding.TenantID]
+	if err != nil || binding.SourceSystem != expected || tokens == nil {
+		return
+	}
+	tokens.markBindingUnhealthy()
+}
+
+func (s *tenantTokenSource) bindingUnhealthy() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.now().Before(s.unhealthyUntil)
+}
+
+func (s *tenantTokenSource) markBindingUnhealthy() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A 403 scope failure identifies an unhealthy grant, not a rejected
+	// bearer. Retain the cached token and only suppress probes for a bounded
+	// cooldown; refetching the same grant would reproduce the failure.
+	s.unhealthyUntil = s.now().Add(scopeMissingCooldown)
+}
 
 func (s *tenantTokenSource) invalidate() {
 	s.mu.Lock()
