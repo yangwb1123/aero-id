@@ -160,23 +160,11 @@ func publicationOutcome(err error, attempt, maxAttempts int, now time.Time, retr
 
 func (s *callbackService) publishAuditFact(ctx context.Context, fact *domain.AuditFact) error {
 	// FM-3: the tenant-binding pre-filter runs before ANY publisher, so an
-	// unbound tenant can never let earlier publishers already publish (which
-	// would duplicate-publish on every retry of the row). The check consumes
-	// no attempt and never dead-letters (publicationOutcome handles
-	// errAuditTenantUnbound before the MaxAttempts comparison). enqueueFact
-	// stays first so callback deliveries are not delayed by a missing binding.
-	for _, publisher := range s.publishers {
-		if publisher == nil {
-			continue
-		}
-		if bound, ok := publisher.(tenantBoundAuditPublisher); ok {
-			if !bound.CanPublishTenant(fact.TenantID) {
-				return errAuditTenantUnbound
-			}
-			if unhealthy, ok := publisher.(tenantUnhealthyAuditPublisher); ok && unhealthy.BindingUnhealthy(fact.TenantID) {
-				return errAuditTenantUnbound
-			}
-		}
+	// unbound or unhealthy tenant can never let earlier publishers already
+	// publish. The check consumes no attempt and never dead-letters
+	// (publicationOutcome handles errAuditTenantUnbound before MaxAttempts).
+	if !auditPublishersAllowTenant(s.publishers, fact.TenantID) {
+		return errAuditTenantUnbound
 	}
 	if err := s.enqueueFact(ctx, fact); err != nil {
 		return err
@@ -190,6 +178,27 @@ func (s *callbackService) publishAuditFact(ctx context.Context, fact *domain.Aud
 		}
 	}
 	return nil
+}
+
+func auditPublishersAllowTenant(publishers []AuditPublisher, tenant string) bool {
+	for _, publisher := range publishers {
+		if !auditPublisherAllowsTenant(publisher, tenant) {
+			return false
+		}
+	}
+	return true
+}
+
+func auditPublisherAllowsTenant(publisher AuditPublisher, tenant string) bool {
+	if publisher == nil {
+		return true
+	}
+	bound, ok := publisher.(tenantBoundAuditPublisher)
+	if !ok || !bound.CanPublishTenant(tenant) {
+		return !ok
+	}
+	unhealthy, ok := publisher.(tenantUnhealthyAuditPublisher)
+	return !ok || !unhealthy.BindingUnhealthy(tenant)
 }
 
 // classifyScopeMissing maps a publisher error onto the drain settlement and

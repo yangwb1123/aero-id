@@ -108,34 +108,10 @@ func (p *Publisher) Publish(ctx context.Context, fact *domain.AuditFact) error {
 		return fmt.Errorf("%w: transport", ErrTokenUnavailable)
 	}
 	if response.StatusCode == http.StatusUnauthorized {
-		defer response.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes))
-		// Status-driven invalidation: the cached token is rejected; drop it
-		// and bump the epoch so the next AccessToken refetches immediately
-		// (REQ-3). Runs regardless of whether the body parses.
-		_ = p.tokens.Invalidate(binding)
-		// Direction delta over the merged table (C-4): a drained body that
-		// best-effort parses to invalid_scope/insufficient_scope is
-		// ErrTokenScopeMissing — mutually exclusive with ErrTokenRejected.
-		// Body-parse failure is non-fatal: the plain path applies.
-		if scopeRejectedCode(tokenErrorCode(body)) {
-			return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
-		}
-		return fmt.Errorf("%w: HTTP %d", ErrTokenRejected, response.StatusCode)
+		return p.handleUnauthorized(response, binding)
 	}
 	if response.StatusCode == http.StatusForbidden {
-		defer response.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes+1))
-		if err == nil && len(body) <= maxReceiptBytes && scopeRejectedCode(tokenErrorCode(body)) {
-			// Keep the cached bearer. A scope-coded 403 identifies an unhealthy
-			// grant and must not be turned into a repeated token refresh loop.
-			p.tokens.MarkBindingUnhealthy(binding)
-			return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
-		}
-		// Preserve the generic non-accepted receipt classification for malformed,
-		// oversized, or non-scope 403 bodies. The body has already been bounded
-		// and closed, and no response content enters the returned error.
-		return fmt.Errorf("audit governance: HTTP %d", response.StatusCode)
+		return p.handleForbidden(response, binding)
 	}
 	return validateReceipt(response, fact)
 }
@@ -158,14 +134,6 @@ func (p *Publisher) BindingUnhealthy(tenantID string) bool {
 	return p.tokens.BindingUnhealthy(SourceBinding{TenantID: tenantID, SourceSystem: source})
 }
 
-func (p *Publisher) authorization(ctx context.Context, fact *domain.AuditFact) (string, string, error) {
-	binding, err := p.bindingFor(fact)
-	if err != nil {
-		return "", "", err
-	}
-	return p.authorizationForBinding(ctx, binding)
-}
-
 func (p *Publisher) authorizationForBinding(ctx context.Context, binding SourceBinding) (string, string, error) {
 	token, err := p.tokens.AccessToken(ctx, binding)
 	// C-B propagation: the token-endpoint scope classification must escape to
@@ -178,6 +146,32 @@ func (p *Publisher) authorizationForBinding(ctx context.Context, binding SourceB
 		return "", "", ErrTokenUnavailable
 	}
 	return binding.SourceSystem, token, nil
+}
+
+func (p *Publisher) handleUnauthorized(response *http.Response, binding SourceBinding) error {
+	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes))
+	// A 401 rejects the bearer: invalidate it and fence any in-flight token
+	// refresh before the next publication attempt.
+	_ = p.tokens.Invalidate(binding)
+	if scopeRejectedCode(tokenErrorCode(body)) {
+		return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
+	}
+	return fmt.Errorf("%w: HTTP %d", ErrTokenRejected, response.StatusCode)
+}
+
+func (p *Publisher) handleForbidden(response *http.Response, binding SourceBinding) error {
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxReceiptBytes+1))
+	if err == nil && len(body) <= maxReceiptBytes && scopeRejectedCode(tokenErrorCode(body)) {
+		// A scope-coded 403 identifies an unhealthy grant, not a rejected
+		// bearer. Keep the token and suppress repeated probes for a cooldown.
+		p.tokens.MarkBindingUnhealthy(binding)
+		return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
+	}
+	// The body has already been bounded and closed; never expose it in the
+	// generic non-accepted receipt classification.
+	return fmt.Errorf("audit governance: HTTP %d", response.StatusCode)
 }
 
 func (p *Publisher) bindingFor(fact *domain.AuditFact) (SourceBinding, error) {
