@@ -9,28 +9,110 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/aero/aero-id/internal/pkg/bulkhead"
 )
 
-func (c *JSONSummaryConnector) begin(ctx context.Context) (func(), error) {
-	c.breakerMu.Lock()
-	if time.Now().Before(c.openedUntil) {
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCircuit(string(c.source), "open")
-		}
-		c.breakerMu.Unlock()
+type sourceWorkload string
+
+const (
+	workloadQuery   sourceWorkload = "query"
+	workloadCommand sourceWorkload = "command"
+	workloadHealth  sourceWorkload = "health"
+)
+
+type sourceWorkloadPolicy struct {
+	bulkhead       *bulkhead.Bulkhead
+	mu             sync.Mutex
+	consecutiveErr int
+	openedUntil    time.Time
+}
+
+func newSourceWorkloadPolicy(limit int) *sourceWorkloadPolicy {
+	return &sourceWorkloadPolicy{bulkhead: bulkhead.New(limit)}
+}
+
+type sourceWorkloadLimits struct {
+	query   int
+	command int
+	health  int
+}
+
+func workloadLimits(cfg HTTPConfig) sourceWorkloadLimits {
+	total := clampedSummaryConcurrency(cfg.MaxConcurrency)
+	// Preserve most of the legacy pool for interactive summaries while
+	// reserving non-zero command and probe capacity. Explicit class limits are
+	// deployment overrides and may intentionally choose a different split.
+	query := maxWorkloadLimit(1, total*3/4)
+	command := maxWorkloadLimit(1, total/8)
+	health := maxWorkloadLimit(1, total-query-command)
+	if cfg.QueryMaxConcurrency > 0 {
+		query = cfg.QueryMaxConcurrency
+	}
+	if cfg.CommandMaxConcurrency > 0 {
+		command = cfg.CommandMaxConcurrency
+	}
+	if cfg.HealthMaxConcurrency > 0 {
+		health = cfg.HealthMaxConcurrency
+	}
+	return sourceWorkloadLimits{query: query, command: command, health: health}
+}
+
+func maxWorkloadLimit(minimum, value int) int {
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func (c *JSONSummaryConnector) policy(workload sourceWorkload) *sourceWorkloadPolicy {
+	switch workload {
+	case workloadCommand:
+		return c.commandPolicy
+	case workloadHealth:
+		return c.healthPolicy
+	default:
+		return c.queryPolicy
+	}
+}
+
+func (c *JSONSummaryConnector) observeCircuit(workload sourceWorkload, state string) {
+	if c.cfg.Metrics == nil {
+		return
+	}
+	c.cfg.Metrics.ObserveSourceCircuitWorkload(string(c.source), string(workload), state)
+	if workload == workloadQuery {
+		// Preserve the pre-partition metric as the interactive query circuit.
+		c.cfg.Metrics.ObserveSourceCircuit(string(c.source), state)
+	}
+}
+
+func (c *JSONSummaryConnector) begin(ctx context.Context, workload sourceWorkload) (func(), error) {
+	policy := c.policy(workload)
+	policy.mu.Lock()
+	if time.Now().Before(policy.openedUntil) {
+		c.observeCircuit(workload, "open")
+		policy.mu.Unlock()
 		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.circuit_open", Temporary: true}
 	}
-	c.breakerMu.Unlock()
-	token, err := c.bulkhead.AcquireToken(ctx)
+	policy.mu.Unlock()
+	token, err := policy.bulkhead.AcquireToken(ctx)
 	if err != nil {
+		if c.cfg.Metrics != nil {
+			c.cfg.Metrics.ObserveSourceBulkhead(string(c.source), string(workload), false)
+		}
 		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.bulkhead", Temporary: true, Cause: err}
+	}
+	if c.cfg.Metrics != nil {
+		c.cfg.Metrics.ObserveSourceBulkhead(string(c.source), string(workload), true)
 	}
 	return token, nil
 }
 
-func (c *JSONSummaryConnector) beginObserved(ctx context.Context, operation string, started time.Time) (func(), error) {
-	release, err := c.begin(ctx)
+func (c *JSONSummaryConnector) beginObserved(ctx context.Context, workload sourceWorkload, operation string, started time.Time) (func(), error) {
+	release, err := c.begin(ctx, workload)
 	if err != nil {
 		c.observeCall(operation, started, err)
 		return nil, err
@@ -38,23 +120,20 @@ func (c *JSONSummaryConnector) beginObserved(ctx context.Context, operation stri
 	return release, nil
 }
 
-func (c *JSONSummaryConnector) finish(err error) {
-	c.breakerMu.Lock()
-	defer c.breakerMu.Unlock()
+func (c *JSONSummaryConnector) finish(workload sourceWorkload, err error) {
+	policy := c.policy(workload)
+	policy.mu.Lock()
+	defer policy.mu.Unlock()
 	remote, ok := IsRemote(err)
 	if !ok || !remote.Temporary {
-		c.consecutiveErr = 0
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCircuit(string(c.source), "closed")
-		}
+		policy.consecutiveErr = 0
+		c.observeCircuit(workload, "closed")
 		return
 	}
-	c.consecutiveErr++
-	if c.consecutiveErr >= 5 {
-		c.openedUntil = time.Now().Add(10 * time.Second)
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCircuit(string(c.source), "open")
-		}
+	policy.consecutiveErr++
+	if policy.consecutiveErr >= 5 {
+		policy.openedUntil = time.Now().Add(10 * time.Second)
+		c.observeCircuit(workload, "open")
 	}
 }
 

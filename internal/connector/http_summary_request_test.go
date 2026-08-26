@@ -56,6 +56,9 @@ func TestNewJSONSummaryConnectorRejectsUnboundedConfiguration(t *testing.T) {
 	}{
 		{name: "body", cfg: HTTPConfig{MaxBodyBytes: maxSourceBodyBytes + 1}},
 		{name: "concurrency", cfg: HTTPConfig{MaxConcurrency: maxSourceConcurrency + 1}},
+		{name: "query concurrency", cfg: HTTPConfig{QueryMaxConcurrency: maxSourceConcurrency + 1}},
+		{name: "command concurrency", cfg: HTTPConfig{CommandMaxConcurrency: maxSourceConcurrency + 1}},
+		{name: "health concurrency", cfg: HTTPConfig{HealthMaxConcurrency: maxSourceConcurrency + 1}},
 		{name: "attempts", cfg: HTTPConfig{MaxAttempts: maxSourceAttempts + 1}},
 		{name: "timeout", cfg: HTTPConfig{Timeout: maxSourceTimeout + time.Second}},
 		{name: "backoff", cfg: HTTPConfig{RetryBackoff: maxSourceRetryBackoff + time.Second}},

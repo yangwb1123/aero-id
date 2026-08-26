@@ -50,6 +50,9 @@ data:
         timeout: 2s
         max_body_bytes: 1048576
         max_concurrency: 32
+        query_max_concurrency: 0            # 0 = partitioned max_concurrency fallback
+        command_max_concurrency: 0          # reserved command capacity
+        health_max_concurrency: 0           # reserved probe capacity
         max_attempts: 3
         retry_backoff: 50ms
       aero_im:
@@ -61,6 +64,9 @@ data:
         timeout: 2s
         max_body_bytes: 1048576
         max_concurrency: 32
+        query_max_concurrency: 0            # 0 = partitioned max_concurrency fallback
+        command_max_concurrency: 0          # reserved command capacity
+        health_max_concurrency: 0           # reserved probe capacity
         max_attempts: 3
         retry_backoff: 50ms
       aero_vault:
@@ -72,6 +78,9 @@ data:
         timeout: 2s
         max_body_bytes: 1048576
         max_concurrency: 32
+        query_max_concurrency: 0            # 0 = partitioned max_concurrency fallback
+        command_max_concurrency: 0          # reserved command capacity
+        health_max_concurrency: 0           # reserved probe capacity
         max_attempts: 3
         retry_backoff: 50ms
     database:

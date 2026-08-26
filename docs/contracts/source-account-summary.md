@@ -31,6 +31,17 @@ are never allowed) and only for the exact hosts `localhost`, `127.0.0.1`, or `::
 configuration override is `AERO_ID_SOURCES_AERO_IM_ALLOW_INSECURE_LOOPBACK`; it is intended only for local/test
 compatibility and emits a bounded construction metric.
 
+## Workload isolation
+
+Each source connector reserves independent bounded capacity and circuit state for
+`query` (summary), `command` (erase/status), and `health` (health probes).
+`max_concurrency` is the compatibility aggregate; its default partition
+reserves most capacity for queries and non-zero command/probe pools. The
+optional `query_max_concurrency`, `command_max_concurrency`, and
+`health_max_concurrency` settings override a class without allowing probes or
+commands to consume the interactive query pool. Circuit openings are likewise
+class-scoped, so a source health outage does not make account reads fail fast.
+
 ## Summary response
 
 ```json

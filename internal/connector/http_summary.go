@@ -7,10 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/aero/aero-id/internal/pkg/bulkhead"
 	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
@@ -27,7 +25,13 @@ type HTTPConfig struct {
 	OAuth                 OAuthClientCredentialsConfig
 	Timeout               time.Duration
 	MaxBodyBytes          int64
+	// MaxConcurrency is the legacy aggregate fallback. It is partitioned into
+	// query, command, and health pools so background work cannot consume the
+	// interactive summary pool.
 	MaxConcurrency        int
+	QueryMaxConcurrency   int
+	CommandMaxConcurrency int
+	HealthMaxConcurrency  int
 	MaxAttempts           int
 	RetryBackoff          time.Duration
 	TLSCAFile             string
@@ -42,14 +46,13 @@ type HTTPConfig struct {
 // from a source service. Source-specific clients can replace it without
 // changing aggregation services or public APIs.
 type JSONSummaryConnector struct {
-	source         Source
-	cfg            HTTPConfig
-	client         *http.Client
-	tokens         *oauthClientCredentials
-	bulkhead       *bulkhead.Bulkhead
-	breakerMu      sync.Mutex
-	consecutiveErr int
-	openedUntil    time.Time
+	source        Source
+	cfg           HTTPConfig
+	client        *http.Client
+	tokens        *oauthClientCredentials
+	queryPolicy   *sourceWorkloadPolicy
+	commandPolicy *sourceWorkloadPolicy
+	healthPolicy  *sourceWorkloadPolicy
 }
 
 const (
@@ -83,8 +86,10 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 	if decision.Compatibility && cfg.Metrics != nil {
 		cfg.Metrics.ObserveSourceAuthCompatibility(source.String(), string(decision.Mode))
 	}
+	limits := workloadLimits(cfg)
 	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, tokens: tokens,
-		bulkhead: bulkhead.New(clampedSummaryConcurrency(cfg.MaxConcurrency))}, nil
+		queryPolicy: newSourceWorkloadPolicy(limits.query), commandPolicy: newSourceWorkloadPolicy(limits.command),
+		healthPolicy: newSourceWorkloadPolicy(limits.health)}, nil
 }
 
 func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, error) {
@@ -167,8 +172,13 @@ func validateHTTPConfigBounds(cfg HTTPConfig) error {
 	if cfg.MaxBodyBytes > maxSourceBodyBytes {
 		return fmt.Errorf("source connector max body bytes must not exceed %d", maxSourceBodyBytes)
 	}
-	if cfg.MaxConcurrency > maxSourceConcurrency {
-		return fmt.Errorf("source connector max concurrency must not exceed %d", maxSourceConcurrency)
+	for name, limit := range map[string]int{
+		"max": cfg.MaxConcurrency, "query": cfg.QueryMaxConcurrency,
+		"command": cfg.CommandMaxConcurrency, "health": cfg.HealthMaxConcurrency,
+	} {
+		if limit > maxSourceConcurrency {
+			return fmt.Errorf("source connector %s max concurrency must not exceed %d", name, maxSourceConcurrency)
+		}
 	}
 	if cfg.MaxAttempts > maxSourceAttempts {
 		return fmt.Errorf("source connector max attempts must not exceed %d", maxSourceAttempts)
@@ -200,7 +210,7 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 		return nil, err
 	}
 	started := time.Now()
-	release, err := c.begin(ctx)
+	release, err := c.begin(ctx, workloadQuery)
 	if err != nil {
 		if c.cfg.Metrics != nil {
 			c.cfg.Metrics.ObserveSourceCall(string(c.source), "summary", time.Since(started), err)
@@ -209,7 +219,7 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 	}
 	defer func() {
 		release()
-		c.finish(resultErr)
+		c.finish(workloadQuery, resultErr)
 		if c.cfg.Metrics != nil {
 			c.cfg.Metrics.ObserveSourceCall(string(c.source), "summary", time.Since(started), resultErr)
 		}
@@ -262,7 +272,7 @@ func (c *JSONSummaryConnector) summaryRequestError(ctx context.Context, err erro
 
 func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
 	started := time.Now()
-	release, err := c.begin(ctx)
+	release, err := c.begin(ctx, workloadHealth)
 	if err != nil {
 		if c.cfg.Metrics != nil {
 			c.cfg.Metrics.ObserveSourceCall(string(c.source), "health", time.Since(started), err)
@@ -271,7 +281,7 @@ func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
 	}
 	defer func() {
 		release()
-		c.finish(resultErr)
+		c.finish(workloadHealth, resultErr)
 		if c.cfg.Metrics != nil {
 			c.cfg.Metrics.ObserveSourceCall(string(c.source), "health", time.Since(started), resultErr)
 		}
@@ -308,13 +318,13 @@ func (c *JSONSummaryConnector) Erase(ctx context.Context, req EraseRequest) (res
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.erase_not_configured"}
 	}
 	started := time.Now()
-	release, err := c.beginObserved(ctx, "erase", started)
+	release, err := c.beginObserved(ctx, workloadCommand, "erase", started)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		release()
-		c.finish(resultErr)
+		c.finish(workloadCommand, resultErr)
 		if c.cfg.Metrics != nil {
 			c.cfg.Metrics.ObserveSourceCall(string(c.source), "erase", time.Since(started), resultErr)
 		}

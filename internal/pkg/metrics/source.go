@@ -15,6 +15,11 @@ type sourceMetric struct {
 	latency *histogram
 }
 
+type sourceBulkheadMetric struct {
+	acquired uint64
+	rejected uint64
+}
+
 // ObserveSourceCall records bounded per-source connector latency and failures.
 // source and operation are controlled values, never request paths or IDs.
 func (r *Registry) ObserveSourceCall(source, operation string, duration time.Duration, callErr error) {
@@ -40,14 +45,47 @@ func (r *Registry) ObserveSourceCall(source, operation string, duration time.Dur
 	item.latency.count++
 }
 
-// ObserveSourceCircuit exposes the current local breaker state. It is advisory;
-// the breaker itself remains the connector's correctness boundary.
+// ObserveSourceCircuit exposes the legacy source-wide breaker state. It is
+// advisory; the connector's workload-specific breakers are authoritative.
 func (r *Registry) ObserveSourceCircuit(source, state string) {
 	if strings.TrimSpace(source) == "" {
 		return
 	}
 	r.sourceMu.Lock()
 	r.sourceCircuits[source] = state
+	r.sourceMu.Unlock()
+}
+
+// ObserveSourceCircuitWorkload records the bounded breaker state for one
+// source/workload pair. Workload is a fixed connector class, never a request
+// path or caller-controlled label.
+func (r *Registry) ObserveSourceCircuitWorkload(source, workload, state string) {
+	if strings.TrimSpace(source) == "" || strings.TrimSpace(workload) == "" {
+		return
+	}
+	r.sourceMu.Lock()
+	r.sourceWorkloadCircuits[source+"|"+workload] = state
+	r.sourceMu.Unlock()
+}
+
+// ObserveSourceBulkhead records successful and rejected acquisitions for one
+// source/workload pair. This makes capacity pressure distinguishable from
+// remote failures without exposing high-cardinality request data.
+func (r *Registry) ObserveSourceBulkhead(source, workload string, acquired bool) {
+	if strings.TrimSpace(source) == "" || strings.TrimSpace(workload) == "" {
+		return
+	}
+	r.sourceMu.Lock()
+	item := r.sourceBulkheads[source+"|"+workload]
+	if item == nil {
+		item = &sourceBulkheadMetric{}
+		r.sourceBulkheads[source+"|"+workload] = item
+	}
+	if acquired {
+		item.acquired++
+	} else {
+		item.rejected++
+	}
 	r.sourceMu.Unlock()
 }
 
@@ -100,10 +138,40 @@ func (r *Registry) writeSourceText(w io.Writer) {
 			fmt.Fprintf(w, "aeroid_source_circuit_state{source=%q,state=%q} 1\n", source, r.sourceCircuits[source])
 		}
 	}
+	r.writeSourceWorkloadText(w)
+	r.writeSourceBulkheadText(w)
 	if r.sourceAuthCompatibility > 0 {
 		fmt.Fprintln(w, "# HELP aeroid_source_auth_compatibility_total Explicit unauthenticated source compatibility constructions.")
 		fmt.Fprintln(w, "# TYPE aeroid_source_auth_compatibility_total counter")
 		fmt.Fprintf(w, "aeroid_source_auth_compatibility_total{source=\"aero-im\",mode=\"loopback\"} %d\n", r.sourceAuthCompatibility)
+	}
+}
+
+func (r *Registry) writeSourceWorkloadText(w io.Writer) {
+	if len(r.sourceWorkloadCircuits) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "# HELP aeroid_source_workload_circuit_state Local source workload circuit-breaker state.")
+	fmt.Fprintln(w, "# TYPE aeroid_source_workload_circuit_state gauge")
+	for _, key := range sortedStringKeys(r.sourceWorkloadCircuits) {
+		parts := strings.SplitN(key, "|", 2)
+		fmt.Fprintf(w, "aeroid_source_workload_circuit_state{source=%q,workload=%q,state=%q} 1\n", parts[0], parts[1], r.sourceWorkloadCircuits[key])
+	}
+}
+
+func (r *Registry) writeSourceBulkheadText(w io.Writer) {
+	if len(r.sourceBulkheads) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "# HELP aeroid_source_bulkhead_acquisitions_total Source workload bulkhead acquisitions.")
+	fmt.Fprintln(w, "# TYPE aeroid_source_bulkhead_acquisitions_total counter")
+	fmt.Fprintln(w, "# HELP aeroid_source_bulkhead_rejections_total Source workload bulkhead rejections.")
+	fmt.Fprintln(w, "# TYPE aeroid_source_bulkhead_rejections_total counter")
+	for _, key := range sortedBulkheadKeys(r.sourceBulkheads) {
+		parts := strings.SplitN(key, "|", 2)
+		item := r.sourceBulkheads[key]
+		fmt.Fprintf(w, "aeroid_source_bulkhead_acquisitions_total{source=%q,workload=%q} %d\n", parts[0], parts[1], item.acquired)
+		fmt.Fprintf(w, "aeroid_source_bulkhead_rejections_total{source=%q,workload=%q} %d\n", parts[0], parts[1], item.rejected)
 	}
 }
 
@@ -117,6 +185,15 @@ func sortedKeysSource(values map[string]*sourceMetric) []string {
 }
 
 func sortedStringKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedBulkheadKeys(values map[string]*sourceBulkheadMetric) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

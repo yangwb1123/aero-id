@@ -182,7 +182,10 @@ type SourceEndpointConfig struct {
 	OAuthResource         string        `mapstructure:"oauth_resource"`
 	Timeout               time.Duration `mapstructure:"timeout"`
 	MaxBodyBytes          int64         `mapstructure:"max_body_bytes"`
-	MaxConcurrency        int           `mapstructure:"max_concurrency"`
+	MaxConcurrency        int           `mapstructure:"max_concurrency"` // legacy fallback per workload class
+	QueryMaxConcurrency   int           `mapstructure:"query_max_concurrency"`
+	CommandMaxConcurrency int           `mapstructure:"command_max_concurrency"`
+	HealthMaxConcurrency  int           `mapstructure:"health_max_concurrency"`
 	MaxAttempts           int           `mapstructure:"max_attempts"`
 	RetryBackoff          time.Duration `mapstructure:"retry_backoff"`
 	TLSCAFile             string        `mapstructure:"tls_ca_file"`
@@ -403,9 +406,17 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("AERO_ID")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	for _, key := range []string{"sources.aero_im.allow_insecure_loopback", "sources.snaplink.allow_insecure_loopback"} {
+	keys := []string{
+		"sources.aero_im.allow_insecure_loopback", "sources.snaplink.allow_insecure_loopback",
+	}
+	for _, source := range []string{"snaplink", "aero_im", "aero_vault"} {
+		for _, setting := range []string{"query_max_concurrency", "command_max_concurrency", "health_max_concurrency"} {
+			keys = append(keys, "sources."+source+"."+setting)
+		}
+	}
+	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
-			return nil, fmt.Errorf("bind source authentication environment: %w", err)
+			return nil, fmt.Errorf("bind source environment: %w", err)
 		}
 	}
 

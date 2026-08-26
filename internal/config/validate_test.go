@@ -204,6 +204,9 @@ func sourceEndpointCases() []sourceEndpointCase {
 		{"negative timeout", func(s *SourceEndpointConfig) { s.Timeout = -time.Second }, sourceLimitsErr},
 		{"negative max_body_bytes", func(s *SourceEndpointConfig) { s.MaxBodyBytes = -1 }, sourceLimitsErr},
 		{"negative max_concurrency", func(s *SourceEndpointConfig) { s.MaxConcurrency = -1 }, sourceLimitsErr},
+		{"negative query_max_concurrency", func(s *SourceEndpointConfig) { s.QueryMaxConcurrency = -1 }, sourceLimitsErr},
+		{"negative command_max_concurrency", func(s *SourceEndpointConfig) { s.CommandMaxConcurrency = -1 }, sourceLimitsErr},
+		{"negative health_max_concurrency", func(s *SourceEndpointConfig) { s.HealthMaxConcurrency = -1 }, sourceLimitsErr},
 		{"negative max_attempts", func(s *SourceEndpointConfig) { s.MaxAttempts = -1 }, sourceLimitsErr},
 		{"negative retry_backoff", func(s *SourceEndpointConfig) { s.RetryBackoff = -time.Second }, sourceLimitsErr},
 		{"disabled connector (empty endpoint)", func(s *SourceEndpointConfig) {

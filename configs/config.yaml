@@ -16,6 +16,9 @@ sources:
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
+    query_max_concurrency: 0     # 0 = partitioned max_concurrency fallback; reserves the interactive read pool
+    command_max_concurrency: 0   # 0 = partitioned max_concurrency fallback; isolated from reads
+    health_max_concurrency: 0    # 0 = partitioned max_concurrency fallback; isolated from reads/commands
     max_attempts: 3
     retry_backoff: 50ms
     tls_ca_file: ""
@@ -38,6 +41,9 @@ sources:
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
+    query_max_concurrency: 0     # 0 = partitioned max_concurrency fallback; reserves the interactive read pool
+    command_max_concurrency: 0   # 0 = partitioned max_concurrency fallback; isolated from reads
+    health_max_concurrency: 0    # 0 = partitioned max_concurrency fallback; isolated from reads/commands
     max_attempts: 3
     retry_backoff: 50ms
     tls_ca_file: ""
@@ -59,6 +65,9 @@ sources:
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
+    query_max_concurrency: 0     # 0 = partitioned max_concurrency fallback; reserves the interactive read pool
+    command_max_concurrency: 0   # 0 = partitioned max_concurrency fallback; isolated from reads
+    health_max_concurrency: 0    # 0 = partitioned max_concurrency fallback; isolated from reads/commands
     max_attempts: 3
     retry_backoff: 50ms
     tls_ca_file: ""

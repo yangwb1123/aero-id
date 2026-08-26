@@ -47,6 +47,8 @@ func sourceHTTPConfig(value config.SourceEndpointConfig, environment string, met
 		OAuth: connector.OAuthClientCredentialsConfig{TokenURL: value.OAuthTokenURL, ClientID: value.OAuthClientID,
 			ClientSecret: value.OAuthSecret, Scope: value.OAuthScope, Resource: value.OAuthResource},
 		Timeout: value.Timeout, MaxBodyBytes: value.MaxBodyBytes, MaxConcurrency: value.MaxConcurrency,
-		MaxAttempts: value.MaxAttempts, RetryBackoff: value.RetryBackoff, TLSCAFile: value.TLSCAFile, TLSCertFile: value.TLSCertFile,
+		QueryMaxConcurrency: value.QueryMaxConcurrency, CommandMaxConcurrency: value.CommandMaxConcurrency,
+		HealthMaxConcurrency: value.HealthMaxConcurrency, MaxAttempts: value.MaxAttempts, RetryBackoff: value.RetryBackoff,
+		TLSCAFile: value.TLSCAFile, TLSCertFile: value.TLSCertFile,
 		TLSKeyFile: value.TLSKeyFile, TLSServerName: value.TLSServerName, Metrics: metricsReg}
 }

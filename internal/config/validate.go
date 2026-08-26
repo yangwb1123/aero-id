@@ -451,7 +451,8 @@ func validateSourceURL(name, raw string) error {
 
 func validSourceLimits(source SourceEndpointConfig) bool {
 	return source.Timeout >= 0 && source.MaxBodyBytes >= 0 && source.MaxConcurrency >= 0 &&
-		source.MaxAttempts >= 0 && source.RetryBackoff >= 0
+		source.QueryMaxConcurrency >= 0 && source.CommandMaxConcurrency >= 0 &&
+		source.HealthMaxConcurrency >= 0 && source.MaxAttempts >= 0 && source.RetryBackoff >= 0
 }
 
 func validateSourcePaths(name string, source SourceEndpointConfig) error {

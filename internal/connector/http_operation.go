@@ -18,14 +18,14 @@ func (c *JSONSummaryConnector) OperationStatus(ctx context.Context, req Operatio
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.operation_status_not_configured"}
 	}
 	started := time.Now()
-	release, err := c.begin(ctx)
+	release, err := c.begin(ctx, workloadCommand)
 	if err != nil {
 		c.observeCall("operation_status", started, err)
 		return nil, err
 	}
 	defer func() {
 		release()
-		c.finish(resultErr)
+		c.finish(workloadCommand, resultErr)
 		c.observeCall("operation_status", started, resultErr)
 	}()
 	requestCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
