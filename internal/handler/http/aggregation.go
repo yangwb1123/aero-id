@@ -79,14 +79,24 @@ func (h *AggregationHandler) GetAccountOverview(c *gin.Context) {
 
 func aggregationInput(c *gin.Context) service.AggregationInput {
 	values := c.QueryArray("dataset")
-	if len(values) == 0 && c.Query("datasets") != "" {
-		values = strings.Split(c.Query("datasets"), ",")
+	limit := len(domain.AccountDatasetRegistry())
+	if len(values) == 0 {
+		if raw, present := c.GetQuery("datasets"); present {
+			if strings.Count(raw, ",") >= limit {
+				values = []string{"\x00dataset_scope_too_large"}
+			} else {
+				values = strings.Split(raw, ",")
+			}
+		}
+	}
+	if len(values) > limit {
+		values = []string{"\x00dataset_scope_too_large"}
 	}
 	datasets := make([]domain.AccountDataset, 0, len(values))
 	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			datasets = append(datasets, domain.AccountDataset(value))
-		}
+		// Keep explicit empty tokens; dropping them would turn dataset= into
+		// an implicit source-wide request.
+		datasets = append(datasets, domain.AccountDataset(value))
 	}
 	maxAge := time.Duration(0)
 	if value := c.Query("max_age"); value != "" {

@@ -39,12 +39,23 @@ func (s *operationService) runClaimed(ctx context.Context, operation *domain.Ope
 			if errors.Is(claimErr, gorm.ErrRecordNotFound) || errors.Is(claimErr, repository.ErrOperationStepUnknown) {
 				break
 			}
+			if ctx != nil && ctx.Err() != nil {
+				// The worker is stopping; finish from durable state using the
+				// independent persistence context below.
+				break
+			}
 			return nil, apperr.Internal("operation.claim_failed", "failed to claim operation step").Wrap(claimErr)
 		}
 		if err := s.runClaimedStep(ctx, operation, step, owner); err != nil {
 			return nil, err
 		}
 		if step.Status == domain.StepUnknown || step.Status == domain.StepFailed {
+			break
+		}
+		// A caller timeout or worker shutdown may arrive after the step result
+		// was durably recorded. Do not attempt another claim with a canceled
+		// context; finalize the operation from durable step state instead.
+		if ctx != nil && ctx.Err() != nil {
 			break
 		}
 	}
@@ -59,11 +70,12 @@ func terminalOperationStatus(status domain.OperationStatus) bool {
 }
 
 func (s *operationService) runClaimedStep(ctx context.Context, operation *domain.Operation, step *domain.OperationStep, worker string) error {
-	stateCtx, stateCancel := operationPersistenceContext(ctx)
-	defer stateCancel()
 	if s.runner == nil {
-		if err := s.finishStep(stateCtx, operation, step, worker, domain.StepFailed, "", "operation.runner_unavailable", nil,
-			"operation runner is not configured"); err != nil {
+		stateCtx, stateCancel := operationPersistenceContext(ctx)
+		err := s.finishStep(stateCtx, operation, step, worker, domain.StepFailed, "", "operation.runner_unavailable", nil,
+			"operation runner is not configured")
+		stateCancel()
+		if err != nil {
 			return apperr.Internal("operation.finish_step_failed", "failed to finish operation step").Wrap(err)
 		}
 		return s.abortOperationSteps(ctx, operation, worker)
@@ -72,7 +84,10 @@ func (s *operationService) runClaimedStep(ctx context.Context, operation *domain
 	sourceOperationID, result, runErr := s.runner.Run(remoteCtx, operation, step)
 	remoteCancel()
 	status, code, message := operationRunStatus(runErr)
-	if err := s.finishStep(stateCtx, operation, step, worker, status, sourceOperationID, code, result, message); err != nil {
+	stateCtx, stateCancel := operationPersistenceContext(ctx)
+	err := s.finishStep(stateCtx, operation, step, worker, status, sourceOperationID, code, result, message)
+	stateCancel()
+	if err != nil {
 		return apperr.Internal("operation.finish_step_failed", "failed to finish operation step").Wrap(err)
 	}
 	step.Status = status

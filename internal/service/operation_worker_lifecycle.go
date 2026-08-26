@@ -87,9 +87,14 @@ func operationRemoteContext(parent context.Context) (context.Context, context.Ca
 	return context.WithTimeout(parent, operationRemoteTimeout)
 }
 
+// operationPersistenceContext is independent from the caller's cancellation
+// and deadline. WithoutCancel preserves request values used by audit and
+// tracing while allowing a durable outcome write after remote work is
+// canceled or times out.
 func operationPersistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
-	if parent != nil && parent.Err() == nil {
-		return context.WithTimeout(parent, operationPersistTimeout)
+	base := context.Background()
+	if parent != nil {
+		base = context.WithoutCancel(parent)
 	}
-	return context.WithTimeout(context.Background(), operationPersistTimeout)
+	return context.WithTimeout(base, operationPersistTimeout)
 }

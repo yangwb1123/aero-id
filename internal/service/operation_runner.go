@@ -47,6 +47,7 @@ func (r *connectorOperationRunner) ReconcileCompensation(ctx context.Context, op
 		return domain.StepUnknown, "", nil, fmt.Errorf("operation step is required")
 	}
 	compensationStep := *step
+	compensationStep.Action = step.CompensationAction
 	compensationStep.SourceOperationID = step.CompensationSourceOperationID
 	return r.reconcile(ctx, operation, &compensationStep,
 		operationCompensationReconcileIdempotencyKey(operation, step))
@@ -88,14 +89,23 @@ func (r *connectorOperationRunner) Reconcile(ctx context.Context, operation *dom
 }
 
 func operationDatasetsForStep(step *domain.OperationStep, source connector.Source) ([]domain.AccountDataset, error) {
+	if step == nil || connector.Source(strings.TrimSpace(step.Source)) != source {
+		return nil, invalidOperationDatasetScope()
+	}
 	action := strings.ToLower(strings.TrimSpace(step.Action))
 	if operationActionIsDestructive(action) {
-		return parseOperationDatasetsForSource(step.RequestPayload, source)
+		return resolveOperationDatasetScope(step.RequestPayload, source, connector.DatasetScopeStored)
 	}
 	switch action {
 	case "sync", "summary", "source.summary":
+		if source == connector.SourceAeroIM || source == connector.SourceAeroVault {
+			return resolveOperationDatasetScope(step.RequestPayload, source, connector.DatasetScopeStored)
+		}
 		return operationDatasets(step.RequestPayload, source)
 	default:
+		if source == connector.SourceAeroIM || source == connector.SourceAeroVault {
+			return nil, invalidOperationDatasetScope()
+		}
 		return nil, nil
 	}
 }
@@ -203,7 +213,7 @@ func commandResultOutcome(source connector.Source, result *connector.CommandResu
 //nolint:cyclop // projection persistence handles each allow-listed source dataset in one operation step.
 func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.Operation, step *domain.OperationStep,
 	client connector.Connector, account *domain.Account, datasets []domain.AccountDataset) (string, map[string]any, error) {
-	if client.Source() != connector.SourceAeroIM && len(datasets) == 0 {
+	if client.Source() != connector.SourceAeroIM && client.Source() != connector.SourceAeroVault && len(datasets) == 0 {
 		datasets = datasetsForSource(allDatasets(), string(client.Source()))
 	}
 	summary, err := client.Summary(ctx, connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
@@ -218,12 +228,14 @@ func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.O
 	if r.application == nil {
 		return "", nil, repository.ErrSummaryApplicationUnavailable
 	}
-	applicationResult, err := r.application.ApplySummary(ctx, domain.SummaryApplicationRequest{
+	persistCtx, persistCancel := operationPersistenceContext(ctx)
+	applicationResult, err := r.application.ApplySummary(persistCtx, domain.SummaryApplicationRequest{
 		AccountID: account.ID, Source: string(client.Source()), SourceRegion: summary.SourceRegion, Version: summary.Version,
 		RequestedDatasets: append([]domain.AccountDataset(nil), datasets...), Coverage: summary.Coverage,
 		Complete: summary.Complete, SkippedDatasets: append([]string(nil), summary.SkippedDatasets...),
 		Snapshots: summary.Snapshots, Sources: summary.Sources, Memberships: summary.Memberships,
 	})
+	persistCancel()
 	if err != nil {
 		return "", nil, err
 	}
@@ -245,8 +257,8 @@ func syncOperationResult(summary *connector.Summary, applicationResult domain.Su
 }
 
 func operationDatasets(payload map[string]any, source connector.Source) ([]domain.AccountDataset, error) {
-	if source == connector.SourceAeroIM {
-		return parseAeroIMOperationDatasets(payload)
+	if source == connector.SourceAeroIM || source == connector.SourceAeroVault {
+		return resolveOperationDatasetScope(payload, source, connector.DatasetScopeStored)
 	}
 	return legacyOperationDatasets(payload), nil
 }

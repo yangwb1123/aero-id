@@ -84,9 +84,11 @@ func (s *operationService) prepareOperation(ctx context.Context, actor, tenantID
 	if err := s.authorizeOperationCreate(ctx, actor, input); err != nil {
 		return nil, nil, err
 	}
-	if err := validateOperationDatasetScopes(input.Steps); err != nil {
+	normalizedSteps, err := normalizeOperationDatasetScopes(input.Steps)
+	if err != nil {
 		return nil, nil, err
 	}
+	input.Steps = normalizedSteps
 	existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
 	if err == nil {
 		return nil, existing, nil

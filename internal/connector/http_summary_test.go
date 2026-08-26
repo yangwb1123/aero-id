@@ -81,7 +81,8 @@ func TestJSONSummaryConnectorRedactsCamelCaseCredentials(t *testing.T) {
 		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{"aero-vault.tenants":{"display_name":"Ada","owner":{"accessKey":"AKIA…","privateKey":"-----BEGIN…"}}}}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", Client: server.Client()})
+	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
+		AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +110,13 @@ func TestJSONSummaryConnectorEraseUsesIdempotency(t *testing.T) {
 		_, _ = w.Write([]byte(`{"operation_id":"remote-1","status":"accepted"}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, ErasePath: "/erase", Client: server.Client()})
+	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, ErasePath: "/erase",
+		AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{2}, RequestID: "request-2", IdempotencyKey: "erase-1", OperationID: "op-1"})
+	result, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{2}, RequestID: "request-2", IdempotencyKey: "erase-1", OperationID: "op-1",
+		Datasets: []domain.AccountDataset{"aero-vault.tenants"}})
 	if err != nil || result.SourceOperationID != "remote-1" {
 		t.Fatalf("Erase() = %#v, %v", result, err)
 	}

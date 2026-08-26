@@ -132,6 +132,13 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 	if err != nil {
 		return nil, err
 	}
+	// Validate and normalize before continuation or idempotency reads. An
+	// invalid scope must not retrieve/reuse an existing job or reach target
+	// authorization/account loading.
+	datasets, err := normalizeSyncJobDatasets(input.JobType, input.Datasets)
+	if err != nil {
+		return nil, err
+	}
 	var continuation *domain.SyncJob
 	if input.AuditExportContinuationID != (domain.ID{}) {
 		if input.JobType != domain.SyncJobAuditExport {
@@ -175,25 +182,6 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 	}
 	if err := requireHomeRegion(ctx, s.accountRepo, input.AccountID, s.region); err != nil {
 		return nil, err
-	}
-	var datasets []domain.AccountDataset
-	if input.JobType == domain.SyncJobErase {
-		// Preserve the public empty erase request as an explicit full-scope
-		// operation, but persist the expanded registry so execution never has
-		// to interpret an empty list as "erase everything".
-		if len(input.Datasets) == 0 {
-			datasets = allDatasets()
-		} else {
-			if err := validateDestructiveDatasetInput(input.Datasets); err != nil {
-				return nil, err
-			}
-			datasets = append([]domain.AccountDataset(nil), input.Datasets...)
-		}
-	} else {
-		datasets, err = normalizeDatasets(input.Datasets)
-		if err != nil {
-			return nil, err
-		}
 	}
 	request := map[string]any{"datasets": datasets}
 	if continuation != nil {
@@ -268,10 +256,25 @@ func (s *syncJobService) Run(ctx context.Context, id domain.ID, worker string) (
 	if err != nil {
 		return nil, err
 	}
+	// Validate a pending historical row before the service-level home-region
+	// lookup. If it is malformed, claim it without loading the account and
+	// durably mark it failed rather than leaving it pending forever.
+	if job.Status == domain.SyncJobPending {
+		if scopeErr := validatePersistedSyncJobScope(job); scopeErr != nil {
+			claimCtx, claimCancel := syncPersistenceContext(ctx)
+			claimed, claimErr := s.repo.Claim(claimCtx, job.ID, workerOrDefault(worker), syncLeaseDuration)
+			claimCancel()
+			if claimErr != nil {
+				return nil, apperr.Conflict("sync.not_runnable", "sync job is already running or completed").Wrap(claimErr)
+			}
+			code, message := syncJobScopeFailure(job.JobType)
+			return nil, s.finishJobFailure(ctx, claimed, domain.SyncJobFailed, code, message, nil, scopeErr)
+		}
+	}
 	if err := requireHomeRegion(ctx, s.accountRepo, job.AccountID, s.region); err != nil {
 		return nil, err
 	}
-	claimed, err := s.repo.Claim(ctx, job.ID, workerOrDefault(worker), 5*time.Minute)
+	claimed, err := s.repo.Claim(ctx, job.ID, workerOrDefault(worker), syncLeaseDuration)
 	if err != nil {
 		return nil, apperr.Conflict("sync.not_runnable", "sync job is already running or completed").Wrap(err)
 	}
@@ -301,7 +304,7 @@ func (s *syncJobService) Start(ctx context.Context, interval time.Duration) func
 					lastExportCleanup = time.Now()
 				}
 				for i := 0; i < 4; i++ {
-					job, err := s.claimNext(workerCtx, "sync-worker", 5*time.Minute)
+					job, err := s.claimNext(workerCtx, "sync-worker", syncLeaseDuration)
 					if err != nil {
 						if errors.Is(err, repository.ErrSyncJobUnknown) {
 							continue
@@ -316,7 +319,7 @@ func (s *syncJobService) Start(ctx context.Context, interval time.Duration) func
 					}
 				}
 				for i := 0; i < 4; i++ {
-					job, err := s.claimUnknownNext(workerCtx, "sync-reconciler", 5*time.Minute)
+					job, err := s.claimUnknownNext(workerCtx, "sync-reconciler", syncLeaseDuration)
 					if errors.Is(err, gorm.ErrRecordNotFound) {
 						break
 					}
@@ -355,6 +358,11 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
 			"erase job requires a non-empty valid dataset scope", nil, scopeErr)
 	}
+	required, scopeErr := validatedDatasetsBySource(datasets)
+	if scopeErr != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
+			"erase job requires a non-empty valid dataset scope", nil, scopeErr)
+	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
@@ -366,13 +374,6 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 	failures := 0
 	var wait sync.WaitGroup
 	var mu sync.Mutex
-	required := make(map[connector.Source][]domain.AccountDataset)
-	for _, dataset := range datasets {
-		if descriptor, ok := domain.DatasetDescriptorOf(dataset); ok {
-			source := connector.Source(descriptor.Source)
-			required[source] = append(required[source], dataset)
-		}
-	}
 	for source, requested := range required {
 		client, configured := s.connectors[source]
 		if !configured {
@@ -389,7 +390,9 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 		wait.Add(1)
 		go func(source connector.Source, command connector.CommandConnector, requested []domain.AccountDataset) {
 			defer wait.Done()
-			commandResult, callErr := command.Erase(ctx, eraseRequestForJob(account, job, source, requested))
+			remoteCtx, remoteCancel := syncRemoteContext(ctx)
+			commandResult, callErr := command.Erase(remoteCtx, eraseRequestForJob(account, job, source, requested))
+			remoteCancel()
 			mu.Lock()
 			defer mu.Unlock()
 			if callErr != nil {
@@ -428,9 +431,14 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 	} else if failures > 0 {
 		status = domain.SyncJobPartiallyComplete
 		code, message = "erase.partial_failure", "one or more source deletion commands failed"
-	} else if err := s.accountRepo.EraseAccount(ctx, job.TenantID, job.AccountID); err != nil {
-		status = domain.SyncJobPartiallyComplete
-		code, message = "erase.local_projection_failed", "source deletion completed but local erasure failed"
+	} else {
+		persistCtx, persistCancel := syncPersistenceContext(ctx)
+		err := s.accountRepo.EraseAccount(persistCtx, job.TenantID, job.AccountID)
+		persistCancel()
+		if err != nil {
+			status = domain.SyncJobPartiallyComplete
+			code, message = "erase.local_projection_failed", "source deletion completed but local erasure failed"
+		}
 	}
 	return s.finishJobAndLoad(ctx, job, status, code, message, result)
 }

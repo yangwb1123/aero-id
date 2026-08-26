@@ -70,9 +70,7 @@ func (s *operationService) reconcileForwardSteps(ctx context.Context, operation 
 		if err != nil {
 			return apperr.Internal("operation.reconcile_claim_failed", "failed to claim unknown operation step").Wrap(err)
 		}
-		remoteCtx, remoteCancel := operationRemoteContext(ctx)
-		status, sourceOperationID, result, reconcileErr := reconciledStepResult(remoteCtx, reconciler, operation, step)
-		remoteCancel()
+		status, sourceOperationID, result, reconcileErr := reconciledStepResult(ctx, reconciler, operation, step)
 		code, message := outcomeErrorCode(status), outcomeErrorMessage(status)
 		if reconcileErr != nil {
 			status, code, message = operationRunStatus(reconcileErr)
@@ -217,6 +215,7 @@ func stepResultIsPartial(result map[string]any) bool {
 	return status == "partial" || status == string(domain.OperationPartiallyCompleted)
 }
 
+//nolint:cyclop // terminal transition contains the durable state and audit error matrix.
 func (s *operationService) finishOperation(ctx context.Context, id domain.ID) (*domain.Operation, error) {
 	operation, err := s.repo.Get(ctx, id)
 	if err != nil {

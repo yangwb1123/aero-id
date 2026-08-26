@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -98,11 +97,11 @@ func (s *SyncJobServer) ReconcileSyncJob(ctx context.Context, req *aeropb.Reconc
 }
 
 func syncJobToProto(job *domain.SyncJob) (*aeropb.SyncJob, error) {
-	request, err := structpb.NewStruct(job.Request)
+	request, err := structFromMap(job.Request)
 	if err != nil {
 		return nil, err
 	}
-	result, err := structpb.NewStruct(publicSyncResult(job.Result))
+	result, err := structFromMap(publicSyncResult(job.Result))
 	if err != nil {
 		return nil, err
 	}

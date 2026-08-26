@@ -71,7 +71,7 @@ data:
         retry_backoff: 50ms
       aero_vault:
         endpoint: https://aero-vault.REGION_PLACEHOLDER.example.com
-        summary_path: /internal/account-summary
+        summary_path: /v1/internal/account-summary
         erase_path: ""
         status_path: ""
         region: "REGION_PLACEHOLDER"

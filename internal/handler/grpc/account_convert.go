@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -160,7 +161,19 @@ func structFromMap(values map[string]any) (*structpb.Struct, error) {
 	if values == nil {
 		return nil, nil
 	}
-	return structpb.NewStruct(values)
+	// structpb.NewStruct accepts JSON-shaped []any values, but not typed slices
+	// such as []string or []domain.AccountDataset. Payloads created by the
+	// service intentionally use typed dataset slices, so normalize through the
+	// JSON wire shape before handing the value to protobuf.
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+	normalized := make(map[string]any)
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
+		return nil, err
+	}
+	return structpb.NewStruct(normalized)
 }
 
 func timestampOf(value *time.Time) *timestamppb.Timestamp {

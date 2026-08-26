@@ -66,6 +66,9 @@ func setBearer(request *http.Request, token string) {
 }
 
 func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseRequest) (*http.Request, []byte, error) {
+	if len(req.Datasets) == 0 && (c.source == SourceAeroIM || c.source == SourceAeroVault) {
+		return nil, nil, invalidDatasetScope(c.source)
+	}
 	endpoint, err := url.Parse(strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.ErasePath)
 	if err != nil {
 		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint", Cause: err}
@@ -243,19 +246,9 @@ func normalizeSummaryCoverage(result *Summary, requested []domain.AccountDataset
 
 func requestedSummaryDatasets(source Source, requested []domain.AccountDataset) []domain.AccountDataset {
 	if source != SourceAeroIM && len(requested) == 0 {
-		return sourceDatasets(source)
+		return sourceDatasetScope(source)
 	}
-	return requested
-}
-
-func sourceDatasets(source Source) []domain.AccountDataset {
-	result := make([]domain.AccountDataset, 0)
-	for _, descriptor := range domain.AccountDatasetRegistry() {
-		if descriptor.Source == string(source) {
-			result = append(result, descriptor.Name)
-		}
-	}
-	return result
+	return append([]domain.AccountDataset(nil), requested...)
 }
 
 func markMissingRequestedDatasets(result *Summary, requested []domain.AccountDataset) {

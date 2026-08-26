@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -76,7 +75,7 @@ func auditFactToProto(fact *domain.AuditFact) (*aeropb.AuditFact, error) {
 	if fact == nil {
 		return nil, nil
 	}
-	payload, err := structpb.NewStruct(fact.Payload)
+	payload, err := structFromMap(fact.Payload)
 	if err != nil {
 		return nil, apperr.Internal("audit.payload_invalid", "audit payload is invalid").Wrap(err)
 	}

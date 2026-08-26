@@ -11,7 +11,12 @@ import (
 
 //nolint:cyclop,funlen // sync execution aggregates concurrent source outcomes into a durable partial result.
 func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
-	datasets, scopeErr := parsePersistedDatasets(job.Request, true)
+	datasets, scopeErr := parsePersistedSyncDatasets(job.Request, true)
+	if scopeErr != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.invalid_dataset_scope",
+			"sync job requires a non-empty valid dataset scope", nil, scopeErr)
+	}
+	required, scopeErr := validatedDatasetsBySource(datasets)
 	if scopeErr != nil {
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.invalid_dataset_scope",
 			"sync job requires a non-empty valid dataset scope", nil, scopeErr)
@@ -22,7 +27,6 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.account_load_failed", "failed to load account", nil, cause)
 	}
 	result := map[string]any{"mode": string(job.JobType), "sources": map[string]any{}}
-	required := datasetsBySource(datasets)
 	var wait sync.WaitGroup
 	var mu sync.Mutex
 	var failures int
@@ -54,7 +58,9 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 				mu.Unlock()
 				return
 			}
-			summary, callErr := client.Summary(ctx, syncSummaryRequest(account, job, requested))
+			remoteCtx, remoteCancel := syncRemoteContext(ctx)
+			summary, callErr := client.Summary(remoteCtx, syncSummaryRequest(account, job, requested))
+			remoteCancel()
 			if callErr != nil {
 				mu.Lock()
 				failures++
@@ -71,7 +77,10 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 				mu.Unlock()
 				return
 			}
-			if persistErr := s.persistSyncSummary(ctx, job, account, source, requested, summary); persistErr != nil {
+			persistCtx, persistCancel := syncPersistenceContext(ctx)
+			persistErr := s.persistSyncSummary(persistCtx, job, account, source, requested, summary)
+			persistCancel()
+			if persistErr != nil {
 				status, code, isUnknown := summaryPersistenceStatus(persistErr)
 				mu.Lock()
 				if isUnknown {

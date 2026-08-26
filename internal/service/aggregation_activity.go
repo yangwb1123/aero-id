@@ -11,6 +11,11 @@ import (
 // never turns pagination into a synchronous source call.
 func (s *aggregationService) ListMeActivity(ctx context.Context, input AggregationInput,
 	page domain.Page) (*domain.AccountActivityPage, error) {
+	if len(input.Datasets) > 0 {
+		if _, err := normalizeDatasets(input.Datasets); err != nil {
+			return nil, err
+		}
+	}
 	input.Datasets = []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}
 	overview, err := s.GetMeOverview(ctx, input)
 	if err != nil {

@@ -7,11 +7,11 @@ an adapter that enforces its own resource authorization and residency policy.
 
 ## Request
 
-The configured summary path receives `GET` with:
+The configured summary path receives `GET` requests. The checked-in Aero Vault source snapshot exposes this seam at `/v1/internal/account-summary`; Aero IM exposes it at `/internal/account-summary`. Keep the path configurable for ingress deployments that mount either service under a different base.
 
 - `account_id`: aero-id UUID, opaque to the source
 - `region`: requested source region when present
-- repeated `dataset`: allow-listed dataset names
+- repeated `dataset`: allow-listed dataset names. Aero Vault summary requests always carry a concrete, source-owned dataset list; an empty summary selection expands locally in registry order.
 - `reconcile=true` only for a bounded reconciliation call
 
 The connector also propagates `X-Request-ID`, `X-Aero-Operation-ID`,
@@ -41,6 +41,16 @@ optional `query_max_concurrency`, `command_max_concurrency`, and
 `health_max_concurrency` settings override a class without allowing probes or
 commands to consume the interactive query pool. Circuit openings are likewise
 class-scoped, so a source health outage does not make account reads fail fast.
+
+## Commands and scope rules
+
+Erase requests require a concrete, non-empty dataset array owned by the target source. Aero Vault rejects an empty erase scope locally before idempotency validation, bulkhead acquisition, credentials, or HTTP execution. Invalid, duplicate, mixed-source, malformed, and oversized scopes are local `source.dataset_scope_invalid` failures and never trigger source authorization or network I/O.
+
+The currently deployed Aero Vault adapter publishes the read-only summary seam
+only; its erase and status paths remain unset in the checked-in deployment
+manifest. Do not treat the optional command wire shape below as a shipped Vault
+capability until the source command contract is deployed and the paths are
+explicitly enabled.
 
 ## Summary response
 

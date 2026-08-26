@@ -27,8 +27,11 @@ func (r *syncJobRepo) finish(ctx context.Context, id domain.ID, worker string, s
 		updates["completed_at"] = now
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		updated := tx.Model(&syncJobRow{}).Where("id = ? AND status = ? AND lease_owner = ?", id,
-			string(domain.SyncJobRunning), worker).Updates(updates)
+		// Lease expiry is itself a fencing boundary. Do not let an old worker
+		// finish after its lease elapsed merely because no replacement has
+		// claimed the row yet.
+		updated := tx.Model(&syncJobRow{}).Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > ?", id,
+			string(domain.SyncJobRunning), worker, now).Updates(updates)
 		if updated.Error != nil {
 			return updated.Error
 		}

@@ -91,3 +91,22 @@ func TestGRPCError_genericInternal(t *testing.T) {
 		t.Fatalf("status = %v %q", st.Code(), st.Message())
 	}
 }
+
+func TestInvalidDatasetScopeMapsToPublicBadRequestAndInvalidArgument(t *testing.T) {
+	err := BadRequest("operation.invalid_dataset_scope", "source operation step requires a non-empty valid dataset scope")
+	if err.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("HTTP status = %d, want %d", err.HTTPStatus(), http.StatusBadRequest)
+	}
+	st := status.Convert(GRPCError(err))
+	if st.Code() != codes.InvalidArgument || st.Message() != err.Message {
+		t.Fatalf("gRPC status = %v %q, want InvalidArgument and safe message", st.Code(), st.Message())
+	}
+	details := st.Details()
+	if len(details) != 1 {
+		t.Fatalf("details = %d, want one ErrorInfo", len(details))
+	}
+	info, ok := details[0].(*errdetails.ErrorInfo)
+	if !ok || info.Reason != "operation.invalid_dataset_scope" || info.Domain != "aero-id" {
+		t.Fatalf("detail = %#v, want stable operation scope code", details[0])
+	}
+}

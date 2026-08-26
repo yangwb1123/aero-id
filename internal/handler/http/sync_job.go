@@ -5,6 +5,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/middleware"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/service"
 )
@@ -82,7 +83,7 @@ func (h *SyncJobHandler) EraseAccount(c *gin.Context) {
 func (h *SyncJobHandler) create(c *gin.Context, jobType domain.SyncJobType, accountID domain.ID) {
 	var body syncJobRequest
 	if err := c.ShouldBindJSON(&body); err != nil && c.Request.ContentLength != 0 {
-		httpx.WriteError(c, err)
+		httpx.WriteError(c, apperr.BadRequest("sync.invalid_request", "invalid request body"))
 		return
 	}
 	key := body.IdempotencyKey

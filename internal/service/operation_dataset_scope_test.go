@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/aero/aero-id/internal/connector"
@@ -47,8 +49,8 @@ func TestParseAeroIMOperationDatasetsIsStrictAndOrdered(t *testing.T) {
 	}
 }
 
-func TestOperationDatasetsKeepsNonAeroIMLegacySemantics(t *testing.T) {
-	got, err := operationDatasets(map[string]any{"datasets": []any{"aero-vault.tenants", "aero-im.profile", "unknown", 3}}, connector.SourceAeroVault)
+func TestOperationDatasetsKeepsUntouchedLegacySemantics(t *testing.T) {
+	got, err := operationDatasets(map[string]any{"datasets": []any{"aero-vault.tenants", "aero-im.profile", "unknown", 3}}, connector.SourceSnaplink)
 	if err != nil {
 		t.Fatalf("operationDatasets: %v", err)
 	}
@@ -97,9 +99,87 @@ func TestOperationCreateValidatesAeroIMScopeBeforeIdempotencyLookup(t *testing.T
 	}
 }
 
+type operationScopeCreateRepo struct {
+	operationAuthorizationRepo
+	created *domain.Operation
+}
+
+func (r *operationScopeCreateRepo) Create(_ context.Context, operation *domain.Operation) error {
+	r.created = operation
+	return nil
+}
+
+func TestVaultSummaryOperationNormalizesWithoutMutatingCaller(t *testing.T) {
+	payload := map[string]any{"datasets": []any{"aero-vault.usage", "aero-vault.tenants"}, "keep": "value"}
+	before := map[string]any{"datasets": []any{"aero-vault.usage", "aero-vault.tenants"}, "keep": "value"}
+	repo := &operationScopeCreateRepo{}
+	svc := NewOperationService(repo)
+	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "actor-1", TenantID: "tenant-a"})
+	operation, err := svc.Create(ctx, OperationInput{AccountID: domain.ID{1}, OperationType: "sync", IdempotencyKey: "vault-summary-1",
+		Steps: []OperationStepInput{{StepKey: "step-1", Source: string(connector.SourceAeroVault), Action: "summary", RequestPayload: payload}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(payload, before) {
+		t.Fatalf("caller payload changed: %#v", payload)
+	}
+	if repo.created != operation || len(operation.Steps) != 1 {
+		t.Fatalf("created operation = %#v", operation)
+	}
+	got, ok := operation.Steps[0].RequestPayload["datasets"].([]string)
+	want := []string{"aero-vault.usage", "aero-vault.tenants"}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("persisted datasets = %#v, want ordered strings %v", operation.Steps[0].RequestPayload["datasets"], want)
+	}
+}
+
+func TestVaultSummaryOperationEmptyScopeExpandsBeforePersistence(t *testing.T) {
+	for i, payload := range []map[string]any{
+		nil,
+		{"datasets": nil},
+		{"datasets": []string{}},
+	} {
+		repo := &operationScopeCreateRepo{}
+		svc := NewOperationService(repo)
+		ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "actor-1", TenantID: "tenant-a"})
+		operation, err := svc.Create(ctx, OperationInput{AccountID: domain.ID{1}, OperationType: "sync", IdempotencyKey: "vault-summary-empty-" + strconv.Itoa(i),
+			Steps: []OperationStepInput{{StepKey: "step-1", Source: string(connector.SourceAeroVault), Action: "summary", RequestPayload: payload}}})
+		if err != nil {
+			t.Fatalf("payload %#v: %v", payload, err)
+		}
+		got, ok := operation.Steps[0].RequestPayload["datasets"].([]string)
+		want := []string{"aero-vault.tenants", "aero-vault.buckets", "aero-vault.usage"}
+		if !ok || !reflect.DeepEqual(got, want) {
+			t.Fatalf("payload %#v expanded datasets = %#v, want %v", payload, operation.Steps[0].RequestPayload["datasets"], want)
+		}
+	}
+}
+
+func TestInvalidVaultOperationScopeHasNoRepositorySideEffects(t *testing.T) {
+	for _, payload := range []map[string]any{
+		{"datasets": []any{"aero-vault.tenants", "aero-vault.tenants"}},
+		{"datasets": []any{"aero-vault.tenants", "aero-im.profile"}},
+		{"datasets": []any{"aero-vault.unknown"}},
+	} {
+		repo := &operationScopeCreateRepo{}
+		svc := NewOperationService(repo)
+		ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "actor-1", TenantID: "tenant-a"})
+		_, err := svc.Create(ctx, OperationInput{AccountID: domain.ID{1}, OperationType: "sync", IdempotencyKey: "invalid-vault",
+			Steps: []OperationStepInput{{StepKey: "step-1", Source: string(connector.SourceAeroVault), Action: "summary", RequestPayload: payload}}})
+		var appErr *apperr.AppError
+		if !errors.As(err, &appErr) || appErr.Code != invalidOperationDatasetScopeCode {
+			t.Fatalf("payload %#v error = %v, want %s", payload, err, invalidOperationDatasetScopeCode)
+		}
+		if repo.findCalls != 0 || repo.created != nil {
+			t.Fatalf("repository side effects for payload %#v: find=%d created=%v", payload, repo.findCalls, repo.created != nil)
+		}
+	}
+}
+
 type operationScopeConnector struct {
 	summaries int
 	erases    int
+	statuses  int
 }
 
 func (c *operationScopeConnector) Source() connector.Source   { return connector.SourceAeroIM }
@@ -111,6 +191,49 @@ func (c *operationScopeConnector) Summary(context.Context, connector.SummaryRequ
 func (c *operationScopeConnector) Erase(context.Context, connector.EraseRequest) (*connector.CommandResult, error) {
 	c.erases++
 	return &connector.CommandResult{Status: "completed"}, nil
+}
+
+type operationVaultScopeConnector struct{ operationScopeConnector }
+
+func (*operationVaultScopeConnector) Source() connector.Source { return connector.SourceAeroVault }
+func (c *operationVaultScopeConnector) OperationStatus(context.Context, connector.OperationStatusRequest) (*connector.CommandResult, error) {
+	c.statuses++
+	return &connector.CommandResult{Status: "completed"}, nil
+}
+
+func TestOperationRunnerRejectsMalformedStoredAeroVaultScopesBeforeConnectorCalls(t *testing.T) {
+	for _, action := range []string{"sync", "erase"} {
+		t.Run(action, func(t *testing.T) {
+			client := &operationVaultScopeConnector{}
+			runner := NewConnectorOperationRunner(&operationScopeAccountRepo{}, nil, client)
+			step := &domain.OperationStep{ID: domain.ID{3}, Source: string(connector.SourceAeroVault), Action: action,
+				RequestPayload: map[string]any{"datasets": []any{}}}
+			_, _, err := runner.Run(t.Context(), &domain.Operation{ID: domain.ID{1}, AccountID: domain.ID{2}}, step)
+			var appErr *apperr.AppError
+			if !errors.As(err, &appErr) || appErr.Code != invalidOperationDatasetScopeCode {
+				t.Fatalf("error = %v, want %s", err, invalidOperationDatasetScopeCode)
+			}
+			if client.summaries != 0 || client.erases != 0 {
+				t.Fatalf("connector calls = summary:%d erase:%d, want 0/0", client.summaries, client.erases)
+			}
+		})
+	}
+}
+
+func TestOperationRunnerReconcileRejectsMalformedStoredAeroVaultScopeBeforeStatus(t *testing.T) {
+	client := &operationVaultScopeConnector{}
+	runner := NewConnectorOperationRunner(&operationScopeAccountRepo{}, nil, client)
+	reconciler := runner.(OperationOutcomeReconciler)
+	status, _, _, err := reconciler.Reconcile(t.Context(), &domain.Operation{ID: domain.ID{1}, AccountID: domain.ID{2}},
+		&domain.OperationStep{ID: domain.ID{3}, Source: string(connector.SourceAeroVault), Action: "erase",
+			RequestPayload: map[string]any{"datasets": []any{"aero-vault.tenants", "aero-vault.tenants"}}})
+	var appErr *apperr.AppError
+	if status != domain.StepFailed || !errors.As(err, &appErr) || appErr.Code != invalidOperationDatasetScopeCode {
+		t.Fatalf("reconcile = %s/%v, want failed/%s", status, err, invalidOperationDatasetScopeCode)
+	}
+	if client.statuses != 0 {
+		t.Fatalf("operation status calls = %d, want 0", client.statuses)
+	}
 }
 
 func TestOperationRunnerRejectsMalformedStoredAeroIMScopesBeforeConnectorCalls(t *testing.T) {

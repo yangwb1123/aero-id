@@ -52,7 +52,7 @@ sources:
     tls_server_name: ""
   aero_vault:
     endpoint: ""
-    summary_path: /internal/account-summary
+    summary_path: /v1/internal/account-summary
     erase_path: ""
     status_path: ""
     region: local

@@ -45,27 +45,41 @@ func NewAggregationService(accounts AccountService, snapshots repository.Snapsho
 }
 
 func (s *aggregationService) GetMeOverview(ctx context.Context, input AggregationInput) (*domain.AggregateOverview, error) {
+	datasets, err := normalizeDatasets(input.Datasets)
+	if err != nil {
+		return nil, err
+	}
 	view, err := s.accounts.GetMe(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.load(ctx, view.Account, view.Profile, input)
+	return s.loadWithDatasets(ctx, view.Account, view.Profile, input, datasets)
 }
 
 func (s *aggregationService) GetAccountOverview(ctx context.Context, id domain.ID, input AggregationInput) (*domain.AggregateOverview, error) {
+	datasets, err := normalizeDatasets(input.Datasets)
+	if err != nil {
+		return nil, err
+	}
 	view, err := s.accounts.GetAccount(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return s.load(ctx, view.Account, view.Profile, input)
+	return s.loadWithDatasets(ctx, view.Account, view.Profile, input, datasets)
 }
 
+//nolint:unused // retained as the package-level compatibility helper for direct callers.
 func (s *aggregationService) load(ctx context.Context, account *domain.Account, profile *domain.AccountProfile,
 	input AggregationInput) (*domain.AggregateOverview, error) {
 	datasets, err := normalizeDatasets(input.Datasets)
 	if err != nil {
 		return nil, err
 	}
+	return s.loadWithDatasets(ctx, account, profile, input, datasets)
+}
+
+func (s *aggregationService) loadWithDatasets(ctx context.Context, account *domain.Account, profile *domain.AccountProfile,
+	input AggregationInput, datasets []domain.AccountDataset) (*domain.AggregateOverview, error) {
 	mode := input.Consistency
 	if mode == "" {
 		mode = domain.ConsistencyEventual
@@ -174,19 +188,32 @@ func normalizeDatasets(values []domain.AccountDataset) ([]domain.AccountDataset,
 		}
 		return result, nil
 	}
+	if len(values) > len(domain.AccountDatasetRegistry()) {
+		return nil, apperr.BadRequest("aggregation.invalid_dataset", "dataset is not allow-listed")
+	}
 	seen := make(map[domain.AccountDataset]struct{}, len(values))
-	result := make([]domain.AccountDataset, 0, len(values))
+	normalized := make([]domain.AccountDataset, 0, len(values))
+	bySource := make(map[connector.Source][]domain.AccountDataset)
 	for _, value := range values {
 		value = domain.AccountDataset(strings.TrimSpace(string(value)))
-		if _, ok := domain.DatasetDescriptorOf(value); !ok {
+		descriptor, ok := domain.DatasetDescriptorOf(value)
+		if !ok {
 			return nil, apperr.BadRequest("aggregation.invalid_dataset", "dataset is not allow-listed")
 		}
-		if _, ok := seen[value]; !ok {
-			seen[value] = struct{}{}
-			result = append(result, value)
+		if _, duplicate := seen[value]; duplicate {
+			return nil, apperr.BadRequest("aggregation.invalid_dataset", "dataset is not allow-listed")
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+		source := connector.Source(descriptor.Source)
+		bySource[source] = append(bySource[source], value)
+	}
+	for source, requested := range bySource {
+		if _, err := connector.ResolveDatasetScope(source, requested, connector.DatasetScopeStored); err != nil {
+			return nil, apperr.BadRequest("aggregation.invalid_dataset", "dataset is not allow-listed")
 		}
 	}
-	return result, nil
+	return normalized, nil
 }
 
 func datasetsForSource(datasets []domain.AccountDataset, source string) []domain.AccountDataset {

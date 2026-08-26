@@ -46,8 +46,10 @@ func (r *operationRepo) ListReconcileRunnable(ctx context.Context, limit int) ([
 	err := r.db.WithContext(ctx).Table("operations").Select("DISTINCT operations.id AS id").
 		Where("operations.status IN ?", []string{string(domain.OperationUnknown), string(domain.OperationCompensating)}).
 		Where("EXISTS (SELECT 1 FROM operation_steps candidate WHERE candidate.operation_id = operations.id AND "+
-			"((candidate.status = ?) OR (candidate.status = ? AND candidate.lease_kind = ? AND candidate.lease_until < now()) OR "+
-			"(candidate.status = ? AND candidate.compensation_action <> '' AND candidate.compensation_status = ?) OR "+
+			"((candidate.status = ? AND (candidate.lease_until IS NULL OR candidate.lease_until < now())) OR "+
+			"(candidate.status = ? AND candidate.lease_kind = ? AND candidate.lease_until < now()) OR "+
+			"(candidate.status = ? AND candidate.compensation_action <> '' AND candidate.compensation_status = ? AND "+
+			"(candidate.compensation_lease_until IS NULL OR candidate.compensation_lease_until < now())) OR "+
 			"(candidate.status = ? AND candidate.compensation_action <> '' AND candidate.compensation_status = ? AND "+
 			"candidate.compensation_lease_until < now())))",
 			unknown, running, "reconcile", string(domain.StepSucceeded), unknown, string(domain.StepSucceeded), running).

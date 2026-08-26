@@ -44,7 +44,7 @@ type operationStepRequest struct {
 func (h *OperationHandler) Create(c *gin.Context) {
 	var body operationRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		httpx.WriteError(c, err)
+		httpx.WriteError(c, apperr.BadRequest("operation.invalid_request", "invalid request body"))
 		return
 	}
 	accountID, err := parseOptionalID(body.AccountID, "account_id")

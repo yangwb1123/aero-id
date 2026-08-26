@@ -206,9 +206,11 @@ func clampedSummaryConcurrency(limit int) int {
 func (c *JSONSummaryConnector) Source() Source { return c.source }
 
 func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) (result *Summary, resultErr error) {
-	if err := validateDatasetScope(c.source, req.Datasets); err != nil {
+	resolved, err := ResolveDatasetScope(c.source, req.Datasets, DatasetScopeSummary)
+	if err != nil {
 		return nil, err
 	}
+	req.Datasets = resolved
 	started := time.Now()
 	release, err := c.begin(ctx, workloadQuery)
 	if err != nil {
@@ -308,9 +310,11 @@ func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
 }
 
 func (c *JSONSummaryConnector) Erase(ctx context.Context, req EraseRequest) (result *CommandResult, resultErr error) {
-	if err := validateDatasetScope(c.source, req.Datasets); err != nil {
+	resolved, err := ResolveDatasetScope(c.source, req.Datasets, DatasetScopeDestructive)
+	if err != nil {
 		return nil, err
 	}
+	req.Datasets = resolved
 	if strings.TrimSpace(req.IdempotencyKey) == "" {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.idempotency_key_missing", Temporary: false}
 	}
