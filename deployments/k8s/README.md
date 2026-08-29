@@ -17,9 +17,13 @@ home region; other regions serve local projections (see
 #    audit_ledger_signing_key and export_encryption_key. Optional source bearer
 #    keys are snaplink_bearer_token, aero_im_bearer_token and
 #    aero_vault_bearer_token. To enable the bound Aero IM summary, also provide
-#    aero_im_target_assertion_private_key as an Ed25519 PKCS#8 PEM key and set
-#    the complete target_assertion_* block in the ConfigMap; the key is mounted
-#    read-only with restrictive permissions.
+#    aero_im_target_assertion_private_key as an Ed25519 PKCS#8 PEM key and
+#    aero_im_oauth_client_secret. They are injected only through
+#    `AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_PRIVATE_KEY` and
+#    `AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET`; keep both corresponding
+#    ConfigMap values blank. Set the complete target_assertion_* block in the
+#    ConfigMap, including target_assertion_key_env; the key is never stored in
+#    the ConfigMap.
 # 3. Before enabling that block, publish the matching public Ed25519 JWK set at
 #    the dedicated external JWKS URI configured in Aero IM
 #    (`AERO__ACCOUNT_SUMMARY__TARGET_ASSERTION_JWKS_URI`). This endpoint is not
@@ -29,6 +33,39 @@ home region; other regions serve local projections (see
 # 4. Deploy dependencies (postgres, redis, nats) first so workers can start.
 kubectl apply -f deployments/k8s/regional-cell.yaml
 ```
+
+### Bound Aero IM source configuration
+
+The source fields use Viper's `AERO_ID_` prefix and `.`-to-`_` mapping. The
+base ConfigMap carries blank keys for the OAuth fields so these exact overrides
+are reachable; non-secret values may remain in the ConfigMap or be supplied by
+an environment-specific overlay:
+
+| Config field | Environment override | Storage rule |
+|---|---|---|
+| `sources.aero_im.oauth_token_url` | `AERO_ID_SOURCES_AERO_IM_OAUTH_TOKEN_URL` | non-secret |
+| `sources.aero_im.oauth_client_id` | `AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_ID` | non-secret |
+| `sources.aero_im.oauth_scope` | `AERO_ID_SOURCES_AERO_IM_OAUTH_SCOPE` | non-secret |
+| `sources.aero_im.oauth_resource` | `AERO_ID_SOURCES_AERO_IM_OAUTH_RESOURCE` | non-secret |
+| `sources.aero_im.oauth_client_secret` | `AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET` | Secret only; never a ConfigMap value |
+
+For the signer metadata, the corresponding names are
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_KEY_FILE`,
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_KEY_ENV`,
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_KEY_ID`,
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_ISSUER`,
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_AUDIENCE`,
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_SUBJECT`,
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_CLIENT_ID`, and
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_LIFETIME`. When enabling the signer,
+set `target_assertion_key_env` to the Secret-backed
+`AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_PRIVATE_KEY`; the base manifest
+injects that environment variable but leaves the signer disabled. It does not
+use a Secret volume because Kubernetes Secret volume paths are symlinks and the
+loader intentionally rejects symlinked key files. These values are references
+or non-secret metadata; the private key itself is never stored in the
+ConfigMap. This manifest does not publish a JWKS; the matching dedicated JWKS
+remains an externally managed deployment boundary.
 
 ## Layout
 

@@ -33,11 +33,11 @@ sources:
     status_path: ""
     region: local
     bearer_token: ""
-    oauth_token_url: ""
-    oauth_client_id: ""
-    oauth_client_secret: ""
-    oauth_scope: ""
-    oauth_resource: ""
+    oauth_token_url: ""        # env: AERO_ID_SOURCES_AERO_IM_OAUTH_TOKEN_URL
+    oauth_client_id: ""         # env: AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_ID
+    oauth_client_secret: ""     # blank here; env: AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET
+    oauth_scope: ""             # env: AERO_ID_SOURCES_AERO_IM_OAUTH_SCOPE
+    oauth_resource: ""           # env: AERO_ID_SOURCES_AERO_IM_OAUTH_RESOURCE
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32

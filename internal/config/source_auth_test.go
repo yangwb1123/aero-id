@@ -23,6 +23,44 @@ sources:
 	}
 }
 
+func TestLoadAeroIMOAuthEnvironmentOverridesForTargetAssertion(t *testing.T) {
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_OAUTH_TOKEN_URL", "https://snaplink.example/token")
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_ID", "aero-id-im-source")
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET", "oauth-client-secret-from-secret")
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_OAUTH_SCOPE", "aero.account.summary.read")
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_OAUTH_RESOURCE", "aero-im")
+	content := sample + `
+sources:
+  aero_im:
+    endpoint: "https://aero-im.example"
+    summary_path: /internal/account-summary
+    region: local
+    bearer_token: ""
+    oauth_token_url: ""
+    oauth_client_id: ""
+    oauth_client_secret: ""
+    oauth_scope: ""
+    oauth_resource: ""
+    target_assertion_key_file: ""
+    target_assertion_key_env: AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_PRIVATE_KEY
+    target_assertion_key_id: target-key-2026-08
+    target_assertion_issuer: https://aero-id.example/assertions
+    target_assertion_audience: aero-im-account-summary
+    target_assertion_subject: aero-id-sync
+    target_assertion_client_id: aero-id-im-source
+`
+	cfg, err := Load(writeTemp(t, content))
+	if err != nil {
+		t.Fatalf("Load error = %v", err)
+	}
+	got := cfg.Sources.AeroIM
+	if got.OAuthTokenURL != "https://snaplink.example/token" || got.OAuthClientID != "aero-id-im-source" ||
+		got.OAuthSecret != "oauth-client-secret-from-secret" || got.OAuthScope != "aero.account.summary.read" ||
+		got.OAuthResource != "aero-im" {
+		t.Fatal("AeroIM OAuth environment overrides did not land")
+	}
+}
+
 func TestLoadSourceWorkloadConcurrencyEnvironmentOverrides(t *testing.T) {
 	t.Setenv("AERO_ID_SOURCES_SNAPLINK_QUERY_MAX_CONCURRENCY", "7")
 	t.Setenv("AERO_ID_SOURCES_AERO_IM_COMMAND_MAX_CONCURRENCY", "5")

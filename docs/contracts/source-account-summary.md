@@ -42,7 +42,9 @@ after every signature, claim, query, and header check.
 Aero ID does not publish this public key set. Deployment therefore owns an
 explicit external JWKS contract: `AERO__ACCOUNT_SUMMARY__TARGET_ASSERTION_JWKS_URI`
 in Aero IM must point to an HTTPS endpoint managed for this dedicated trust
-domain, not `AERO__OIDC__JWKS_URI` or the general integration JWKS. The
+domain, not `AERO__OIDC__JWKS_URI` or the general integration JWKS. It must
+use HTTPS even for loopback-looking hosts and must not redirect; Aero IM
+rejects cleartext and redirect responses at this dedicated boundary. The
 endpoint must publish a bounded RFC 7517 document containing only verification
 keys such as:
 
