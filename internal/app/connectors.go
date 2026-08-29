@@ -50,5 +50,10 @@ func sourceHTTPConfig(value config.SourceEndpointConfig, environment string, met
 		QueryMaxConcurrency: value.QueryMaxConcurrency, CommandMaxConcurrency: value.CommandMaxConcurrency,
 		HealthMaxConcurrency: value.HealthMaxConcurrency, MaxAttempts: value.MaxAttempts, RetryBackoff: value.RetryBackoff,
 		TLSCAFile: value.TLSCAFile, TLSCertFile: value.TLSCertFile,
-		TLSKeyFile: value.TLSKeyFile, TLSServerName: value.TLSServerName, Metrics: metricsReg}
+		TLSKeyFile: value.TLSKeyFile, TLSServerName: value.TLSServerName,
+		TargetAssertionKeyFile: value.TargetAssertionKeyFile, TargetAssertionKeyEnv: value.TargetAssertionKeyEnv,
+		TargetAssertionKeyID: value.TargetAssertionKeyID, TargetAssertionIssuer: value.TargetAssertionIssuer,
+		TargetAssertionAudience: value.TargetAssertionAudience, TargetAssertionSubject: value.TargetAssertionSubject,
+		TargetAssertionClientID: value.TargetAssertionClientID, TargetAssertionLifetime: value.TargetAssertionLifetime,
+		Metrics: metricsReg}
 }

@@ -25,23 +25,41 @@ type AggregationInput struct {
 }
 
 type aggregationService struct {
-	accounts    AccountService
-	snapshots   repository.SnapshotRepository
-	application repository.SummaryApplication
-	connectors  map[connector.Source]connector.Connector
+	accounts              AccountService
+	authoritativeAccounts connector.AuthoritativeAccountLoader
+	snapshots             repository.SnapshotRepository
+	application           repository.SummaryApplication
+	connectors            map[connector.Source]connector.Connector
 }
 
 const defaultAggregationMaxAge = 5 * time.Minute
 
 func NewAggregationService(accounts AccountService, snapshots repository.SnapshotRepository,
 	application repository.SummaryApplication, connectors ...connector.Connector) AggregationService {
+	return newAggregationService(accounts, nil, snapshots, application, connectors...)
+}
+
+// NewAggregationServiceWithAuthoritativeAccounts wires the tenant-scoped
+// account loader required before an Aero IM target assertion can be minted.
+// The legacy constructor remains for source fixtures that do not use the
+// bound Aero IM connector.
+func NewAggregationServiceWithAuthoritativeAccounts(accounts AccountService,
+	authoritative connector.AuthoritativeAccountLoader, snapshots repository.SnapshotRepository,
+	application repository.SummaryApplication, connectors ...connector.Connector) AggregationService {
+	return newAggregationService(accounts, authoritative, snapshots, application, connectors...)
+}
+
+func newAggregationService(accounts AccountService, authoritative connector.AuthoritativeAccountLoader,
+	snapshots repository.SnapshotRepository, application repository.SummaryApplication,
+	connectors ...connector.Connector) AggregationService {
 	bySource := make(map[connector.Source]connector.Connector, len(connectors))
 	for _, item := range connectors {
 		if item != nil {
 			bySource[item.Source()] = item
 		}
 	}
-	return &aggregationService{accounts: accounts, snapshots: snapshots, application: application, connectors: bySource}
+	return &aggregationService{accounts: accounts, authoritativeAccounts: authoritative,
+		snapshots: snapshots, application: application, connectors: bySource}
 }
 
 func (s *aggregationService) GetMeOverview(ctx context.Context, input AggregationInput) (*domain.AggregateOverview, error) {
@@ -132,8 +150,24 @@ func (s *aggregationService) refresh(ctx context.Context, account *domain.Accoun
 
 func (s *aggregationService) refreshSource(ctx context.Context, account *domain.Account, source connector.Source,
 	client connector.Connector, requested []domain.AccountDataset, result *domain.AggregateOverview, mu *sync.Mutex) {
-	summary, err := client.Summary(ctx, connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
-		ActorUID: actorFromContext(ctx), TenantID: TenantFrom(ctx), RequestID: RequestIDFrom(ctx), Region: account.HomeRegion, Datasets: requested})
+	request := connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
+		ActorUID: actorFromContext(ctx), TenantID: account.TenantID, RequestID: RequestIDFrom(ctx),
+		Region: account.HomeRegion, Datasets: requested}
+	var err error
+	if source == connector.SourceAeroIM {
+		if s.authoritativeAccounts == nil {
+			s.setSourceError(result, mu, source, "source.target_binding_unavailable")
+			return
+		}
+		request, err = connector.NewTrustedSummaryRequest(ctx, s.authoritativeAccounts,
+			connector.TrustedSummaryRequestInput{TenantID: account.TenantID, AccountID: account.ID,
+				ActorUID: actorFromContext(ctx), RequestID: RequestIDFrom(ctx), Datasets: requested})
+		if err != nil {
+			s.setSourceError(result, mu, source, "source.target_binding_invalid")
+			return
+		}
+	}
+	summary, err := client.Summary(ctx, request)
 	if err != nil {
 		s.setSourceError(result, mu, source, sourceErrorCode(err))
 		return

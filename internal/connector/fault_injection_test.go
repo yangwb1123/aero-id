@@ -240,8 +240,9 @@ func TestConnector_CircuitOpensAfterRepeatedFailures(t *testing.T) {
 
 func newTestConnector(t *testing.T, endpoint string, cfg HTTPConfig) *JSONSummaryConnector {
 	t.Helper()
+	cfg = addTestTargetAssertion(cfg)
 	cfg.Endpoint = endpoint
-	cfg.SummaryPath = "/summary"
+	cfg.SummaryPath = accountSummaryCanonicalPath
 	cfg.AllowInsecureLoopback = true
 	cfg.Environment = "test"
 	cfg.Client = http.DefaultClient

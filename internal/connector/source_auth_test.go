@@ -107,15 +107,15 @@ func TestAeroIMStaticBearerAuthenticatesEverySurface(t *testing.T) {
 		}
 		paths = append(paths, r.URL.Path)
 		switch r.URL.Path {
-		case "/summary":
+		case accountSummaryCanonicalPath:
 			_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 		default:
 			_, _ = w.Write([]byte(`{"status":"completed","source_operation_id":"source-op"}`))
 		}
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
-		BearerToken: "  static-source-token  ", ErasePath: "/erase", OperationStatusPath: "/status", MaxAttempts: 1})
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL,
+		BearerToken: "  static-source-token  ", ErasePath: "/erase", OperationStatusPath: "/status", MaxAttempts: 1}))
 	if err != nil {
 		t.Fatalf("static bearer constructor: %v", err)
 	}
@@ -128,8 +128,8 @@ func TestAeroIMStaticBearerAuthenticatesEverySurface(t *testing.T) {
 	if _, err := client.OperationStatus(t.Context(), OperationStatusRequest{AccountID: domain.ID{1}, SourceOperationID: "source-op"}); err != nil {
 		t.Fatalf("operation status: %v", err)
 	}
-	if len(paths) != 3 || paths[0] != "/summary" || paths[1] != "/erase" || paths[2] != "/status" {
-		t.Fatalf("authenticated paths = %#v, want summary/erase/status", paths)
+	if len(paths) != 3 || paths[0] != accountSummaryCanonicalPath || paths[1] != "/erase" || paths[2] != "/status" {
+		t.Fatalf("authenticated paths = %#v, want canonical summary/erase/status", paths)
 	}
 }
 
@@ -163,9 +163,9 @@ func TestAeroIMOAuthFailureDoesNotCallSource(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer sourceServer.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: sourceServer.URL,
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: sourceServer.URL,
 		OAuth: OAuthClientCredentialsConfig{TokenURL: tokenServer.URL, ClientID: "client",
-			ClientSecret: "secret", Scope: "summary:read", Resource: "aero-im"}, MaxAttempts: 1})
+			ClientSecret: "secret", Scope: "summary:read", Resource: "aero-im"}, MaxAttempts: 1}))
 	if err != nil {
 		t.Fatalf("OAuth constructor: %v", err)
 	}
@@ -270,9 +270,9 @@ func TestAeroIMMTLSWithInjectedClientPresentsClientCertificate(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL, SummaryPath: accountSummaryCanonicalPath,
 		TLSCAFile: material.caFile, TLSCertFile: material.clientCertFile, TLSKeyFile: material.clientKeyFile,
-		Client: server.Client(), MaxAttempts: 1})
+		Client: server.Client(), MaxAttempts: 1}))
 	if err != nil {
 		t.Fatalf("mTLS constructor: %v", err)
 	}

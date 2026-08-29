@@ -9,6 +9,80 @@ import (
 	"github.com/aero/aero-id/internal/domain"
 )
 
+type syncSummaryAccountLoader struct {
+	account *domain.Account
+}
+
+func (l syncSummaryAccountLoader) GetByID(_ context.Context, tenantID string, accountID domain.ID) (*domain.Account, error) {
+	if l.account == nil || l.account.TenantID != tenantID || l.account.ID != accountID {
+		return nil, errors.New("account not found")
+	}
+	return l.account, nil
+}
+
+func TestSyncSummaryRequestUsesAuthoritativeAccountIdentity(t *testing.T) {
+	account := &domain.Account{ID: domain.ID{1}, TenantID: "tenant-1", CanonicalUID: "uid-1", HomeRegion: "us-east-1", Status: domain.AccountActive}
+	job := &domain.SyncJob{ID: domain.ID{2}, AccountID: account.ID, ActorUID: "actor-1", TenantID: "tenant-1", RequestID: "request-1"}
+	request, err := syncSummaryRequest(t.Context(), syncSummaryAccountLoader{account}, account, job, connector.SourceAeroIM, []domain.AccountDataset{"aero-im.profile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.AccountID != account.ID || request.CanonicalUID != account.CanonicalUID ||
+		request.TenantID != account.TenantID || request.Region != account.HomeRegion {
+		t.Fatalf("request identity = %#v, want account-authoritative fields", request)
+	}
+	if request.ActorUID != job.ActorUID || request.OperationID != job.ID.String() {
+		t.Fatalf("request context = %#v, want job context", request)
+	}
+}
+
+func TestSyncSummaryRequestRejectsTenantCanonicalAndRegionMismatches(t *testing.T) {
+	baseAccount := &domain.Account{ID: domain.ID{1}, TenantID: "tenant-1", CanonicalUID: "uid-1", HomeRegion: "us-east-1", Status: domain.AccountActive}
+	baseJob := &domain.SyncJob{ID: domain.ID{2}, AccountID: baseAccount.ID, TenantID: "tenant-1"}
+	cases := []struct {
+		name   string
+		mutate func(*domain.Account, *domain.SyncJob)
+	}{
+		{"tenant", func(_ *domain.Account, job *domain.SyncJob) { job.TenantID = "tenant-2" }},
+		{"canonical UID", func(account *domain.Account, _ *domain.SyncJob) { account.CanonicalUID = "" }},
+		{"region", func(account *domain.Account, _ *domain.SyncJob) { account.HomeRegion = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account := *baseAccount
+			job := *baseJob
+			tc.mutate(&account, &job)
+			if _, err := syncSummaryRequest(t.Context(), syncSummaryAccountLoader{&account}, &account, &job, connector.SourceAeroIM, []domain.AccountDataset{"aero-im.profile"}); err == nil {
+				t.Fatal("invalid authoritative target was accepted")
+			}
+		})
+	}
+}
+
+func TestSyncSummaryRequestKeepsAeroVaultConstructionSourceAware(t *testing.T) {
+	account := &domain.Account{ID: domain.ID{3}, TenantID: "tenant-1", CanonicalUID: "opaque-user", HomeRegion: "us-west-2", Status: domain.AccountActive}
+	job := &domain.SyncJob{ID: domain.ID{4}, AccountID: account.ID, ActorUID: "actor-1", TenantID: account.TenantID, RequestID: "request-1"}
+	request, err := syncSummaryRequest(t.Context(), nil, account, job, connector.SourceAeroVault,
+		[]domain.AccountDataset{"aero-vault.tenants"})
+	if err != nil {
+		t.Fatalf("Aero Vault sync request: %v", err)
+	}
+	if request.AccountID != account.ID || request.CanonicalUID != account.CanonicalUID ||
+		request.TenantID != job.TenantID || request.Region != account.HomeRegion ||
+		len(request.Datasets) != 1 || request.Datasets[0] != "aero-vault.tenants" {
+		t.Fatalf("Aero Vault request = %#v, want source-owned request fields", request)
+	}
+}
+
+func TestSyncSummaryRequestKeepsAeroIMFailClosedWithoutLoader(t *testing.T) {
+	account := &domain.Account{ID: domain.ID{5}, TenantID: "tenant-1", CanonicalUID: "opaque-user", HomeRegion: "us-west-2", Status: domain.AccountActive}
+	job := &domain.SyncJob{ID: domain.ID{6}, AccountID: account.ID, TenantID: account.TenantID}
+	if _, err := syncSummaryRequest(t.Context(), nil, account, job, connector.SourceAeroIM,
+		[]domain.AccountDataset{"aero-im.profile"}); err == nil {
+		t.Fatal("Aero IM sync request was constructed without an authoritative loader")
+	}
+}
+
 func TestEraseRequestForJobCarriesAccountHomeRegion(t *testing.T) {
 	account := &domain.Account{ID: domain.ID{1}, CanonicalUID: "uid-1", HomeRegion: "us-east-1"}
 	job := &domain.SyncJob{ID: domain.ID{2}, ActorUID: "actor-1", TenantID: "tenant-1", RequestID: "request-1",

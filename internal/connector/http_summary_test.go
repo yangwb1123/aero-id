@@ -12,7 +12,7 @@ import (
 
 func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/summary" || r.URL.Query().Get("dataset") != string(domain.AccountDataset("aero-im.profile")) {
+		if r.URL.Path != accountSummaryCanonicalPath || r.URL.Query().Get("dataset") != string(domain.AccountDataset("aero-im.profile")) {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
 		if got := r.Header.Get("X-Request-ID"); got != "request-1" {
@@ -21,7 +21,7 @@ func TestJSONSummaryConnectorRedactsSensitiveFields(t *testing.T) {
 		_, _ = w.Write([]byte(`{"source_region":"west","version":4,"generated_at":"2026-08-20T00:00:00Z","datasets":{"aero-im.profile":{"display_name":"Ada","token":"secret","nested":{"body":"message"}}}}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL, SummaryPath: accountSummaryCanonicalPath, AllowInsecureLoopback: true, Environment: "test", Client: server.Client()}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestJSONSummaryConnectorRejectsMissingFreshnessMetadata(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
+			client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL, SummaryPath: accountSummaryCanonicalPath, AllowInsecureLoopback: true, Environment: "test", Client: server.Client()}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +183,7 @@ func TestJSONSummaryConnectorRejectsInvalidReferences(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
+			client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL, SummaryPath: accountSummaryCanonicalPath, AllowInsecureLoopback: true, Environment: "test", Client: server.Client()}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,7 +204,7 @@ func TestJSONSummaryConnectorRejectsRequestedRegionMismatch(t *testing.T) {
 		_, _ = w.Write([]byte(`{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL, SummaryPath: accountSummaryCanonicalPath, AllowInsecureLoopback: true, Environment: "test", Client: server.Client()}))
 	if err != nil {
 		t.Fatal(err)
 	}

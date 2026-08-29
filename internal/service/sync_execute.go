@@ -58,8 +58,18 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 				mu.Unlock()
 				return
 			}
+			request, requestErr := syncSummaryRequest(ctx, s.accountRepo, account, job, source, requested)
+			if requestErr != nil {
+				mu.Lock()
+				failures++
+				result["sources"].(map[string]any)[string(source)] = map[string]any{
+					"status": "invalid_request", "error_code": "source.target_binding_invalid",
+				}
+				mu.Unlock()
+				return
+			}
 			remoteCtx, remoteCancel := syncRemoteContext(ctx)
-			summary, callErr := client.Summary(remoteCtx, syncSummaryRequest(account, job, requested))
+			summary, callErr := client.Summary(remoteCtx, request)
 			remoteCancel()
 			if callErr != nil {
 				mu.Lock()

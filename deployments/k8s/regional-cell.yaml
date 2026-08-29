@@ -69,6 +69,21 @@ data:
         health_max_concurrency: 0           # reserved probe capacity
         max_attempts: 3
         retry_backoff: 50ms
+        # Owner-approved EdDSA target binding. Keep every field disabled until
+        # the external dedicated Aero IM JWKS and private-key secret are
+        # deployed together; see deployments/k8s/README.md.
+        target_assertion_key_file: ""
+        target_assertion_key_env: ""
+        target_assertion_key_id: ""
+        target_assertion_issuer: ""
+        target_assertion_audience: ""
+        target_assertion_subject: ""
+        target_assertion_client_id: ""
+        target_assertion_lifetime: 0s
+        # When enabled, set target_assertion_key_file to the projected secret
+        # path below, target_assertion_audience to aero-im-account-summary,
+        # target_assertion_subject to aero-id-sync, and configure OAuth scope
+        # aero.account.summary.read with resource aero-im.
       aero_vault:
         endpoint: https://aero-vault.REGION_PLACEHOLDER.example.com
         summary_path: /v1/internal/account-summary
@@ -255,6 +270,9 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
+            - name: account-summary-target-key
+              mountPath: /var/run/secrets/aero-id/account-summary-target
+              readOnly: true
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 5
@@ -270,6 +288,17 @@ spec:
         - name: config
           configMap:
             name: aero-id-config
+        # Optional while target_assertion_key_file is blank. The key is
+        # required by the out-of-band rollout contract when that block is set.
+        - name: account-summary-target-key
+          secret:
+            secretName: aero-id-secrets
+            optional: true
+            defaultMode: 0400
+            items:
+              - key: aero_im_target_assertion_private_key
+                path: private-key.pem
+                mode: 0400
 ---
 # P6-10: HPA driven by RPS/CPU. The api deployment is stateless, so scale-out
 # is safe; account-affecting writes still route to the account home region.
@@ -369,6 +398,9 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
+            - name: account-summary-target-key
+              mountPath: /var/run/secrets/aero-id/account-summary-target
+              readOnly: true
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: "1", memory: 1Gi}
@@ -376,6 +408,15 @@ spec:
         - name: config
           configMap:
             name: aero-id-config
+        - name: account-summary-target-key
+          secret:
+            secretName: aero-id-secrets
+            optional: true
+            defaultMode: 0400
+            items:
+              - key: aero_im_target_assertion_private_key
+                path: private-key.pem
+                mode: 0400
 ---
 # Regional PostgreSQL (single writer). Multi-writer requires an ADR + conflict
 # model; default is home-region writes + async projection replication (P6-03).

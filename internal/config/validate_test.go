@@ -231,6 +231,73 @@ func TestValidateSourceMTLSAndPaths(t *testing.T) {
 	}
 }
 
+func targetAssertionSourceBase() SourceEndpointConfig {
+	source := sourceEndpointBase()
+	source.TargetAssertionClientID = "aero-id-im-source"
+	source.TargetAssertionKeyFile = "/run/secrets/aero-id-target-key.pem"
+	source.TargetAssertionKeyID = "target-key-2026-08"
+	source.TargetAssertionIssuer = "https://aero-id.example/assertions"
+	source.TargetAssertionAudience = "aero-im-account-summary"
+	source.TargetAssertionSubject = "aero-id-sync"
+	source.TargetAssertionLifetime = time.Minute
+	source.OAuthTokenURL = "https://snaplink.example/token"
+	source.OAuthClientID = source.TargetAssertionClientID
+	source.OAuthSecret = "source-secret"
+	source.OAuthScope = "aero.account.summary.read"
+	source.OAuthResource = "aero-im"
+	return source
+}
+
+func TestValidateAeroIMTargetAssertionConfig(t *testing.T) {
+	if err := validateSourceEndpoint("aero_im", targetAssertionSourceBase()); err != nil {
+		t.Fatalf("complete target assertion config: %v", err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*SourceEndpointConfig)
+	}{
+		{"both key references", func(source *SourceEndpointConfig) { source.TargetAssertionKeyEnv = "AERO_TARGET_ASSERTION_KEY" }},
+		{"missing issuer", func(source *SourceEndpointConfig) { source.TargetAssertionIssuer = "" }},
+		{"missing client", func(source *SourceEndpointConfig) { source.TargetAssertionClientID = "" }},
+		{"wrong audience", func(source *SourceEndpointConfig) { source.TargetAssertionAudience = "other-audience" }},
+		{"wrong subject", func(source *SourceEndpointConfig) { source.TargetAssertionSubject = "other-subject" }},
+		{"wrong scope", func(source *SourceEndpointConfig) { source.OAuthScope = "account:summary:read" }},
+		{"wrong resource", func(source *SourceEndpointConfig) { source.OAuthResource = "snaplink" }},
+		{"static bearer", func(source *SourceEndpointConfig) { source.BearerToken = "legacy-token" }},
+		{"client mismatch", func(source *SourceEndpointConfig) {
+			source.OAuthTokenURL = "https://sso.example/token"
+			source.OAuthClientID = "other-client"
+			source.OAuthSecret = "source-secret"
+			source.OAuthScope = "aero.account.summary.read"
+			source.OAuthResource = "aero-im"
+		}},
+		{"invalid env name", func(source *SourceEndpointConfig) {
+			source.TargetAssertionKeyFile = ""
+			source.TargetAssertionKeyEnv = "target-key"
+		}},
+		{"lifetime too long", func(source *SourceEndpointConfig) { source.TargetAssertionLifetime = time.Minute + time.Second }},
+		{"subsecond lifetime", func(source *SourceEndpointConfig) { source.TargetAssertionLifetime = 1500 * time.Millisecond }},
+		{"wrong protocol path", func(source *SourceEndpointConfig) { source.SummaryPath = "/v2/internal/account-summary" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := targetAssertionSourceBase()
+			tc.mutate(&source)
+			if err := validateSourceEndpoint("aero_im", source); err == nil {
+				t.Fatal("invalid target assertion configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateNonAeroIMDoesNotRequireTargetAssertion(t *testing.T) {
+	source := sourceEndpointBase()
+	source.TargetAssertionKeyFile = "/run/secrets/unused.pem"
+	if err := validateSourceEndpoint("aero_vault", source); err != nil {
+		t.Fatalf("non-Aero-IM source was forced to configure target assertions: %v", err)
+	}
+}
+
 func TestValidateCallbackBounds(t *testing.T) {
 	cases := []struct {
 		name    string

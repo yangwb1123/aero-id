@@ -17,6 +17,13 @@ import (
 )
 
 func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req SummaryRequest) (*http.Request, error) {
+	if c.source == SourceAeroIM && req.trustedTarget == nil && c.testTargetRequest != nil {
+		req = c.testTargetRequest(req)
+	}
+	if c.source == SourceAeroIM && !canonicalTargetDatasetOrder(req.Datasets) {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid,
+			Code: "source.target_assertion_dataset_order"}
+	}
 	endpoint, err := c.summaryURL(req)
 	if err != nil {
 		return nil, err
@@ -35,11 +42,27 @@ func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req Summar
 	}
 	request.Header.Set("X-Request-ID", req.RequestID)
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
+	if c.source == SourceAeroIM {
+		if c.targetAssertionSigner == nil || !trustedTargetMatchesRequest(req.trustedTarget, req) {
+			return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable,
+				Code: "source.target_assertion_not_configured"}
+		}
+		assertion, err := c.targetAssertionSigner.sign(req.trustedTarget)
+		if err != nil {
+			return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid,
+				Code: "source.target_assertion_failed", Cause: err}
+		}
+		request.Header.Set(accountSummaryTargetAssertionHeader, assertion)
+	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
 	return request, nil
 }
 
 func (c *JSONSummaryConnector) summaryURL(req SummaryRequest) (*url.URL, error) {
+	if c.source == SourceAeroIM && c.targetAssertionSigner != nil && c.cfg.SummaryPath != accountSummaryCanonicalPath {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid,
+			Code: "source.target_assertion_path"}
+	}
 	endpoint, err := url.Parse(strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.SummaryPath)
 	if err != nil {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint", Cause: err}
@@ -49,7 +72,10 @@ func (c *JSONSummaryConnector) summaryURL(req SummaryRequest) (*url.URL, error) 
 	if req.Region != "" {
 		query.Set("region", req.Region)
 	}
-	if req.Reconcile {
+	// Aero IM's bound protocol has no reconciliation query flag. Reconcile is
+	// an aero-id workflow mode, not a source authorization input; omitting it
+	// keeps the signed request inside the strict IM query allow-list.
+	if req.Reconcile && c.source != SourceAeroIM {
 		query.Set("reconcile", "true")
 	}
 	for _, dataset := range req.Datasets {
@@ -57,6 +83,18 @@ func (c *JSONSummaryConnector) summaryURL(req SummaryRequest) (*url.URL, error) 
 	}
 	endpoint.RawQuery = query.Encode()
 	return endpoint, nil
+}
+
+func canonicalTargetDatasetOrder(datasets []domain.AccountDataset) bool {
+	if len(datasets) == 0 {
+		return false
+	}
+	for index := 1; index < len(datasets); index++ {
+		if string(datasets[index-1]) >= string(datasets[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func setBearer(request *http.Request, token string) {

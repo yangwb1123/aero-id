@@ -38,21 +38,40 @@ type HTTPConfig struct {
 	TLSCertFile           string
 	TLSKeyFile            string
 	TLSServerName         string
-	Client                *http.Client
-	Metrics               *metrics.Registry
+	// Account-summary target assertions are used only by the Aero IM
+	// connector. The key is loaded from one of the two secret references;
+	// non-Aero-IM connectors ignore these fields.
+	TargetAssertionKeyFile  string
+	TargetAssertionKeyEnv   string
+	TargetAssertionKeyID    string
+	TargetAssertionIssuer   string
+	TargetAssertionAudience string
+	TargetAssertionSubject  string
+	TargetAssertionClientID string
+	TargetAssertionLifetime time.Duration
+	Client                  *http.Client
+	Metrics                 *metrics.Registry
+
+	// These are unexported test seams. Production composition always uses
+	// TargetAssertionKeyFile/TargetAssertionKeyEnv above and cannot inject a
+	// request rewriter from another package.
+	targetAssertionSigner *accountSummaryTargetSigner
+	testTargetRequest     func(SummaryRequest) SummaryRequest
 }
 
 // JSONSummaryConnector implements the small, versioned summary seam expected
 // from a source service. Source-specific clients can replace it without
 // changing aggregation services or public APIs.
 type JSONSummaryConnector struct {
-	source        Source
-	cfg           HTTPConfig
-	client        *http.Client
-	tokens        *oauthClientCredentials
-	queryPolicy   *sourceWorkloadPolicy
-	commandPolicy *sourceWorkloadPolicy
-	healthPolicy  *sourceWorkloadPolicy
+	source                Source
+	cfg                   HTTPConfig
+	client                *http.Client
+	tokens                *oauthClientCredentials
+	queryPolicy           *sourceWorkloadPolicy
+	commandPolicy         *sourceWorkloadPolicy
+	healthPolicy          *sourceWorkloadPolicy
+	targetAssertionSigner *accountSummaryTargetSigner
+	testTargetRequest     func(SummaryRequest) SummaryRequest
 }
 
 const (
@@ -79,6 +98,17 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 		return nil, err
 	}
 	cfg = applySourceAuth(source, cfg, decision)
+	var targetAssertionSigner *accountSummaryTargetSigner
+	if source == SourceAeroIM {
+		if cfg.targetAssertionSigner != nil {
+			targetAssertionSigner = cfg.targetAssertionSigner
+		} else {
+			targetAssertionSigner, err = configuredAccountSummaryTargetSigner(cfg)
+			if err != nil {
+				return nil, fmt.Errorf("%s target assertion: %w", source, err)
+			}
+		}
+	}
 	client, tokens, err := sourceClientAndOAuth(source, cfg)
 	if err != nil {
 		return nil, err
@@ -89,7 +119,9 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 	limits := workloadLimits(cfg)
 	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, tokens: tokens,
 		queryPolicy: newSourceWorkloadPolicy(limits.query), commandPolicy: newSourceWorkloadPolicy(limits.command),
-		healthPolicy: newSourceWorkloadPolicy(limits.health)}, nil
+		healthPolicy: newSourceWorkloadPolicy(limits.health), targetAssertionSigner: targetAssertionSigner,
+		testTargetRequest: cfg.testTargetRequest,
+	}, nil
 }
 
 func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, error) {
@@ -211,6 +243,10 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 		return nil, err
 	}
 	req.Datasets = resolved
+	if c.source == SourceAeroIM && c.targetAssertionSigner == nil {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable,
+			Code: "source.target_assertion_not_configured", Temporary: false}
+	}
 	started := time.Now()
 	release, err := c.begin(ctx, workloadQuery)
 	if err != nil {
@@ -234,11 +270,12 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 func (c *JSONSummaryConnector) fetchSummary(ctx context.Context, req SummaryRequest) (*Summary, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
-	httpReq, err := c.newSummaryRequest(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.doHTTP(ctx, func() (*http.Request, error) { return httpReq.Clone(ctx), nil })
+	response, err := c.doHTTP(ctx, func() (*http.Request, error) {
+		// Build a new request for every attempt. The assertion carries a one-time
+		// jti, so reusing a cloned request would make an otherwise safe retry a
+		// replay at Aero IM.
+		return c.newSummaryRequest(ctx, req)
+	})
 	if err != nil {
 		return nil, c.summaryRequestError(ctx, err)
 	}

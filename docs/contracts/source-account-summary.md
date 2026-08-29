@@ -12,14 +12,59 @@ The configured summary path receives `GET` requests. The checked-in Aero Vault s
 - `account_id`: aero-id UUID, opaque to the source
 - `region`: requested source region when present
 - repeated `dataset`: allow-listed dataset names. Aero Vault summary requests always carry a concrete, source-owned dataset list; an empty summary selection expands locally in registry order.
-- `reconcile=true` only for a bounded reconciliation call
+- `reconcile=true` only for a bounded reconciliation call on sources that
+  explicitly publish that parameter. The bound Aero IM path rejects this
+  parameter; reconciliation is an aero-id workflow mode, not an IM wire field.
 
 The connector also propagates `X-Request-ID`, `X-Aero-Operation-ID`,
 `X-Aero-Account-ID`, `X-Aero-Canonical-UID`, `X-Aero-Actor-UID`,
 `X-Aero-Tenant-ID`, `X-Aero-Region`, W3C trace headers, and a source-valid
-`Authorization` bearer token when configured. Sources must re-check their own
-resource permissions; these headers are attribution and correlation context,
-not an authorization bypass.
+`Authorization` bearer token when configured. For Aero IM, the connector must
+also send one `X-Aero-Target-Assertion` compact JWS. The account, canonical UID,
+tenant, and region headers are required exact consistency fields for that
+protocol; they are not an authorization bypass on their own.
+
+## Aero IM target binding
+
+Aero IM accepts the summary only when the bearer is a validated RFC 9068
+client-credentials token **and** the dedicated `X-Aero-Target-Assertion` is a
+valid EdDSA compact JWS. The assertion has protected `typ`
+`aero.account-target+jwt`, an explicit `kid`, and claims `iss`, `aud`, `sub`,
+`client_id`, `account_id`, `canonical_uid`, `tenant_id`, `region`, `datasets`,
+`method`, `path`, `request_hash`, `scope`, `jti`, `iat`, `nbf`, and `exp`.
+`client_id` must equal the validated bearer client; the signed account and
+identity fields must equal the authoritative account loaded by Aero ID. The
+request is accepted only for `GET /internal/account-summary`, with the exact
+canonical query fields and source region. Datasets are unique and UTF-8-byte
+sorted. `jti` is one-time cluster state in Aero IM Redis and is consumed only
+after every signature, claim, query, and header check.
+
+Aero ID does not publish this public key set. Deployment therefore owns an
+explicit external JWKS contract: `AERO__ACCOUNT_SUMMARY__TARGET_ASSERTION_JWKS_URI`
+in Aero IM must point to an HTTPS endpoint managed for this dedicated trust
+domain, not `AERO__OIDC__JWKS_URI` or the general integration JWKS. The
+endpoint must publish a bounded RFC 7517 document containing only verification
+keys such as:
+
+```json
+{"keys":[{"kty":"OKP","crv":"Ed25519","x":"<base64url>","kid":"<explicit-id>","use":"sig","key_ops":["verify"],"alg":"EdDSA"}]}
+```
+
+Every `kid` must be unique. During rotation publish old and new public keys
+for at least the assertion lifetime plus clock skew, JWKS cache TTL, and
+propagation margin. The Ed25519 private key remains an Aero ID secret and is
+never placed in this document, an OAuth secret field, a log, or a request
+payload. If the dedicated JWKS cannot be obtained, Aero IM fails closed before
+any account lookup.
+
+The Aero ID signer is enabled only with one safe private-key reference (an
+absolute `0600`-style file or a named secret environment variable), explicit
+issuer/key ID/client ID, audience `aero-im-account-summary`, subject
+`aero-id-sync`, OAuth scope `aero.account.summary.read`, OAuth resource
+`aero-im`, and the canonical summary path. Its source OAuth client ID must
+match the assertion `client_id`. The shipped configuration leaves this block
+disabled; enabling it without the external JWKS and matching Aero IM
+configuration is not a valid rollout.
 
 ## Source authentication
 

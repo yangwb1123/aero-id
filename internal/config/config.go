@@ -192,6 +192,17 @@ type SourceEndpointConfig struct {
 	TLSCertFile           string        `mapstructure:"tls_cert_file"`
 	TLSKeyFile            string        `mapstructure:"tls_key_file"`
 	TLSServerName         string        `mapstructure:"tls_server_name"`
+	// Aero IM account-summary target assertion signer. These are intentionally
+	// references/metadata only; the private key is loaded by the connector from
+	// the selected file or environment variable and is never stored in config.
+	TargetAssertionKeyFile  string        `mapstructure:"target_assertion_key_file"`
+	TargetAssertionKeyEnv   string        `mapstructure:"target_assertion_key_env"`
+	TargetAssertionKeyID    string        `mapstructure:"target_assertion_key_id"`
+	TargetAssertionIssuer   string        `mapstructure:"target_assertion_issuer"`
+	TargetAssertionAudience string        `mapstructure:"target_assertion_audience"`
+	TargetAssertionSubject  string        `mapstructure:"target_assertion_subject"`
+	TargetAssertionClientID string        `mapstructure:"target_assertion_client_id"`
+	TargetAssertionLifetime time.Duration `mapstructure:"target_assertion_lifetime"`
 }
 
 type ServerConfig struct {

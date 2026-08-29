@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,7 @@ func TestAeroIMDatasetScopeRejectsInvalidRequestsBeforeTransport(t *testing.T) {
 	}))
 	defer server.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL,
-		SummaryPath: "/summary", ErasePath: "/erase", BearerToken: "source-token", MaxAttempts: 1})
+		SummaryPath: accountSummaryCanonicalPath, ErasePath: "/erase", BearerToken: "source-token", MaxAttempts: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestAeroIMDatasetScopeRejectsInvalidRequestsBeforeOAuth(t *testing.T) {
 		case "/token":
 			tokenCalls.Add(1)
 			_, _ = io.WriteString(w, `{"access_token":"source-token","token_type":"Bearer","expires_in":300}`)
-		case "/summary", "/erase":
+		case accountSummaryCanonicalPath, "/erase":
 			sourceCalls.Add(1)
 			w.WriteHeader(http.StatusInternalServerError)
 		default:
@@ -66,7 +67,7 @@ func TestAeroIMDatasetScopeRejectsInvalidRequestsBeforeOAuth(t *testing.T) {
 	}))
 	defer server.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL,
-		SummaryPath: "/summary", ErasePath: "/erase", AllowInsecureLoopback: true, Environment: "test",
+		SummaryPath: accountSummaryCanonicalPath, ErasePath: "/erase", AllowInsecureLoopback: true, Environment: "test",
 		Client: server.Client(), OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token",
 			ClientID: "aero-id", ClientSecret: "source-secret", Scope: "account:summary:read", Resource: "aero-im"}})
 	if err != nil {
@@ -86,7 +87,7 @@ func TestAeroIMDatasetScopeForwardsExactSelection(t *testing.T) {
 	selections := [][]domain.AccountDataset{all[:1], {all[3], all[0], all[2]}}
 	var summaryDatasets, eraseDatasets []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/summary" {
+		if r.URL.Path == accountSummaryCanonicalPath {
 			summaryDatasets = append([]string(nil), r.URL.Query()["dataset"]...)
 			_, _ = io.WriteString(w, `{"source_region":"west","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`)
 			return
@@ -108,8 +109,8 @@ func TestAeroIMDatasetScopeForwardsExactSelection(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL,
-		SummaryPath: "/summary", ErasePath: "/erase", BearerToken: "source-token", MaxAttempts: 1})
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL,
+		ErasePath: "/erase", BearerToken: "source-token", MaxAttempts: 1}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,12 +122,14 @@ func TestAeroIMDatasetScopeForwardsExactSelection(t *testing.T) {
 		for i, dataset := range selection {
 			want[i] = string(dataset)
 		}
-		if len(summaryDatasets) != len(want) {
-			t.Fatalf("summary datasets = %v, want %v", summaryDatasets, want)
+		summaryWant := append([]string(nil), want...)
+		sort.Strings(summaryWant)
+		if len(summaryDatasets) != len(summaryWant) {
+			t.Fatalf("summary datasets = %v, want %v", summaryDatasets, summaryWant)
 		}
-		for i := range want {
-			if summaryDatasets[i] != want[i] {
-				t.Fatalf("summary datasets = %v, want %v", summaryDatasets, want)
+		for i := range summaryWant {
+			if summaryDatasets[i] != summaryWant[i] {
+				t.Fatalf("summary datasets = %v, want %v", summaryDatasets, summaryWant)
 			}
 		}
 		if _, err := client.Erase(t.Context(), EraseRequest{Datasets: selection, IdempotencyKey: "erase-1"}); err != nil {

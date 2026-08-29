@@ -50,6 +50,21 @@ sources:
     tls_cert_file: ""
     tls_key_file: ""
     tls_server_name: ""
+    # Optional owner-approved Aero IM target-binding signer. All values remain
+    # disabled here; enabling requires the complete block, OAuth scope/resource
+    # below, and the external dedicated JWKS contract documented in
+    # docs/contracts/source-account-summary.md.
+    target_assertion_key_file: ""
+    target_assertion_key_env: ""
+    target_assertion_key_id: ""
+    target_assertion_issuer: ""
+    target_assertion_audience: ""
+    target_assertion_subject: ""
+    target_assertion_client_id: ""
+    target_assertion_lifetime: 0s
+    # When enabled, the same source block must set:
+    # oauth_scope: aero.account.summary.read
+    # oauth_resource: aero-im
   aero_vault:
     endpoint: ""
     summary_path: /v1/internal/account-summary

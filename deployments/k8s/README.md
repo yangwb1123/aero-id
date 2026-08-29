@@ -16,8 +16,17 @@ home region; other regions serve local projections (see
 #    signing_key, callback_master_key, event_ingest_signing_key,
 #    audit_ledger_signing_key and export_encryption_key. Optional source bearer
 #    keys are snaplink_bearer_token, aero_im_bearer_token and
-#    aero_vault_bearer_token.
-# 3. Deploy dependencies (postgres, redis, nats) first so workers can start.
+#    aero_vault_bearer_token. To enable the bound Aero IM summary, also provide
+#    aero_im_target_assertion_private_key as an Ed25519 PKCS#8 PEM key and set
+#    the complete target_assertion_* block in the ConfigMap; the key is mounted
+#    read-only with restrictive permissions.
+# 3. Before enabling that block, publish the matching public Ed25519 JWK set at
+#    the dedicated external JWKS URI configured in Aero IM
+#    (`AERO__ACCOUNT_SUMMARY__TARGET_ASSERTION_JWKS_URI`). This endpoint is not
+#    owned by aero-id or this manifest and must never be Snaplink's general JWKS.
+#    It must expose unique kids, `alg: EdDSA`, `crv: Ed25519`, `use: sig`, and
+#    `key_ops: [verify]`; overlap old/new kids through the JWKS cache and rollout.
+# 4. Deploy dependencies (postgres, redis, nats) first so workers can start.
 kubectl apply -f deployments/k8s/regional-cell.yaml
 ```
 

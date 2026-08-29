@@ -216,9 +216,20 @@ func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.O
 	if client.Source() != connector.SourceAeroIM && client.Source() != connector.SourceAeroVault && len(datasets) == 0 {
 		datasets = datasetsForSource(allDatasets(), string(client.Source()))
 	}
-	summary, err := client.Summary(ctx, connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
+	request := connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
 		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID,
-		Region: account.HomeRegion, OperationID: operation.ID.String(), Datasets: datasets})
+		Region: account.HomeRegion, OperationID: operation.ID.String(), Datasets: datasets}
+	var err error
+	if client.Source() == connector.SourceAeroIM {
+		request, err = connector.NewTrustedSummaryRequest(ctx, r.accounts, connector.TrustedSummaryRequestInput{
+			TenantID: operation.TenantID, AccountID: account.ID, ActorUID: operation.ActorUID,
+			RequestID: operation.RequestID, OperationID: operation.ID.String(), Datasets: datasets,
+		})
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	summary, err := client.Summary(ctx, request)
 	if err != nil {
 		return "", nil, err
 	}

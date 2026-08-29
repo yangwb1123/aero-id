@@ -5,6 +5,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -27,10 +28,88 @@ type SummaryRequest struct {
 	Datasets     []domain.AccountDataset
 	Region       string
 	Reconcile    bool
+
+	// trustedTarget is populated only by NewTrustedSummaryRequest after the
+	// constructor has loaded the account through an authoritative loader. Aero
+	// IM refuses to sign or send a summary request without it; other source
+	// connectors retain their existing request shape.
+	trustedTarget *trustedSummaryTarget
+}
+
+type trustedSummaryTarget struct {
+	accountID    string
+	canonicalUID string
+	tenantID     string
+	region       string
+	datasets     []domain.AccountDataset
+}
+
+// AuthoritativeAccountLoader is the minimum repository seam required to load
+// an account by its tenant-scoped canonical ID. Keeping the interface here
+// avoids importing the repository layer into the connector package while still
+// preventing callers from presenting a caller-mutated Account as authority.
+type AuthoritativeAccountLoader interface {
+	GetByID(context.Context, string, domain.ID) (*domain.Account, error)
+}
+
+// TrustedSummaryRequestInput contains transport context plus the authoritative
+// lookup key. Target identity fields are intentionally absent: they must come
+// from the loader, never from caller-supplied request data.
+type TrustedSummaryRequestInput struct {
+	TenantID    string
+	AccountID   domain.ID
+	ActorUID    string
+	RequestID   string
+	OperationID string
+	Datasets    []domain.AccountDataset
+	Reconcile   bool
+}
+
+// NewTrustedSummaryRequest loads the account by (tenant ID, account ID) and
+// copies its canonical UID and home region before constructing the request.
+// Only this constructor produces the private target marker used by the Aero IM
+// signer. A caller can mutate its own Account value, but it cannot make that
+// value authoritative without going through the loader.
+func NewTrustedSummaryRequest(ctx context.Context, loader AuthoritativeAccountLoader,
+	input TrustedSummaryRequestInput) (SummaryRequest, error) {
+	if ctx == nil || loader == nil || input.AccountID == (domain.ID{}) ||
+		!validTargetAssertionComponent(input.TenantID, 512) {
+		return SummaryRequest{}, errors.New("trusted summary account binding is invalid")
+	}
+	account, err := loader.GetByID(ctx, input.TenantID, input.AccountID)
+	if err != nil || account == nil || account.ID != input.AccountID || account.TenantID != input.TenantID ||
+		account.Status != domain.AccountActive || !account.Valid() ||
+		!validTargetAssertionComponent(account.CanonicalUID, 512) ||
+		!validTargetAssertionComponent(account.HomeRegion, 128) {
+		return SummaryRequest{}, errors.New("trusted summary account binding is unavailable")
+	}
+	datasets, err := ResolveDatasetScope(SourceAeroIM, input.Datasets, DatasetScopeStored)
+	if err != nil || len(datasets) == 0 {
+		return SummaryRequest{}, errors.New("trusted summary dataset scope is invalid")
+	}
+	sort.Slice(datasets, func(left, right int) bool { return string(datasets[left]) < string(datasets[right]) })
+	return SummaryRequest{
+		AccountID:    account.ID,
+		CanonicalUID: account.CanonicalUID,
+		ActorUID:     input.ActorUID,
+		TenantID:     account.TenantID,
+		RequestID:    input.RequestID,
+		OperationID:  input.OperationID,
+		Datasets:     datasets,
+		Region:       account.HomeRegion,
+		Reconcile:    input.Reconcile,
+		trustedTarget: &trustedSummaryTarget{
+			accountID:    account.ID.String(),
+			canonicalUID: account.CanonicalUID,
+			tenantID:     account.TenantID,
+			region:       account.HomeRegion,
+			datasets:     append([]domain.AccountDataset(nil), datasets...),
+		},
+	}, nil
 }
 
 type Summary struct {
-	Source       Source
+	Source Source
 	// SourceRegion is the authority region for Version. Version values must be
 	// globally monotonic for an account/source/coverage stream; a region move
 	// cannot restart the counter.

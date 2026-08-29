@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -44,32 +45,46 @@ type LegacyDigestSummary struct {
 }
 
 type legacyMigrationService struct {
-	legacy       repository.LegacyMigrationRepository
-	connectors   map[connector.Source]connector.Connector
-	audit        AuditLedgerService
-	defaultLimit int
+	legacy        repository.LegacyMigrationRepository
+	connectors    map[connector.Source]connector.Connector
+	accountRepo   repository.AccountRepository
+	accountIssuer string
+	audit         AuditLedgerService
+	defaultLimit  int
 }
 
 func NewLegacyMigrationService(legacy repository.LegacyMigrationRepository,
 	connectors ...connector.Connector) LegacyMigrationService {
-	return newLegacyMigrationService(legacy, nil, connectors...)
+	return newLegacyMigrationService(legacy, nil, nil, "", connectors...)
 }
 
 func NewLegacyMigrationServiceWithAudit(legacy repository.LegacyMigrationRepository,
 	audit AuditLedgerService, connectors ...connector.Connector) LegacyMigrationService {
-	return newLegacyMigrationService(legacy, audit, connectors...)
+	return newLegacyMigrationService(legacy, audit, nil, "", connectors...)
+}
+
+// NewLegacyMigrationServiceWithAuditAndAccounts wires the authoritative
+// tenant-scoped account repository needed by the legacy Aero IM comparison.
+// The legacy API supplies a UID rather than an account ID, so the service
+// resolves that UID in the caller's verified tenant before constructing the
+// bound summary request. Without this dependency the Aero IM comparison is
+// deliberately reported unavailable instead of making an unbound call.
+func NewLegacyMigrationServiceWithAuditAndAccounts(legacy repository.LegacyMigrationRepository,
+	audit AuditLedgerService, accounts repository.AccountRepository, issuer string,
+	connectors ...connector.Connector) LegacyMigrationService {
+	return newLegacyMigrationService(legacy, audit, accounts, issuer, connectors...)
 }
 
 func newLegacyMigrationService(legacy repository.LegacyMigrationRepository, audit AuditLedgerService,
-	connectors ...connector.Connector) LegacyMigrationService {
+	accounts repository.AccountRepository, issuer string, connectors ...connector.Connector) LegacyMigrationService {
 	bySource := make(map[connector.Source]connector.Connector, len(connectors))
 	for _, client := range connectors {
 		if client != nil {
 			bySource[client.Source()] = client
 		}
 	}
-	return &legacyMigrationService{legacy: legacy, connectors: bySource, audit: audit,
-		defaultLimit: defaultLegacyMigrationLimit}
+	return &legacyMigrationService{legacy: legacy, connectors: bySource, accountRepo: accounts,
+		accountIssuer: strings.TrimSpace(issuer), audit: audit, defaultLimit: defaultLegacyMigrationLimit}
 }
 
 // defaultLegacyMigrationLimit caps one compare run.
@@ -86,9 +101,30 @@ func (s *legacyMigrationService) compareWithSource(ctx context.Context, input Le
 		result.SourceErrors["source"] = "source summary unavailable"
 		return nil
 	}
-	request := connector.SummaryRequest{CanonicalUID: input.OwnerUID, Region: ""}
+	var request connector.SummaryRequest
 	if input.Source == connector.SourceAeroIM {
-		request.Datasets = []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}
+		// LegacyCompareInput is not itself an authority. Resolve the UID by the
+		// verified request tenant and then let the trusted constructor copy the
+		// account's canonical UID and home region. A missing loader, tenant, or
+		// issuer is a safe unavailable result, never an unbound source call.
+		tenantID := strings.TrimSpace(TenantFrom(ctx))
+		if s.accountRepo == nil || tenantID == "" || s.accountIssuer == "" {
+			return errors.New("authoritative Aero IM account binding is unavailable")
+		}
+		account, lookupErr := s.accountRepo.FindByIdentity(ctx, tenantID, s.accountIssuer, input.OwnerUID)
+		if lookupErr != nil || account == nil {
+			return errors.New("authoritative Aero IM account binding is unavailable")
+		}
+		var requestErr error
+		request, requestErr = connector.NewTrustedSummaryRequest(ctx, s.accountRepo,
+			connector.TrustedSummaryRequestInput{TenantID: tenantID, AccountID: account.ID,
+				ActorUID: actorFromContext(ctx), RequestID: RequestIDFrom(ctx),
+				Datasets: []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}})
+		if requestErr != nil {
+			return errors.New("authoritative Aero IM account binding is unavailable")
+		}
+	} else {
+		request = connector.SummaryRequest{CanonicalUID: input.OwnerUID, Region: ""}
 	}
 	summary, err := client.Summary(ctx, request)
 	if err != nil {

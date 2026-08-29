@@ -134,9 +134,11 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithRegionFencingAllowedRegions(deps.cfg.Account.Regions))
 	cutoverSvc := service.NewLegacyCutoverService(repository.NewLegacyCutoverRepository(deps.gdb, deps.auditLedgerRepo),
 		repository.NewLegacyCleanupRepository(deps.gdb), deps.auditLedger)
-	legacyMigrationSvc := service.NewLegacyMigrationServiceWithAudit(
-		repository.NewLegacyMigrationRepository(deps.gdb), deps.auditLedger, deps.sourceConnectors...)
-	aggregationSvc := service.NewAggregationService(accountSvc, deps.snapshotRepo, deps.summaryApplication, deps.sourceConnectors...)
+	legacyMigrationSvc := service.NewLegacyMigrationServiceWithAuditAndAccounts(
+		repository.NewLegacyMigrationRepository(deps.gdb), deps.auditLedger, deps.accountRepo,
+		deps.cfg.Account.Issuer, deps.sourceConnectors...)
+	aggregationSvc := service.NewAggregationServiceWithAuthoritativeAccounts(accountSvc, deps.accountRepo,
+		deps.snapshotRepo, deps.summaryApplication, deps.sourceConnectors...)
 	eventIngestSvc := service.NewEventIngestService(deps.eventReceiptRepo,
 		service.WithEventAllowedRegions(deps.cfg.EventIngest.AllowedRegions),
 		service.WithEventIngestAudit(deps.auditLedger),

@@ -109,7 +109,7 @@ func TestConnectorClientCredentialsCachesAudienceBoundToken(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"source-token","token_type":"Bearer","expires_in":300}`))
-		case "/summary":
+		case accountSummaryCanonicalPath:
 			sourceCalls++
 			if got := r.Header.Get("Authorization"); got != "Bearer source-token" {
 				t.Fatalf("Authorization = %q", got)
@@ -147,12 +147,12 @@ func TestConnectorClientCredentialsPropagatesAcrossAllConnectorSurfaces(t *testi
 			tokenCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"source-token","token_type":"Bearer","expires_in":300}`))
-		case "/summary", "/erase", "/status":
+		case accountSummaryCanonicalPath, "/erase", "/status":
 			paths = append(paths, r.URL.Path+" "+r.Header.Get("Authorization"))
 			if r.Header.Get("Authorization") != "Bearer source-token" {
 				t.Fatalf("%s Authorization = %q", r.URL.Path, r.Header.Get("Authorization"))
 			}
-			if r.URL.Path == "/summary" {
+			if r.URL.Path == accountSummaryCanonicalPath {
 				writeOAuthSummary(t, w)
 				return
 			}
@@ -194,7 +194,7 @@ func TestConnectorClientCredentialsRefreshesOnceAfterUnauthorized(t *testing.T) 
 			tokenCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"token-` + string(rune('0'+tokenCalls)) + `","token_type":"Bearer","expires_in":300}`))
-		case "/summary":
+		case accountSummaryCanonicalPath:
 			sourceCalls++
 			if r.Header.Get("Authorization") == "Bearer token-1" {
 				w.WriteHeader(http.StatusUnauthorized)
