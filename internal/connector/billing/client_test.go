@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,6 +75,210 @@ func TestClientUsesServerConfiguredTenantBindingAndTenantlessPaths(t *testing.T)
 	}
 	if _, err := client.CurrentEntitlement(t.Context(), "tenant-unconfigured"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unconfigured tenant error = %v", err)
+	}
+}
+
+func TestClientRetriesUnauthorizedWithFreshTokenAndPreservesRequest(t *testing.T) {
+	command := ReserveCommand{ID: "res-1", Dimension: "users", Quantity: 2, TTLSeconds: 300, IdempotencyKey: "stable-key"}
+	expectedBody, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tokenCalls, resourceCalls atomic.Int32
+	captures := make(chan billingRequestCapture, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/token":
+			call := tokenCalls.Add(1)
+			clientID, secret, ok := request.BasicAuth()
+			if !ok || clientID != "tenant-1-client" || secret != "secret" {
+				t.Errorf("token credentials = %q/%q/%v", clientID, secret, ok)
+			}
+			if err := request.ParseForm(); err != nil {
+				t.Errorf("parse token form: %v", err)
+			}
+			if request.Form.Get("scope") != ScopeMeteringWrite || request.Form.Get("resource") != billingResource {
+				t.Errorf("token form scope/resource = %q/%q", request.Form.Get("scope"), request.Form.Get("resource"))
+			}
+			token := "token-1"
+			if call == 2 {
+				token = "token-2"
+			}
+			writeJSON(t, w, http.StatusOK, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": 300})
+		case "/" + reservationPath:
+			body, readErr := io.ReadAll(request.Body)
+			if readErr != nil {
+				t.Errorf("read reservation body: %v", readErr)
+			}
+			captures <- billingRequestCapture{method: request.Method, path: request.URL.Path,
+				authorization: request.Header.Get("Authorization"), idempotencyKey: request.Header.Get("Idempotency-Key"), body: string(body)}
+			resourceCalls.Add(1)
+			if request.Header.Get("Authorization") == "Bearer token-1" {
+				writeJSON(t, w, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+				return
+			}
+			writeJSON(t, w, http.StatusCreated, map[string]any{"reservation": map[string]any{
+				"id": command.ID, "tenant_id": "tenant-1", "dimension": command.Dimension,
+				"quantity": command.Quantity, "status": "pending",
+			}})
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	client := newBillingTestClient(t, server.URL)
+	reservation, err := client.Reserve(t.Context(), "tenant-1", command)
+	if err != nil {
+		t.Fatalf("reserve after token refresh: %v", err)
+	}
+	if reservation.ID != command.ID || reservation.TenantID != "tenant-1" || reservation.Quantity != command.Quantity {
+		t.Fatalf("reservation = %+v, want validated response", reservation)
+	}
+	if got := tokenCalls.Load(); got != 2 {
+		t.Fatalf("token calls = %d, want 2", got)
+	}
+	if got := resourceCalls.Load(); got != 2 {
+		t.Fatalf("resource calls = %d, want 2", got)
+	}
+	first, second := nextBillingCapture(t, captures), nextBillingCapture(t, captures)
+	if first.authorization != "Bearer token-1" || second.authorization != "Bearer token-2" {
+		t.Fatalf("Authorization headers = %q/%q, want token-1/token-2", first.authorization, second.authorization)
+	}
+	for index, capture := range []billingRequestCapture{first, second} {
+		if capture.method != http.MethodPost || capture.path != "/"+reservationPath || capture.idempotencyKey != command.IdempotencyKey {
+			t.Errorf("request %d metadata = %+v, want exact retry metadata", index, capture)
+		}
+		if capture.body != string(expectedBody) {
+			t.Errorf("request %d body = %q, want %q", index, capture.body, expectedBody)
+		}
+	}
+}
+
+func TestClientBoundsUnauthorizedRetry(t *testing.T) {
+	var tokenCalls, resourceCalls atomic.Int32
+	captures := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/token":
+			call := tokenCalls.Add(1)
+			token := "token-1"
+			if call == 2 {
+				token = "token-2"
+			}
+			writeJSON(t, w, http.StatusOK, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": 300})
+		case "/" + entitlementPath:
+			resourceCalls.Add(1)
+			captures <- request.Header.Get("Authorization")
+			writeJSON(t, w, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	client := newBillingTestClient(t, server.URL)
+	_, err := client.CurrentEntitlement(t.Context(), "tenant-1")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("second 401 error = %v, want ErrUnauthorized", err)
+	}
+	if got := tokenCalls.Load(); got != 2 {
+		t.Fatalf("token calls = %d, want 2", got)
+	}
+	if got := resourceCalls.Load(); got != 2 {
+		t.Fatalf("resource calls = %d, want 2", got)
+	}
+	if first, second := nextBillingHeader(t, captures), nextBillingHeader(t, captures); first != "Bearer token-1" || second != "Bearer token-2" {
+		t.Fatalf("Authorization headers = %q/%q, want token-1/token-2", first, second)
+	}
+}
+
+func TestClientDoesNotRefreshForbiddenOrInsufficientScope(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "forbidden", status: http.StatusForbidden, body: `{"error":"insufficient_scope"}`},
+		{name: "insufficient scope", status: http.StatusUnauthorized, body: `{"error":"insufficient_scope"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var tokenCalls, resourceCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/token":
+					tokenCalls.Add(1)
+					writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "token-1", "token_type": "Bearer", "expires_in": 300})
+				case "/" + entitlementPath:
+					resourceCalls.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(test.status)
+					_, _ = io.WriteString(w, test.body)
+				default:
+					http.NotFound(w, request)
+				}
+			}))
+			defer server.Close()
+
+			client := newBillingTestClient(t, server.URL)
+			_, err := client.CurrentEntitlement(t.Context(), "tenant-1")
+			if !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("error = %v, want ErrUnauthorized", err)
+			}
+			if got := tokenCalls.Load(); got != 1 {
+				t.Fatalf("token calls = %d, want 1", got)
+			}
+			if got := resourceCalls.Load(); got != 1 {
+				t.Fatalf("resource calls = %d, want 1", got)
+			}
+			if token, ok := client.bindings["tenant-1"].cached(ScopeEntitlementRead); !ok || token != "token-1" {
+				t.Fatalf("cached token = %q/%v, want token-1/true", token, ok)
+			}
+		})
+	}
+}
+
+func newBillingTestClient(t *testing.T, endpoint string) *Client {
+	t.Helper()
+	client, err := NewClient(Config{Endpoint: endpoint, Timeout: time.Second, MaxBodyBytes: 1024,
+		AllowInsecureLoopback: true, Bindings: map[string]BindingConfig{
+			"tenant-1": {TokenURL: endpoint + "/token", ClientID: "tenant-1-client", ClientSecret: "secret",
+				Scope: ScopeEntitlementRead + " " + ScopeMeteringWrite, Resources: []string{billingResource}},
+		}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+type billingRequestCapture struct {
+	method         string
+	path           string
+	authorization  string
+	idempotencyKey string
+	body           string
+}
+
+func nextBillingCapture(t *testing.T, captures <-chan billingRequestCapture) billingRequestCapture {
+	t.Helper()
+	select {
+	case capture := <-captures:
+		return capture
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for billing request")
+		return billingRequestCapture{}
+	}
+}
+
+func nextBillingHeader(t *testing.T, captures <-chan string) string {
+	t.Helper()
+	select {
+	case capture := <-captures:
+		return capture
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for billing request")
+		return ""
 	}
 }
 

@@ -207,11 +207,11 @@ func (client *Client) request(ctx context.Context, tenantID, scope, method, path
 	if tokens == nil {
 		return ErrUnauthorized
 	}
-	token, err := tokens.accessToken(ctx, scope)
+	snapshot, err := tokens.accessTokenSnapshot(ctx, scope)
 	if err != nil {
 		return err
 	}
-	request, err := client.newRequest(ctx, method, path, key, token, input)
+	request, err := client.newRequest(ctx, method, path, key, snapshot.value, input)
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,57 @@ func (client *Client) request(ctx context.Context, tenantID, scope, method, path
 	if err != nil {
 		return fmt.Errorf("%w: transport", ErrUnavailable)
 	}
+	if response.StatusCode == http.StatusUnauthorized {
+		return client.retryUnauthorized(ctx, tokens, scope, method, path, key, input, output, snapshot, response)
+	}
 	return client.decode(response, output)
+}
+
+func (client *Client) retryUnauthorized(ctx context.Context, tokens *tokenSource, scope, method, path, key string,
+	input, output any, snapshot billingTokenSnapshot, response *http.Response) error {
+	if !client.refreshableUnauthorized(response) {
+		return ErrUnauthorized
+	}
+	tokens.invalidateIf(snapshot)
+	replacement, err := tokens.accessTokenSnapshot(ctx, scope)
+	if err != nil {
+		return err
+	}
+	retry, err := client.newRequest(ctx, method, path, key, replacement.value, input)
+	if err != nil {
+		return err
+	}
+	response, err = client.client.Do(retry)
+	if err != nil {
+		return fmt.Errorf("%w: transport", ErrUnavailable)
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		body := readBillingErrorBody(response, client.maxBody)
+		if billingErrorCode(body) != "insufficient_scope" {
+			tokens.invalidateIf(replacement)
+		}
+		return ErrUnauthorized
+	}
+	return client.decode(response, output)
+}
+
+func (client *Client) refreshableUnauthorized(response *http.Response) bool {
+	return billingErrorCode(readBillingErrorBody(response, client.maxBody)) != "insufficient_scope"
+}
+
+func readBillingErrorBody(response *http.Response, limit int64) []byte {
+	if response == nil || response.Body == nil {
+		return nil
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil || int64(len(body)) > limit {
+		return nil
+	}
+	return body
 }
 
 func (client *Client) newRequest(ctx context.Context, method, path, key, token string, input any) (*http.Request, error) {
@@ -266,11 +316,7 @@ func (client *Client) decode(response *http.Response, output any) error {
 }
 
 func decodeBillingError(status int, body []byte) error {
-	var envelope struct {
-		Code string `json:"error"`
-	}
-	_ = json.Unmarshal(body, &envelope)
-	switch envelope.Code {
+	switch billingErrorCode(body) {
 	case "metering_quota_exceeded":
 		return ErrQuotaExceeded
 	case "metering_entitlement_missing", "metering_dimension_not_allowed":
@@ -282,6 +328,16 @@ func decodeBillingError(status int, body []byte) error {
 		return ErrUnauthorized
 	}
 	return fmt.Errorf("%w: HTTP %d", ErrUnavailable, status)
+}
+
+func billingErrorCode(body []byte) string {
+	var envelope struct {
+		Code string `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return ""
+	}
+	return envelope.Code
 }
 
 func secureEndpoint(raw string, allowLoopback bool) (*url.URL, error) {

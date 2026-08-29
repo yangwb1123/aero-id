@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -33,13 +34,28 @@ type tokenSource struct {
 	client       *http.Client
 	mu           sync.RWMutex
 	tokens       map[string]cachedToken
+	epochs       map[string]uint64
+	generations  map[string]uint64
 	flight       singleflight.Group
 }
 
 type cachedToken struct {
-	value     string
-	refreshAt time.Time
+	value      string
+	refreshAt  time.Time
+	epoch      uint64
+	generation uint64
 }
+
+type billingTokenSnapshot struct {
+	scope      string
+	value      string
+	epoch      uint64
+	generation uint64
+}
+
+var errEpochDiscarded = errors.New("billing: token epoch discarded")
+
+const maxEpochReentries = 1
 
 func newTokenSource(config oauthConfig, client *http.Client) (*tokenSource, error) {
 	endpoint, err := secureEndpoint(config.TokenURL, config.AllowHTTP)
@@ -50,7 +66,8 @@ func newTokenSource(config oauthConfig, client *http.Client) (*tokenSource, erro
 		return nil, ErrInvalidConfig
 	}
 	return &tokenSource{endpoint: endpoint, clientID: config.ClientID, clientSecret: config.ClientSecret,
-		resource: billingResource, client: noRedirectClient(client, config.Timeout), tokens: make(map[string]cachedToken)}, nil
+		resource: billingResource, client: noRedirectClient(client, config.Timeout), tokens: make(map[string]cachedToken),
+		epochs: make(map[string]uint64), generations: make(map[string]uint64)}, nil
 }
 
 func validBillingScopes(value string) bool {
@@ -64,67 +81,140 @@ func validBillingScopes(value string) bool {
 }
 
 func (source *tokenSource) accessToken(ctx context.Context, scope string) (string, error) {
+	snapshot, err := source.accessTokenSnapshot(ctx, scope)
+	return snapshot.value, err
+}
+
+func (source *tokenSource) accessTokenSnapshot(ctx context.Context, scope string) (billingTokenSnapshot, error) {
 	if scope != ScopeEntitlementRead && scope != ScopeMeteringWrite {
-		return "", ErrInvalidConfig
+		return billingTokenSnapshot{}, ErrInvalidConfig
 	}
-	if token, ok := source.cached(scope); ok {
-		return token, nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	result := source.flight.DoChan(scope, func() (any, error) {
-		if token, ok := source.cached(scope); ok {
-			return token, nil
+	for reentry := 0; reentry <= maxEpochReentries; reentry++ {
+		snapshot, err := source.accessTokenAttempt(ctx, scope)
+		if !errors.Is(err, errEpochDiscarded) {
+			return snapshot, err
 		}
-		return source.fetch(ctx, scope)
+		if reentry == maxEpochReentries {
+			return billingTokenSnapshot{}, ErrUnavailable
+		}
+	}
+	return billingTokenSnapshot{}, ErrUnavailable
+}
+
+func (source *tokenSource) accessTokenAttempt(ctx context.Context, scope string) (billingTokenSnapshot, error) {
+	if snapshot, ok := source.cachedSnapshot(scope); ok {
+		return snapshot, nil
+	}
+	epoch := source.currentEpoch(scope)
+	result := source.flight.DoChan(tokenFlightKey(scope, epoch), func() (any, error) {
+		if snapshot, ok := source.cachedSnapshot(scope); ok {
+			return snapshot, nil
+		}
+		return source.fetchSnapshotAtEpoch(ctx, scope, epoch)
 	})
+	return source.awaitToken(ctx, result)
+}
+
+func (source *tokenSource) awaitToken(ctx context.Context, result <-chan singleflight.Result) (billingTokenSnapshot, error) {
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return billingTokenSnapshot{}, ctx.Err()
 	case outcome := <-result:
 		if outcome.Err != nil {
-			return "", outcome.Err
+			return billingTokenSnapshot{}, outcome.Err
 		}
-		token, ok := outcome.Val.(string)
-		if !ok || token == "" {
-			return "", ErrUnavailable
+		snapshot, ok := outcome.Val.(billingTokenSnapshot)
+		if !ok || snapshot.value == "" {
+			return billingTokenSnapshot{}, ErrUnavailable
 		}
-		return token, nil
+		return snapshot, nil
 	}
+}
+
+func tokenFlightKey(scope string, epoch uint64) string {
+	return fmt.Sprintf("%s\x00%d", scope, epoch)
 }
 
 func (source *tokenSource) cached(scope string) (string, bool) {
-	source.mu.RLock()
-	defer source.mu.RUnlock()
-	token, found := source.tokens[scope]
-	return token.value, found && token.value != "" && time.Now().UTC().Before(token.refreshAt)
+	snapshot, ok := source.cachedSnapshot(scope)
+	return snapshot.value, ok
 }
 
-func (source *tokenSource) fetch(ctx context.Context, scope string) (string, error) {
+func (source *tokenSource) cachedSnapshot(scope string) (billingTokenSnapshot, bool) {
+	source.mu.RLock()
+	token, found := source.tokens[scope]
+	epoch := source.epochs[scope]
+	source.mu.RUnlock()
+	if !found || token.value == "" || token.epoch != epoch || !time.Now().UTC().Before(token.refreshAt) {
+		return billingTokenSnapshot{}, false
+	}
+	return billingTokenSnapshot{scope: scope, value: token.value, epoch: token.epoch, generation: token.generation}, true
+}
+
+func (source *tokenSource) currentEpoch(scope string) uint64 {
+	source.mu.RLock()
+	defer source.mu.RUnlock()
+	return source.epochs[scope]
+}
+
+func (source *tokenSource) invalidateIf(snapshot billingTokenSnapshot) {
+	if snapshot.scope == "" || snapshot.value == "" {
+		return
+	}
+	source.mu.Lock()
+	current, found := source.tokens[snapshot.scope]
+	epoch := source.epochs[snapshot.scope]
+	if found {
+		if current.value != snapshot.value || current.epoch != snapshot.epoch || current.generation != snapshot.generation {
+			source.mu.Unlock()
+			return
+		}
+	} else if epoch != snapshot.epoch {
+		source.mu.Unlock()
+		return
+	}
+	delete(source.tokens, snapshot.scope)
+	if source.epochs == nil {
+		source.epochs = make(map[string]uint64)
+	}
+	source.epochs[snapshot.scope] = epoch + 1
+	source.mu.Unlock()
+}
+
+func (source *tokenSource) fetchSnapshotAtEpoch(ctx context.Context, scope string, epoch uint64) (billingTokenSnapshot, error) {
 	form := url.Values{"grant_type": {"client_credentials"}, "scope": {scope}, "resource": {source.resource}}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, source.endpoint.String(), strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", ErrUnavailable
+		return billingTokenSnapshot{}, ErrUnavailable
 	}
 	request.SetBasicAuth(source.clientID, source.clientSecret)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
 	response, err := source.client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("%w: token transport", ErrUnavailable)
+		return billingTokenSnapshot{}, fmt.Errorf("%w: token transport", ErrUnavailable)
 	}
-	return source.decode(response, scope)
+	return source.decodeSnapshotAtEpoch(response, scope, epoch)
 }
 
-func (source *tokenSource) decode(response *http.Response, scope string) (string, error) {
+func (source *tokenSource) decodeSnapshotAtEpoch(response *http.Response, scope string, epoch uint64) (billingTokenSnapshot, error) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return "", fmt.Errorf("%w: token HTTP %d", ErrUnavailable, response.StatusCode)
+		return billingTokenSnapshot{}, fmt.Errorf("%w: token HTTP %d", ErrUnavailable, response.StatusCode)
 	}
 	wire, err := decodeTokenWire(response)
 	if err != nil {
-		return "", ErrUnavailable
+		return billingTokenSnapshot{}, ErrUnavailable
 	}
-	return source.cacheToken(scope, wire), nil
+	snapshot, ok := source.cacheSnapshotAtEpoch(scope, wire, epoch)
+	if !ok {
+		return billingTokenSnapshot{}, errEpochDiscarded
+	}
+	return snapshot, nil
 }
 
 type tokenWire struct {
@@ -154,11 +244,28 @@ func validTokenWire(wire tokenWire) bool {
 		strings.EqualFold(wire.TokenType, "Bearer") && wire.ExpiresIn > 0
 }
 
-func (source *tokenSource) cacheToken(scope string, wire tokenWire) string {
+func (source *tokenSource) cacheTokenAtEpoch(scope string, wire tokenWire, epoch uint64) (string, bool) {
+	snapshot, ok := source.cacheSnapshotAtEpoch(scope, wire, epoch)
+	return snapshot.value, ok
+}
+
+func (source *tokenSource) cacheSnapshotAtEpoch(scope string, wire tokenWire, epoch uint64) (billingTokenSnapshot, bool) {
 	lifetime := time.Duration(min(wire.ExpiresIn, int64((24*time.Hour)/time.Second))) * time.Second
 	source.mu.Lock()
+	defer source.mu.Unlock()
+	if source.epochs[scope] != epoch {
+		return billingTokenSnapshot{}, false
+	}
+	if source.tokens == nil {
+		source.tokens = make(map[string]cachedToken)
+	}
+	if source.generations == nil {
+		source.generations = make(map[string]uint64)
+	}
+	source.generations[scope]++
+	generation := source.generations[scope]
 	source.tokens[scope] = cachedToken{value: wire.AccessToken,
-		refreshAt: time.Now().UTC().Add(lifetime - min(30*time.Second, lifetime/2))}
-	source.mu.Unlock()
-	return wire.AccessToken
+		refreshAt: time.Now().UTC().Add(lifetime - min(30*time.Second, lifetime/2)),
+		epoch:     epoch, generation: generation}
+	return billingTokenSnapshot{scope: scope, value: wire.AccessToken, epoch: epoch, generation: generation}, true
 }
