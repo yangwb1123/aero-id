@@ -92,32 +92,15 @@ type targetAssertionClaims struct {
 }
 
 func configuredAccountSummaryTargetSigner(cfg HTTPConfig) (*accountSummaryTargetSigner, error) {
-	configured := cfg.TargetAssertionKeyFile != "" || cfg.TargetAssertionKeyEnv != "" ||
-		cfg.TargetAssertionKeyID != "" || cfg.TargetAssertionIssuer != "" ||
-		cfg.TargetAssertionAudience != "" || cfg.TargetAssertionSubject != "" ||
-		cfg.TargetAssertionClientID != "" || cfg.TargetAssertionLifetime != 0
-	if !configured {
+	if !targetAssertionConfigured(cfg) {
 		return nil, nil
 	}
-	// A static bearer has no validated client_id claim. It is therefore not a
-	// valid transport identity for a target assertion, even though it remains a
-	// supported compatibility mode for non-bound source calls.
-	if strings.TrimSpace(cfg.BearerToken) != "" {
-		return nil, errors.New("account summary target assertion requires OAuth client credentials")
-	}
-	if strings.TrimSpace(cfg.OAuth.TokenURL) == "" || strings.TrimSpace(cfg.OAuth.ClientID) == "" ||
-		strings.TrimSpace(cfg.OAuth.ClientSecret) == "" ||
-		strings.Join(strings.Fields(cfg.OAuth.Scope), " ") != accountSummaryAssertionScope ||
-		strings.TrimSpace(cfg.OAuth.Resource) != accountSummaryOAuthResource {
-		return nil, errors.New("account summary target assertion requires the dedicated OAuth client configuration")
+	if err := validateConfiguredTargetAssertion(cfg); err != nil {
+		return nil, err
 	}
 	clientID := strings.TrimSpace(cfg.TargetAssertionClientID)
-	oauthClientID := strings.TrimSpace(cfg.OAuth.ClientID)
-	if clientID == "" || clientID != oauthClientID {
-		return nil, errors.New("account summary target assertion client is inconsistent")
-	}
-	if cfg.SummaryPath != accountSummaryCanonicalPath {
-		return nil, errors.New("account summary target assertion requires the canonical summary path")
+	if err := validateConfiguredTargetAssertionClient(cfg, clientID); err != nil {
+		return nil, err
 	}
 	return newAccountSummaryTargetSigner(targetAssertionSignerConfig{
 		KeyFile: cfg.TargetAssertionKeyFile, KeyEnv: cfg.TargetAssertionKeyEnv,
@@ -127,37 +110,92 @@ func configuredAccountSummaryTargetSigner(cfg HTTPConfig) (*accountSummaryTarget
 	})
 }
 
+func targetAssertionConfigured(cfg HTTPConfig) bool {
+	return cfg.TargetAssertionKeyFile != "" || cfg.TargetAssertionKeyEnv != "" ||
+		cfg.TargetAssertionKeyID != "" || cfg.TargetAssertionIssuer != "" ||
+		cfg.TargetAssertionAudience != "" || cfg.TargetAssertionSubject != "" ||
+		cfg.TargetAssertionClientID != "" || cfg.TargetAssertionLifetime != 0
+}
+
+func validateConfiguredTargetAssertion(cfg HTTPConfig) error {
+	// A static bearer has no validated client_id claim. It is therefore not a
+	// valid transport identity for a target assertion, even though it remains a
+	// supported compatibility mode for non-bound source calls.
+	if strings.TrimSpace(cfg.BearerToken) != "" {
+		return errors.New("account summary target assertion requires OAuth client credentials")
+	}
+	if !targetAssertionOAuthConfigValid(cfg) {
+		return errors.New("account summary target assertion requires the dedicated OAuth client configuration")
+	}
+	return nil
+}
+
+func targetAssertionOAuthConfigValid(cfg HTTPConfig) bool {
+	return strings.TrimSpace(cfg.OAuth.TokenURL) != "" && strings.TrimSpace(cfg.OAuth.ClientID) != "" &&
+		strings.TrimSpace(cfg.OAuth.ClientSecret) != "" &&
+		strings.Join(strings.Fields(cfg.OAuth.Scope), " ") == accountSummaryAssertionScope &&
+		strings.TrimSpace(cfg.OAuth.Resource) == accountSummaryOAuthResource
+}
+
+func validateConfiguredTargetAssertionClient(cfg HTTPConfig, clientID string) error {
+	oauthClientID := strings.TrimSpace(cfg.OAuth.ClientID)
+	if clientID == "" || clientID != oauthClientID {
+		return errors.New("account summary target assertion client is inconsistent")
+	}
+	if cfg.SummaryPath != accountSummaryCanonicalPath {
+		return errors.New("account summary target assertion requires the canonical summary path")
+	}
+	return nil
+}
+
 func newAccountSummaryTargetSigner(cfg targetAssertionSignerConfig) (*accountSummaryTargetSigner, error) {
-	key := append(ed25519.PrivateKey(nil), cfg.PrivateKey...)
-	if len(key) == 0 {
-		loaded, err := loadEd25519PrivateKey(cfg.KeyFile, cfg.KeyEnv)
-		if err != nil {
-			return nil, err
-		}
-		key = loaded
-	} else {
-		if strings.TrimSpace(cfg.KeyFile) != "" || strings.TrimSpace(cfg.KeyEnv) != "" {
-			return nil, errors.New("account summary target assertion key has multiple sources")
-		}
-		if len(key) != ed25519.PrivateKeySize {
-			return nil, errors.New("account summary target assertion private key is invalid")
-		}
+	key, err := accountSummaryTargetSignerKey(cfg)
+	if err != nil {
+		return nil, err
 	}
-	lifetime := cfg.Lifetime
-	if lifetime <= 0 {
-		lifetime = defaultTargetAssertionLifetime
-	}
-	if lifetime <= 0 || lifetime > maxTargetAssertionLifetime || lifetime%time.Second != 0 ||
-		!validTargetAssertionComponent(cfg.KeyID, 256) ||
-		!validTargetAssertionComponent(cfg.Issuer, 512) ||
-		cfg.Audience != accountSummaryTargetAudience ||
-		cfg.Subject != accountSummaryTargetSubject ||
-		!validTargetAssertionComponent(cfg.ClientID, 256) {
-		return nil, errors.New("account summary target assertion configuration is invalid")
+	lifetime, err := accountSummaryTargetSignerLifetime(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return &accountSummaryTargetSigner{privateKey: key, keyID: cfg.KeyID, issuer: cfg.Issuer,
 		audience: cfg.Audience, subject: cfg.Subject, clientID: cfg.ClientID, lifetime: lifetime,
 		now: func() time.Time { return time.Now().UTC() }, newJTI: uuid.NewRandom}, nil
+}
+
+func accountSummaryTargetSignerKey(cfg targetAssertionSignerConfig) (ed25519.PrivateKey, error) {
+	key := append(ed25519.PrivateKey(nil), cfg.PrivateKey...)
+	if len(key) == 0 {
+		return loadEd25519PrivateKey(cfg.KeyFile, cfg.KeyEnv)
+	}
+	if strings.TrimSpace(cfg.KeyFile) != "" || strings.TrimSpace(cfg.KeyEnv) != "" {
+		return nil, errors.New("account summary target assertion key has multiple sources")
+	}
+	if len(key) != ed25519.PrivateKeySize {
+		return nil, errors.New("account summary target assertion private key is invalid")
+	}
+	return key, nil
+}
+
+func accountSummaryTargetSignerLifetime(cfg targetAssertionSignerConfig) (time.Duration, error) {
+	lifetime := cfg.Lifetime
+	if lifetime <= 0 {
+		lifetime = defaultTargetAssertionLifetime
+	}
+	if !validAccountSummaryTargetSignerConfig(cfg, lifetime) {
+		return 0, errors.New("account summary target assertion configuration is invalid")
+	}
+	return lifetime, nil
+}
+
+func validAccountSummaryTargetSignerConfig(cfg targetAssertionSignerConfig, lifetime time.Duration) bool {
+	if lifetime <= 0 || lifetime > maxTargetAssertionLifetime || lifetime%time.Second != 0 {
+		return false
+	}
+	return validTargetAssertionComponent(cfg.KeyID, 256) &&
+		validTargetAssertionComponent(cfg.Issuer, 512) &&
+		cfg.Audience == accountSummaryTargetAudience &&
+		cfg.Subject == accountSummaryTargetSubject &&
+		validTargetAssertionComponent(cfg.ClientID, 256)
 }
 
 func (s *accountSummaryTargetSigner) sign(target *trustedSummaryTarget) (string, error) {
@@ -217,43 +255,63 @@ func loadEd25519PrivateKey(path, envName string) (ed25519.PrivateKey, error) {
 	if path != "" && envName != "" {
 		return nil, errors.New("account summary target assertion key has multiple sources")
 	}
-	var data []byte
-	var err error
-	switch {
-	case path != "":
-		if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
-			return nil, errors.New("account summary target assertion key file is unavailable")
-		}
-		info, statErr := os.Lstat(path)
-		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !safePrivateKeyFileInfo(info) {
-			return nil, errors.New("account summary target assertion key file is unavailable")
-		}
-		file, openErr := os.Open(path)
-		if openErr != nil {
-			return nil, errors.New("account summary target assertion key file is unavailable")
-		}
-		openedInfo, openedStatErr := file.Stat()
-		if openedStatErr != nil || !safePrivateKeyFileInfo(openedInfo) {
-			_ = file.Close()
-			return nil, errors.New("account summary target assertion key file is unavailable")
-		}
-		data, err = io.ReadAll(io.LimitReader(file, maxTargetAssertionKeyBytes+1))
-		_ = file.Close()
-	case envName != "":
-		if !validEnvironmentName(envName) {
-			return nil, errors.New("account summary target assertion key environment name is invalid")
-		}
-		value, ok := os.LookupEnv(envName)
-		if !ok || strings.TrimSpace(value) == "" {
-			return nil, errors.New("account summary target assertion key environment value is unavailable")
-		}
-		data = []byte(strings.ReplaceAll(value, `\n`, "\n"))
-	default:
-		return nil, errors.New("account summary target assertion private key is not configured")
+	data, err := loadEd25519PrivateKeyData(path, envName)
+	if err != nil {
+		return nil, err
 	}
-	if err != nil || len(data) == 0 || len(data) > maxTargetAssertionKeyBytes {
+	if len(data) == 0 || len(data) > maxTargetAssertionKeyBytes {
 		return nil, errors.New("account summary target assertion key is unavailable")
 	}
+	return parseEd25519PrivateKey(data)
+}
+
+func loadEd25519PrivateKeyData(path, envName string) ([]byte, error) {
+	if path != "" {
+		return readEd25519PrivateKeyFile(path)
+	}
+	if envName != "" {
+		return readEd25519PrivateKeyEnvironment(envName)
+	}
+	return nil, errors.New("account summary target assertion private key is not configured")
+}
+
+func readEd25519PrivateKeyFile(path string) ([]byte, error) {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
+		return nil, errors.New("account summary target assertion key file is unavailable")
+	}
+	info, statErr := os.Lstat(path)
+	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !safePrivateKeyFileInfo(info) {
+		return nil, errors.New("account summary target assertion key file is unavailable")
+	}
+	file, openErr := os.Open(path)
+	if openErr != nil {
+		return nil, errors.New("account summary target assertion key file is unavailable")
+	}
+	openedInfo, openedStatErr := file.Stat()
+	if openedStatErr != nil || !safePrivateKeyFileInfo(openedInfo) {
+		_ = file.Close()
+		return nil, errors.New("account summary target assertion key file is unavailable")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxTargetAssertionKeyBytes+1))
+	_ = file.Close()
+	if err != nil {
+		return nil, errors.New("account summary target assertion key is unavailable")
+	}
+	return data, nil
+}
+
+func readEd25519PrivateKeyEnvironment(envName string) ([]byte, error) {
+	if !validEnvironmentName(envName) {
+		return nil, errors.New("account summary target assertion key environment name is invalid")
+	}
+	value, ok := os.LookupEnv(envName)
+	if !ok || strings.TrimSpace(value) == "" {
+		return nil, errors.New("account summary target assertion key environment value is unavailable")
+	}
+	return []byte(strings.ReplaceAll(value, `\n`, "\n")), nil
+}
+
+func parseEd25519PrivateKey(data []byte) (ed25519.PrivateKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil || block.Type != "PRIVATE KEY" || len(strings.TrimSpace(string(rest))) != 0 {
 		return nil, errors.New("account summary target assertion key is invalid")
@@ -296,17 +354,31 @@ func validTargetAssertionComponent(value string, maxBytes int) bool {
 }
 
 func trustedTargetFieldsValid(target *trustedSummaryTarget) bool {
-	if target == nil || target.accountID == "" || target.canonicalUID == "" || target.tenantID == "" ||
-		target.region == "" || !validTargetAssertionComponent(target.accountID, 512) ||
-		!validTargetAssertionComponent(target.canonicalUID, 512) ||
-		!validTargetAssertionComponent(target.tenantID, 512) ||
-		!validTargetAssertionComponent(target.region, 128) || len(target.datasets) == 0 {
+	if !trustedTargetIdentityFieldsValid(target) {
 		return false
 	}
-	for index, dataset := range target.datasets {
+	if len(target.datasets) == 0 {
+		return false
+	}
+	return trustedTargetDatasetsValid(target.datasets)
+}
+
+func trustedTargetIdentityFieldsValid(target *trustedSummaryTarget) bool {
+	if target == nil {
+		return false
+	}
+	return target.accountID != "" && target.canonicalUID != "" && target.tenantID != "" &&
+		target.region != "" && validTargetAssertionComponent(target.accountID, 512) &&
+		validTargetAssertionComponent(target.canonicalUID, 512) &&
+		validTargetAssertionComponent(target.tenantID, 512) &&
+		validTargetAssertionComponent(target.region, 128)
+}
+
+func trustedTargetDatasetsValid(datasets []domain.AccountDataset) bool {
+	for index, dataset := range datasets {
 		descriptor, ok := domain.DatasetDescriptorOf(dataset)
 		if !ok || descriptor.Source != string(SourceAeroIM) ||
-			(index > 0 && string(target.datasets[index-1]) >= string(dataset)) {
+			(index > 0 && string(datasets[index-1]) >= string(dataset)) {
 			return false
 		}
 	}
@@ -357,13 +429,23 @@ func canonicalAccountSummaryRequest(method, path, accountID, region string,
 	values = append(values, ordered...)
 	var encoded []byte
 	for _, value := range values {
-		if len(value) > int(^uint32(0)) {
-			return nil, errors.New("account summary canonical field is too large")
+		fieldLength, err := canonicalAccountSummaryFieldLength(value)
+		if err != nil {
+			return nil, err
 		}
 		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+		binary.BigEndian.PutUint32(length[:], fieldLength)
 		encoded = append(encoded, length[:]...)
 		encoded = append(encoded, []byte(value)...)
 	}
 	return encoded, nil
+}
+
+func canonicalAccountSummaryFieldLength(value string) (uint32, error) {
+	length := uint64(len(value))
+	// len is non-negative; this upper bound proves the narrowing is lossless.
+	if length > uint64(^uint32(0)) {
+		return 0, errors.New("account summary canonical field is too large")
+	}
+	return uint32(length), nil
 }

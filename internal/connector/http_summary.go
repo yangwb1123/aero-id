@@ -98,16 +98,9 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 		return nil, err
 	}
 	cfg = applySourceAuth(source, cfg, decision)
-	var targetAssertionSigner *accountSummaryTargetSigner
-	if source == SourceAeroIM {
-		if cfg.targetAssertionSigner != nil {
-			targetAssertionSigner = cfg.targetAssertionSigner
-		} else {
-			targetAssertionSigner, err = configuredAccountSummaryTargetSigner(cfg)
-			if err != nil {
-				return nil, fmt.Errorf("%s target assertion: %w", source, err)
-			}
-		}
+	targetAssertionSigner, err := targetAssertionSignerForSource(source, cfg)
+	if err != nil {
+		return nil, err
 	}
 	client, tokens, err := sourceClientAndOAuth(source, cfg)
 	if err != nil {
@@ -122,6 +115,20 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 		healthPolicy: newSourceWorkloadPolicy(limits.health), targetAssertionSigner: targetAssertionSigner,
 		testTargetRequest: cfg.testTargetRequest,
 	}, nil
+}
+
+func targetAssertionSignerForSource(source Source, cfg HTTPConfig) (*accountSummaryTargetSigner, error) {
+	if source != SourceAeroIM {
+		return nil, nil
+	}
+	if cfg.targetAssertionSigner != nil {
+		return cfg.targetAssertionSigner, nil
+	}
+	signer, err := configuredAccountSummaryTargetSigner(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%s target assertion: %w", source, err)
+	}
+	return signer, nil
 }
 
 func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, error) {

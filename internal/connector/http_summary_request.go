@@ -17,12 +17,9 @@ import (
 )
 
 func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req SummaryRequest) (*http.Request, error) {
-	if c.source == SourceAeroIM && req.trustedTarget == nil && c.testTargetRequest != nil {
-		req = c.testTargetRequest(req)
-	}
-	if c.source == SourceAeroIM && !canonicalTargetDatasetOrder(req.Datasets) {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid,
-			Code: "source.target_assertion_dataset_order"}
+	req = c.applyTestTargetRequest(req)
+	if err := c.validateTargetSummaryRequest(req); err != nil {
+		return nil, err
 	}
 	endpoint, err := c.summaryURL(req)
 	if err != nil {
@@ -42,20 +39,46 @@ func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req Summar
 	}
 	request.Header.Set("X-Request-ID", req.RequestID)
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
-	if c.source == SourceAeroIM {
-		if c.targetAssertionSigner == nil || !trustedTargetMatchesRequest(req.trustedTarget, req) {
-			return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable,
-				Code: "source.target_assertion_not_configured"}
-		}
-		assertion, err := c.targetAssertionSigner.sign(req.trustedTarget)
-		if err != nil {
-			return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid,
-				Code: "source.target_assertion_failed", Cause: err}
-		}
-		request.Header.Set(accountSummaryTargetAssertionHeader, assertion)
+	if err := c.addTargetAssertion(request, req); err != nil {
+		return nil, err
 	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
 	return request, nil
+}
+
+func (c *JSONSummaryConnector) applyTestTargetRequest(req SummaryRequest) SummaryRequest {
+	if c.source == SourceAeroIM && req.trustedTarget == nil && c.testTargetRequest != nil {
+		return c.testTargetRequest(req)
+	}
+	return req
+}
+
+func (c *JSONSummaryConnector) validateTargetSummaryRequest(req SummaryRequest) error {
+	if c.source != SourceAeroIM {
+		return nil
+	}
+	if canonicalTargetDatasetOrder(req.Datasets) {
+		return nil
+	}
+	return &RemoteError{Source: c.source, Kind: ErrorInvalid,
+		Code: "source.target_assertion_dataset_order"}
+}
+
+func (c *JSONSummaryConnector) addTargetAssertion(request *http.Request, req SummaryRequest) error {
+	if c.source != SourceAeroIM {
+		return nil
+	}
+	if c.targetAssertionSigner == nil || !trustedTargetMatchesRequest(req.trustedTarget, req) {
+		return &RemoteError{Source: c.source, Kind: ErrorUnavailable,
+			Code: "source.target_assertion_not_configured"}
+	}
+	assertion, err := c.targetAssertionSigner.sign(req.trustedTarget)
+	if err != nil {
+		return &RemoteError{Source: c.source, Kind: ErrorInvalid,
+			Code: "source.target_assertion_failed", Cause: err}
+	}
+	request.Header.Set(accountSummaryTargetAssertionHeader, assertion)
+	return nil
 }
 
 func (c *JSONSummaryConnector) summaryURL(req SummaryRequest) (*url.URL, error) {

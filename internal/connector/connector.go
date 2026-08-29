@@ -72,20 +72,16 @@ type TrustedSummaryRequestInput struct {
 // value authoritative without going through the loader.
 func NewTrustedSummaryRequest(ctx context.Context, loader AuthoritativeAccountLoader,
 	input TrustedSummaryRequestInput) (SummaryRequest, error) {
-	if ctx == nil || loader == nil || input.AccountID == (domain.ID{}) ||
-		!validTargetAssertionComponent(input.TenantID, 512) {
+	if !validTrustedSummaryRequestInput(ctx, loader, input) {
 		return SummaryRequest{}, errors.New("trusted summary account binding is invalid")
 	}
-	account, err := loader.GetByID(ctx, input.TenantID, input.AccountID)
-	if err != nil || account == nil || account.ID != input.AccountID || account.TenantID != input.TenantID ||
-		account.Status != domain.AccountActive || !account.Valid() ||
-		!validTargetAssertionComponent(account.CanonicalUID, 512) ||
-		!validTargetAssertionComponent(account.HomeRegion, 128) {
-		return SummaryRequest{}, errors.New("trusted summary account binding is unavailable")
+	account, err := loadTrustedSummaryAccount(ctx, loader, input)
+	if err != nil {
+		return SummaryRequest{}, err
 	}
-	datasets, err := ResolveDatasetScope(SourceAeroIM, input.Datasets, DatasetScopeStored)
-	if err != nil || len(datasets) == 0 {
-		return SummaryRequest{}, errors.New("trusted summary dataset scope is invalid")
+	datasets, err := trustedSummaryDatasets(input.Datasets)
+	if err != nil {
+		return SummaryRequest{}, err
 	}
 	sort.Slice(datasets, func(left, right int) bool { return string(datasets[left]) < string(datasets[right]) })
 	return SummaryRequest{
@@ -106,6 +102,39 @@ func NewTrustedSummaryRequest(ctx context.Context, loader AuthoritativeAccountLo
 			datasets:     append([]domain.AccountDataset(nil), datasets...),
 		},
 	}, nil
+}
+
+func validTrustedSummaryRequestInput(ctx context.Context, loader AuthoritativeAccountLoader,
+	input TrustedSummaryRequestInput) bool {
+	return ctx != nil && loader != nil && input.AccountID != (domain.ID{}) &&
+		validTargetAssertionComponent(input.TenantID, 512)
+}
+
+func loadTrustedSummaryAccount(ctx context.Context, loader AuthoritativeAccountLoader,
+	input TrustedSummaryRequestInput) (*domain.Account, error) {
+	account, err := loader.GetByID(ctx, input.TenantID, input.AccountID)
+	if err != nil || !validTrustedSummaryAccount(account, input) {
+		return nil, errors.New("trusted summary account binding is unavailable")
+	}
+	return account, nil
+}
+
+func validTrustedSummaryAccount(account *domain.Account, input TrustedSummaryRequestInput) bool {
+	if account == nil {
+		return false
+	}
+	return account.ID == input.AccountID && account.TenantID == input.TenantID &&
+		account.Status == domain.AccountActive && account.Valid() &&
+		validTargetAssertionComponent(account.CanonicalUID, 512) &&
+		validTargetAssertionComponent(account.HomeRegion, 128)
+}
+
+func trustedSummaryDatasets(input []domain.AccountDataset) ([]domain.AccountDataset, error) {
+	datasets, err := ResolveDatasetScope(SourceAeroIM, input, DatasetScopeStored)
+	if err != nil || len(datasets) == 0 {
+		return nil, errors.New("trusted summary dataset scope is invalid")
+	}
+	return datasets, nil
 }
 
 type Summary struct {
