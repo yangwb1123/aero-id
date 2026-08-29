@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 )
 
 // NATSConfig configures the JetStream consumer adapter (P3-04).
@@ -25,7 +27,7 @@ type NATSConfig struct {
 //
 // Ack semantics (at-least-once):
 //   - handler success      -> Ack
-//   - transient failure    -> Nak (redeliver with backoff up to MaxRedeliveries)
+//   - transient failure    -> Nak until the cap; final failure is DLQ'd, then Term
 //   - malformed/poison     -> durable redacted DLQ record, then Term
 type NATSBus struct {
 	conn *nats.Conn
@@ -99,6 +101,10 @@ func (b *NATSBus) handleMessage(ctx context.Context, msg *nats.Msg, handler Enve
 	}
 	if err := handler(ctx, &envelope); err != nil {
 		if transientDeliveryError(err) {
+			if b.isFinalDelivery(msg) {
+				b.terminatePoison(msg, "retry_exhausted", &envelope)
+				return
+			}
 			_ = msg.Nak()
 			return
 		}
@@ -114,6 +120,16 @@ func (b *NATSBus) handleMessage(ctx context.Context, msg *nats.Msg, handler Enve
 // ones. The ingest service maps deterministic validation/tenant/region failures
 // to 4xx-style errors; transient storage/unavailable failures are 5xx-style.
 func transientDeliveryError(err error) bool {
+	var appErr *apperr.AppError
+	if errors.As(err, &appErr) {
+		// Receipt lease contention is reported as a conflict, but the work is
+		// still in progress and must be retried. Other conflict codes remain
+		// terminal, including event.integrity_conflict.
+		if appErr.Code == "event.in_flight" {
+			return true
+		}
+		return appErr.HTTPStatus() >= 500
+	}
 	type codedError interface {
 		HTTPStatus() int
 	}
@@ -122,6 +138,19 @@ func transientDeliveryError(err error) bool {
 		return coded.HTTPStatus() >= 500
 	}
 	return true // unknown errors are retried (at-least-once)
+}
+
+func (b *NATSBus) isFinalDelivery(msg *nats.Msg) bool {
+	metadata, err := msg.Metadata()
+	if err != nil {
+		// A non-JetStream or malformed message must not be terminated merely
+		// because its delivery metadata is unavailable. Nak leaves the cap to
+		// JetStream's configured MaxDeliver value.
+		return false
+	}
+	// maxRedeliveries returns the default positive value when configured with
+	// zero or a negative value, so this conversion cannot be negative.
+	return metadata.NumDelivered >= uint64(b.maxRedeliveries()) // #nosec G115 -- validated positive retry count
 }
 
 func (b *NATSBus) maxRedeliveries() int {

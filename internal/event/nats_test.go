@@ -3,7 +3,10 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/nats-io/nats.go"
 
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 )
@@ -16,6 +19,7 @@ func TestTransientDeliveryError(t *testing.T) {
 	}{
 		{"internal error retries", apperr.Internal("event.apply_failed", "db down"), true},
 		{"unavailable retries", apperr.Unavailable("event.apply_failed", "source down"), true},
+		{"receipt lease contention retries", apperr.Conflict("event.in_flight", "event is already being processed"), true},
 		{"invalid projection terminates", apperr.BadRequest("event.invalid_projection", "bad"), false},
 		{"tenant mismatch terminates", apperr.Forbidden("event.tenant_mismatch", "wrong tenant"), false},
 		{"residency policy terminates", apperr.Forbidden("event.region_not_allowed", "region"), false},
@@ -26,6 +30,33 @@ func TestTransientDeliveryError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := transientDeliveryError(tc.err); got != tc.want {
 				t.Errorf("transientDeliveryError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNATSFinalDeliveryDetection(t *testing.T) {
+	bus := &NATSBus{cfg: NATSConfig{MaxRedeliveries: 3}}
+	cases := []struct {
+		name      string
+		delivered uint64
+		hasReply  bool
+		wantFinal bool
+	}{
+		{name: "metadata unavailable", wantFinal: false},
+		{name: "before configured cap", delivered: 2, hasReply: true, wantFinal: false},
+		{name: "at configured cap", delivered: 3, hasReply: true, wantFinal: true},
+		{name: "past configured cap", delivered: 4, hasReply: true, wantFinal: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &nats.Msg{}
+			if tc.hasReply {
+				msg.Sub = &nats.Subscription{}
+				msg.Reply = fmt.Sprintf("$JS.ACK.stream.consumer.%d.1.1.1.0", tc.delivered)
+			}
+			if got := bus.isFinalDelivery(msg); got != tc.wantFinal {
+				t.Errorf("isFinalDelivery() = %v, want %v", got, tc.wantFinal)
 			}
 		})
 	}

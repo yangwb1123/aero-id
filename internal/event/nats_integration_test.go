@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/event"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/repository/testpg"
@@ -385,5 +387,105 @@ func TestNATSBusRedeliveryAfterTransientFailure(t *testing.T) {
 	defer mu.Unlock()
 	if attempts > 3 {
 		t.Errorf("attempts = %d, want <= 3 (acked after the second delivery)", attempts)
+	}
+}
+
+// TestNATSBusDeadLettersExhaustedTransientDelivery verifies that a transient
+// AppError is retried through the configured delivery cap, then quarantined
+// once with metadata only instead of relying on the broker to discard it.
+func TestNATSBusDeadLettersExhaustedTransientDelivery(t *testing.T) {
+	_, url := startNATS(t)
+	createStream(t, url, "aero_events", "aero.events.canonical")
+	const maxDeliveries = 3
+	bus, err := event.NewNATSBus(event.NATSConfig{
+		URL: url, Stream: "aero_events", Subject: "aero.events.canonical",
+		DeadLetterSubject: "aero.events.canonical.dead-letter",
+		Durable:           "aero-id-ingest-retry-exhausted", MaxRedeliveries: maxDeliveries, AckWait: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+
+	var mu sync.Mutex
+	attempts := 0
+	stop, err := bus.Subscribe(context.Background(), func(ctx context.Context, envelope *event.Envelope) error {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		return apperr.Unavailable("event.apply_failed", "error-body-must-not-be-published")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	conn, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadLetters, err := js.SubscribeSync("aero.events.canonical.dead-letter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deadLetters.Unsubscribe()
+	time.Sleep(500 * time.Millisecond)
+	envelope := &event.Envelope{
+		EventID: idgen.NewID(), Source: "aero-vault", SourceRegion: "us-west",
+		EventType: "vault.usage.updated", SchemaVersion: 1, AggregateType: "object",
+		AggregateID: "obj-retry-exhausted", AggregateVersion: 1, TenantID: "tenant-a",
+		OccurredAt: time.Now().UTC(),
+		Payload:    map[string]any{"source_secret": "source-payload-must-not-be-published"},
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := js.Publish("aero.events.canonical", raw); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := deadLetters.NextMsg(10 * time.Second)
+	if err != nil {
+		t.Fatalf("retry-exhausted dead-letter record was not published: %v", err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(msg.Data, &record); err != nil {
+		t.Fatalf("retry-exhausted dead-letter record is invalid JSON: %v", err)
+	}
+	if record["reason"] != "retry_exhausted" {
+		t.Fatalf("dead-letter reason = %#v, want retry_exhausted", record["reason"])
+	}
+	for _, key := range []string{"payload", "source_payload", "error", "error_body"} {
+		if _, leaked := record[key]; leaked {
+			t.Fatalf("dead-letter record leaked %q: %#v", key, record)
+		}
+	}
+	for _, secret := range []string{"source-payload-must-not-be-published", "error-body-must-not-be-published"} {
+		if strings.Contains(string(msg.Data), secret) {
+			t.Fatalf("dead-letter record leaked %q: %s", secret, msg.Data)
+		}
+	}
+	_ = msg.Ack()
+
+	mu.Lock()
+	gotAttempts := attempts
+	mu.Unlock()
+	if gotAttempts != maxDeliveries {
+		t.Fatalf("handler attempts = %d, want configured cap %d", gotAttempts, maxDeliveries)
+	}
+	if extra, err := deadLetters.NextMsg(1 * time.Second); err == nil {
+		_ = extra.Ack()
+		t.Fatal("transient exhaustion published more than one dead-letter record")
+	}
+	mu.Lock()
+	gotAttempts = attempts
+	mu.Unlock()
+	if gotAttempts != maxDeliveries {
+		t.Fatalf("handler attempts after termination = %d, want %d", gotAttempts, maxDeliveries)
 	}
 }
