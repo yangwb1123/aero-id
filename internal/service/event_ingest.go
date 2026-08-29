@@ -133,6 +133,9 @@ func (s *eventIngestService) quarantineInvalidProjection(ctx context.Context, en
 // key (uq_audit_ledger_tenant_event), so exactly one fact survives.
 func (s *eventIngestService) quarantineEvent(ctx context.Context, envelope *event.Envelope, code string) error {
 	if err := s.receipts.QuarantineEvent(ctx, envelope, code); err != nil {
+		if errors.Is(err, repository.ErrEventIntegrityConflict) {
+			return apperr.Conflict("event.integrity_conflict", "event id is already bound to different content").Wrap(err)
+		}
 		return apperr.Internal("event.quarantine_failed", "failed to quarantine event").Wrap(err)
 	}
 	if err := s.recordAudit(ctx, envelope, nil, "quarantined"); err != nil {
@@ -142,6 +145,9 @@ func (s *eventIngestService) quarantineEvent(ctx context.Context, envelope *even
 }
 
 func mapEventApplyError(err error) error {
+	if errors.Is(err, repository.ErrEventIntegrityConflict) {
+		return apperr.Conflict("event.integrity_conflict", "event id is already bound to different content").Wrap(err)
+	}
 	if errors.Is(err, repository.ErrEventReceiptBusy) {
 		return apperr.Conflict("event.in_flight", "event is already being processed").Wrap(err)
 	}

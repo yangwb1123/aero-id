@@ -19,6 +19,7 @@ func TestTransientDeliveryError(t *testing.T) {
 		{"invalid projection terminates", apperr.BadRequest("event.invalid_projection", "bad"), false},
 		{"tenant mismatch terminates", apperr.Forbidden("event.tenant_mismatch", "wrong tenant"), false},
 		{"residency policy terminates", apperr.Forbidden("event.region_not_allowed", "region"), false},
+		{"event integrity conflict terminates", apperr.Conflict("event.integrity_conflict", "event id is already bound to different content"), false},
 		{"plain error retries", errors.New("boom"), true},
 	}
 	for _, tc := range cases {

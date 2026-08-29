@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -73,6 +72,7 @@ type eventReceiptRow struct {
 	Status           string         `gorm:"column:status"`
 	ErrorCode        string         `gorm:"column:error_code"`
 	Payload          datatypes.JSON `gorm:"column:payload"`
+	ContentHash      string         `gorm:"column:content_hash"`
 	Attempt          int            `gorm:"column:attempt"`
 	LeaseOwner       string         `gorm:"column:lease_owner"`
 	LeaseUntil       *time.Time     `gorm:"column:lease_until"`
@@ -96,26 +96,33 @@ func (r *eventReceiptRepo) ApplySnapshotEventWithAudit(ctx context.Context, enve
 
 func (r *eventReceiptRepo) applySnapshotEvent(ctx context.Context, envelope *event.Envelope,
 	mutation *event.SnapshotMutation, fact *domain.AuditFact) (EventApplyResult, error) {
-	payload, err := json.Marshal(event.RedactPayload(envelope.Payload))
+	contentHash, err := event.CanonicalContentHash(envelope)
+	if err != nil {
+		return EventApplyResult{}, fmt.Errorf("canonical event content: %w", err)
+	}
+	payload, err := marshalRedactedEventPayload(envelope)
 	if err != nil {
 		return EventApplyResult{}, fmt.Errorf("marshal event payload: %w", err)
 	}
 	result := EventApplyResult{}
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result.Status, err = r.applySnapshotEventTx(ctx, tx, envelope, mutation, fact, payload)
+		result.Status, err = r.applySnapshotEventTx(ctx, tx, envelope, mutation, fact, payload, contentHash)
 		return err
 	})
 	return result, err
 }
 
 func (r *eventReceiptRepo) applySnapshotEventTx(ctx context.Context, tx *gorm.DB, envelope *event.Envelope,
-	mutation *event.SnapshotMutation, fact *domain.AuditFact, payload []byte) (EventApplyStatus, error) {
+	mutation *event.SnapshotMutation, fact *domain.AuditFact, payload []byte, contentHash string) (EventApplyStatus, error) {
 	now := time.Now().UTC()
-	if err := verifyEventAccountTenant(tx, envelope.TenantID, mutation.AccountID); err != nil {
+	// Claim first so an existing key is content-checked before target
+	// validation. A newly inserted claim is rolled back if its target tenant is
+	// invalid; an exact existing duplicate still retains the tenant check.
+	receipt, owner, err := claimEventReceipt(tx, envelope, payload, contentHash, now)
+	if err != nil {
 		return "", err
 	}
-	receipt, owner, err := claimEventReceipt(tx, envelope, payload, now)
-	if err != nil {
+	if err := verifyEventAccountTenant(tx, envelope.TenantID, mutation.AccountID); err != nil {
 		return "", err
 	}
 	if owner == "" {
@@ -201,7 +208,11 @@ func (r *eventReceiptRepo) appendEventAudit(ctx context.Context, tx *gorm.DB, fa
 }
 
 func (r *eventReceiptRepo) QuarantineEvent(ctx context.Context, envelope *event.Envelope, code string) error {
-	payload, err := json.Marshal(event.RedactPayload(envelope.Payload))
+	contentHash, err := event.CanonicalContentHash(envelope)
+	if err != nil {
+		return fmt.Errorf("canonical quarantined event content: %w", err)
+	}
+	payload, err := marshalRedactedEventPayload(envelope)
 	if err != nil {
 		return fmt.Errorf("marshal quarantined event payload: %w", err)
 	}
@@ -210,36 +221,64 @@ func (r *eventReceiptRepo) QuarantineEvent(ctx context.Context, envelope *event.
 		ID: idgen.NewID(), TenantID: envelope.TenantID, Source: envelope.Source, EventID: envelope.EventID,
 		SourceRegion: envelope.SourceRegion, AggregateType: envelope.AggregateType,
 		AggregateID: envelope.AggregateID, AggregateVersion: envelope.AggregateVersion,
-		Status: string(EventQuarantined), ErrorCode: code, Payload: datatypes.JSON(payload), Attempt: 1, CreatedAt: now, UpdatedAt: now,
+		Status: string(EventQuarantined), ErrorCode: code, Payload: datatypes.JSON(payload), ContentHash: contentHash,
+		Attempt: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
-		if insert.Error != nil || insert.RowsAffected > 0 {
-			return insert.Error
-		}
-		var existing eventReceiptRow
-		if err := tx.Where("tenant_id = ? AND source = ? AND event_id = ?",
-			envelope.TenantID, envelope.Source, envelope.EventID).First(&existing).Error; err != nil {
-			return err
-		}
-		if existing.Status == string(EventApplied) || existing.Status == string(EventDuplicate) {
-			return nil
-		}
-		if existing.Status == "processing" && existing.LeaseUntil != nil && existing.LeaseUntil.After(now) {
-			return ErrEventReceiptBusy
-		}
-		return tx.Model(&eventReceiptRow{}).Where("id = ?", existing.ID).Updates(map[string]any{
-			"status": string(EventQuarantined), "error_code": code, "lease_owner": "", "lease_until": nil, "updated_at": now,
-		}).Error
+		return quarantineEventTx(tx, envelope, row, contentHash, code, now)
 	})
 }
 
-func claimEventReceipt(tx *gorm.DB, envelope *event.Envelope, payload []byte, now time.Time) (*eventReceiptRow, string, error) {
+func quarantineEventTx(tx *gorm.DB, envelope *event.Envelope, row *eventReceiptRow,
+	contentHash, code string, now time.Time) error {
+	if err := lockEventContentKey(tx, envelope); err != nil {
+		return err
+	}
+	if err := checkEventStoreContent(tx, envelope, contentHash); err != nil {
+		return err
+	}
+	insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+	if insert.Error != nil || insert.RowsAffected > 0 {
+		return insert.Error
+	}
+	return updateQuarantineReceipt(tx, envelope, contentHash, code, now)
+}
+
+func updateQuarantineReceipt(tx *gorm.DB, envelope *event.Envelope, contentHash, code string, now time.Time) error {
+	var existing eventReceiptRow
+	query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
+		Where("tenant_id = ? AND source = ? AND event_id = ?",
+			envelope.TenantID, envelope.Source, envelope.EventID).First(&existing)
+	if query.Error != nil {
+		return query.Error
+	}
+	if err := eventContentMatches(existing.ContentHash, contentHash); err != nil {
+		return err
+	}
+	if existing.Status == string(EventApplied) || existing.Status == string(EventDuplicate) {
+		return nil
+	}
+	if existing.Status == "processing" && existing.LeaseUntil != nil && existing.LeaseUntil.After(now) {
+		return ErrEventReceiptBusy
+	}
+	return tx.Model(&eventReceiptRow{}).Where("id = ?", existing.ID).Updates(map[string]any{
+		"status": string(EventQuarantined), "error_code": code, "lease_owner": "", "lease_until": nil, "updated_at": now,
+	}).Error
+}
+
+func claimEventReceipt(tx *gorm.DB, envelope *event.Envelope, payload []byte, contentHash string,
+	now time.Time) (*eventReceiptRow, string, error) {
+	if err := lockEventContentKey(tx, envelope); err != nil {
+		return nil, "", err
+	}
+	if err := checkEventStoreContent(tx, envelope, contentHash); err != nil {
+		return nil, "", err
+	}
 	owner := idgen.NewID().String()
 	receipt := &eventReceiptRow{ID: idgen.NewID(), TenantID: envelope.TenantID, Source: envelope.Source, EventID: envelope.EventID,
 		SourceRegion: envelope.SourceRegion, AggregateType: envelope.AggregateType, AggregateID: envelope.AggregateID,
-		AggregateVersion: envelope.AggregateVersion, Status: "processing", Payload: datatypes.JSON(payload), Attempt: 1,
-		LeaseOwner: owner, LeaseUntil: timePtr(now.Add(5 * time.Minute)), CreatedAt: now, UpdatedAt: now}
+		AggregateVersion: envelope.AggregateVersion, Status: "processing", Payload: datatypes.JSON(payload), ContentHash: contentHash,
+		Attempt: 1, LeaseOwner: owner, LeaseUntil: timePtr(now.Add(5 * time.Minute)), CreatedAt: now, UpdatedAt: now}
 	insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(receipt)
 	if insert.Error != nil {
 		return nil, "", fmt.Errorf("create event receipt: %w", insert.Error)
@@ -247,11 +286,19 @@ func claimEventReceipt(tx *gorm.DB, envelope *event.Envelope, payload []byte, no
 	if insert.RowsAffected > 0 {
 		return receipt, owner, nil
 	}
+	return reclaimEventReceipt(tx, envelope, contentHash, owner, now)
+}
+
+func reclaimEventReceipt(tx *gorm.DB, envelope *event.Envelope, contentHash, owner string,
+	now time.Time) (*eventReceiptRow, string, error) {
 	var existing eventReceiptRow
 	query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
 		Where("tenant_id = ? AND source = ? AND event_id = ?", envelope.TenantID, envelope.Source, envelope.EventID).First(&existing)
 	if query.Error != nil {
 		return nil, "", query.Error
+	}
+	if err := eventContentMatches(existing.ContentHash, contentHash); err != nil {
+		return nil, "", err
 	}
 	if existing.Status != "processing" {
 		return &existing, "", nil

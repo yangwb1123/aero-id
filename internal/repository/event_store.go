@@ -16,8 +16,10 @@ import (
 )
 
 // EventStoreRepository persists canonical events durably (P3-07). Appends are
-// idempotent on (tenant_id, source, event_id) and are executed inside the same
-// transaction as the receipt/projection update by the receipt repository.
+// idempotent only when (tenant_id, source, event_id) is bound to the same
+// canonical content; a changed envelope is an integrity conflict. Appends are
+// executed inside the same transaction as the receipt/projection update by the
+// receipt repository.
 type EventStoreRepository interface {
 	Append(ctx context.Context, envelope *event.Envelope) error
 	ListByAggregate(ctx context.Context, tenantID, source, aggregateType, aggregateID string,
@@ -45,6 +47,7 @@ type eventStoreRow struct {
 	OccurredAt       time.Time      `gorm:"column:occurred_at"`
 	ReceivedAt       time.Time      `gorm:"column:received_at"`
 	Payload          datatypes.JSON `gorm:"column:payload"`
+	ContentHash      string         `gorm:"column:content_hash"`
 }
 
 func (eventStoreRow) TableName() string { return "event_store" }
@@ -59,17 +62,30 @@ func NewEventStoreRepository(db *gorm.DB) EventStoreRepository {
 
 // Append inserts the (redacted) canonical event idempotently. It is meant to be
 // called from within the receipt transaction (applySnapshotEventTx); a standalone
-// call still works and never overwrites an existing row.
+// call still works, never overwrites an existing row, and rejects a changed
+// envelope under an existing event key.
 func (r *eventStoreRepo) Append(ctx context.Context, envelope *event.Envelope) error {
-	return appendEventStore(r.db.WithContext(ctx), envelope)
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return appendEventStore(tx, envelope)
+	})
 }
 
 // appendEventStore runs on any *gorm.DB (plain or transaction) so the receipt
 // repository can persist the event atomically with its projection update.
 func appendEventStore(db *gorm.DB, envelope *event.Envelope) error {
-	payload, err := json.Marshal(event.RedactPayload(envelope.Payload))
+	contentHash, err := event.CanonicalContentHash(envelope)
+	if err != nil {
+		return fmt.Errorf("canonical event content: %w", err)
+	}
+	payload, err := marshalRedactedEventPayload(envelope)
 	if err != nil {
 		return fmt.Errorf("marshal event payload: %w", err)
+	}
+	if err := lockEventContentKey(db, envelope); err != nil {
+		return err
+	}
+	if err := checkEventReceiptContent(db, envelope, contentHash); err != nil {
+		return err
 	}
 	row := &eventStoreRow{
 		ID: idgen.NewID(), EventID: envelope.EventID, TenantID: envelope.TenantID, Source: envelope.Source,
@@ -78,9 +94,21 @@ func appendEventStore(db *gorm.DB, envelope *event.Envelope) error {
 		AggregateVersion: envelope.AggregateVersion, ActorUID: envelope.ActorUID,
 		OperationID: envelope.OperationID, CorrelationID: envelope.CorrelationID,
 		CausationID: envelope.CausationID, TraceID: envelope.TraceID,
-		OccurredAt: envelope.OccurredAt.UTC(), ReceivedAt: time.Now().UTC(), Payload: payload,
+		OccurredAt: envelope.OccurredAt.UTC().Truncate(time.Microsecond), ReceivedAt: time.Now().UTC(), Payload: payload, ContentHash: contentHash,
 	}
-	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error
+	insert := db.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+	if insert.Error != nil {
+		return insert.Error
+	}
+	if insert.RowsAffected > 0 {
+		return nil
+	}
+	var existing eventStoreRow
+	if err := db.Where("tenant_id = ? AND source = ? AND event_id = ?",
+		envelope.TenantID, envelope.Source, envelope.EventID).First(&existing).Error; err != nil {
+		return fmt.Errorf("load existing event store row: %w", err)
+	}
+	return eventContentMatches(existing.ContentHash, contentHash)
 }
 
 func (r *eventStoreRepo) ListByAggregate(ctx context.Context, tenantID, source, aggregateType, aggregateID string,
