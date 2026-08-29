@@ -241,12 +241,15 @@ type GRPCConfig struct {
 }
 
 type DatabaseConfig struct {
-	Host            string        `mapstructure:"host"`
-	Port            int           `mapstructure:"port"`
-	User            string        `mapstructure:"user"`
-	Password        string        `mapstructure:"password"`
-	DBName          string        `mapstructure:"dbname"`
-	SSLMode         string        `mapstructure:"sslmode"`
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	DBName   string `mapstructure:"dbname"`
+	SSLMode  string `mapstructure:"sslmode"`
+	// ConnectTimeout bounds the PostgreSQL connection and authentication attempt.
+	// 0 means no dial bound; configured values use pgx's integer-second granularity.
+	ConnectTimeout  time.Duration `mapstructure:"connect_timeout"`
 	MaxOpenConns    int           `mapstructure:"max_open_conns"`
 	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
@@ -261,10 +264,14 @@ type DatabaseConfig struct {
 }
 
 func (d DatabaseConfig) DSN() string {
-	return fmt.Sprintf(
+	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=UTC",
 		d.Host, d.Port, d.User, d.Password, d.DBName, d.SSLMode,
 	)
+	if seconds := int(d.ConnectTimeout / time.Second); seconds >= 1 {
+		dsn += fmt.Sprintf(" connect_timeout=%d", seconds)
+	}
+	return dsn
 }
 
 type SSOConfig struct {

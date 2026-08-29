@@ -4,6 +4,11 @@
 
 All items on branch `feat/roadmap`, 33 commits ahead of `main`.
 
+### Database startup/pool hardening
+- PostgreSQL connections use the configured integer-second `connect_timeout` (shipped default: 3s; `0` means no dial bound).
+- Zero pool settings now use bounded defaults (50 open / 10 idle), negative settings are rejected, and idle connections are capped by the open limit.
+- Removed the unused contextless database `Ping` helper; health and degradation probes remain the connectivity checks.
+
 ### Added
 
 **Direction 1 — Observability & Operability**

@@ -125,6 +125,12 @@ check-anchored-event-ids:
 check-audit-manifest:
 	@bash scripts/check-audit-manifest.sh
 
+# Database startup/pool hardening gate: keep the bounded DSN wiring and the
+# deliberate removal of dead contextless db.Ping mechanically pinned.
+.PHONY: check-db-startup-hardening
+check-db-startup-hardening:
+	@bash scripts/check-db-startup-hardening.sh
+
 # Composition-root seam gate (Mutation-A pin): the buildAuditStack call and
 # the drain Start must stay in internal/app/new.go with their exact shapes
 # (C-1/C-2), the drain must not move into buildAuditStack (C-2b), the stack

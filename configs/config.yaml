@@ -115,6 +115,7 @@ database:
   password: ""              # secret provider/env only: AERO_ID_DATABASE_PASSWORD
   dbname: aero_id
   sslmode: disable
+  connect_timeout: 3s       # TCP dial + authentication bound; 0 = no dial bound
   max_open_conns: 50
   max_idle_conns: 10
   conn_max_lifetime: 1h

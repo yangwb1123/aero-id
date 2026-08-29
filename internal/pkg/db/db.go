@@ -18,7 +18,16 @@ type Options struct {
 }
 
 func Open(opts Options) (*gorm.DB, error) {
-	gormCfg := &gorm.Config{Logger: logger.Default.LogMode(logLevel(opts.LogLevel))}
+	opts, err := normalizeOptions(opts)
+	if err != nil {
+		return nil, fmt.Errorf("db options: %w", err)
+	}
+	// Keep connectivity lazy so degraded-start behavior is governed by the
+	// request-time health and degradation probes, not an implicit startup ping.
+	gormCfg := &gorm.Config{
+		Logger:               logger.Default.LogMode(logLevel(opts.LogLevel)),
+		DisableAutomaticPing: true,
+	}
 	db, err := gorm.Open(postgres.Open(opts.DSN), gormCfg)
 	if err != nil {
 		return nil, fmt.Errorf("gorm open: %w", err)
@@ -58,12 +67,4 @@ func configurePool(db interface {
 	if opts.ConnMaxLifetime > 0 {
 		db.SetConnMaxLifetime(opts.ConnMaxLifetime)
 	}
-}
-
-func Ping(db *gorm.DB) error {
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.Ping()
 }

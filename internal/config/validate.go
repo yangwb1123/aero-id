@@ -158,6 +158,7 @@ func regionConfigured(value string, regions map[string]struct{}) bool {
 
 func (c *Config) validateRuntimeLimits() error {
 	checks := []error{
+		validateDatabase(c.Database),
 		validateCORSOrigins(c.Server.HTTP.CORSOrigins),
 		validateStorage(c.Storage), validateRateLimit(c.RateLimit), validateStorageGC(c.Storage.GC),
 		validateExport(c.Export), validateWebhook(c.Outbox.Webhook), validateEventIngest(c.EventIngest),
@@ -169,6 +170,19 @@ func (c *Config) validateRuntimeLimits() error {
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateDatabase rejects values that would round to an unbounded pgx dial.
+// Pool bounds remain owned by internal/pkg/db so every DB caller shares one
+// normalization contract.
+func validateDatabase(value DatabaseConfig) error {
+	if value.ConnectTimeout < 0 {
+		return fmt.Errorf("database.connect_timeout must not be negative")
+	}
+	if value.ConnectTimeout > 0 && value.ConnectTimeout < time.Second {
+		return fmt.Errorf("database.connect_timeout must be 0 or at least 1s (pgx integer-second granularity)")
 	}
 	return nil
 }

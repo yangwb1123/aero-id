@@ -214,6 +214,54 @@ func TestDatabaseDSN(t *testing.T) {
 	}
 }
 
+func TestDatabaseDSNConnectTimeout(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "db", Port: 5432, User: "aero", Password: "secret", DBName: "aero_id",
+		SSLMode: "require", ConnectTimeout: 2 * time.Second,
+	}
+	want := "host=db port=5432 user=aero password=secret dbname=aero_id sslmode=require TimeZone=UTC connect_timeout=2"
+	if got := cfg.DSN(); got != want {
+		t.Fatalf("DSN = %q, want %q", got, want)
+	}
+}
+
+func TestValidateDatabaseConnectTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   time.Duration
+		wantErr string
+	}{
+		{name: "negative", value: -time.Second, wantErr: "database.connect_timeout must not be negative"},
+		{name: "positive sub-second", value: 500 * time.Millisecond, wantErr: "database.connect_timeout must be 0 or at least 1s (pgx integer-second granularity)"},
+		{name: "zero is allowed", value: 0},
+		{name: "one second is allowed", value: time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDatabase(DatabaseConfig{ConnectTimeout: tt.value})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateDatabase error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("validateDatabase error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidDatabaseConnectTimeout(t *testing.T) {
+	for _, value := range []string{"-1s", "500ms"} {
+		content := strings.Replace(sample, "  max_open_conns: 10", "  connect_timeout: "+value+"\n  max_open_conns: 10", 1)
+		_, err := Load(writeTemp(t, content))
+		if err == nil || !strings.Contains(err.Error(), "database.connect_timeout") {
+			t.Errorf("connect_timeout=%s: Load error = %v, want database.connect_timeout validation", value, err)
+		}
+	}
+}
+
 func TestLoadAuditLedgerSigningKeyValidation(t *testing.T) {
 	const validLine = "audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}"
 	if _, err := Load(writeTemp(t, sample)); err != nil {
@@ -692,6 +740,9 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 	cfg, err := Load(shipped)
 	if err != nil {
 		t.Fatalf("shipped configs/config.yaml must load: %v", err)
+	}
+	if cfg.Database.ConnectTimeout != 3*time.Second {
+		t.Fatalf("shipped database connect_timeout = %v, want 3s", cfg.Database.ConnectTimeout)
 	}
 	gov := cfg.AuditGovernance
 	if gov.Enabled {

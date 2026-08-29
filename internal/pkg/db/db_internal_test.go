@@ -1,10 +1,10 @@
 package db
 
 // Deterministic unit tests for the connection foundation package (no Docker,
-// no network, no timing). The only test that touches Open uses a DSN that
-// fails deterministically at pgx.ParseConfig ("sslmode=bogus") before any
-// network I/O; a parse-valid DSN would make the test network-dependent and is
-// deliberately never used here.
+// no network, no timing). Offline Open tests use either a DSN that fails
+// deterministically at pgx.ParseConfig ("sslmode=bogus") before any network
+// I/O or invalid pool options; parse-valid DSNs are otherwise network-dependent
+// and are deliberately kept in the integration-tagged test.
 
 import (
 	"errors"
@@ -58,9 +58,12 @@ type poolRecorder struct {
 	maxLifetime    time.Duration
 }
 
-func (r *poolRecorder) SetMaxOpenConns(v int)              { r.setMaxOpen = true; r.maxOpen = v }
-func (r *poolRecorder) SetMaxIdleConns(v int)              { r.setMaxIdle = true; r.maxIdle = v }
-func (r *poolRecorder) SetConnMaxLifetime(v time.Duration) { r.setMaxLifetime = true; r.maxLifetime = v }
+func (r *poolRecorder) SetMaxOpenConns(v int) { r.setMaxOpen = true; r.maxOpen = v }
+func (r *poolRecorder) SetMaxIdleConns(v int) { r.setMaxIdle = true; r.maxIdle = v }
+func (r *poolRecorder) SetConnMaxLifetime(v time.Duration) {
+	r.setMaxLifetime = true
+	r.maxLifetime = v
+}
 
 // TestConfigurePool pins the > 0-only semantics: each pool setting is applied
 // exactly when its Options value is strictly positive; zero and negative
