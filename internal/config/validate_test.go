@@ -249,7 +249,7 @@ func targetAssertionSourceBase() SourceEndpointConfig {
 }
 
 func TestValidateAeroIMTargetAssertionConfig(t *testing.T) {
-	if err := validateSourceEndpoint("aero_im", targetAssertionSourceBase()); err != nil {
+	if err := validateSourceEndpoint("aero-im", targetAssertionSourceBase()); err != nil {
 		t.Fatalf("complete target assertion config: %v", err)
 	}
 	cases := []struct {
@@ -283,7 +283,7 @@ func TestValidateAeroIMTargetAssertionConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			source := targetAssertionSourceBase()
 			tc.mutate(&source)
-			if err := validateSourceEndpoint("aero_im", source); err == nil {
+			if err := validateSourceEndpoint("aero-im", source); err == nil {
 				t.Fatal("invalid target assertion configuration was accepted")
 			}
 		})

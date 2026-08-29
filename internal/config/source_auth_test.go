@@ -61,6 +61,51 @@ sources:
 	}
 }
 
+func TestLoadRejectsInvalidAeroIMTargetAssertion(t *testing.T) {
+	const validConfig = sample + `
+sources:
+  aero_im:
+    endpoint: "https://aero-im.example"
+    summary_path: /internal/account-summary
+    region: local
+    oauth_token_url: "https://snaplink.example/token"
+    oauth_client_id: aero-id-im-source
+    oauth_client_secret: oauth-client-secret
+    oauth_scope: aero.account.summary.read
+    oauth_resource: aero-im
+    target_assertion_key_file: /run/secrets/aero-id-target-key.pem
+    target_assertion_key_id: target-key-2026-08
+    target_assertion_issuer: "https://aero-id.example/assertions"
+    target_assertion_audience: aero-im-account-summary
+    target_assertion_subject: aero-id-sync
+    target_assertion_client_id: aero-id-im-source
+`
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "invalid audience",
+			content: strings.Replace(validConfig, "target_assertion_audience: aero-im-account-summary", "target_assertion_audience: wrong-audience", 1),
+			wantErr: "sources.aero_im.target_assertion_audience must be",
+		},
+		{
+			name:    "missing issuer",
+			content: strings.Replace(validConfig, `target_assertion_issuer: "https://aero-id.example/assertions"`, `target_assertion_issuer: ""`, 1),
+			wantErr: "sources.aero_im.target_assertion_issuer is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeTemp(t, tc.content))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Load error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadSourceWorkloadConcurrencyEnvironmentOverrides(t *testing.T) {
 	t.Setenv("AERO_ID_SOURCES_SNAPLINK_QUERY_MAX_CONCURRENCY", "7")
 	t.Setenv("AERO_ID_SOURCES_AERO_IM_COMMAND_MAX_CONCURRENCY", "5")

@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -412,7 +411,7 @@ func validateSourceEndpoint(name string, source SourceEndpointConfig) error {
 	if err := validateSourcePaths(name, source); err != nil {
 		return err
 	}
-	if name == "aero_im" {
+	if name == "aero-im" {
 		if err := validateAeroIMTargetAssertion(source); err != nil {
 			return err
 		}
@@ -473,98 +472,6 @@ func validSourceLimits(source SourceEndpointConfig) bool {
 	return source.Timeout >= 0 && source.MaxBodyBytes >= 0 && source.MaxConcurrency >= 0 &&
 		source.QueryMaxConcurrency >= 0 && source.CommandMaxConcurrency >= 0 &&
 		source.HealthMaxConcurrency >= 0 && source.MaxAttempts >= 0 && source.RetryBackoff >= 0
-}
-
-const (
-	aeroIMAccountSummaryAssertionScope    = "aero.account.summary.read"
-	aeroIMAccountSummaryAssertionAudience = "aero-im-account-summary"
-	aeroIMAccountSummaryAssertionSubject  = "aero-id-sync"
-	aeroIMAccountSummaryOAuthResource     = "aero-im"
-)
-
-func validateAeroIMTargetAssertion(source SourceEndpointConfig) error {
-	values := []string{source.TargetAssertionKeyFile, source.TargetAssertionKeyEnv,
-		source.TargetAssertionKeyID, source.TargetAssertionIssuer, source.TargetAssertionAudience,
-		source.TargetAssertionSubject, source.TargetAssertionClientID}
-	configured := false
-	for _, value := range values {
-		configured = configured || strings.TrimSpace(value) != ""
-	}
-	configured = configured || source.TargetAssertionLifetime != 0
-	if !configured {
-		return nil
-	}
-	if (strings.TrimSpace(source.TargetAssertionKeyFile) == "") == (strings.TrimSpace(source.TargetAssertionKeyEnv) == "") {
-		return fmt.Errorf("sources.aero_im target assertion requires exactly one private-key file or environment reference")
-	}
-	for field, value := range map[string]string{
-		"target_assertion_key_id": source.TargetAssertionKeyID,
-		"target_assertion_issuer": source.TargetAssertionIssuer,
-	} {
-		if !validTargetAssertionConfigText(value) {
-			return fmt.Errorf("sources.aero_im.%s is required and must be a bounded non-whitespace value", field)
-		}
-	}
-	if strings.TrimSpace(source.TargetAssertionAudience) != aeroIMAccountSummaryAssertionAudience {
-		return fmt.Errorf("sources.aero_im.target_assertion_audience must be %q", aeroIMAccountSummaryAssertionAudience)
-	}
-	if strings.TrimSpace(source.TargetAssertionSubject) != aeroIMAccountSummaryAssertionSubject {
-		return fmt.Errorf("sources.aero_im.target_assertion_subject must be %q", aeroIMAccountSummaryAssertionSubject)
-	}
-	if !validTargetAssertionConfigText(source.TargetAssertionClientID) {
-		return fmt.Errorf("sources.aero_im.target_assertion_client_id is required and must be a bounded non-whitespace value")
-	}
-	clientID := strings.TrimSpace(source.TargetAssertionClientID)
-	oauthClientID := strings.TrimSpace(source.OAuthClientID)
-	if clientID != oauthClientID {
-		return fmt.Errorf("sources.aero_im target assertion client ID must match oauth_client_id")
-	}
-	if strings.TrimSpace(source.BearerToken) != "" {
-		return fmt.Errorf("sources.aero_im target assertions require OAuth client credentials, not bearer_token")
-	}
-	if strings.TrimSpace(source.OAuthTokenURL) == "" || strings.TrimSpace(source.OAuthSecret) == "" ||
-		strings.Join(strings.Fields(source.OAuthScope), " ") != aeroIMAccountSummaryAssertionScope ||
-		strings.TrimSpace(source.OAuthResource) != aeroIMAccountSummaryOAuthResource {
-		return fmt.Errorf("sources.aero_im target assertion requires OAuth scope %q and resource %q", aeroIMAccountSummaryAssertionScope, aeroIMAccountSummaryOAuthResource)
-	}
-	if source.TargetAssertionLifetime < 0 || source.TargetAssertionLifetime > time.Minute ||
-		(source.TargetAssertionLifetime > 0 && source.TargetAssertionLifetime%time.Second != 0) {
-		return fmt.Errorf("sources.aero_im target assertion lifetime must be 1m or less in whole seconds")
-	}
-	if source.SummaryPath != "" && source.SummaryPath != "/internal/account-summary" {
-		return fmt.Errorf("sources.aero_im summary_path must be /internal/account-summary when target assertions are enabled")
-	}
-	if source.TargetAssertionKeyEnv != "" && !validEnvironmentName(strings.TrimSpace(source.TargetAssertionKeyEnv)) {
-		return fmt.Errorf("sources.aero_im target assertion key environment reference is invalid")
-	}
-	if strings.TrimSpace(source.TargetAssertionKeyFile) != "" &&
-		(!validTargetAssertionConfigText(source.TargetAssertionKeyFile) ||
-			!filepath.IsAbs(strings.TrimSpace(source.TargetAssertionKeyFile))) {
-		return fmt.Errorf("sources.aero_im target assertion key file must be an absolute safe path")
-	}
-	return nil
-}
-
-func validTargetAssertionConfigText(value string) bool {
-	value = strings.TrimSpace(value)
-	return value != "" && len(value) <= 512 && strings.IndexFunc(value, func(character rune) bool {
-		return character == ' ' || character == '\t' || character == '\r' || character == '\n' || character == '\x00' || character == '\x7f'
-	}) == -1
-}
-
-func validEnvironmentName(value string) bool {
-	if value == "" || len(value) > 128 {
-		return false
-	}
-	for index, character := range value {
-		first := index == 0
-		letter := character >= 'A' && character <= 'Z'
-		digit := character >= '0' && character <= '9'
-		if !letter && character != '_' && !(digit && !first) {
-			return false
-		}
-	}
-	return true
 }
 
 func validateSourcePaths(name string, source SourceEndpointConfig) error {
