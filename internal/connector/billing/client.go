@@ -29,12 +29,13 @@ const (
 )
 
 var (
-	ErrInvalidConfig = errors.New("billing: invalid configuration")
-	ErrUnavailable   = errors.New("billing: unavailable")
-	ErrUnauthorized  = errors.New("billing: source unauthorized")
-	ErrQuotaExceeded = errors.New("billing: quota exceeded")
-	ErrEntitlement   = errors.New("billing: entitlement missing")
-	ErrInvalidReply  = errors.New("billing: invalid response")
+	ErrInvalidConfig      = errors.New("billing: invalid configuration")
+	ErrUnavailable        = errors.New("billing: unavailable")
+	ErrUnauthorized       = errors.New("billing: source unauthorized")
+	ErrQuotaExceeded      = errors.New("billing: quota exceeded")
+	ErrEntitlement        = errors.New("billing: entitlement missing")
+	ErrReservationExpired = errors.New("billing: reservation expired")
+	ErrInvalidReply       = errors.New("billing: invalid response")
 )
 
 type BindingConfig struct {
@@ -180,18 +181,34 @@ func (client *Client) Commit(ctx context.Context, tenantID, reservationID, key, 
 	return nil
 }
 
-func (client *Client) Release(ctx context.Context, tenantID, reservationID string) error {
+func (client *Client) Release(ctx context.Context, tenantID, reservationID, idempotencyKey string) error {
 	path := reservationPath + "/" + url.PathEscape(reservationID)
 	var envelope struct {
 		Reservation *Reservation `json:"reservation"`
 	}
-	if err := client.request(ctx, tenantID, ScopeMeteringWrite, http.MethodDelete, path, "", nil, &envelope); err != nil {
+	if !validReleaseRequest(reservationID, idempotencyKey) {
+		return ErrInvalidConfig
+	}
+	if err := client.request(ctx, tenantID, ScopeMeteringWrite, http.MethodDelete, path, idempotencyKey, nil, &envelope); err != nil {
 		return err
 	}
-	if envelope.Reservation == nil || envelope.Reservation.ID != reservationID || envelope.Reservation.TenantID != tenantID {
+	if envelope.Reservation == nil || envelope.Reservation.ID != reservationID ||
+		envelope.Reservation.TenantID != tenantID || !releaseState(envelope.Reservation.Status) {
 		return ErrInvalidReply
 	}
 	return nil
+}
+
+func validReleaseRequest(reservationID, idempotencyKey string) bool {
+	return strings.HasPrefix(reservationID, "usr-res-") && reservationID != "usr-res-" &&
+		len(reservationID) <= 256 && reservationID == strings.TrimSpace(reservationID) &&
+		strings.IndexFunc(reservationID, unicode.IsControl) < 0 && idempotencyKey != "" &&
+		len(idempotencyKey) <= 256 && idempotencyKey == strings.TrimSpace(idempotencyKey) &&
+		strings.IndexFunc(idempotencyKey, unicode.IsControl) < 0
+}
+
+func releaseState(status string) bool {
+	return status == "released" || status == "expired"
 }
 
 func (client *Client) HealthCheck(ctx context.Context) error {
@@ -321,6 +338,8 @@ func decodeBillingError(status int, body []byte) error {
 		return ErrQuotaExceeded
 	case "metering_entitlement_missing", "metering_dimension_not_allowed":
 		return ErrEntitlement
+	case "metering_reservation_expired":
+		return ErrReservationExpired
 	case "invalid_token", "insufficient_scope", "metering_source_unauthorized":
 		return ErrUnauthorized
 	}

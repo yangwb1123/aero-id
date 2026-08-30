@@ -72,10 +72,14 @@ New-account creation uses Snaplink `Reserve`, local durable creation, then
 `Commit`. The stable reservation and fact keys are derived from the verified
 tenant, issuer, and subject. Migration `000051` persists the pending commit next
 to the account, so crashes and retries complete the same saga idempotently.
-Failed local creation leaves the bounded reservation pending for retry and
-Snaplink TTL expiry; releasing it immediately would make the stable saga
-unretryable. Entitlement cache state never authorizes a quota mutation:
-Reserve, Commit, and Release always go to Snaplink and fail closed.
+Failed local creation records a fenced, durable release intent and makes one
+bounded synchronous attempt; failures are retried by the reconciler. A process
+crash before the attempt leaves the reservation pending until reconciliation or
+Snaplink TTL expiry. **Rollout blocker:** the currently verified Snaplink
+metering DELETE endpoint does not yet require or persist `Idempotency-Key`.
+Aero ID compensation must remain disabled until that source contract is
+shipped and verified. Entitlement cache state never authorizes a quota
+mutation: Reserve, Commit, and Release always go to Snaplink and fail closed.
 
 Existing accounts created before billing enablement require an explicit
 Snaplink usage reconciliation before enforcing the account limit. Organization

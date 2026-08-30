@@ -24,11 +24,12 @@ func (r *accountRepo) EnsureByIdentity(ctx context.Context, tenantID, issuer, su
 		return nil, err
 	}
 	var result *domain.Account
-	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result, _, err = ensureAccountIdentityTx(tx, input, domain.ID{})
-		return err
+	var callbackErr error
+	commitErr := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result, _, callbackErr = ensureAccountIdentityTx(tx, input, domain.ID{})
+		return callbackErr
 	})
-	return result, err
+	return result, transactionOutcome(commitErr, callbackErr)
 }
 
 func normalizeAccountIdentity(tenantID, issuer, subject, canonicalUID,

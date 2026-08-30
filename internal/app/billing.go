@@ -17,7 +17,7 @@ type billingRuntime struct {
 	probe func(context.Context) error
 }
 
-func buildBillingRuntime(cfg *config.Config, db *gorm.DB) (billingRuntime, error) {
+func buildBillingRuntime(cfg *config.Config, db *gorm.DB, sagaRepo repository.AccountQuotaSagaRepository) (billingRuntime, error) {
 	if !cfg.Billing.Enabled {
 		return billingRuntime{}, nil
 	}
@@ -40,7 +40,7 @@ func buildBillingRuntime(cfg *config.Config, db *gorm.DB) (billingRuntime, error
 		return billingRuntime{}, fmt.Errorf("billing client: %w", err)
 	}
 	repo := repository.NewEntitlementRepository(db)
-	quota := service.NewBillingService(repo, client, service.BillingConfig{
+	quota := service.NewBillingServiceWithSaga(repo, client, sagaRepo, service.BillingConfig{
 		MaxProjectionStaleness: cfg.Billing.MaxProjectionStaleness,
 		AccountFeature:         cfg.Billing.AccountFeature, UserDimension: cfg.Billing.UserDimension,
 		ReservationTTL: cfg.Billing.ReservationTTL,

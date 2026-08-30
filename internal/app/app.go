@@ -46,6 +46,7 @@ type App struct {
 	drainOperations func()
 	stopOperations  func()
 	stopSyncJobs    func()
+	stopQuotaSaga   func()
 	stopEventBus    func()
 	stopReplication func()
 	stopDegradation func()
@@ -147,6 +148,9 @@ func (a *App) shutdown() {
 	}
 	if a.stopSyncJobs != nil {
 		a.stopSyncJobs()
+	}
+	if a.stopQuotaSaga != nil {
+		a.stopQuotaSaga()
 	}
 	if a.stopEventBus != nil {
 		a.stopEventBus()

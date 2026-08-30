@@ -282,6 +282,87 @@ func nextBillingHeader(t *testing.T, captures <-chan string) string {
 	}
 }
 
+func TestClientReleaseCarriesStableIdempotencyKeyAndEscapedPath(t *testing.T) {
+	const reservationID = "usr-res-needs/escaping"
+	const releaseKey = "usr-release-stable"
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/token":
+			writeJSON(t, writer, http.StatusOK, map[string]any{"access_token": "metering-token", "token_type": "Bearer", "expires_in": 300})
+		default:
+			if request.Method != http.MethodDelete || request.URL.EscapedPath() != "/"+reservationPath+"/usr-res-needs%2Fescaping" {
+				t.Errorf("release request = %s %s", request.Method, request.URL.EscapedPath())
+			}
+			if request.Header.Get("Idempotency-Key") != releaseKey {
+				t.Errorf("release idempotency key = %q, want %q", request.Header.Get("Idempotency-Key"), releaseKey)
+			}
+			calls.Add(1)
+			writeJSON(t, writer, http.StatusOK, map[string]any{"reservation": map[string]any{
+				"id": reservationID, "tenant_id": "tenant-1", "status": "released",
+			}})
+		}
+	}))
+	defer server.Close()
+
+	client := newBillingTestClient(t, server.URL)
+	for range 2 {
+		if err := client.Release(t.Context(), "tenant-1", reservationID, releaseKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("release calls = %d, want 2", calls.Load())
+	}
+	if err := client.Release(t.Context(), "tenant-1", reservationID, " "); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("empty release key error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestClientReleaseRejectsMismatchedResponse(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body map[string]any
+	}{
+		{name: "reservation id", body: map[string]any{"id": "other", "tenant_id": "tenant-1", "status": "released"}},
+		{name: "tenant", body: map[string]any{"id": "usr-res-1", "tenant_id": "tenant-2", "status": "released"}},
+		{name: "committed state", body: map[string]any{"id": "usr-res-1", "tenant_id": "tenant-1", "status": "committed"}},
+		{name: "missing state", body: map[string]any{"id": "usr-res-1", "tenant_id": "tenant-1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == "/token" {
+					writeJSON(t, writer, http.StatusOK, map[string]any{"access_token": "token", "token_type": "Bearer", "expires_in": 300})
+					return
+				}
+				writeJSON(t, writer, http.StatusOK, map[string]any{"reservation": test.body})
+			}))
+			defer server.Close()
+			client := newBillingTestClient(t, server.URL)
+			if err := client.Release(t.Context(), "tenant-1", "usr-res-1", "usr-release-1"); !errors.Is(err, ErrInvalidReply) {
+				t.Fatalf("release error = %v, want ErrInvalidReply", err)
+			}
+		})
+	}
+}
+
+func TestClientAcceptsExpiredReleaseReplay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/token" {
+			writeJSON(t, writer, http.StatusOK, map[string]any{"access_token": "token", "token_type": "Bearer", "expires_in": 300})
+			return
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"reservation": map[string]any{
+			"id": "usr-res-1", "tenant_id": "tenant-1", "status": "expired",
+		}})
+	}))
+	defer server.Close()
+	client := newBillingTestClient(t, server.URL)
+	if err := client.Release(t.Context(), "tenant-1", "usr-res-1", "usr-release-1"); err != nil {
+		t.Fatalf("expired release replay = %v", err)
+	}
+}
+
 func TestClientMapsOnlyQuotaErrorCodeToQuotaExceeded(t *testing.T) {
 	client := &Client{maxBody: 1024}
 	tests := []struct {

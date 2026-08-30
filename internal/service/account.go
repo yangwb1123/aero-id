@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -76,16 +77,17 @@ type AccountList struct {
 }
 
 type accountService struct {
-	repo           repository.AccountRepository
-	permission     AccountPermissionChecker
-	audit          AuditLedgerService
-	quota          AccountQuota
-	issuer         string
-	region         string
-	home           *region.Resolver
-	backfillTenant string
-	directory      repository.RegionDirectoryRepository // optional durable fencing guard (P6-02)
-	homeVersion    string
+	repo                repository.AccountRepository
+	permission          AccountPermissionChecker
+	audit               AuditLedgerService
+	quota               AccountQuota
+	issuer              string
+	region              string
+	home                *region.Resolver
+	backfillTenant      string
+	directory           repository.RegionDirectoryRepository // optional durable fencing guard (P6-02)
+	homeVersion         string
+	quotaReleaseTimeout time.Duration
 }
 
 type AccountOption func(*accountService)
@@ -122,9 +124,17 @@ func WithAccountQuota(quota AccountQuota) AccountOption {
 	return func(s *accountService) { s.quota = quota }
 }
 
+func WithAccountQuotaReleaseTimeout(timeout time.Duration) AccountOption {
+	return func(s *accountService) {
+		if timeout > 0 {
+			s.quotaReleaseTimeout = timeout
+		}
+	}
+}
+
 func NewAccountService(repo repository.AccountRepository, opts ...AccountOption) AccountService {
 	s := &accountService{repo: repo, issuer: DefaultAccountIssuer, region: DefaultAccountRegion,
-		backfillTenant: LegacyBackfillTenant, homeVersion: "v1"}
+		backfillTenant: LegacyBackfillTenant, homeVersion: "v1", quotaReleaseTimeout: 5 * time.Second}
 	for _, opt := range opts {
 		opt(s)
 	}

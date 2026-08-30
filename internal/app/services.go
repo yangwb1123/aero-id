@@ -84,6 +84,7 @@ type serviceBundle struct {
 	drainOperations func()
 	stopOperations  func()
 	stopSyncJobs    func()
+	stopQuotaSaga   func()
 }
 
 // buildServices constructs every domain service wired into both transports,
@@ -186,6 +187,12 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithSyncJobRegion(deps.cfg.Account.Region),
 		service.WithSyncJobMetrics(deps.controlMetrics))
 	stopSyncJobs := syncJobSvc.Start(deps.workerContext, time.Second)
+	var stopQuotaSaga func()
+	if quotaWorker, ok := accountSvc.(interface {
+		StartAccountQuotaReconciler(context.Context, time.Duration) func()
+	}); ok {
+		stopQuotaSaga = quotaWorker.StartAccountQuotaReconciler(deps.workerContext, time.Second)
+	}
 	banSvc := service.NewBanService(deps.banRepo, adminSvc,
 		service.WithBanAuditLogger(deps.auditLedger),
 	)
@@ -227,6 +234,6 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		permissionChecker: permissionChecker,
 		stopEventBus:      stopEventBus, stopReplication: stopReplication,
 		drainOperations: drainOperations,
-		stopOperations:  stopOperations, stopSyncJobs: stopSyncJobs,
+		stopOperations:  stopOperations, stopSyncJobs: stopSyncJobs, stopQuotaSaga: stopQuotaSaga,
 	}, nil
 }

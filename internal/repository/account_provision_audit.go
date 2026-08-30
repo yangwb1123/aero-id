@@ -35,20 +35,21 @@ func (r *accountRepo) EnsureByIdentityWithAudit(ctx context.Context, tenantID, i
 		return nil, err
 	}
 	var result *domain.Account
-	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var callbackErr error
+	commitErr := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var created bool
-		result, created, err = ensureAccountIdentityTx(tx, input, accountID)
-		if err != nil {
-			return err
+		result, created, callbackErr = ensureAccountIdentityTx(tx, input, accountID)
+		if callbackErr != nil {
+			return callbackErr
 		}
 		if created {
-			if err := r.audit.AppendInTx(ctx, tx, fact); err != nil {
-				return fmt.Errorf("append account provision audit: %w", err)
+			if callbackErr = r.audit.AppendInTx(ctx, tx, fact); callbackErr != nil {
+				return fmt.Errorf("append account provision audit: %w", callbackErr)
 			}
 		}
 		return nil
 	})
-	return result, err
+	return result, transactionOutcome(commitErr, callbackErr)
 }
 
 // EnsureByIdentityWithQuotaWithAudit is the metered variant (A3): the quota
@@ -61,21 +62,25 @@ func (r *accountRepo) EnsureByIdentityWithQuotaWithAudit(ctx context.Context, te
 		return nil, fmt.Errorf("account quota identity fields must not be blank")
 	}
 	var result *domain.Account
-	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var callbackErr error
+	commitErr := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var created bool
-		result, created, err = ensureAccountIdentityTx(tx, input, accountID)
-		if err != nil {
-			return err
+		result, created, callbackErr = ensureAccountIdentityTx(tx, input, accountID)
+		if callbackErr != nil {
+			return callbackErr
 		}
-		if err := ensureAccountQuotaTx(tx, input.tenantID, result.ID, reservationID); err != nil {
-			return err
+		if callbackErr = ensureAccountQuotaTx(tx, input.tenantID, result.ID, reservationID); callbackErr != nil {
+			return callbackErr
+		}
+		if callbackErr = markQuotaSagaPersistedTx(tx, input.tenantID, reservationID, result.ID); callbackErr != nil {
+			return callbackErr
 		}
 		if created {
-			if err := r.audit.AppendInTx(ctx, tx, fact); err != nil {
-				return fmt.Errorf("append account provision audit: %w", err)
+			if callbackErr = r.audit.AppendInTx(ctx, tx, fact); callbackErr != nil {
+				return fmt.Errorf("append account provision audit: %w", callbackErr)
 			}
 		}
 		return nil
 	})
-	return result, err
+	return result, transactionOutcome(commitErr, callbackErr)
 }

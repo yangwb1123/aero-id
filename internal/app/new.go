@@ -146,7 +146,11 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	storageRefRepo := repository.NewStorageRefRepository(gdb)
 	adminRepo := repository.NewAdminRepository(gdb, auditLedgerRepo)
 	accountRepo := repository.NewAccountRepository(gdb, auditLedgerRepo)
-	billingRuntime, err := buildBillingRuntime(cfg, gdb)
+	quotaSagaRepo, ok := accountRepo.(repository.AccountQuotaSagaRepository)
+	if !ok && cfg.Billing.Enabled {
+		return nil, fmt.Errorf("account quota saga repository is unavailable")
+	}
+	billingRuntime, err := buildBillingRuntime(cfg, gdb, quotaSagaRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +309,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		drainOperations: svcs.drainOperations,
 		stopOperations:  svcs.stopOperations,
 		stopSyncJobs:    svcs.stopSyncJobs,
+		stopQuotaSaga:   svcs.stopQuotaSaga,
 		stopEventBus:    svcs.stopEventBus,
 		stopReplication: svcs.stopReplication,
 		stopDegradation: workers.stopDegradation,

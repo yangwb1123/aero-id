@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
@@ -116,12 +117,48 @@ func (s *accountService) provisionAccount(ctx context.Context, tenantID, issuer,
 	}
 	account, err := s.provisionAccountWithAudit(ctx, tenantID, issuer, subject, homeRegion, reservationID)
 	if err != nil {
+		// A commit acknowledgement loss is not proof of rollback. The durable
+		// saga row is already reserving and its reconciler must first inspect the
+		// account/quota rows before it can release anything.
+		if repository.IsTransactionOutcomeUnknown(err) {
+			return nil, err
+		}
+		if coordinator, ok := s.quota.(AccountQuotaSagaCoordinator); ok {
+			scheduled, scheduleErr := coordinator.ScheduleAccountQuotaRelease(
+				context.WithoutCancel(ctx), tenantID, reservationID)
+			if scheduleErr == nil && scheduled {
+				releaseCtx, cancel := quotaCompensationContext(ctx, s.quotaReleaseTimeout)
+				releaseErr := s.quota.ReleaseAccount(releaseCtx, tenantID, reservationID)
+				cancel()
+				_ = coordinator.FinishAccountQuotaRelease(context.WithoutCancel(ctx), tenantID, reservationID,
+					releaseErr == nil, releaseErr)
+			}
+		} else {
+			// Compatibility fakes and pre-saga wiring retain the original
+			// best-effort behavior; production billing is always coordinated.
+			releaseCtx, cancel := quotaCompensationContext(ctx, s.quotaReleaseTimeout)
+			_ = s.quota.ReleaseAccount(releaseCtx, tenantID, reservationID)
+			cancel()
+		}
 		return nil, err
 	}
 	if err := s.commitAccountQuota(ctx, quotaRepo, tenantID, account, reservationID); err != nil {
 		return nil, err
 	}
 	return account, nil
+}
+
+func isReservationExpired(err error) bool {
+	var appErr *apperr.AppError
+	return errors.As(err, &appErr) && appErr.Code == "billing.reservation_expired"
+}
+
+func quotaCompensationContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	base := context.WithoutCancel(ctx)
+	if timeout <= 0 {
+		return base, func() {}
+	}
+	return context.WithTimeout(base, timeout)
 }
 
 func (s *accountService) provisionUnmeteredAccount(ctx context.Context, tenantID, issuer, subject,
@@ -185,6 +222,12 @@ func (s *accountService) completePendingAccountQuota(ctx context.Context, tenant
 	}
 	reservationID, err := quotaRepo.PendingAccountQuota(ctx, tenantID, account.ID)
 	if errors.Is(err, repository.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+		if statusRepo, ok := s.repo.(repository.AccountQuotaStatusRepository); ok {
+			status, statusErr := statusRepo.AccountQuotaStatus(ctx, tenantID, account.ID)
+			if statusErr == nil && status == "expired" {
+				return apperr.Conflict("billing.reservation_expired", "account quota reservation expired")
+			}
+		}
 		return nil
 	}
 	if err != nil {
@@ -196,10 +239,25 @@ func (s *accountService) completePendingAccountQuota(ctx context.Context, tenant
 func (s *accountService) commitAccountQuota(ctx context.Context, quotaRepo repository.AccountQuotaRepository,
 	tenantID string, account *domain.Account, reservationID string) error {
 	if err := s.quota.CommitAccount(ctx, tenantID, reservationID, account.ID); err != nil {
+		if isReservationExpired(err) {
+			if expiryRepo, ok := quotaRepo.(repository.AccountQuotaExpiryRepository); ok {
+				if markErr := expiryRepo.MarkAccountQuotaExpired(ctx, tenantID, account.ID, reservationID); markErr != nil {
+					return mapAccountError(markErr, "billing.saga_expiry_failed", "failed to persist expired account quota state")
+				}
+			}
+			if coordinator, ok := s.quota.(AccountQuotaSagaCoordinator); ok {
+				_ = coordinator.MarkAccountQuotaExpired(ctx, tenantID, reservationID)
+			}
+		}
 		return err
 	}
 	if err := quotaRepo.MarkAccountQuotaCommitted(ctx, tenantID, account.ID, reservationID); err != nil {
 		return mapAccountError(err, "billing.saga_commit_failed", "failed to persist account quota state")
+	}
+	if coordinator, ok := s.quota.(AccountQuotaSagaCoordinator); ok {
+		if err := coordinator.MarkAccountQuotaCommitted(ctx, tenantID, reservationID); err != nil {
+			return mapAccountError(err, "billing.saga_commit_failed", "failed to persist account quota saga state")
+		}
 	}
 	return nil
 }

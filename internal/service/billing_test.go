@@ -31,6 +31,13 @@ type billingGatewayStub struct {
 	projection *domain.EntitlementProjection
 	err        error
 	commands   []billing.ReserveCommand
+	releases   []billingReleaseCall
+}
+
+type billingReleaseCall struct {
+	tenantID       string
+	reservationID  string
+	idempotencyKey string
 }
 
 func (stub *billingGatewayStub) CurrentEntitlement(context.Context, string) (*domain.EntitlementProjection, error) {
@@ -49,7 +56,10 @@ func (stub *billingGatewayStub) Commit(context.Context, string, string, string, 
 	return stub.err
 }
 
-func (stub *billingGatewayStub) Release(context.Context, string, string) error { return stub.err }
+func (stub *billingGatewayStub) Release(_ context.Context, tenantID, reservationID, idempotencyKey string) error {
+	stub.releases = append(stub.releases, billingReleaseCall{tenantID: tenantID, reservationID: reservationID, idempotencyKey: idempotencyKey})
+	return stub.err
+}
 
 func TestBillingServiceUsesRecentProjectionDuringCentralOutage(t *testing.T) {
 	now := time.Now().UTC()
@@ -117,6 +127,32 @@ func TestBillingServiceUsesStableReservationIdentity(t *testing.T) {
 	}
 	if err := service.CommitAccount(t.Context(), "tenant-1", first, idgen.NewID()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBillingServiceRejectsMalformedReleaseReservation(t *testing.T) {
+	gateway := &billingGatewayStub{}
+	service := NewBillingService(&entitlementRepoStub{}, gateway, BillingConfig{})
+	if err := service.ReleaseAccount(t.Context(), "tenant-1", "usr-res-"); err == nil {
+		t.Fatal("malformed reservation was released")
+	}
+	if len(gateway.releases) != 0 {
+		t.Fatal("malformed reservation reached billing gateway")
+	}
+}
+
+func TestBillingServiceReleaseUsesStableIdempotencyKey(t *testing.T) {
+	gateway := &billingGatewayStub{}
+	service := NewBillingService(&entitlementRepoStub{}, gateway, BillingConfig{})
+	if err := service.ReleaseAccount(t.Context(), "tenant-1", "usr-res-stable"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.releases) != 1 {
+		t.Fatalf("release calls = %d, want 1", len(gateway.releases))
+	}
+	got := gateway.releases[0]
+	if got.tenantID != "tenant-1" || got.reservationID != "usr-res-stable" || got.idempotencyKey != "usr-release-stable" {
+		t.Fatalf("release call = %+v, want stable tenant/reservation/key", got)
 	}
 }
 
