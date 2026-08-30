@@ -360,11 +360,11 @@ func trustedTargetFieldsValid(target *trustedSummaryTarget) bool {
 	if len(target.datasets) == 0 {
 		return false
 	}
-	return trustedTargetDatasetsValid(target.datasets)
+	return trustedTargetDatasetsValid(target)
 }
 
 func trustedTargetIdentityFieldsValid(target *trustedSummaryTarget) bool {
-	if target == nil {
+	if target == nil || !validTrustedSummarySource(target.source) {
 		return false
 	}
 	return target.accountID != "" && target.canonicalUID != "" && target.tenantID != "" &&
@@ -374,11 +374,11 @@ func trustedTargetIdentityFieldsValid(target *trustedSummaryTarget) bool {
 		validTargetAssertionComponent(target.region, 128)
 }
 
-func trustedTargetDatasetsValid(datasets []domain.AccountDataset) bool {
-	for index, dataset := range datasets {
+func trustedTargetDatasetsValid(target *trustedSummaryTarget) bool {
+	for index, dataset := range target.datasets {
 		descriptor, ok := domain.DatasetDescriptorOf(dataset)
-		if !ok || descriptor.Source != string(SourceAeroIM) ||
-			(index > 0 && string(datasets[index-1]) >= string(dataset)) {
+		if !ok || descriptor.Source != string(target.source) ||
+			(index > 0 && string(target.datasets[index-1]) >= string(dataset)) {
 			return false
 		}
 	}

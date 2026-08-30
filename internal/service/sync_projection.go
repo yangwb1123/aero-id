@@ -36,8 +36,10 @@ func (s *syncJobService) persistSyncSummary(ctx context.Context, job *domain.Syn
 	if s.application == nil {
 		return repository.ErrSummaryApplicationUnavailable
 	}
+	// The job's tenant-scoped account ID is the lookup key for bound sources;
+	// never let a stale caller-held account redirect projection writes.
 	accountID := job.AccountID
-	if account != nil && account.ID != (domain.ID{}) {
+	if accountID == (domain.ID{}) && account != nil {
 		accountID = account.ID
 	}
 	_, err := s.application.ApplySummary(ctx, domain.SummaryApplicationRequest{

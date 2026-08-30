@@ -56,7 +56,7 @@ func trustedTestSummaryRequest(request SummaryRequest) SummaryRequest {
 	}
 	sort.Slice(request.Datasets, func(left, right int) bool { return string(request.Datasets[left]) < string(request.Datasets[right]) })
 	request.trustedTarget = &trustedSummaryTarget{
-		accountID: request.AccountID.String(), canonicalUID: request.CanonicalUID,
+		source: SourceAeroIM, accountID: request.AccountID.String(), canonicalUID: request.CanonicalUID,
 		tenantID: request.TenantID, region: request.Region,
 		datasets: append([]domain.AccountDataset(nil), request.Datasets...),
 	}

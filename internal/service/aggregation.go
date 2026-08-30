@@ -40,9 +40,9 @@ func NewAggregationService(accounts AccountService, snapshots repository.Snapsho
 }
 
 // NewAggregationServiceWithAuthoritativeAccounts wires the tenant-scoped
-// account loader required before an Aero IM target assertion can be minted.
-// The legacy constructor remains for source fixtures that do not use the
-// bound Aero IM connector.
+// account loader required before a bound source summary request is issued.
+// The legacy constructor remains for source fixtures that use only unbound
+// compatibility connectors.
 func NewAggregationServiceWithAuthoritativeAccounts(accounts AccountService,
 	authoritative connector.AuthoritativeAccountLoader, snapshots repository.SnapshotRepository,
 	application repository.SummaryApplication, connectors ...connector.Connector) AggregationService {
@@ -150,22 +150,29 @@ func (s *aggregationService) refresh(ctx context.Context, account *domain.Accoun
 
 func (s *aggregationService) refreshSource(ctx context.Context, account *domain.Account, source connector.Source,
 	client connector.Connector, requested []domain.AccountDataset, result *domain.AggregateOverview, mu *sync.Mutex) {
-	request := connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
-		ActorUID: actorFromContext(ctx), TenantID: account.TenantID, RequestID: RequestIDFrom(ctx),
-		Region: account.HomeRegion, Datasets: requested}
-	var err error
-	if source == connector.SourceAeroIM {
+	if account == nil {
+		s.setSourceError(result, mu, source, "source.target_binding_invalid")
+		return
+	}
+	var (
+		request connector.SummaryRequest
+		err     error
+	)
+	if source == connector.SourceAeroIM || source == connector.SourceAeroVault {
 		if s.authoritativeAccounts == nil {
 			s.setSourceError(result, mu, source, "source.target_binding_unavailable")
 			return
 		}
 		request, err = connector.NewTrustedSummaryRequest(ctx, s.authoritativeAccounts,
-			connector.TrustedSummaryRequestInput{TenantID: account.TenantID, AccountID: account.ID,
+			connector.TrustedSummaryRequestInput{Source: source, TenantID: account.TenantID, AccountID: account.ID,
 				ActorUID: actorFromContext(ctx), RequestID: RequestIDFrom(ctx), Datasets: requested})
-		if err != nil {
-			s.setSourceError(result, mu, source, "source.target_binding_invalid")
-			return
-		}
+	} else {
+		request, err = compatibilitySummaryRequest(source, account, actorFromContext(ctx), account.TenantID,
+			RequestIDFrom(ctx), "", requested, false)
+	}
+	if err != nil {
+		s.setSourceError(result, mu, source, "source.target_binding_invalid")
+		return
 	}
 	summary, err := client.Summary(ctx, request)
 	if err != nil {
@@ -176,7 +183,7 @@ func (s *aggregationService) refreshSource(ctx context.Context, account *domain.
 		s.setSourceError(result, mu, source, "source.empty_summary")
 		return
 	}
-	if err := s.persistSummary(ctx, account.ID, source, requested, summary); err != nil {
+	if err := s.persistSummary(ctx, request.AccountID, source, requested, summary); err != nil {
 		s.setSourceError(result, mu, source, "projection.write_failed")
 		return
 	}

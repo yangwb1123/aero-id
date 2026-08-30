@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -53,6 +54,94 @@ func trustedRequestForTest(t *testing.T, datasets []domain.AccountDataset) Summa
 		t.Fatal(err)
 	}
 	return request
+}
+
+type countingSummaryAccountLoader struct {
+	account *domain.Account
+	calls   int
+}
+
+func (l *countingSummaryAccountLoader) GetByID(_ context.Context, tenantID string, accountID domain.ID) (*domain.Account, error) {
+	l.calls++
+	if l.account == nil || l.account.TenantID != tenantID || l.account.ID != accountID {
+		return nil, errors.New("account not found")
+	}
+	return l.account, nil
+}
+
+func TestTrustedSummaryRequestBindsVaultToAuthoritativeSnapshot(t *testing.T) {
+	account := &domain.Account{ID: domain.ID{7}, TenantID: "tenant-7", CanonicalUID: "loaded-uid",
+		HomeRegion: "west-1", Status: domain.AccountActive}
+	loader := &countingSummaryAccountLoader{account: account}
+	datasets := []domain.AccountDataset{"aero-vault.usage", "aero-vault.tenants", "aero-vault.buckets"}
+	request, err := NewTrustedSummaryRequest(t.Context(), loader, TrustedSummaryRequestInput{
+		Source: SourceAeroVault, TenantID: account.TenantID, AccountID: account.ID,
+		ActorUID: "actor-7", RequestID: "request-7", OperationID: "operation-7", Datasets: datasets,
+		Reconcile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account.CanonicalUID = "caller-mutated"
+	account.HomeRegion = "caller-mutated-region"
+	datasets[0] = "aero-vault.tenants"
+	if loader.calls != 1 || request.CanonicalUID != "loaded-uid" || request.Region != "west-1" ||
+		request.ActorUID != "actor-7" || !request.Reconcile ||
+		!reflect.DeepEqual(request.Datasets, []domain.AccountDataset{"aero-vault.buckets", "aero-vault.tenants", "aero-vault.usage"}) {
+		t.Fatalf("trusted Vault request = %#v, loader calls = %d", request, loader.calls)
+	}
+}
+
+func TestTrustedVaultSummaryRequestHasNoTargetAssertionAndPreservesActor(t *testing.T) {
+	account := &domain.Account{ID: domain.ID{9}, TenantID: "tenant-9", CanonicalUID: "vault-uid",
+		HomeRegion: "west-1", Status: domain.AccountActive}
+	request, err := NewTrustedSummaryRequest(t.Context(), testSummaryAccountLoader{account}, TrustedSummaryRequestInput{
+		Source: SourceAeroVault, TenantID: account.TenantID, AccountID: account.ID, ActorUID: "actor-9",
+		RequestID: "request-9", Datasets: []domain.AccountDataset{"aero-vault.tenants"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{
+		Endpoint: "http://127.0.0.1", AllowInsecureLoopback: true, Environment: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest, err := client.newSummaryRequest(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := httpRequest.Header.Get(accountSummaryTargetAssertionHeader); got != "" {
+		t.Fatalf("Vault target assertion = %q, want absent", got)
+	}
+	if got := httpRequest.Header.Get("X-Aero-Actor-UID"); got != "actor-9" {
+		t.Fatalf("Vault actor header = %q, want actor-9", got)
+	}
+}
+
+func TestTrustedSummaryRequestRejectsUnknownOrMismatchedScopeBeforeLoading(t *testing.T) {
+	account := testAccount(8)
+	cases := []struct {
+		name    string
+		source  Source
+		dataset []domain.AccountDataset
+	}{
+		{name: "empty stored scope", source: SourceAeroVault},
+		{name: "mismatched dataset", source: SourceAeroVault, dataset: []domain.AccountDataset{"aero-im.profile"}},
+		{name: "unknown source", source: Source("unknown"), dataset: []domain.AccountDataset{"aero-vault.tenants"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loader := &countingSummaryAccountLoader{account: account}
+			_, err := NewTrustedSummaryRequest(t.Context(), loader, TrustedSummaryRequestInput{
+				Source: tc.source, TenantID: account.TenantID, AccountID: account.ID, Datasets: tc.dataset,
+			})
+			if err == nil || loader.calls != 0 {
+				t.Fatalf("error = %v, loader calls = %d; want local rejection", err, loader.calls)
+			}
+		})
+	}
 }
 
 func TestCanonicalAccountSummaryRequestVectorMatchesRust(t *testing.T) {

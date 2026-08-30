@@ -54,6 +54,57 @@ func (f *fakeMigrationConnector) Summary(ctx context.Context, req connector.Summ
 	return f.summary, f.err
 }
 
+type migrationAccountRepository struct {
+	account *domain.Account
+}
+
+func (r *migrationAccountRepository) EnsureByIdentity(context.Context, string, string, string, string, string) (*domain.Account, error) {
+	return r.account, nil
+}
+func (r *migrationAccountRepository) FindByIdentity(_ context.Context, tenantID, _, _ string) (*domain.Account, error) {
+	if r.account == nil || r.account.TenantID != tenantID {
+		return nil, errors.New("account not found")
+	}
+	return r.account, nil
+}
+func (r *migrationAccountRepository) GetByID(_ context.Context, tenantID string, id domain.ID) (*domain.Account, error) {
+	if r.account == nil || r.account.TenantID != tenantID || r.account.ID != id {
+		return nil, errors.New("account not found")
+	}
+	return r.account, nil
+}
+func (*migrationAccountRepository) GetProfile(context.Context, domain.ID) (*domain.AccountProfile, error) {
+	return nil, nil
+}
+func (*migrationAccountRepository) EraseAccount(context.Context, string, domain.ID) error { return nil }
+func (*migrationAccountRepository) UpdateProfile(context.Context, *domain.AccountProfile) error {
+	return nil
+}
+func (*migrationAccountRepository) ListSources(context.Context, domain.ID, domain.Page) ([]*domain.AccountSource, string, error) {
+	return nil, "", nil
+}
+func (*migrationAccountRepository) ListMemberships(context.Context, domain.ID, domain.Page) ([]*domain.AccountMembership, string, error) {
+	return nil, "", nil
+}
+func (*migrationAccountRepository) UpsertSource(context.Context, *domain.AccountSource) error {
+	return nil
+}
+func (*migrationAccountRepository) UpsertMembership(context.Context, *domain.AccountMembership) error {
+	return nil
+}
+func (*migrationAccountRepository) ListAccounts(context.Context, repository.AccountListFilter) ([]*domain.Account, string, error) {
+	return nil, "", nil
+}
+
+func migrationCompareContext() context.Context {
+	return WithIdentity(context.Background(), &domain.TokenIdentity{UID: "actor-1", Issuer: "issuer-1", Subject: "u-1", TenantID: "tenant-1"})
+}
+
+func migrationAccount() *domain.Account {
+	return &domain.Account{ID: domain.ID{9}, TenantID: "tenant-1", CanonicalUID: "canonical-u-1",
+		HomeRegion: "us-east-1", Status: domain.AccountActive}
+}
+
 func migrationDigest(count int64) *repository.LegacyDataDigest {
 	return &repository.LegacyDataDigest{Count: count, Digest: "abc"}
 }
@@ -69,8 +120,8 @@ func TestLegacyMigrationCompare_Matched(t *testing.T) {
 			Source: string(connector.SourceAeroVault), Data: map[string]any{"object_count": float64(7)},
 		}},
 	}}
-	svc := NewLegacyMigrationService(repo, client)
-	result, err := svc.Compare(context.Background(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault})
+	svc := NewLegacyMigrationServiceWithAuditAndAccounts(repo, nil, &migrationAccountRepository{account: migrationAccount()}, "issuer-1", client)
+	result, err := svc.Compare(migrationCompareContext(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault})
 	if err != nil {
 		t.Fatalf("compare: %v", err)
 	}
@@ -91,8 +142,8 @@ func TestLegacyMigrationCompare_DriftDetected(t *testing.T) {
 			Source: string(connector.SourceAeroVault), Data: map[string]any{"object_count": float64(7)},
 		}},
 	}}
-	svc := NewLegacyMigrationService(repo, client)
-	result, err := svc.Compare(context.Background(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault})
+	svc := NewLegacyMigrationServiceWithAuditAndAccounts(repo, nil, &migrationAccountRepository{account: migrationAccount()}, "issuer-1", client)
+	result, err := svc.Compare(migrationCompareContext(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,8 +197,8 @@ func TestLegacyMigrationCompare_TruncatedIsPartial(t *testing.T) {
 			Source: string(connector.SourceAeroVault), Data: map[string]any{"object_count": float64(1000)},
 		}},
 	}}
-	svc := NewLegacyMigrationService(repo, client)
-	result, err := svc.Compare(context.Background(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault, Limit: 1000})
+	svc := NewLegacyMigrationServiceWithAuditAndAccounts(repo, nil, &migrationAccountRepository{account: migrationAccount()}, "issuer-1", client)
+	result, err := svc.Compare(migrationCompareContext(), LegacyCompareInput{OwnerUID: "u-1", Source: connector.SourceAeroVault, Limit: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}

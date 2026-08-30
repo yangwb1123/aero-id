@@ -62,7 +62,7 @@ func TestSyncSummaryRequestRejectsTenantCanonicalAndRegionMismatches(t *testing.
 func TestSyncSummaryRequestKeepsAeroVaultConstructionSourceAware(t *testing.T) {
 	account := &domain.Account{ID: domain.ID{3}, TenantID: "tenant-1", CanonicalUID: "opaque-user", HomeRegion: "us-west-2", Status: domain.AccountActive}
 	job := &domain.SyncJob{ID: domain.ID{4}, AccountID: account.ID, ActorUID: "actor-1", TenantID: account.TenantID, RequestID: "request-1"}
-	request, err := syncSummaryRequest(t.Context(), nil, account, job, connector.SourceAeroVault,
+	request, err := syncSummaryRequest(t.Context(), syncSummaryAccountLoader{account}, nil, job, connector.SourceAeroVault,
 		[]domain.AccountDataset{"aero-vault.tenants"})
 	if err != nil {
 		t.Fatalf("Aero Vault sync request: %v", err)
@@ -70,7 +70,7 @@ func TestSyncSummaryRequestKeepsAeroVaultConstructionSourceAware(t *testing.T) {
 	if request.AccountID != account.ID || request.CanonicalUID != account.CanonicalUID ||
 		request.TenantID != job.TenantID || request.Region != account.HomeRegion ||
 		len(request.Datasets) != 1 || request.Datasets[0] != "aero-vault.tenants" {
-		t.Fatalf("Aero Vault request = %#v, want source-owned request fields", request)
+		t.Fatalf("Aero Vault request = %#v, want account-bound request fields", request)
 	}
 }
 

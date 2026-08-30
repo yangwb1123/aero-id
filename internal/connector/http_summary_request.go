@@ -68,7 +68,8 @@ func (c *JSONSummaryConnector) addTargetAssertion(request *http.Request, req Sum
 	if c.source != SourceAeroIM {
 		return nil
 	}
-	if c.targetAssertionSigner == nil || !trustedTargetMatchesRequest(req.trustedTarget, req) {
+	if c.targetAssertionSigner == nil || req.trustedTarget == nil || req.trustedTarget.source != c.source ||
+		!trustedTargetMatchesRequest(req.trustedTarget, req) {
 		return &RemoteError{Source: c.source, Kind: ErrorUnavailable,
 			Code: "source.target_assertion_not_configured"}
 	}

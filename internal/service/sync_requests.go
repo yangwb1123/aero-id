@@ -19,25 +19,24 @@ func validSyncJobType(value domain.SyncJobType) bool {
 
 func syncSummaryRequest(ctx context.Context, accounts connector.AuthoritativeAccountLoader, account *domain.Account,
 	job *domain.SyncJob, source connector.Source, datasets []domain.AccountDataset) (connector.SummaryRequest, error) {
+	var empty connector.SummaryRequest
 	if job == nil {
-		return connector.SummaryRequest{}, errors.New("sync job is required")
+		return empty, errors.New("sync job is required")
 	}
-	if source == connector.SourceAeroIM {
+	if source == connector.SourceAeroIM || source == connector.SourceAeroVault {
 		return connector.NewTrustedSummaryRequest(ctx, accounts, connector.TrustedSummaryRequestInput{
-			TenantID: job.TenantID, AccountID: job.AccountID, ActorUID: job.ActorUID, RequestID: job.RequestID,
-			OperationID: job.ID.String(), Datasets: datasets, Reconcile: job.JobType == domain.SyncJobReconcile,
+			Source: source, TenantID: job.TenantID, AccountID: job.AccountID, ActorUID: job.ActorUID,
+			RequestID: job.RequestID, OperationID: job.ID.String(), Datasets: datasets,
+			Reconcile: job.JobType == domain.SyncJobReconcile,
 		})
 	}
+	// Non-bound sources retain their compatibility request shape. They are not
+	// allowed to opt bound sources out of authoritative account loading.
 	if account == nil {
-		return connector.SummaryRequest{}, errors.New("sync account is required")
+		return empty, errors.New("sync account is required")
 	}
-	// Non-Aero-IM sources keep their pre-binding request shape and source-owned
-	// dataset semantics. In particular, never run their scope through the Aero
-	// IM trusted constructor.
-	return connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
-		ActorUID: job.ActorUID, TenantID: job.TenantID, RequestID: job.RequestID,
-		Region: account.HomeRegion, OperationID: job.ID.String(), Datasets: datasets,
-		Reconcile: job.JobType == domain.SyncJobReconcile}, nil
+	return compatibilitySummaryRequest(source, account, job.ActorUID, job.TenantID, job.RequestID,
+		job.ID.String(), datasets, job.JobType == domain.SyncJobReconcile)
 }
 
 func eraseRequestForJob(account *domain.Account, job *domain.SyncJob, source connector.Source,

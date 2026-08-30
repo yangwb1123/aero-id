@@ -5,6 +5,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -37,6 +38,7 @@ type SummaryRequest struct {
 }
 
 type trustedSummaryTarget struct {
+	source       Source
 	accountID    string
 	canonicalUID string
 	tenantID     string
@@ -56,6 +58,7 @@ type AuthoritativeAccountLoader interface {
 // lookup key. Target identity fields are intentionally absent: they must come
 // from the loader, never from caller-supplied request data.
 type TrustedSummaryRequestInput struct {
+	Source      Source
 	TenantID    string
 	AccountID   domain.ID
 	ActorUID    string
@@ -72,14 +75,18 @@ type TrustedSummaryRequestInput struct {
 // value authoritative without going through the loader.
 func NewTrustedSummaryRequest(ctx context.Context, loader AuthoritativeAccountLoader,
 	input TrustedSummaryRequestInput) (SummaryRequest, error) {
+	input.Source = normalizeTrustedSummarySource(input.Source)
 	if !validTrustedSummaryRequestInput(ctx, loader, input) {
 		return SummaryRequest{}, errors.New("trusted summary account binding is invalid")
 	}
-	account, err := loadTrustedSummaryAccount(ctx, loader, input)
+	// Validate the requested source and scope before loading or contacting a
+	// source. Stored scopes are explicit; an empty scope is never interpreted as
+	// "all" by this authority-bound constructor.
+	datasets, err := trustedSummaryDatasets(input.Source, input.Datasets)
 	if err != nil {
 		return SummaryRequest{}, err
 	}
-	datasets, err := trustedSummaryDatasets(input.Datasets)
+	account, err := loadTrustedSummaryAccount(ctx, loader, input)
 	if err != nil {
 		return SummaryRequest{}, err
 	}
@@ -95,6 +102,7 @@ func NewTrustedSummaryRequest(ctx context.Context, loader AuthoritativeAccountLo
 		Region:       account.HomeRegion,
 		Reconcile:    input.Reconcile,
 		trustedTarget: &trustedSummaryTarget{
+			source:       input.Source,
 			accountID:    account.ID.String(),
 			canonicalUID: account.CanonicalUID,
 			tenantID:     account.TenantID,
@@ -104,10 +112,39 @@ func NewTrustedSummaryRequest(ctx context.Context, loader AuthoritativeAccountLo
 	}, nil
 }
 
+func normalizeTrustedSummarySource(source Source) Source {
+	if source == "" {
+		return SourceAeroIM
+	}
+	return source
+}
+
+func validTrustedSummarySource(source Source) bool {
+	switch source {
+	case SourceSnaplink, SourceAeroIM, SourceAeroVault:
+		return true
+	default:
+		return false
+	}
+}
+
 func validTrustedSummaryRequestInput(ctx context.Context, loader AuthoritativeAccountLoader,
 	input TrustedSummaryRequestInput) bool {
-	return ctx != nil && loader != nil && input.AccountID != (domain.ID{}) &&
-		validTargetAssertionComponent(input.TenantID, 512)
+	return ctx != nil && validAuthoritativeLoader(loader) && validTrustedSummarySource(input.Source) &&
+		input.AccountID != (domain.ID{}) && validTargetAssertionComponent(input.TenantID, 512)
+}
+
+func validAuthoritativeLoader(loader AuthoritativeAccountLoader) bool {
+	if loader == nil {
+		return false
+	}
+	value := reflect.ValueOf(loader)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !value.IsNil()
+	default:
+		return true
+	}
 }
 
 func loadTrustedSummaryAccount(ctx context.Context, loader AuthoritativeAccountLoader,
@@ -129,8 +166,8 @@ func validTrustedSummaryAccount(account *domain.Account, input TrustedSummaryReq
 		validTargetAssertionComponent(account.HomeRegion, 128)
 }
 
-func trustedSummaryDatasets(input []domain.AccountDataset) ([]domain.AccountDataset, error) {
-	datasets, err := ResolveDatasetScope(SourceAeroIM, input, DatasetScopeStored)
+func trustedSummaryDatasets(source Source, input []domain.AccountDataset) ([]domain.AccountDataset, error) {
+	datasets, err := ResolveDatasetScope(source, input, DatasetScopeStored)
 	if err != nil || len(datasets) == 0 {
 		return nil, errors.New("trusted summary dataset scope is invalid")
 	}

@@ -68,13 +68,14 @@ func TestAggregationRefreshMarksIncompleteSummaryPartial(t *testing.T) {
 	accountID := idgen.NewID()
 	snapshots := &aggregationSnapshotFixture{}
 	application := &aggregationSummaryApplicationFixture{}
-	service := &aggregationService{accounts: aggregationAccountFixture{}, snapshots: snapshots, application: application}
+	account := &domain.Account{ID: accountID, TenantID: "tenant-1", CanonicalUID: "uid-1", HomeRegion: "us-east-1", Status: domain.AccountActive}
+	service := &aggregationService{accounts: aggregationAccountFixture{}, authoritativeAccounts: syncSummaryAccountLoader{account}, snapshots: snapshots, application: application}
 	result := &domain.AggregateOverview{SourceErrors: map[string]string{}}
 	summary := &connector.Summary{
 		Source: connector.SourceAeroVault, Complete: false,
 		Snapshots: []*domain.AccountSnapshot{{Dataset: domain.AccountDataset("aero-vault.buckets")}},
 	}
-	service.refreshSource(context.Background(), &domain.Account{ID: accountID}, connector.SourceAeroVault,
+	service.refreshSource(context.Background(), account, connector.SourceAeroVault,
 		aggregationConnectorFixture{summary: summary}, []domain.AccountDataset{"aero-vault.buckets"}, result, &sync.Mutex{})
 
 	if got := result.SourceErrors[string(connector.SourceAeroVault)]; got != "source.summary_incomplete" {
@@ -92,11 +93,12 @@ func TestAggregationRefreshMarksIncompleteSummaryPartial(t *testing.T) {
 func TestAggregationRefreshLeavesCompleteSummaryHealthy(t *testing.T) {
 	snapshots := &aggregationSnapshotFixture{}
 	application := &aggregationSummaryApplicationFixture{}
-	service := &aggregationService{accounts: aggregationAccountFixture{}, snapshots: snapshots, application: application}
+	account := &domain.Account{ID: idgen.NewID(), TenantID: "tenant-1", CanonicalUID: "uid-1", HomeRegion: "us-east-1", Status: domain.AccountActive}
+	service := &aggregationService{accounts: aggregationAccountFixture{}, authoritativeAccounts: syncSummaryAccountLoader{account}, snapshots: snapshots, application: application}
 	result := &domain.AggregateOverview{SourceErrors: map[string]string{}}
-	service.refreshSource(context.Background(), &domain.Account{ID: idgen.NewID()}, connector.SourceAeroVault,
+	service.refreshSource(context.Background(), account, connector.SourceAeroVault,
 		aggregationConnectorFixture{summary: &connector.Summary{Source: connector.SourceAeroVault, Complete: true}},
-		nil, result, &sync.Mutex{})
+		[]domain.AccountDataset{"aero-vault.buckets"}, result, &sync.Mutex{})
 	if len(result.SourceErrors) != 0 {
 		t.Fatalf("complete summary produced source errors: %v", result.SourceErrors)
 	}

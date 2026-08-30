@@ -101,30 +101,31 @@ func (s *legacyMigrationService) compareWithSource(ctx context.Context, input Le
 		result.SourceErrors["source"] = "source summary unavailable"
 		return nil
 	}
-	var request connector.SummaryRequest
+	// LegacyCompareInput is not an authority. Resolve the UID in the verified
+	// request tenant for both target sources, then let the trusted constructor
+	// load the account by its tenant-scoped ID and copy identity fields. There
+	// is deliberately no unbound UID fallback for Vault or IM.
+	tenantID := strings.TrimSpace(TenantFrom(ctx))
+	if s.accountRepo == nil || tenantID == "" || s.accountIssuer == "" {
+		return errors.New("authoritative source account binding is unavailable")
+	}
+	account, lookupErr := s.accountRepo.FindByIdentity(ctx, tenantID, s.accountIssuer, input.OwnerUID)
+	if lookupErr != nil || account == nil {
+		return errors.New("authoritative source account binding is unavailable")
+	}
+	datasets := []domain.AccountDataset{
+		domain.AccountDataset("aero-vault.tenants"),
+		domain.AccountDataset("aero-vault.buckets"),
+		domain.AccountDataset("aero-vault.usage"),
+	}
 	if input.Source == connector.SourceAeroIM {
-		// LegacyCompareInput is not itself an authority. Resolve the UID by the
-		// verified request tenant and then let the trusted constructor copy the
-		// account's canonical UID and home region. A missing loader, tenant, or
-		// issuer is a safe unavailable result, never an unbound source call.
-		tenantID := strings.TrimSpace(TenantFrom(ctx))
-		if s.accountRepo == nil || tenantID == "" || s.accountIssuer == "" {
-			return errors.New("authoritative Aero IM account binding is unavailable")
-		}
-		account, lookupErr := s.accountRepo.FindByIdentity(ctx, tenantID, s.accountIssuer, input.OwnerUID)
-		if lookupErr != nil || account == nil {
-			return errors.New("authoritative Aero IM account binding is unavailable")
-		}
-		var requestErr error
-		request, requestErr = connector.NewTrustedSummaryRequest(ctx, s.accountRepo,
-			connector.TrustedSummaryRequestInput{TenantID: tenantID, AccountID: account.ID,
-				ActorUID: actorFromContext(ctx), RequestID: RequestIDFrom(ctx),
-				Datasets: []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}})
-		if requestErr != nil {
-			return errors.New("authoritative Aero IM account binding is unavailable")
-		}
-	} else {
-		request = connector.SummaryRequest{CanonicalUID: input.OwnerUID, Region: ""}
+		datasets = []domain.AccountDataset{domain.DatasetAeroIMActivitySummary}
+	}
+	request, requestErr := connector.NewTrustedSummaryRequest(ctx, s.accountRepo,
+		connector.TrustedSummaryRequestInput{Source: input.Source, TenantID: tenantID, AccountID: account.ID,
+			ActorUID: actorFromContext(ctx), RequestID: RequestIDFrom(ctx), Datasets: datasets})
+	if requestErr != nil {
+		return errors.New("authoritative source account binding is unavailable")
 	}
 	summary, err := client.Summary(ctx, request)
 	if err != nil {

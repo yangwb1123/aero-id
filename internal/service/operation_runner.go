@@ -216,18 +216,22 @@ func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.O
 	if client.Source() != connector.SourceAeroIM && client.Source() != connector.SourceAeroVault && len(datasets) == 0 {
 		datasets = datasetsForSource(allDatasets(), string(client.Source()))
 	}
-	request := connector.SummaryRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
-		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID,
-		Region: account.HomeRegion, OperationID: operation.ID.String(), Datasets: datasets}
-	var err error
-	if client.Source() == connector.SourceAeroIM {
+	var (
+		request connector.SummaryRequest
+		err     error
+	)
+	if client.Source() == connector.SourceAeroIM || client.Source() == connector.SourceAeroVault {
 		request, err = connector.NewTrustedSummaryRequest(ctx, r.accounts, connector.TrustedSummaryRequestInput{
-			TenantID: operation.TenantID, AccountID: account.ID, ActorUID: operation.ActorUID,
-			RequestID: operation.RequestID, OperationID: operation.ID.String(), Datasets: datasets,
+			Source: client.Source(), TenantID: operation.TenantID, AccountID: operation.AccountID,
+			ActorUID: operation.ActorUID, RequestID: operation.RequestID, OperationID: operation.ID.String(),
+			Datasets: datasets,
 		})
-		if err != nil {
-			return "", nil, err
-		}
+	} else {
+		request, err = compatibilitySummaryRequest(client.Source(), account, operation.ActorUID, operation.TenantID,
+			operation.RequestID, operation.ID.String(), datasets, false)
+	}
+	if err != nil {
+		return "", nil, err
 	}
 	summary, err := client.Summary(ctx, request)
 	if err != nil {
@@ -239,9 +243,13 @@ func (r *connectorOperationRunner) sync(ctx context.Context, operation *domain.O
 	if r.application == nil {
 		return "", nil, repository.ErrSummaryApplicationUnavailable
 	}
+	accountID := request.AccountID
+	if accountID == (domain.ID{}) && account != nil {
+		accountID = account.ID
+	}
 	persistCtx, persistCancel := operationPersistenceContext(ctx)
 	applicationResult, err := r.application.ApplySummary(persistCtx, domain.SummaryApplicationRequest{
-		AccountID: account.ID, Source: string(client.Source()), SourceRegion: summary.SourceRegion, Version: summary.Version,
+		AccountID: accountID, Source: string(client.Source()), SourceRegion: summary.SourceRegion, Version: summary.Version,
 		RequestedDatasets: append([]domain.AccountDataset(nil), datasets...), Coverage: summary.Coverage,
 		Complete: summary.Complete, SkippedDatasets: append([]string(nil), summary.SkippedDatasets...),
 		Snapshots: summary.Snapshots, Sources: summary.Sources, Memberships: summary.Memberships,
