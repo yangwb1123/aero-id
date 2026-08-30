@@ -58,16 +58,28 @@ type Registry struct {
 
 	// Transactional-outbox relay observability. outboxMu isolates these fields so
 	// outbox drain operations (every 5s) never block HTTP/gRPC or SSO metrics.
-	outboxMu        sync.Mutex
-	outboxPublished map[string]uint64 // event_type -> events successfully published
-	outboxFailed    map[string]uint64 // event_type -> handler failures (left for retry)
-	outboxDrain     *histogram        // per-pass drain duration in seconds
+	outboxMu                 sync.Mutex
+	outboxPublished          map[string]uint64 // event_type -> durably published events
+	outboxFailed             map[string]uint64 // event_type -> handler failures (left for retry)
+	outboxDeadLetter         map[string]uint64 // event_type -> successful terminal transitions
+	outboxClaimErrors        uint64
+	outboxClaimLost          uint64
+	outboxFinalizationErrors uint64
+	outboxRenewalErrors      uint64
+	outboxDrainPasses        uint64
+	outboxDrain              *histogram // per-pass drain duration in seconds
 
-	// outboxPending and outboxLagSecs are last-write gauges stored as atomic
-	// uint64 bits (math.Float64bits). The relay writes them every 5s without any
-	// lock; /metrics reads them under the main mu (via WriteText).
-	outboxPending atomic.Uint64
-	outboxLagSecs atomic.Uint64
+	// Outbox gauges are last-write values stored as atomic uint64 bits
+	// (math.Float64bits). The relay writes them every 5s without any lock;
+	// /metrics reads them under the main mu (via WriteText).
+	outboxPending          atomic.Uint64
+	outboxClaimed          atomic.Uint64
+	outboxLagSecs          atomic.Uint64
+	outboxEligibilityKnown atomic.Uint64
+	// outboxEligibilityValueKnown distinguishes an initial unknown observation
+	// from a real zero backlog. It prevents first-scrape zeroes being mistaken
+	// for evidence that the outbox is empty.
+	outboxEligibilityValueKnown atomic.Uint64
 }
 
 func NewRegistry() *Registry {
@@ -84,8 +96,9 @@ func NewRegistry() *Registry {
 		ssoErrors:              make(map[string]uint64),
 		ssoLatency:             make(map[string]*histogram),
 
-		outboxPublished: make(map[string]uint64),
-		outboxFailed:    make(map[string]uint64),
+		outboxPublished:  make(map[string]uint64),
+		outboxFailed:     make(map[string]uint64),
+		outboxDeadLetter: make(map[string]uint64),
 	}
 }
 
@@ -184,19 +197,63 @@ func (r *Registry) ObserveOutboxFailed(eventType string) {
 	r.outboxMu.Unlock()
 }
 
-// ObserveOutboxDrain records one drain pass: pending is the number of unpublished
-// events the pass observed, oldestAge is the age of the oldest such event (0 when
-// the outbox was empty), and dur is the pass duration.
-//
-// pending and oldestAge are last-write gauges stored as atomics so they never
-// block HTTP/gRPC or SSO metrics. The drain histogram is stored under outboxMu.
-func (r *Registry) ObserveOutboxDrain(pending int, oldestAge, dur time.Duration) {
-	// Write gauge values atomically — no lock needed.
-	r.outboxPending.Store(math.Float64bits(float64(pending)))
-	r.outboxLagSecs.Store(math.Float64bits(oldestAge.Seconds()))
+// ObserveOutboxDeadLetter records a terminal retry transition confirmed by
+// MarkFailed. It is a counter, not a current-row gauge, because rows may later
+// be purged or replayed.
+func (r *Registry) ObserveOutboxDeadLetter(eventType string) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	r.outboxMu.Lock()
+	r.outboxDeadLetter[eventType]++
+	r.outboxMu.Unlock()
+}
+
+func (r *Registry) ObserveOutboxClaimError() {
+	r.outboxMu.Lock()
+	r.outboxClaimErrors++
+	r.outboxMu.Unlock()
+}
+
+func (r *Registry) ObserveOutboxClaimLost() {
+	r.outboxMu.Lock()
+	r.outboxClaimLost++
+	r.outboxMu.Unlock()
+}
+
+func (r *Registry) ObserveOutboxFinalizationError() {
+	r.outboxMu.Lock()
+	r.outboxFinalizationErrors++
+	r.outboxMu.Unlock()
+}
+
+func (r *Registry) ObserveOutboxRenewalError() {
+	r.outboxMu.Lock()
+	r.outboxRenewalErrors++
+	r.outboxMu.Unlock()
+}
+
+// ObserveOutboxDrain records one drain pass. Pending and oldestAge are updated
+// only when eligibilityKnown is true; this prevents a stats outage from
+// overwriting known gauges with fabricated zeroes. Claimed and eligibilityKnown
+// are always updated. Gauges are atomics so they never block request metrics;
+// the drain histogram remains under outboxMu.
+func (r *Registry) ObserveOutboxDrain(pending, claimed int, oldestAge, dur time.Duration, eligibilityKnown bool) {
+	if eligibilityKnown {
+		r.outboxPending.Store(math.Float64bits(float64(pending)))
+		r.outboxLagSecs.Store(math.Float64bits(oldestAge.Seconds()))
+		r.outboxEligibilityValueKnown.Store(1)
+	}
+	r.outboxClaimed.Store(math.Float64bits(float64(claimed)))
+	known := 0.0
+	if eligibilityKnown {
+		known = 1
+	}
+	r.outboxEligibilityKnown.Store(math.Float64bits(known))
 
 	secs := dur.Seconds()
 	r.outboxMu.Lock()
+	r.outboxDrainPasses++
 	if r.outboxDrain == nil {
 		r.outboxDrain = &histogram{bucketCounts: make([]uint64, len(r.buckets))}
 	}
@@ -264,17 +321,27 @@ func (r *Registry) writeOutboxText(w io.Writer) {
 	// writes are independent; the gauge values are last-write and slightly stale is
 	// acceptable for Prometheus exposition.
 	pending := math.Float64frombits(r.outboxPending.Load())
+	claimed := math.Float64frombits(r.outboxClaimed.Load())
 	lagSecs := math.Float64frombits(r.outboxLagSecs.Load())
+	eligibilityKnown := math.Float64frombits(r.outboxEligibilityKnown.Load())
+	eligibilityValueKnown := r.outboxEligibilityValueKnown.Load() == 1
 
-	// outboxPublished and outboxFailed are counters protected by outboxMu.
+	// Copy maps while holding outboxMu. The relay can update these maps while
+	// /metrics is rendering, and iterating a live map would be a data race.
 	r.outboxMu.Lock()
-	pub := r.outboxPublished
-	fail := r.outboxFailed
+	pub := copyCounterMap(r.outboxPublished)
+	fail := copyCounterMap(r.outboxFailed)
+	dead := copyCounterMap(r.outboxDeadLetter)
+	claimErrors := r.outboxClaimErrors
+	claimLost := r.outboxClaimLost
+	finalizationErrors := r.outboxFinalizationErrors
+	renewalErrors := r.outboxRenewalErrors
+	drainPasses := r.outboxDrainPasses
 	drain := r.outboxDrain
 	r.outboxMu.Unlock()
 
 	if len(pub) > 0 {
-		fmt.Fprintln(w, "# HELP aeroid_outbox_published_total Outbox events successfully published by event_type.")
+		fmt.Fprintln(w, "# HELP aeroid_outbox_published_total Outbox events durably finalized as published by event_type.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_published_total counter")
 		for _, k := range sortedKeys(pub) {
 			fmt.Fprintf(w, "aeroid_outbox_published_total{event_type=%q} %d\n", k, pub[k])
@@ -290,25 +357,78 @@ func (r *Registry) writeOutboxText(w io.Writer) {
 	}
 
 	if drain != nil {
-		fmt.Fprintln(w, "# HELP aeroid_outbox_pending Unpublished outbox events seen on the last drain pass.")
+		writeOutboxOperationalCounters(w, dead, claimErrors, claimLost, finalizationErrors, renewalErrors, drainPasses)
+		writeOutboxBacklogMetrics(w, pending, claimed, eligibilityKnown, lagSecs, eligibilityValueKnown)
+		writeOutboxDrainHistogram(w, r.buckets, drain)
+	}
+}
+
+func writeOutboxDrainHistogram(w io.Writer, buckets []float64, h *histogram) {
+	fmt.Fprintln(w, "# HELP aeroid_outbox_drain_duration_seconds Outbox relay drain-pass duration in seconds.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_drain_duration_seconds histogram")
+	for i, b := range buckets {
+		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=%q} %d\n",
+			strconv.FormatFloat(b, 'g', -1, 64), h.bucketCounts[i])
+	}
+	fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=\"+Inf\"} %d\n", h.count)
+	fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_sum %g\n", h.sum)
+	fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_count %d\n", h.count)
+}
+
+func writeOutboxOperationalCounters(w io.Writer, dead map[string]uint64, claimErrors, claimLost, finalizationErrors, renewalErrors, drainPasses uint64) {
+	fmt.Fprintln(w, "# HELP aeroid_outbox_claim_errors_total Outbox claim query failures.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_claim_errors_total counter")
+	fmt.Fprintf(w, "aeroid_outbox_claim_errors_total %d\n", claimErrors)
+	fmt.Fprintln(w, "# HELP aeroid_outbox_claim_lost_total Outbox finalization attempts rejected because the lease/token was stale or expired.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_claim_lost_total counter")
+	fmt.Fprintf(w, "aeroid_outbox_claim_lost_total %d\n", claimLost)
+	fmt.Fprintln(w, "# HELP aeroid_outbox_finalization_errors_total Outbox publish or retry-state finalization failures excluding expected claim loss.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_finalization_errors_total counter")
+	fmt.Fprintf(w, "aeroid_outbox_finalization_errors_total %d\n", finalizationErrors)
+	fmt.Fprintln(w, "# HELP aeroid_outbox_renewal_errors_total Outbox claim renewal failures.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_renewal_errors_total counter")
+	fmt.Fprintf(w, "aeroid_outbox_renewal_errors_total %d\n", renewalErrors)
+	fmt.Fprintln(w, "# HELP aeroid_outbox_drain_passes_total Outbox drain passes completed, including empty and failed-claim passes.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_drain_passes_total counter")
+	fmt.Fprintf(w, "aeroid_outbox_drain_passes_total %d\n", drainPasses)
+	if len(dead) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "# HELP aeroid_outbox_dead_letter_total Outbox events whose terminal retry transition was durably recorded.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_dead_letter_total counter")
+	for _, k := range sortedKeys(dead) {
+		fmt.Fprintf(w, "aeroid_outbox_dead_letter_total{event_type=%q} %d\n", k, dead[k])
+	}
+}
+
+func writeOutboxBacklogMetrics(w io.Writer, pending, claimed, eligibilityKnown, lagSecs float64, valueKnown bool) {
+	if valueKnown {
+		fmt.Fprintln(w, "# HELP aeroid_outbox_pending Eligible unpublished outbox events seen on the last drain pass.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_pending gauge")
 		fmt.Fprintf(w, "aeroid_outbox_pending %g\n", pending)
+	}
 
-		fmt.Fprintln(w, "# HELP aeroid_outbox_oldest_age_seconds Age of the oldest unpublished outbox event in seconds.")
+	fmt.Fprintln(w, "# HELP aeroid_outbox_claimed Claimed outbox events in the last drain pass.")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_claimed gauge")
+	fmt.Fprintf(w, "aeroid_outbox_claimed %g\n", claimed)
+
+	fmt.Fprintln(w, "# HELP aeroid_outbox_eligibility_known Whether eligible backlog statistics were available (1 or 0).")
+	fmt.Fprintln(w, "# TYPE aeroid_outbox_eligibility_known gauge")
+	fmt.Fprintf(w, "aeroid_outbox_eligibility_known %g\n", eligibilityKnown)
+
+	if valueKnown {
+		fmt.Fprintln(w, "# HELP aeroid_outbox_oldest_age_seconds Age of the oldest eligible unpublished outbox event in seconds.")
 		fmt.Fprintln(w, "# TYPE aeroid_outbox_oldest_age_seconds gauge")
 		fmt.Fprintf(w, "aeroid_outbox_oldest_age_seconds %g\n", lagSecs)
-
-		fmt.Fprintln(w, "# HELP aeroid_outbox_drain_duration_seconds Outbox relay drain-pass duration in seconds.")
-		fmt.Fprintln(w, "# TYPE aeroid_outbox_drain_duration_seconds histogram")
-		h := drain
-		for i, b := range r.buckets {
-			fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=%q} %d\n",
-				strconv.FormatFloat(b, 'g', -1, 64), h.bucketCounts[i])
-		}
-		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_bucket{le=\"+Inf\"} %d\n", h.count)
-		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_sum %g\n", h.sum)
-		fmt.Fprintf(w, "aeroid_outbox_drain_duration_seconds_count %d\n", h.count)
 	}
+}
+
+func copyCounterMap(src map[string]uint64) map[string]uint64 {
+	out := make(map[string]uint64, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
 }
 
 // writeSSOText renders the SSO dependency-health series. Caller holds r.mu.

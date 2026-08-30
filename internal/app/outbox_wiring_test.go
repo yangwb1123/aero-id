@@ -26,6 +26,9 @@ func (r *recordingCleanerRepo) Append(context.Context, *gorm.DB, *outbox.Event) 
 func (r *recordingCleanerRepo) ClaimBatch(context.Context, int) ([]*outbox.ClaimedEvent, error) {
 	return nil, nil
 }
+func (r *recordingCleanerRepo) GetEligibilityStats(context.Context) (outbox.EligibilityStats, error) {
+	return outbox.EligibilityStats{}, nil
+}
 func (r *recordingCleanerRepo) MarkPublished(context.Context, []outbox.Claim) error { return nil }
 func (r *recordingCleanerRepo) MarkFailed(context.Context, outbox.Claim, int, int, time.Time) error {
 	return nil

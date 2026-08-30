@@ -10,7 +10,12 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"github.com/aero/aero-id/internal/repository/testpg"
 )
@@ -149,6 +154,153 @@ func discoverMigrations(t *testing.T, dir string) map[int]migrationPair {
 		pairs[version] = migrationPair{up: up, down: down}
 	}
 	return pairs
+}
+
+func TestOutboxRetryEligibilityMigration(t *testing.T) {
+	db := testpg.Start(t)
+	_, file, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(file)
+	migrations := discoverMigrations(t, dir)
+	versions := make([]int, 0, len(migrations))
+	for version := range migrations {
+		if version <= 68 {
+			versions = append(versions, version)
+		}
+	}
+	sort.Ints(versions)
+	for _, version := range versions {
+		migration := migrations[version]
+		sqlText, err := os.ReadFile(filepath.Join(dir, migration.up))
+		if err != nil {
+			t.Fatalf("read %s: %v", migration.up, err)
+		}
+		if err := db.Exec(string(sqlText)).Error; err != nil {
+			t.Fatalf("exec %s: %v", migration.up, err)
+		}
+	}
+
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	last := time.Date(2026, 1, 2, 3, 5, 0, 0, time.UTC)
+	rows := []struct {
+		retry int
+		last  *time.Time
+		want  time.Time
+	}{
+		{retry: 0, want: created},
+		{retry: -1, want: created},
+		{retry: 1, last: &last, want: last.Add(5 * time.Second)},
+		{retry: 10, last: &last, want: last.Add(2560 * time.Second)},
+		{retry: 11, last: &last, want: last.Add(time.Hour)},
+		{retry: 2, want: created},
+	}
+	ids := make([]uuid.UUID, len(rows))
+	for i, row := range rows {
+		ids[i] = uuid.New()
+		if err := db.Exec(`INSERT INTO outbox_events
+			(id, aggregate_type, aggregate_id, event_type, payload, created_at, retry_count, last_retry_at, dead_letter)
+			VALUES (?, 'test', ?, 'test.retry', '{}'::jsonb, ?, ?, ?, false)`,
+			ids[i], ids[i].String(), created, row.retry, row.last).Error; err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	up, err := os.ReadFile(filepath.Join(dir, migrations[69].up))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(string(up)).Error; err != nil {
+		t.Fatalf("apply 000069: %v", err)
+	}
+	for i, id := range ids {
+		var got time.Time
+		if err := db.Raw(`SELECT next_attempt_at FROM outbox_events WHERE id = ?`, id).Scan(&got).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !got.Equal(rows[i].want) {
+			t.Fatalf("row %d next_attempt_at = %v, want %v", i, got, rows[i].want)
+		}
+	}
+	assertOutboxRetryColumn(t, db, true)
+	assertOutboxRetryIndex(t, db, true)
+
+	down, err := os.ReadFile(filepath.Join(dir, migrations[69].down))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(string(down)).Error; err != nil {
+		t.Fatalf("rollback 000069: %v", err)
+	}
+	assertOutboxRetryColumn(t, db, false)
+	assertOutboxRetryIndex(t, db, false)
+
+	// A failure after the DDL/backfill must leave both schema and data at the
+	// pre-migration state because the production migrator wraps each migration
+	// and its bookkeeping update in one transaction.
+	tx := db.Begin()
+	if err := tx.Exec(string(up)).Error; err != nil {
+		t.Fatalf("begin failed migration: %v", err)
+	}
+	if err := tx.Exec(`SELECT * FROM migration_failure_fixture`).Error; err == nil {
+		t.Fatal("expected forced migration failure")
+	}
+	if err := tx.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	assertOutboxRetryColumn(t, db, false)
+	assertOutboxRetryIndex(t, db, false)
+}
+
+func assertOutboxRetryColumn(t *testing.T, db interface {
+	Raw(string, ...interface{}) *gorm.DB
+}, present bool) {
+	t.Helper()
+	var exists bool
+	if err := db.Raw(`SELECT EXISTS(SELECT FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'outbox_events' AND column_name = 'next_attempt_at')`).Scan(&exists).Error; err != nil {
+		t.Fatal(err)
+	}
+	if exists != present {
+		t.Fatalf("next_attempt_at exists = %v, want %v", exists, present)
+	}
+	if !present {
+		return
+	}
+	var column struct {
+		Nullable string
+		Default  *string
+	}
+	if err := db.Raw(`SELECT is_nullable AS nullable, column_default AS default
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'outbox_events' AND column_name = 'next_attempt_at'`).Scan(&column).Error; err != nil {
+		t.Fatal(err)
+	}
+	if column.Nullable != "NO" || column.Default == nil || !strings.Contains(*column.Default, "now()") {
+		t.Fatalf("next_attempt_at metadata = %+v, want NOT NULL DEFAULT now()", column)
+	}
+}
+
+func assertOutboxRetryIndex(t *testing.T, db interface {
+	Raw(string, ...interface{}) *gorm.DB
+}, migrated bool) {
+	t.Helper()
+	var definition string
+	if err := db.Raw(`SELECT pg_get_indexdef(c.oid)
+		FROM pg_class c WHERE c.relname = 'idx_outbox_unpublished'`).Scan(&definition).Error; err != nil {
+		t.Fatal(err)
+	}
+	var predicate string
+	if err := db.Raw(`SELECT pg_get_expr(i.indpred, i.indrelid)
+		FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+		WHERE c.relname = 'idx_outbox_unpublished'`).Scan(&predicate).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migrated {
+		if !strings.Contains(definition, "next_attempt_at") || !strings.Contains(predicate, "dead_letter") || strings.Contains(predicate, "now()") {
+			t.Fatalf("migrated index definition/predicate = %q/%q, want due key, non-dead filtering, and no volatile predicate", definition, predicate)
+		}
+	} else if !strings.Contains(definition, "created_at") || strings.Contains(definition, "next_attempt_at") {
+		t.Fatalf("rolled-back index definition = %q, want the pre-migration index", definition)
+	}
 }
 
 func tableExists(t *testing.T, sqlDB *sql.DB, table string) bool {

@@ -22,3 +22,105 @@ groups:
           summary: aero-id replication runs are failing
           description: Replication is failing; distinguish terminal, transient, and unknown classes in the metric labels and inspect the worker logs.
           runbook: docs/runbooks/replication-parked.md
+
+  - name: aero-id-outbox
+    rules:
+      - alert: AeroIDOutboxEligibleBacklog
+        expr: aeroid_outbox_eligibility_known == 1 and aeroid_outbox_pending > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id eligible outbox backlog is sustained
+          description: Due, unpublished, non-dead-letter events have not drained for 15 minutes. Check handler and database health.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxOldestEligibleAge
+        expr: aeroid_outbox_eligibility_known == 1 and aeroid_outbox_oldest_age_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id outbox eligible event is aging
+          description: The oldest due unpublished event is older than five minutes.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxEligibilityUnknown
+        expr: aeroid_outbox_eligibility_known == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id outbox eligibility is unknown
+          description: The latest drain could not obtain trustworthy eligibility statistics or claim rows; retained backlog and age gauges are not current.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxRenewalErrors
+        expr: increase(aeroid_outbox_renewal_errors_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id outbox claim renewal is failing
+          description: Long-running handlers may be reclaimed and redelivered; inspect lease duration and database latency.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxHandlerFailures
+        expr: increase(aeroid_outbox_failed_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id outbox handlers are failing
+          description: Handler failures leave events unpublished for retry; inspect event type and downstream health.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxDeadLetters
+        expr: increase(aeroid_outbox_dead_letter_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: aero-id outbox event reached dead letter
+          description: A handler exhausted its retry ceiling. Preserve the event and use approved replay procedures.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxClaimErrors
+        expr: increase(aeroid_outbox_claim_errors_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: aero-id outbox claim queries are failing
+          description: The relay cannot establish claims; no handlers should run for failed claim passes.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxClaimLoss
+        expr: increase(aeroid_outbox_claim_lost_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id outbox claims are expiring or being superseded
+          description: Finalization was rejected by claim fencing; occasional loss is expected, but sustained loss can cause duplicate handler execution.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxFinalizationErrors
+        expr: increase(aeroid_outbox_finalization_errors_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: aero-id outbox finalization is failing
+          description: Handler success is not durable publication until MarkPublished commits; expect redelivery and inspect database health.
+          runbook: docs/runbooks/outbox-retry-eligibility.md
+
+      - alert: AeroIDOutboxDrainStopped
+        expr: absent(aeroid_outbox_drain_passes_total) or increase(aeroid_outbox_drain_passes_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: aero-id outbox drain heartbeat is absent
+          description: No drain pass has been observed for ten minutes; check worker health and deployment state.
+          runbook: docs/runbooks/outbox-retry-eligibility.md

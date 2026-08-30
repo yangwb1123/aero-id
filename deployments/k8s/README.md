@@ -80,10 +80,90 @@ remains an externally managed deployment boundary.
 | `aero-id-nats` | JetStream stream `aero_events`, subjects `aero.events.canonical` and `aero.events.canonical.dead-letter` |
 | Ingress | `api.<region>.example.com` -> service |
 
+## Deployment and rollback sequencing
+
+The current relay requires migration `000069` before any new-version process
+starts. The migration is additive but rollout is intentionally quiesced: an old
+relay ignores `next_attempt_at`, while a new relay must never share a queue with
+it.
+
+### Forward rollout
+
+Use an immutable image tag or digest, and use the migration artifact from that
+same release. In each region:
+
+```bash
+# Capture the current revision and stop every old writer/relay first.
+kubectl -n aero-id scale deploy/aero-id-workers --replicas=0
+kubectl -n aero-id scale deploy/aero-id-api --replicas=0
+kubectl -n aero-id rollout status deploy/aero-id-workers --timeout=2m
+kubectl -n aero-id rollout status deploy/aero-id-api --timeout=2m
+
+# Run once, using the release image and production config/secret mounts.
+# The Job must complete successfully before either Deployment is resumed.
+kubectl -n aero-id create job --from=... aero-id-migrate-${RELEASE}
+kubectl -n aero-id wait --for=condition=complete job/aero-id-migrate-${RELEASE} --timeout=10m
+
+# Verify both the migration watermark and the outbox catalog shape.
+make migrate-verify CONFIG=/path/to/production-config.yaml
+
+# Roll the image, wait for startup compatibility checks, then resume traffic.
+kubectl -n aero-id set image deploy/aero-id-api aero-id=aero-id@${DIGEST}
+kubectl -n aero-id set image deploy/aero-id-workers aero-id=aero-id@${DIGEST}
+kubectl -n aero-id scale deploy/aero-id-api --replicas=3
+kubectl -n aero-id scale deploy/aero-id-workers --replicas=2
+kubectl -n aero-id rollout status deploy/aero-id-api --timeout=10m
+kubectl -n aero-id rollout status deploy/aero-id-workers --timeout=10m
+```
+
+The `create job --from=...` line is a placeholder for the platform's approved
+Job template; it must run `/app/migrate -config /app/configs/config.yaml
+-migrations /app/migrations up` with the production Secret. Do not paste a
+password-bearing DSN into a command. Run `migrate validate` for migration-file
+and bookkeeping drift, and inspect the catalog shape in step 3; application
+startup fails closed if the required `next_attempt_at` column is absent or
+nullable.
+
+### Rollback
+
+Rollback is not `migrate down` followed by a rolling restart. The new binary
+writes `next_attempt_at`, so **all new API and worker instances must be stopped
+before the column is removed**:
+
+```bash
+kubectl -n aero-id scale deploy/aero-id-workers --replicas=0
+kubectl -n aero-id scale deploy/aero-id-api --replicas=0
+kubectl -n aero-id rollout status deploy/aero-id-workers --timeout=2m
+kubectl -n aero-id rollout status deploy/aero-id-api --timeout=2m
+
+# Restore the previously released binary while the 000069 schema still exists.
+kubectl -n aero-id set image deploy/aero-id-api aero-id=aero-id@${OLD_DIGEST}
+kubectl -n aero-id set image deploy/aero-id-workers aero-id=aero-id@${OLD_DIGEST}
+# Keep replicas at zero until the down migration has committed.
+
+# Run the down migration from the new-release migration artifact, not from an
+# old image that predates 000069.
+kubectl -n aero-id create job --from=... aero-id-rollback-${RELEASE}
+kubectl -n aero-id wait --for=condition=complete job/aero-id-rollback-${RELEASE} --timeout=10m
+
+# Confirm version 000068, then start only the old binary.
+make migrate-version CONFIG=/path/to/production-config.yaml
+kubectl -n aero-id scale deploy/aero-id-api --replicas=3
+kubectl -n aero-id scale deploy/aero-id-workers --replicas=2
+```
+
+Abort and restore the new schema if any old pod is still running the new
+binary, if the migration Job fails, or if `migrate verify`/startup reports a
+shape mismatch. Never run old and new relay implementations concurrently.
+
 ## Operational notes
 
 - **Migrations**: run `cmd/migrate` as a Job per region before rolling the API
-  (config `database.auto_migrate: false`). Never edit applied migrations.
+  (config `database.auto_migrate: false`). Never edit applied migrations. For
+  outbox migration `000069`, quiesce all old and new API/worker instances before
+  the migration, then deploy the new binary; see
+  `docs/runbooks/outbox-retry-eligibility.md`. Rollback requires stopping every
+  new-version writer before running the down migration.
 - **NATS stream**: configure `aero_events` with both the canonical and
   `aero.events.canonical.dead-letter` subjects. Poison messages are acknowledged
   only after a redacted metadata record is durably published to the latter.

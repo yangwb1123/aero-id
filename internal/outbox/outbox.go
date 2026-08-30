@@ -17,9 +17,9 @@ import (
 
 // Event is a domain side-effect recorded for asynchronous delivery. ID is a
 // UUIDv7 primary key (so events sort oldest-first). Payload is opaque JSON.
-// RetryCount, LastRetryAt, and DeadLetter track handler-failure history for
-// exponential backoff; the relay skips events whose next retry is not yet due
-// and dead-letter events beyond the max-retries threshold.
+// RetryCount, LastRetryAt, and NextAttemptAt track handler-failure history
+// for exponential backoff; the database excludes events whose next retry is
+// not yet due and dead-letter events beyond the max-retries threshold.
 type Event struct {
 	ID            uuid.UUID
 	AggregateType string
@@ -30,6 +30,7 @@ type Event struct {
 	PublishedAt   *time.Time
 	RetryCount    int
 	LastRetryAt   *time.Time
+	NextAttemptAt time.Time
 	DeadLetter    bool
 }
 
@@ -55,36 +56,53 @@ type ClaimedEvent struct {
 // infrastructure error: the event will be re-claimed and re-delivered.
 var ErrClaimLost = errors.New("outbox: claim lost or expired")
 
+// EligibilityStats describes the database-observed ready backlog. A nil
+// OldestCreatedAt means no eligible events were present.
+type EligibilityStats struct {
+	Pending         int
+	OldestCreatedAt *time.Time
+	// ObservedAt is the database clock at which the aggregate was evaluated.
+	// It lets consumers calculate age without mixing database and application
+	// clocks. Older repository fakes may leave it zero; callers then use their
+	// local observation time as a compatibility fallback.
+	ObservedAt time.Time
+}
+
 // Repository persists and drains outbox events.
 type Repository interface {
 	// Append writes an event using the caller-supplied transaction so it commits
 	// (or rolls back) together with the domain rows in the same tx.
 	Append(ctx context.Context, tx *gorm.DB, e *Event) error
 
-	// ClaimBatch atomically claims up to limit unpublished, non-dead-letter
-	// events (backoff eligibility is applied by the relay after claiming),
-	// returning them oldest-first with a fresh durable claim on each row. Rows
-	// with an unexpired claim are invisible to all other ClaimBatch calls.
+	// ClaimBatch atomically claims up to limit unpublished, non-dead-letter,
+	// due events, returning them oldest-first with a fresh durable claim on each
+	// row. Rows with an unexpired claim are invisible to all other ClaimBatch calls.
 	// Claims expire after the repository's lease; expired rows are re-claimable
 	// with a new token.
 	ClaimBatch(ctx context.Context, limit int) ([]*ClaimedEvent, error)
+
+	// GetEligibilityStats observes the currently eligible unpublished backlog.
+	// It is informational only and must not be used to gate delivery.
+	GetEligibilityStats(ctx context.Context) (EligibilityStats, error)
 
 	// MarkPublished stamps published_at only on claims the caller still holds
 	// (matching token, unexpired). Valid claims are applied; if any claim is
 	// missing, foreign, or expired the returned error wraps ErrClaimLost.
 	MarkPublished(ctx context.Context, claims []Claim) error
 
-	// MarkFailed increments retry_count and sets last_retry_at only while the
-	// caller holds the claim; when the new retry_count reaches maxRetries the
-	// event becomes a dead letter. Stale claims are a no-op returning
-	// ErrClaimLost. The write is relative (retry_count = retry_count + 1);
+	// MarkFailed increments retry_count, records last_retry_at, and schedules
+	// next_attempt_at only while the caller holds the claim; when the new
+	// retry_count reaches maxRetries the event becomes a dead letter. Stale
+	// claims are a no-op returning ErrClaimLost. The write is relative
+	// (retry_count = retry_count + 1);
 	// retryCount is used for relay logging and must equal the current
-	// retry_count + 1 when the claim is held.
+	// retry_count + 1 when the claim is held. The at argument is retained for
+	// source compatibility; PostgreSQL assigns retry timestamps atomically.
 	MarkFailed(ctx context.Context, c Claim, retryCount, maxRetries int, at time.Time) error
 
 	// Release clears the claim on rows the caller holds without changing retry
-	// state. Used for events skipped by the relay's Go backoff check (the
-	// primary backoff exclusion). Stale claims are a no-op.
+	// state. It remains for interface compatibility; normal relay delivery does
+	// not call it now that ClaimBatch applies database-side eligibility.
 	Release(ctx context.Context, claims []Claim) error
 
 	// RenewClaims extends claimed_at to now() on claims the caller still holds

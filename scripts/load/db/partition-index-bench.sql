@@ -16,8 +16,9 @@
 --   * Index Scan on idx_audit_ledger_query / idx_notifications_recipient_unread
 --     (a Seq Scan on a large table is a regression signal);
 --   * high Shared buffers read on keyset pagination (index-only scan expected);
---   * the outbox drain query must use idx_outbox_unpublished and never sort
---     the full table.
+--   * the outbox drain query must use idx_outbox_unpublished; because the
+--     due-time predicate is a range before created_at ordering, a bounded sort
+--     of qualifying rows is legitimate. A full-table scan/sort is not.
 --
 -- Seed the bench database first (idempotent; volumes and override syntax in
 -- scripts/load/db/seed-bench.sql):
@@ -78,11 +79,23 @@ EXPLAIN (ANALYZE, BUFFERS)
 SELECT id, event_type, payload
   FROM outbox_events
  WHERE published_at IS NULL
+   AND NOT dead_letter
+   AND next_attempt_at <= now()
+   AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds')
  ORDER BY created_at ASC, id ASC
  LIMIT 100
  FOR UPDATE SKIP LOCKED;
 
-\echo '=== 7. Audit publications: due deliveries (callback worker) ==='
+\echo '=== 7. Outbox eligibility stats ==='
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*), min(created_at)
+  FROM outbox_events
+ WHERE published_at IS NULL
+   AND NOT dead_letter
+   AND next_attempt_at <= now()
+   AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds');
+
+\echo '=== 8. Audit publications: due deliveries (callback worker) ==='
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT p.id, p.fact_id, p.next_attempt_at
   FROM audit_publications p

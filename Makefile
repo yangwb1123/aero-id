@@ -168,13 +168,15 @@ N              ?= 1
 
 # Migration tooling — runs the in-repo cmd/migrate against the configured DB
 # (reads the DSN from $(CONFIG); no external `migrate` binary required).
-.PHONY: migrate-up migrate-down migrate-version migrate-validate
+.PHONY: migrate-up migrate-down migrate-version migrate-verify migrate-validate
 migrate-up:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) up
 migrate-down:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) down $(N)
 migrate-version:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) version
+migrate-verify:
+	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) verify
 migrate-validate:
 	go run ./cmd/migrate -config $(CONFIG) -migrations $(MIGRATIONS_DIR) validate
 

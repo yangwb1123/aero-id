@@ -67,18 +67,23 @@ func New(db *gorm.DB, dir string, logf Logf) *Migrator {
 	return &Migrator{db: db, dir: dir, logf: logf}
 }
 
-// ensureTable creates the bookkeeping table if it does not yet exist.
-func (m *Migrator) ensureTable() error {
+// EnsureSchemaMigrations creates the bookkeeping table if it does not yet
+// exist. It is intentionally separate from compatibility probes, which are
+// read-only.
+func EnsureSchemaMigrations(db *gorm.DB) error {
 	const ddl = `CREATE TABLE IF NOT EXISTS ` + migrationsTable + ` (
 		version BIGINT PRIMARY KEY,
 		name    TEXT NOT NULL,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`
-	if err := m.db.Exec(ddl).Error; err != nil {
+	if err := db.Exec(ddl).Error; err != nil {
 		return fmt.Errorf("create %s: %w", migrationsTable, err)
 	}
 	return nil
 }
+
+// ensureTable preserves the migrator's historical behavior for up/down/version.
+func (m *Migrator) ensureTable() error { return EnsureSchemaMigrations(m.db) }
 
 // appliedVersions returns the set of versions recorded as applied.
 func (m *Migrator) appliedVersions() (map[uint64]bool, error) {
@@ -98,14 +103,7 @@ func (m *Migrator) Version() (uint64, error) {
 	if err := m.ensureTable(); err != nil {
 		return 0, err
 	}
-	var version *uint64
-	if err := m.db.Table(migrationsTable).Select("MAX(version)").Scan(&version).Error; err != nil {
-		return 0, fmt.Errorf("read current version: %w", err)
-	}
-	if version == nil {
-		return 0, nil
-	}
-	return *version, nil
+	return CurrentVersion(m.db)
 }
 
 // Up applies every pending up-migration in ascending version order. It returns

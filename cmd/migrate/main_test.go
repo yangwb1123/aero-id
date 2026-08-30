@@ -127,3 +127,13 @@ func TestMigrateConfigLoadFailure(t *testing.T) {
 		t.Fatalf("stderr = %q, want byte-identical %q (any extra line is a boot side effect)", got, want)
 	}
 }
+
+func TestPreflightAcceptsVerify(t *testing.T) {
+	cmd, n, err := preflight([]string{"verify"})
+	if err != nil {
+		t.Fatalf("preflight verify: %v", err)
+	}
+	if cmd != "verify" || n != 1 {
+		t.Fatalf("preflight = (%q, %d), want (verify, 1)", cmd, n)
+	}
+}

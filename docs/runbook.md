@@ -10,6 +10,8 @@
   unknown 结果数、审计 ingest 失败、callback 重试/DLQ 深度、对账漂移、区域新鲜度。
 - 业务追溯：`trace_id`（技术调用图）、`operation_id`（一次用户意图）、`request_id`（一次传输请求）、
   `causation_id`（父事实）。日志、指标 exemplar、审计查询三处必须可关联。
+- **Outbox 专项**：`docs/runbooks/outbox-retry-eligibility.md` 覆盖 eligible backlog、数据库时钟/租约、
+  claim/finalization 失败、poison event、死信和发布回滚；不要用本页的通用 DLQ 步骤替代它。
 
 ---
 

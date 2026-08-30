@@ -54,6 +54,10 @@ func TestOutboxRepo_AppendFetchMarkPublished(t *testing.T) {
 	if len(got) != 1 || got[0].Event.ID != e.ID || got[0].Event.EventType != "message.sent" {
 		t.Fatalf("claim batch = %+v, want the appended event", got)
 	}
+	wantNextAttempt := e.CreatedAt.Truncate(time.Microsecond)
+	if !got[0].Event.NextAttemptAt.Equal(wantNextAttempt) {
+		t.Fatalf("claimed next_attempt_at = %v, want append CreatedAt %v", got[0].Event.NextAttemptAt, wantNextAttempt)
+	}
 
 	if err := repo.MarkPublished(ctx, []outbox.Claim{got[0].Claim}); err != nil {
 		t.Fatal(err)
@@ -64,6 +68,46 @@ func TestOutboxRepo_AppendFetchMarkPublished(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("after MarkPublished, unpublished = %+v, want none", got)
+	}
+}
+
+func TestOutboxRepo_EligibilityStatsUsesDueAndLeasePredicates(t *testing.T) {
+	ctx := context.Background()
+	db, repo := setupOutboxRepo(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	due := newEvent("due")
+	due.CreatedAt = now.Add(-time.Minute)
+	due.NextAttemptAt = now.Add(-time.Second)
+	future := newEvent("future")
+	future.NextAttemptAt = now.Add(time.Hour)
+	for _, e := range []*outbox.Event{due, future} {
+		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return repo.Append(ctx, tx, e)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := repo.GetEligibilityStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 1 || stats.OldestCreatedAt == nil || stats.ObservedAt.IsZero() {
+		t.Fatalf("eligibility stats = %+v, want one due event, oldest timestamp, and DB observation time", stats)
+	}
+	if !stats.OldestCreatedAt.Equal(due.CreatedAt) {
+		t.Fatalf("oldest eligible = %v, want %v", *stats.OldestCreatedAt, due.CreatedAt)
+	}
+	claimed, err := repo.ClaimBatch(ctx, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].Event.ID != due.ID {
+		t.Fatalf("claim due events = %v, %v; want only due event", claimed, err)
+	}
+	stats, err = repo.GetEligibilityStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 0 || stats.OldestCreatedAt != nil {
+		t.Fatalf("claimed eligibility stats = %+v, want empty", stats)
 	}
 }
 
@@ -93,4 +137,3 @@ func TestOutboxRepo_FailedTxRollsBackEvent(t *testing.T) {
 		t.Fatalf("event must be rolled back with the tx, got %+v", got)
 	}
 }
-

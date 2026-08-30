@@ -80,12 +80,40 @@ func TestRegistry_SSOExposition(t *testing.T) {
 	}
 }
 
+func TestRegistry_OutboxUnknownBeforeFirstKnownObservation(t *testing.T) {
+	r := metrics.NewRegistry()
+	r.ObserveOutboxDrain(42, 0, time.Hour, time.Millisecond, false)
+	var b strings.Builder
+	r.WriteText(&b)
+	out := b.String()
+	if strings.Contains(out, "aeroid_outbox_pending") || strings.Contains(out, "aeroid_outbox_oldest_age_seconds") {
+		t.Fatalf("unknown first observation fabricated backlog/age values:\n%s", out)
+	}
+	for _, want := range []string{
+		`aeroid_outbox_claimed 0`,
+		`aeroid_outbox_eligibility_known 0`,
+		`aeroid_outbox_drain_passes_total 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unknown observation missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRegistry_OutboxExposition(t *testing.T) {
 	r := metrics.NewRegistry()
 	r.ObserveOutboxPublished("message.sent")
 	r.ObserveOutboxPublished("message.sent")
 	r.ObserveOutboxFailed("comment.replied")
-	r.ObserveOutboxDrain(3, 90*time.Second, 4*time.Millisecond)
+	r.ObserveOutboxDeadLetter("comment.replied")
+	r.ObserveOutboxClaimError()
+	r.ObserveOutboxClaimLost()
+	r.ObserveOutboxFinalizationError()
+	r.ObserveOutboxRenewalError()
+	r.ObserveOutboxDrain(3, 2, 90*time.Second, 4*time.Millisecond, true)
+	// An eligibility stats outage must not erase the last known backlog/lag,
+	// while claimed and known still reflect the current drain.
+	r.ObserveOutboxDrain(999, 1, 0, 5*time.Millisecond, false)
 
 	var b strings.Builder
 	r.WriteText(&b)
@@ -96,13 +124,22 @@ func TestRegistry_OutboxExposition(t *testing.T) {
 		`aeroid_outbox_published_total{event_type="message.sent"} 2`,
 		`# TYPE aeroid_outbox_failed_total counter`,
 		`aeroid_outbox_failed_total{event_type="comment.replied"} 1`,
+		`aeroid_outbox_dead_letter_total{event_type="comment.replied"} 1`,
+		`aeroid_outbox_claim_errors_total 1`,
+		`aeroid_outbox_claim_lost_total 1`,
+		`aeroid_outbox_finalization_errors_total 1`,
+		`aeroid_outbox_renewal_errors_total 1`,
 		`# TYPE aeroid_outbox_pending gauge`,
 		`aeroid_outbox_pending 3`,
+		`# TYPE aeroid_outbox_claimed gauge`,
+		`aeroid_outbox_claimed 1`,
+		`# TYPE aeroid_outbox_eligibility_known gauge`,
+		`aeroid_outbox_eligibility_known 0`,
 		`# TYPE aeroid_outbox_oldest_age_seconds gauge`,
 		`aeroid_outbox_oldest_age_seconds 90`,
 		`# TYPE aeroid_outbox_drain_duration_seconds histogram`,
-		`aeroid_outbox_drain_duration_seconds_count 1`,
-		`aeroid_outbox_drain_duration_seconds_bucket{le="+Inf"} 1`,
+		`aeroid_outbox_drain_duration_seconds_count 2`,
+		`aeroid_outbox_drain_duration_seconds_bucket{le="+Inf"} 2`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("exposition missing line:\n  %s\n--- full output ---\n%s", want, out)

@@ -14,16 +14,23 @@ import (
 
 // recordingSink captures relay observations for assertions. It satisfies MetricsSink.
 type recordingSink struct {
-	mu          sync.Mutex
-	published   map[string]int
-	failed      map[string]int
-	lastPending int
-	lastOldest  time.Duration
-	drainPasses int
+	mu             sync.Mutex
+	published      map[string]int
+	failed         map[string]int
+	lastPending    int
+	lastOldest     time.Duration
+	lastClaimed    int
+	lastKnown      bool
+	drainPasses    int
+	claimErrors    int
+	claimLost      int
+	finalizeErrors int
+	renewErrors    int
+	deadLetters    map[string]int
 }
 
 func newRecordingSink() *recordingSink {
-	return &recordingSink{published: map[string]int{}, failed: map[string]int{}}
+	return &recordingSink{published: map[string]int{}, failed: map[string]int{}, deadLetters: map[string]int{}}
 }
 
 func (s *recordingSink) ObserveOutboxPublished(eventType string) {
@@ -38,11 +45,43 @@ func (s *recordingSink) ObserveOutboxFailed(eventType string) {
 	s.mu.Unlock()
 }
 
-func (s *recordingSink) ObserveOutboxDrain(pending int, oldestAge, _ time.Duration) {
+func (s *recordingSink) ObserveOutboxDrain(pending, claimed int, oldestAge, _ time.Duration, known bool) {
 	s.mu.Lock()
 	s.lastPending = pending
+	s.lastClaimed = claimed
+	s.lastKnown = known
 	s.lastOldest = oldestAge
 	s.drainPasses++
+	s.mu.Unlock()
+}
+
+func (s *recordingSink) ObserveOutboxClaimError() {
+	s.mu.Lock()
+	s.claimErrors++
+	s.mu.Unlock()
+}
+
+func (s *recordingSink) ObserveOutboxClaimLost() {
+	s.mu.Lock()
+	s.claimLost++
+	s.mu.Unlock()
+}
+
+func (s *recordingSink) ObserveOutboxFinalizationError() {
+	s.mu.Lock()
+	s.finalizeErrors++
+	s.mu.Unlock()
+}
+
+func (s *recordingSink) ObserveOutboxRenewalError() {
+	s.mu.Lock()
+	s.renewErrors++
+	s.mu.Unlock()
+}
+
+func (s *recordingSink) ObserveOutboxDeadLetter(eventType string) {
+	s.mu.Lock()
+	s.deadLetters[eventType]++
 	s.mu.Unlock()
 }
 
@@ -51,12 +90,17 @@ func (s *recordingSink) ObserveOutboxDrain(pending int, oldestAge, _ time.Durati
 // honor tokens, and MarkFailed clears the claim (matching the SQL semantics).
 // Append is unused here (the relay never appends), so it is a no-op.
 type fakeRepo struct {
-	mu        sync.Mutex
-	events    []*Event
-	published map[uuid.UUID]bool
-	claims    map[uuid.UUID]uuid.UUID // eventID -> token
-	renews    []uuid.UUID             // event IDs renewed, in order
-	releases  []uuid.UUID             // event IDs released, in order
+	mu               sync.Mutex
+	events           []*Event
+	published        map[uuid.UUID]bool
+	claims           map[uuid.UUID]uuid.UUID // eventID -> token
+	renews           []uuid.UUID             // event IDs renewed, in order
+	releases         []uuid.UUID             // event IDs released, in order
+	eligibilityErr   error
+	claimErr         error
+	markFailedErr    error
+	markPublishedErr error
+	renewErr         error
 }
 
 func newFakeRepo(events ...*Event) *fakeRepo {
@@ -68,6 +112,9 @@ func (r *fakeRepo) Append(context.Context, *gorm.DB, *Event) error { return nil 
 func (r *fakeRepo) ClaimBatch(_ context.Context, limit int) ([]*ClaimedEvent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.claimErr != nil {
+		return nil, r.claimErr
+	}
 	var out []*ClaimedEvent
 	for _, e := range r.events {
 		if r.published[e.ID] {
@@ -79,6 +126,9 @@ func (r *fakeRepo) ClaimBatch(_ context.Context, limit int) ([]*ClaimedEvent, er
 		if _, held := r.claims[e.ID]; held {
 			continue // claimed but not yet finalized (lease never expires in-memory)
 		}
+		if !fakeEventDue(e, time.Now()) {
+			continue // database-owned next_attempt_at predicate
+		}
 		token := uuid.New()
 		r.claims[e.ID] = token
 		out = append(out, &ClaimedEvent{Event: e, Claim: Claim{EventID: e.ID, Token: token}})
@@ -89,41 +139,83 @@ func (r *fakeRepo) ClaimBatch(_ context.Context, limit int) ([]*ClaimedEvent, er
 	return out, nil
 }
 
+func (r *fakeRepo) GetEligibilityStats(_ context.Context) (EligibilityStats, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.eligibilityErr != nil {
+		return EligibilityStats{}, r.eligibilityErr
+	}
+	stats := EligibilityStats{ObservedAt: time.Now()}
+	now := stats.ObservedAt
+	for _, e := range r.events {
+		if r.published[e.ID] || e.DeadLetter {
+			continue
+		}
+		if _, held := r.claims[e.ID]; held || !fakeEventDue(e, now) {
+			continue
+		}
+		stats.Pending++
+		if stats.OldestCreatedAt == nil || e.CreatedAt.Before(*stats.OldestCreatedAt) {
+			created := e.CreatedAt
+			stats.OldestCreatedAt = &created
+		}
+	}
+	return stats, nil
+}
+
+func fakeEventDue(e *Event, now time.Time) bool {
+	// NextAttemptAt is authoritative. The LastRetryAt fallback exists only for
+	// older unit fixtures and deliberately cannot override a persisted due time.
+	if !e.NextAttemptAt.IsZero() {
+		return !now.Before(e.NextAttemptAt)
+	}
+	if e.LastRetryAt != nil {
+		return !now.Before(e.LastRetryAt.Add(backoff(e.RetryCount)))
+	}
+	return true
+}
+
 func (r *fakeRepo) MarkPublished(_ context.Context, claims []Claim) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var lost int
+	if r.markPublishedErr != nil {
+		return r.markPublishedErr
+	}
 	for _, c := range claims {
 		token, held := r.claims[c.EventID]
 		if !held || token != c.Token {
-			lost++
-			continue
+			return fmt.Errorf("mark published: %w", ErrClaimLost)
 		}
+	}
+	for _, c := range claims {
 		r.published[c.EventID] = true
 		delete(r.claims, c.EventID)
-	}
-	if lost > 0 {
-		return fmt.Errorf("mark published: %w (%d of %d claims stale)", ErrClaimLost, lost, len(claims))
 	}
 	return nil
 }
 
-func (r *fakeRepo) MarkFailed(_ context.Context, c Claim, retryCount, maxRetries int, _ time.Time) error {
+func (r *fakeRepo) MarkFailed(_ context.Context, c Claim, _ int, maxRetries int, _ time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.markFailedErr != nil {
+		return r.markFailedErr
+	}
 	token, held := r.claims[c.EventID]
 	if !held || token != c.Token {
 		return fmt.Errorf("mark failed: %w", ErrClaimLost)
 	}
-	// Preserve retry state like the SQL path: clear the claim, keep the event
-	// unpublished and track retry state so backoff skips work across drains.
+	// Derive the new attempt from persisted state, matching the relative SQL
+	// update rather than trusting the relay's snapshot argument.
 	for _, e := range r.events {
 		if e.ID == c.EventID {
-			e.RetryCount = retryCount
-			now := time.Now()
-			e.LastRetryAt = &now
-			if retryCount >= maxRetries {
+			e.RetryCount++
+			failedAt := time.Now().UTC()
+			e.LastRetryAt = &failedAt
+			if e.RetryCount >= maxRetries {
 				e.DeadLetter = true
+				e.NextAttemptAt = failedAt
+			} else {
+				e.NextAttemptAt = failedAt.Add(backoff(e.RetryCount))
 			}
 		}
 	}
@@ -148,6 +240,9 @@ func (r *fakeRepo) Release(_ context.Context, claims []Claim) error {
 func (r *fakeRepo) RenewClaims(_ context.Context, claims []Claim) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.renewErr != nil {
+		return r.renewErr
+	}
 	for _, c := range claims {
 		token, held := r.claims[c.EventID]
 		if !held || token != c.Token {
@@ -232,6 +327,7 @@ func TestRelay_HandlerErrorLeavesEventUnpublished(t *testing.T) {
 	due := time.Now().Add(-time.Hour)
 	repo.mu.Lock()
 	bad.LastRetryAt = &due
+	bad.NextAttemptAt = due
 	repo.mu.Unlock()
 	fail = false
 	if n := relay.drain(context.Background()); n != 1 {
@@ -244,7 +340,8 @@ func TestRelay_HandlerErrorLeavesEventUnpublished(t *testing.T) {
 
 func TestRelay_MetricsSinkRecordsPublishedFailedAndLag(t *testing.T) {
 	// K published + J failed in a single drain pass; the lag gauge reflects the
-	// oldest unpublished event's age and pending reflects the batch size.
+	// oldest eligible event's age and pending reflects the eligible backlog,
+	// independently of the claimed batch.
 	oldest := time.Now().Add(-90 * time.Second)
 	e1 := &Event{ID: uuid.New(), EventType: "message.sent", CreatedAt: oldest}
 	e2 := &Event{ID: uuid.New(), EventType: "message.sent", CreatedAt: time.Now().Add(-30 * time.Second)}
@@ -335,15 +432,17 @@ func TestRelay_DrainOnStop(t *testing.T) {
 	}
 }
 
-// TestRelay_BackstopRelease guards REQ-6/D4: an event inside its backoff window
-// is claimed (backoff exclusion is Go-side), the relay's backstop skips it
-// without invoking the handler, and Release clears the claim so a later pass
-// can pick it up once due.
-func TestRelay_BackstopRelease(t *testing.T) {
+// TestRelay_DatabaseEligibility guards the database-owned retry predicate:
+// an event inside its backoff window is not claimed, handled, or released, so
+// a newer due event can pass it without claim/release churn.
+func TestRelay_DatabaseEligibility(t *testing.T) {
 	due := time.Now().Add(-time.Minute)
 	past := time.Now().Add(-time.Second) // inside backoff(1) = 5s window
 	dueEvent := &Event{ID: uuid.New(), EventType: "message.sent", CreatedAt: due}
-	backoffEvent := &Event{ID: uuid.New(), EventType: "comment.replied", CreatedAt: past, RetryCount: 1, LastRetryAt: &past}
+	backoffEvent := &Event{
+		ID: uuid.New(), EventType: "comment.replied", CreatedAt: past,
+		RetryCount: 1, LastRetryAt: &past, NextAttemptAt: past.Add(5 * time.Second),
+	}
 	repo := newFakeRepo(dueEvent, backoffEvent)
 
 	var handled int
@@ -364,20 +463,16 @@ func TestRelay_BackstopRelease(t *testing.T) {
 	if repo.isPublished(backoffEvent.ID) {
 		t.Fatal("backoff event must stay unpublished")
 	}
-	if len(repo.releases) != 1 || repo.releases[0] != backoffEvent.ID {
-		t.Fatalf("releases = %v, want exactly the backoff event's claim released", repo.releases)
+	if len(repo.releases) != 0 {
+		t.Fatalf("releases = %v, want none for a future-due event", repo.releases)
 	}
-	// The skipped event must not hold a claim: a second drain pass sees it again
-	// (and skips it again), proving no lease-induced invisibility.
-	repo.releases = nil
+	// The future-due event remains visible to a later database poll without
+	// holding a lease or requiring a release operation.
 	if n := relay.drain(context.Background()); n != 0 {
 		t.Fatalf("second drain handled %d, want 0", n)
 	}
-	if len(repo.releases) != 1 || repo.releases[0] != backoffEvent.ID {
-		t.Fatalf("second drain releases = %v, want the backoff event re-released", repo.releases)
-	}
-	if repo.claimsHeld() != 0 {
-		t.Fatal("no claims may remain held after the drain")
+	if len(repo.releases) != 0 || repo.claimsHeld() != 0 {
+		t.Fatalf("second drain releases/claims = %v/%d, want none", repo.releases, repo.claimsHeld())
 	}
 }
 
@@ -503,8 +598,8 @@ func TestRelay_HandlerPanicDoesNotCrashLoop(t *testing.T) {
 	repo.mu.Unlock()
 
 	// AC-3 (R1): a second drain must not re-panic. The poison event is inside
-	// its backoff(1) = 5s window, so it is claimed, skipped, and released
-	// without invoking the handler.
+	// its backoff(1) = 5s window, so ClaimBatch excludes it without invoking
+	// the handler or creating a claim/release cycle.
 	if n := relay.drain(context.Background()); n != 0 {
 		t.Fatalf("backoff drain handled %d, want 0", n)
 	}
@@ -520,6 +615,7 @@ func TestRelay_HandlerPanicDoesNotCrashLoop(t *testing.T) {
 	due := time.Now().Add(-time.Hour)
 	repo.mu.Lock()
 	bad.LastRetryAt = &due
+	bad.NextAttemptAt = due
 	repo.mu.Unlock()
 	if n := relay.drain(context.Background()); n != 0 {
 		t.Fatalf("dead-letter drain handled %d, want 0", n)
@@ -577,6 +673,107 @@ func TestRelay_HandlerPanicDoesNotCrashLoop(t *testing.T) {
 // TestRelay_HandlerErrorClearsClaimAndRetries guards the MarkFailed interplay
 // (F4): a failed event's claim is cleared, so the next drain pass can claim and
 // retry it once due, and a second failure advances retry state.
+func TestRelay_FailureInjectionAndUnknownState(t *testing.T) {
+	ctx := context.Background()
+
+	// Statistics failure is non-fatal: delivery continues, but the pass is
+	// explicitly unknown and does not fabricate backlog values.
+	statsRepo := newFakeRepo(&Event{ID: uuid.New(), EventType: "stats"})
+	statsRepo.eligibilityErr = stderrors.New("stats unavailable")
+	statsSink := newRecordingSink()
+	statsRelay := NewRelay(statsRepo, HandlerFunc(func(context.Context, *Event) error { return nil }), 0, nil, statsSink)
+	if got := statsRelay.drain(ctx); got != 1 {
+		t.Fatalf("stats failure drain = %d, want 1", got)
+	}
+	statsSink.mu.Lock()
+	if statsSink.lastKnown || statsSink.lastClaimed != 1 || statsSink.drainPasses != 1 {
+		t.Fatalf("stats failure observation = known:%v claimed:%d passes:%d, want false/1/1", statsSink.lastKnown, statsSink.lastClaimed, statsSink.drainPasses)
+	}
+	statsSink.mu.Unlock()
+
+	// Claim failure must not invoke the handler and must transition the
+	// eligibility signal to unknown even when stats had succeeded.
+	claimRepo := newFakeRepo(&Event{ID: uuid.New(), EventType: "claim"})
+	claimRepo.claimErr = stderrors.New("claim unavailable")
+	claimSink := newRecordingSink()
+	claimCalls := 0
+	claimRelay := NewRelay(claimRepo, HandlerFunc(func(context.Context, *Event) error {
+		claimCalls++
+		return nil
+	}), 0, nil, claimSink)
+	if got := claimRelay.drain(ctx); got != 0 || claimCalls != 0 {
+		t.Fatalf("claim failure drain/calls = %d/%d, want 0/0", got, claimCalls)
+	}
+	claimSink.mu.Lock()
+	if claimSink.lastKnown || claimSink.claimErrors != 1 || claimSink.drainPasses != 1 {
+		t.Fatalf("claim failure observation = known:%v errors:%d passes:%d, want false/1/1", claimSink.lastKnown, claimSink.claimErrors, claimSink.drainPasses)
+	}
+	claimSink.mu.Unlock()
+
+	// Retry-state finalization failure is observable and does not release a
+	// successful claim optimistically. Once the claim is abandoned, the event
+	// is redelivered and only then counted as durably published.
+	failedRepo := newFakeRepo(&Event{ID: uuid.New(), EventType: "retry"})
+	failedSink := newRecordingSink()
+	failedRepo.markFailedErr = stderrors.New("retry update unavailable")
+	failedRelay := NewRelay(failedRepo, HandlerFunc(func(context.Context, *Event) error {
+		return stderrors.New("handler failure")
+	}), 2, nil, failedSink)
+	if got := failedRelay.drain(ctx); got != 0 || failedSink.failed["retry"] != 1 {
+		t.Fatalf("MarkFailed failure drain/metric = %d/%d, want 0/1", got, failedSink.failed["retry"])
+	}
+	failedSink.mu.Lock()
+	finalizeErrors := failedSink.finalizeErrors
+	failedSink.mu.Unlock()
+	if finalizeErrors != 1 {
+		t.Fatalf("MarkFailed finalization errors = %d, want 1", finalizeErrors)
+	}
+	failedRepo.mu.Lock()
+	failedRepo.claims = map[uuid.UUID]uuid.UUID{}
+	failedRepo.markFailedErr = nil
+	failedRepo.mu.Unlock()
+
+	publishRepo := newFakeRepo(&Event{ID: uuid.New(), EventType: "publish"})
+	publishSink := newRecordingSink()
+	publishRepo.markPublishedErr = fmt.Errorf("publish claim expired: %w", ErrClaimLost)
+	publishRelay := NewRelay(publishRepo, HandlerFunc(func(context.Context, *Event) error { return nil }), 2, nil, publishSink)
+	if got := publishRelay.drain(ctx); got != 0 || publishSink.published["publish"] != 0 {
+		t.Fatalf("MarkPublished failure drain/metric = %d/%d, want 0/0", got, publishSink.published["publish"])
+	}
+	publishSink.mu.Lock()
+	if publishSink.claimLost != 1 || publishSink.finalizeErrors != 0 {
+		t.Fatalf("claim-loss metrics = %d/%d, want 1/0", publishSink.claimLost, publishSink.finalizeErrors)
+	}
+	publishSink.mu.Unlock()
+	publishRepo.mu.Lock()
+	publishRepo.claims = map[uuid.UUID]uuid.UUID{}
+	publishRepo.markPublishedErr = nil
+	publishRepo.mu.Unlock()
+	if got := publishRelay.drain(ctx); got != 1 || publishSink.published["publish"] != 1 {
+		t.Fatalf("redelivery drain/metric = %d/%d, want 1/1", got, publishSink.published["publish"])
+	}
+
+	// Renewal failure is fail-safe: it is observable, but the live handler is
+	// still allowed to finish and finalization remains claim-fenced.
+	renewRepo := newFakeRepo(
+		&Event{ID: uuid.New(), EventType: "renew-a"},
+		&Event{ID: uuid.New(), EventType: "renew-b"},
+	)
+	renewRepo.renewErr = stderrors.New("renew unavailable")
+	renewSink := newRecordingSink()
+	renewRelay := NewRelay(renewRepo, HandlerFunc(func(context.Context, *Event) error { return nil }), 2, nil, renewSink)
+	renewRelay.renewEvery = 0
+	if got := renewRelay.drain(ctx); got != 2 {
+		t.Fatalf("renewal failure drain = %d, want 2", got)
+	}
+	renewSink.mu.Lock()
+	gotRenewErrors := renewSink.renewErrors
+	renewSink.mu.Unlock()
+	if gotRenewErrors == 0 {
+		t.Fatal("renewal failure was not observable")
+	}
+}
+
 func TestRelay_HandlerErrorClearsClaimAndRetries(t *testing.T) {
 	bad := &Event{ID: uuid.New(), EventType: "comment.replied", CreatedAt: time.Now()}
 	repo := newFakeRepo(bad)
@@ -599,7 +796,7 @@ func TestRelay_HandlerErrorClearsClaimAndRetries(t *testing.T) {
 		t.Fatal("failed event must stay unpublished")
 	}
 
-	// The event is in backoff now: a drain skips and releases it (no retry yet).
+	// The event is in backoff now: ClaimBatch excludes it (no retry yet).
 	if n := relay.drain(context.Background()); n != 0 {
 		t.Fatalf("backoff drain handled %d, want 0", n)
 	}
@@ -612,6 +809,7 @@ func TestRelay_HandlerErrorClearsClaimAndRetries(t *testing.T) {
 	repo.mu.Lock()
 	due := time.Now().Add(-time.Hour)
 	repo.events[0].LastRetryAt = &due
+	repo.events[0].NextAttemptAt = due
 	repo.mu.Unlock()
 	if n := relay.drain(context.Background()); n != 1 {
 		t.Fatalf("retry drain handled %d, want 1", n)

@@ -91,6 +91,26 @@ func TestMigratorUpAndDown(t *testing.T) {
 	}
 }
 
+func TestOutboxRetryEligibilityCompatibilityGate(t *testing.T) {
+	db := testpg.Start(t)
+	if err := migrate.RequireVersion(db, migrate.MinOutboxRetryEligibilityVersion); err == nil {
+		t.Fatal("fresh database must fail the compatibility gate")
+	}
+	m := migrate.New(db, filepath.Join(testpg.RepoRoot(t), "migrations"), nil)
+	if _, err := m.Up(); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if err := migrate.VerifyOutboxRetryEligibility(db); err != nil {
+		t.Fatalf("migrated database failed compatibility gate: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", migrate.MinOutboxRetryEligibilityVersion).Error; err != nil {
+		t.Fatalf("remove watermark: %v", err)
+	}
+	if err := migrate.RequireVersion(db, migrate.MinOutboxRetryEligibilityVersion); err == nil {
+		t.Fatal("database below the relay version must fail the compatibility gate")
+	}
+}
+
 // TestValidateRoundtrip pins the up/validate roundtrip against a real
 // Postgres: on a fresh database Validate() reports all pairs pending WITHOUT
 // creating schema_migrations; after Up() it reports every on-disk pair applied

@@ -24,6 +24,7 @@ type eventRow struct {
 	PublishedAt   *time.Time     `gorm:"column:published_at"`
 	RetryCount    int            `gorm:"column:retry_count"`
 	LastRetryAt   *time.Time     `gorm:"column:last_retry_at"`
+	NextAttemptAt time.Time      `gorm:"column:next_attempt_at"`
 	DeadLetter    bool           `gorm:"column:dead_letter"`
 	ClaimToken    *uuid.UUID     `gorm:"column:claim_token"`
 	ClaimedAt     *time.Time     `gorm:"column:claimed_at"`
@@ -42,6 +43,7 @@ func rowToEvent(r *eventRow) *Event {
 		PublishedAt:   r.PublishedAt,
 		RetryCount:    r.RetryCount,
 		LastRetryAt:   r.LastRetryAt,
+		NextAttemptAt: r.NextAttemptAt,
 		DeadLetter:    r.DeadLetter,
 	}
 }
@@ -63,6 +65,32 @@ func NewGormRepository(db *gorm.DB, opts ...Option) *GormRepository {
 	return r
 }
 
+// GetEligibilityStats observes the ready unpublished backlog using the same
+// database clock and lease predicate as ClaimBatch. It is deliberately
+// observational: delivery never depends on this snapshot remaining current.
+func (r *GormRepository) GetEligibilityStats(ctx context.Context) (EligibilityStats, error) {
+	var stats struct {
+		Pending         int        `gorm:"column:pending"`
+		OldestCreatedAt *time.Time `gorm:"column:oldest_created_at"`
+		ObservedAt      time.Time  `gorm:"column:observed_at"`
+	}
+	if err := r.db.WithContext(ctx).Raw(`
+SELECT count(*) AS pending, min(created_at) AS oldest_created_at,
+       statement_timestamp() AS observed_at
+FROM outbox_events
+WHERE published_at IS NULL
+  AND NOT dead_letter
+  AND next_attempt_at <= statement_timestamp()
+  AND (claimed_at IS NULL OR claimed_at < statement_timestamp() - ?::interval)`, r.leaseInterval()).Scan(&stats).Error; err != nil {
+		return EligibilityStats{}, fmt.Errorf("get outbox eligibility stats: %w", err)
+	}
+	return EligibilityStats{
+		Pending:         stats.Pending,
+		OldestCreatedAt: stats.OldestCreatedAt,
+		ObservedAt:      stats.ObservedAt,
+	}, nil
+}
+
 // Append inserts the event using the caller's transaction so it shares the
 // fate of the domain rows written in that same tx.
 func (r *GormRepository) Append(ctx context.Context, tx *gorm.DB, e *Event) error {
@@ -74,6 +102,14 @@ func (r *GormRepository) Append(ctx context.Context, tx *gorm.DB, e *Event) erro
 		Payload:       datatypes.JSON(e.Payload),
 		CreatedAt:     e.CreatedAt,
 		PublishedAt:   e.PublishedAt,
+	}
+	switch {
+	case !e.NextAttemptAt.IsZero():
+		row.NextAttemptAt = e.NextAttemptAt
+	case !e.CreatedAt.IsZero():
+		row.NextAttemptAt = e.CreatedAt
+	default:
+		row.NextAttemptAt = time.Now().UTC()
 	}
 	if err := tx.WithContext(ctx).Create(row).Error; err != nil {
 		return fmt.Errorf("append outbox event: %w", err)

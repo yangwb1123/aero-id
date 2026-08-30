@@ -38,6 +38,10 @@ func (r *purgeRecordingRepo) ClaimBatch(context.Context, int) ([]*ClaimedEvent, 
 	return nil, nil
 }
 
+func (r *purgeRecordingRepo) GetEligibilityStats(context.Context) (EligibilityStats, error) {
+	return EligibilityStats{}, nil
+}
+
 func (r *purgeRecordingRepo) MarkPublished(context.Context, []Claim) error { return nil }
 
 func (r *purgeRecordingRepo) MarkFailed(context.Context, Claim, int, int, time.Time) error {

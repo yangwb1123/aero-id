@@ -6,8 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	dbpkg "github.com/aero/aero-id/internal/pkg/db"
+	"github.com/aero/aero-id/internal/pkg/migrate"
 )
 
 const postgresFixtureTimeout = time.Minute
@@ -88,28 +87,29 @@ func Start(t *testing.T) *gorm.DB {
 	return db
 }
 
-// Migrate executes every *.up.sql file under migrationsDir in lexical order.
-// Path is typically returned by RepoRoot helpers; we just take it raw.
+// Migrate executes every discovered *.up.sql under migrationsDir in ascending
+// version order and records the same watermark used by production. Keeping
+// test databases' schema_migrations current makes startup compatibility gates
+// exercise the real deployment contract instead of silently running at version 0.
 func Migrate(t *testing.T, db *gorm.DB, migrationsDir string) {
 	t.Helper()
-	entries, err := os.ReadDir(migrationsDir)
+	if err := migrate.EnsureSchemaMigrations(db); err != nil {
+		t.Fatalf("ensure schema migrations: %v", err)
+	}
+	migrations, err := migrate.Discover(migrationsDir)
 	if err != nil {
-		t.Fatalf("read migrations: %v", err)
+		t.Fatalf("discover migrations: %v", err)
 	}
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
-			files = append(files, e.Name())
-		}
-	}
-	sort.Strings(files)
-	for _, f := range files {
-		b, err := os.ReadFile(filepath.Join(migrationsDir, f))
+	for _, migration := range migrations {
+		b, err := os.ReadFile(filepath.Join(migrationsDir, filepath.Base(migration.UpFile)))
 		if err != nil {
-			t.Fatalf("read %s: %v", f, err)
+			t.Fatalf("read %s: %v", migration.UpFile, err)
 		}
 		if err := db.Exec(string(b)).Error; err != nil {
-			t.Fatalf("exec %s: %v", f, err)
+			t.Fatalf("exec %s: %v", migration.UpFile, err)
+		}
+		if err := db.Exec(`INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`, migration.Version, migration.Name).Error; err != nil {
+			t.Fatalf("record %06d: %v", migration.Version, err)
 		}
 	}
 }

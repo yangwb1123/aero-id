@@ -13,6 +13,7 @@
 //	up            apply all pending migrations
 //	down [N]      roll back the most recent migration (or the most recent N)
 //	version       print the current schema version
+//	verify        verify the deployed schema is compatible with the current relay
 //	validate      report migration-set integrity and disk-vs-applied drift without mutating
 package main
 
@@ -40,6 +41,7 @@ commands:
   up            apply all pending migrations
   down [N]      roll back the most recent migration (or the most recent N)
   version       print the current schema version
+  verify        verify the deployed schema is compatible with the current relay
   validate      report migration-set integrity and disk-vs-applied drift without mutating`
 }
 
@@ -102,7 +104,7 @@ func preflight(rest []string) (cmd string, downN int, err error) {
 	}
 	cmd = rest[0]
 	switch cmd {
-	case "up", "version", "validate":
+	case "up", "version", "verify", "validate":
 		return cmd, 1, nil
 	case "down":
 		arg := ""
@@ -129,6 +131,8 @@ func dispatch(m *migrate.Migrator, cmd string, n int) error {
 		return runDown(m, n)
 	case "version":
 		return runVersion(m)
+	case "verify":
+		return runVerify(m)
 	case "validate":
 		return validateCmd(m)
 	default:
@@ -178,6 +182,19 @@ func runVersion(m *migrate.Migrator) error {
 	}
 	fmt.Printf("%06d\n", v)
 	return nil
+}
+
+func runVerify(m *migrate.Migrator) error {
+	v, err := m.CurrentVersion()
+	if err != nil {
+		return err
+	}
+	if v == 0 {
+		fmt.Println("no migrations applied (version 0)")
+	} else {
+		fmt.Printf("%06d\n", v)
+	}
+	return m.VerifyOutboxRetryEligibility()
 }
 
 // validateCmd implements "migrate validate": strict Discover (any D-rule
