@@ -46,7 +46,7 @@ func (c *JSONSummaryConnector) OperationStatus(ctx context.Context, req Operatio
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, remoteHTTPError(c.source, response.StatusCode)
 	}
-	return c.decodeCommandResult(response.Body)
+	return c.decodeCommandResult(response.Body, req)
 }
 
 func (c *JSONSummaryConnector) operationStatusURL(req OperationStatusRequest) (*url.URL, error) {
@@ -85,7 +85,18 @@ func (c *JSONSummaryConnector) operationStatusRequest(ctx context.Context, endpo
 	return request, nil
 }
 
-func (c *JSONSummaryConnector) decodeCommandResult(body io.Reader) (*CommandResult, error) {
+type commandResultPayload struct {
+	OperationID       string         `json:"operation_id"`
+	SourceOperationID string         `json:"source_operation_id"`
+	Status            string         `json:"status"`
+	Result            map[string]any `json:"result"`
+}
+
+func operationStatusIDMismatch(response, requested string) bool {
+	return response != "" && response != requested
+}
+
+func (c *JSONSummaryConnector) decodeCommandResult(body io.Reader, req OperationStatusRequest) (*CommandResult, error) {
 	data, err := io.ReadAll(io.LimitReader(body, c.cfg.MaxBodyBytes+1))
 	if err != nil {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.response_read_failed", Temporary: true, Cause: err}
@@ -93,14 +104,13 @@ func (c *JSONSummaryConnector) decodeCommandResult(body io.Reader) (*CommandResu
 	if int64(len(data)) > c.cfg.MaxBodyBytes {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large"}
 	}
-	var payload struct {
-		OperationID       string         `json:"operation_id"`
-		SourceOperationID string         `json:"source_operation_id"`
-		Status            string         `json:"status"`
-		Result            map[string]any `json:"result"`
-	}
+	var payload commandResultPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_invalid", Cause: err}
+	}
+	if c.source == SourceAeroIM && (operationStatusIDMismatch(payload.OperationID, req.OperationID) ||
+		operationStatusIDMismatch(payload.SourceOperationID, req.SourceOperationID)) {
+		return nil, &RemoteError{Source: SourceAeroIM, Kind: ErrorInvalid, Code: "source.operation_id_mismatch"}
 	}
 	if payload.SourceOperationID == "" {
 		payload.SourceOperationID = payload.OperationID

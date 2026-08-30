@@ -65,6 +65,19 @@ func TestCommandResultOutcome(t *testing.T) {
 	}
 }
 
+func TestOperationRunStatusTreatsIdentifierMismatchAsFailed(t *testing.T) {
+	status, code, _ := operationRunStatus(&connector.RemoteError{
+		Source: connector.SourceAeroIM, Kind: connector.ErrorInvalid,
+		Code: "source.operation_id_mismatch",
+	})
+	if status != domain.StepFailed {
+		t.Fatalf("status = %s, want failed durable step", status)
+	}
+	if code != "operation.step_failed" {
+		t.Fatalf("code = %q, want operation.step_failed", code)
+	}
+}
+
 func TestSyncOperationResultPreservesPartialSummary(t *testing.T) {
 	result := syncOperationResult(&connector.Summary{
 		Complete:        false,
