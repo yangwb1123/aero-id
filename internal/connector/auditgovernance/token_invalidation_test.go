@@ -111,7 +111,7 @@ func TestPublish401InvalidatesAndRefetchesExactlyOnce(t *testing.T) {
 	// 1. First publish: plain 401 → ErrTokenRejected, mutually exclusive with
 	// the scope-missing sentinel.
 	firstErr := publisher.Publish(t.Context(), fact)
-	if !errors.Is(firstErr, ErrTokenRejected) || errors.Is(firstErr, ErrTokenScopeMissing) {
+	if !errors.Is(firstErr, ErrTokenRejected) || errors.Is(firstErr, ErrTokenScopeMissing) || errors.Is(firstErr, ErrEventRejected) {
 		t.Fatalf("first publish error = %v, want ErrTokenRejected (not scope-missing)", firstErr)
 	}
 	if got := eventsPosts.Add(0); got != 1 {
@@ -580,7 +580,7 @@ func TestEvents401WithScopeBodyIsScopeMissingAlertedOnce(t *testing.T) {
 	}
 
 	publishErr := publisher.Publish(t.Context(), fact)
-	if !errors.Is(publishErr, ErrTokenScopeMissing) || errors.Is(publishErr, ErrTokenRejected) {
+	if !errors.Is(publishErr, ErrTokenScopeMissing) || errors.Is(publishErr, ErrTokenRejected) || errors.Is(publishErr, ErrEventRejected) {
 		t.Fatalf("publish error = %v, want ErrTokenScopeMissing (mutually exclusive with ErrTokenRejected)", publishErr)
 	}
 	if got := eventsPosts.Load(); got != 1 {

@@ -43,7 +43,9 @@ func (f *accountViewRepo) ListMemberships(ctx context.Context, accountID domain.
 // allowAllChecker grants every permission.
 type allowAllChecker struct{}
 
-func (allowAllChecker) HasPermission(ctx context.Context, uid, permission string) (bool, error) { return true, nil }
+func (allowAllChecker) HasPermission(ctx context.Context, uid, permission string) (bool, error) {
+	return true, nil
+}
 
 func newAccountViewService(repo repository.AccountRepository, audit AuditLedgerService) *accountService {
 	return NewAccountService(repo,

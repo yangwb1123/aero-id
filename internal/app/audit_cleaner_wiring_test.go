@@ -26,7 +26,7 @@ type appAuditRecorder struct {
 }
 
 func (r *appAuditRecorder) Append(context.Context, *domain.AuditEvent) error { return nil }
-func (r *appAuditRecorder) Log(context.Context, *domain.AuditEvent) error     { return nil }
+func (r *appAuditRecorder) Log(context.Context, *domain.AuditEvent) error    { return nil }
 func (r *appAuditRecorder) List(context.Context, string, string, domain.Page) ([]*domain.AuditEvent, string, error) {
 	return nil, "", nil
 }

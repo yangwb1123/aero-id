@@ -223,7 +223,7 @@ func TestRequeueDeadRollsBackWithoutSigningKey(t *testing.T) {
 	if err != nil || len(fetched) != 1 {
 		t.Fatalf("fetch = %v, %v; want 1", fetched, err)
 	}
-	if err := callbacks.MarkDelivery(ctx, fetched[0].ID, "test-worker", "dead_letter", 0, "", "delivery.failed",
+	if err := callbacks.MarkDelivery(ctx, fetched[0].ID, "test-worker", fetched[0].LeaseGeneration, "dead_letter", 0, "", "delivery.failed",
 		time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}

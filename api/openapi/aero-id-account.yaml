@@ -387,15 +387,21 @@ paths:
       security: [{snaplinkBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/RequiredIdempotencyKey'}
       responses:
         '200':
-          description: Delivery queued for manual replay (handler returns httpx.OK = 200).
+          description: Delivery queued for manual replay. Retries with the same key and delivery ID replay the stored response without creating another replay audit fact; the guarantee lasts for the configured idempotency retention window.
+          headers:
+            Idempotent-Replayed:
+              description: Present with value true when the response was replayed from the idempotency store.
+              schema: {type: string, enum: ["true"]}
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   data: {type: object, properties: {status: {type: string, example: queued}}}
+        '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
   /admin/accounts:
     get:
@@ -797,6 +803,7 @@ components:
     Cursor: {name: cursor, in: query, schema: {type: string}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
     IdempotencyKey: {name: Idempotency-Key, in: header, schema: {type: string, maxLength: 200}}
+    RequiredIdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}, description: Stable per command retry key. Reuse it only for the same concrete resource and request; retention is bounded by server configuration.}
     WorkerID: {name: X-Worker-ID, in: header, schema: {type: string, maxLength: 128}}
     AccountID: {name: account_id, in: path, required: true, schema: {type: string, format: uuid}}
     TenantID: {name: tenant_id, in: path, required: true, schema: {type: string}}

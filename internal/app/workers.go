@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/redis/rueidis"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
-	"github.com/redis/rueidis"
 
 	"github.com/aero/aero-id/internal/config"
 	httpapi "github.com/aero/aero-id/internal/handler/http"
@@ -28,19 +28,19 @@ import (
 // under the file-size gate (C-7). Mirrors the outboxDependencies/
 // grpcDependencies struct pattern.
 type workerDependencies struct {
-	cfg         *config.Config
-	log         *zap.Logger
-	gdb         *gorm.DB
-	sqlDB       *sql.DB
-	ssoClient   *sso.Client
-	notifRepo   repository.NotificationRepository
-	outboxRepo  *outbox.GormRepository
-	holdRepo    repository.AuditHoldRepository
+	cfg             *config.Config
+	log             *zap.Logger
+	gdb             *gorm.DB
+	sqlDB           *sql.DB
+	ssoClient       *sso.Client
+	notifRepo       repository.NotificationRepository
+	outboxRepo      *outbox.GormRepository
+	holdRepo        repository.AuditHoldRepository
 	auditLedger     service.AuditLedgerService
 	auditLedgerRepo repository.FullAuditLedgerRepository
-	store       storage.FileStorage
-	billingRuntime billingRuntime
-	cutoverSvc  service.LegacyCutoverService
+	store           storage.FileStorage
+	billingRuntime  billingRuntime
+	cutoverSvc      service.LegacyCutoverService
 }
 
 // workerBundle carries the shared state and worker-stop functions the rest

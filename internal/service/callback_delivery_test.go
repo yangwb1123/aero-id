@@ -103,7 +103,7 @@ func (f *callbackFakeRepo) FetchDueDeliveries(ctx context.Context, limit int, wo
 	}
 	return out, nil
 }
-func (f *callbackFakeRepo) MarkDelivery(ctx context.Context, id domain.ID, worker, status string, statusCode int, response, errorCode string, next time.Time) error {
+func (f *callbackFakeRepo) MarkDelivery(ctx context.Context, id domain.ID, worker string, generation int64, status string, statusCode int, response, errorCode string, next time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failMark != nil {

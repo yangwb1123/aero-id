@@ -11,52 +11,52 @@ import (
 )
 
 type snapshotFingerprint struct {
-	Present     bool                    `json:"present"`
-	Dataset     domain.AccountDataset   `json:"dataset"`
-	Source      string                  `json:"source"`
-	SourceRegion string                 `json:"source_region"`
-	Status      domain.SnapshotStatus   `json:"status"`
-	Version     int64                   `json:"version"`
-	GeneratedAt time.Time               `json:"generated_at"`
-	ExpiresAt   *time.Time               `json:"expires_at,omitempty"`
-	ErrorCode   string                  `json:"error_code"`
-	Data        map[string]any          `json:"data"`
+	Present      bool                  `json:"present"`
+	Dataset      domain.AccountDataset `json:"dataset"`
+	Source       string                `json:"source"`
+	SourceRegion string                `json:"source_region"`
+	Status       domain.SnapshotStatus `json:"status"`
+	Version      int64                 `json:"version"`
+	GeneratedAt  time.Time             `json:"generated_at"`
+	ExpiresAt    *time.Time            `json:"expires_at,omitempty"`
+	ErrorCode    string                `json:"error_code"`
+	Data         map[string]any        `json:"data"`
 }
 
 type sourceFingerprint struct {
-	AccountID       domain.ID              `json:"account_id"`
-	Source          string                `json:"source"`
-	SourceRegion    string                `json:"source_region"`
-	SourceAccountID string                `json:"source_account_id"`
-	ScopeType       string                `json:"scope_type"`
-	ScopeID         string                `json:"scope_id"`
-	Status          string                `json:"status"`
-	Version         int64                 `json:"version"`
-	GeneratedAt     *time.Time            `json:"generated_at,omitempty"`
-	ErrorCode       string                `json:"error_code"`
-	Data            map[string]any        `json:"data"`
+	AccountID       domain.ID      `json:"account_id"`
+	Source          string         `json:"source"`
+	SourceRegion    string         `json:"source_region"`
+	SourceAccountID string         `json:"source_account_id"`
+	ScopeType       string         `json:"scope_type"`
+	ScopeID         string         `json:"scope_id"`
+	Status          string         `json:"status"`
+	Version         int64          `json:"version"`
+	GeneratedAt     *time.Time     `json:"generated_at,omitempty"`
+	ErrorCode       string         `json:"error_code"`
+	Data            map[string]any `json:"data"`
 }
 
 type membershipFingerprint struct {
-	AccountID       domain.ID       `json:"account_id"`
-	Source          string           `json:"source"`
-	SourceRegion    string           `json:"source_region"`
-	ScopeType       string           `json:"scope_type"`
-	ScopeID         string           `json:"scope_id"`
-	SourceMemberID  string           `json:"source_member_id"`
-	Role            string           `json:"role"`
-	Status          string           `json:"status"`
-	Version         int64            `json:"version"`
-	ErrorCode       string           `json:"error_code"`
-	Data            map[string]any   `json:"data"`
+	AccountID      domain.ID      `json:"account_id"`
+	Source         string         `json:"source"`
+	SourceRegion   string         `json:"source_region"`
+	ScopeType      string         `json:"scope_type"`
+	ScopeID        string         `json:"scope_id"`
+	SourceMemberID string         `json:"source_member_id"`
+	Role           string         `json:"role"`
+	Status         string         `json:"status"`
+	Version        int64          `json:"version"`
+	ErrorCode      string         `json:"error_code"`
+	Data           map[string]any `json:"data"`
 }
 
 type summaryFingerprintEnvelope struct {
-	Source        string      `json:"source"`
-	SourceRegion  string      `json:"source_region"`
-	Coverage      string      `json:"coverage"`
-	Skipped       []string    `json:"skipped,omitempty"`
-	Payload       interface{} `json:"payload"`
+	Source       string      `json:"source"`
+	SourceRegion string      `json:"source_region"`
+	Coverage     string      `json:"coverage"`
+	Skipped      []string    `json:"skipped,omitempty"`
+	Payload      interface{} `json:"payload"`
 }
 
 func summaryApplicationFingerprints(request domain.SummaryApplicationRequest,

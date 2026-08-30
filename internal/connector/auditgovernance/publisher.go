@@ -169,9 +169,9 @@ func (p *Publisher) handleForbidden(response *http.Response, binding SourceBindi
 		p.tokens.MarkBindingUnhealthy(binding)
 		return fmt.Errorf("%w: HTTP %d", ErrTokenScopeMissing, response.StatusCode)
 	}
-	// The body has already been bounded and closed; never expose it in the
-	// generic non-accepted receipt classification.
-	return fmt.Errorf("audit governance: HTTP %d", response.StatusCode)
+	// The body has already been bounded and closed; classify this as a
+	// permanent event rejection without exposing response details.
+	return fmt.Errorf("%w: HTTP %d", ErrEventRejected, response.StatusCode)
 }
 
 func (p *Publisher) bindingFor(fact *domain.AuditFact) (SourceBinding, error) {
@@ -292,6 +292,13 @@ func validateReceipt(response *http.Response, fact *domain.AuditFact) error {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusAccepted {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxReceiptBytes))
+		// The governance contract makes every received non-authentication 4xx
+		// permanent, including 408, 425, and 429. This is intentionally
+		// separate from a transport/context timeout, which is handled above and
+		// remains retryable by the durable drain.
+		if response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
+			return fmt.Errorf("%w: HTTP %d", ErrEventRejected, response.StatusCode)
+		}
 		return fmt.Errorf("audit governance: HTTP %d", response.StatusCode)
 	}
 	envelope, err := decodeReceipt(response)

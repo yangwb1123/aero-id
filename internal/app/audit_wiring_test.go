@@ -62,7 +62,7 @@ func (*wiringTestRepo) EnqueueDelivery(ctx context.Context, d *domain.CallbackDe
 func (*wiringTestRepo) FetchDueDeliveries(ctx context.Context, limit int, worker string, lease time.Duration) ([]*domain.CallbackDelivery, error) {
 	return nil, nil
 }
-func (*wiringTestRepo) MarkDelivery(ctx context.Context, id domain.ID, worker, status string, statusCode int, response, errorCode string, next time.Time) error {
+func (*wiringTestRepo) MarkDelivery(ctx context.Context, id domain.ID, worker string, generation int64, status string, statusCode int, response, errorCode string, next time.Time) error {
 	return nil
 }
 func (*wiringTestRepo) ResetDelivery(ctx context.Context, id domain.ID) error { return nil }

@@ -320,8 +320,8 @@ type CommentRepo struct {
 	SetStatusFn           func(ctx context.Context, commentID domain.ID, status domain.CommentStatus) error
 	ListReportsFn         func(ctx context.Context, commentID domain.ID, status *domain.ReportStatus,
 		page domain.Page) ([]*domain.CommentReport, string, error)
-	GetReportFn                 func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
-	ResolveReportFn             func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
+	GetReportFn              func(ctx context.Context, reportID domain.ID) (*domain.CommentReport, error)
+	ResolveReportFn          func(ctx context.Context, reportID domain.ID, status domain.ReportStatus, resolverUID string, at time.Time) error
 	ResolveReportWithAuditFn func(ctx context.Context, reportID domain.ID, status domain.ReportStatus,
 		resolverUID string, at time.Time, hideCommentID domain.ID, fact *domain.AuditFact) error
 	SearchCommentsFn            func(ctx context.Context, ownerUID, query string, limit int) ([]*domain.Comment, error)

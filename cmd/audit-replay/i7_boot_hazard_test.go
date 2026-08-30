@@ -83,7 +83,7 @@ func seedDeadDelivery(t *testing.T, db *gorm.DB, callbacks repository.CallbackRe
 	if err != nil || len(fetched) != 1 {
 		t.Fatalf("fetch = %v, %v; want 1", fetched, err)
 	}
-	if err := callbacks.MarkDelivery(ctx, fetched[0].ID, "probe-worker", "dead_letter", 0, "", "delivery.failed",
+	if err := callbacks.MarkDelivery(ctx, fetched[0].ID, "probe-worker", fetched[0].LeaseGeneration, "dead_letter", 0, "", "delivery.failed",
 		time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}

@@ -18,14 +18,14 @@ import (
 // it (the routing type-assert in purgeAuditWithExempt needs the excluding
 // surface present; without it the cleaner would fall back to a full purge).
 type recordingAuditRepo struct {
-	mu           sync.Mutex
-	excluding    []string
-	barePurges   int
+	mu              sync.Mutex
+	excluding       []string
+	barePurges      int
 	excludingPurges int
 }
 
 func (r *recordingAuditRepo) Append(context.Context, *domain.AuditEvent) error { return nil }
-func (r *recordingAuditRepo) Log(context.Context, *domain.AuditEvent) error     { return nil }
+func (r *recordingAuditRepo) Log(context.Context, *domain.AuditEvent) error    { return nil }
 func (r *recordingAuditRepo) List(context.Context, string, string, domain.Page) ([]*domain.AuditEvent, string, error) {
 	return nil, "", nil
 }

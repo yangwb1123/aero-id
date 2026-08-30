@@ -23,7 +23,7 @@ func (r *recordingClaimRepo) ClaimPublication(context.Context, string, time.Dura
 	r.claims++
 	return nil, nil
 }
-func (r *recordingClaimRepo) FinishPublication(context.Context, domain.ID, string, int, string, string, time.Time) error {
+func (r *recordingClaimRepo) FinishPublication(context.Context, domain.ID, string, int64, int, string, string, time.Time) error {
 	return nil
 }
 func (r *recordingClaimRepo) RequeuePublication(context.Context, []domain.ID, int, repository.ReplayIntent) (int, []*domain.AuditFact, error) {

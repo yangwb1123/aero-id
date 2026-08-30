@@ -126,7 +126,8 @@ func (s *callbackService) finishPublicationAttempt(ctx context.Context, item *do
 	// published (crash after claim, saturated bulkhead, claim hydration
 	// failure) must not inflate the counter toward a premature terminal
 	// dead_letter. ClaimPublication now leaves attempt untouched; the value
-	// persisted here is this delivery attempt's number.
+	// persisted here is this committed settlement's number. A remote delivery
+	// may therefore be repeated after a crash without consuming the counter.
 	nextAttempt := item.Attempt + 1
 	status, code, next := publicationOutcome(
 		s.publishAuditFact(ctx, item.Fact), nextAttempt, s.cfg.MaxAttempts, now, s.retryDelay(nextAttempt),
@@ -138,7 +139,7 @@ func (s *callbackService) finishPublicationAttempt(ctx context.Context, item *do
 	// finish failure the row stays delivering and the decision is re-made after
 	// lease-expiry re-claim, so the outcome is not counted — the failure is
 	// observed separately above.
-	if err := s.publications.FinishPublication(ctx, item.ID, s.worker, nextAttempt, status, code, next); err != nil {
+	if err := s.publications.FinishPublication(ctx, item.ID, s.worker, item.LeaseGeneration, nextAttempt, status, code, next); err != nil {
 		s.metrics.ObserveAuditPublicationFinishFailure(status, err)
 		return
 	}
@@ -149,8 +150,17 @@ func publicationOutcome(err error, attempt, maxAttempts int, now time.Time, retr
 	if err == nil {
 		return "completed", "", now
 	}
-	if errors.Is(err, errAuditTenantUnbound) {
+	if errors.Is(err, errAuditTenantUnbound) || errors.Is(err, auditgovernance.ErrTokenScopeMissing) {
 		return "pending", "audit.binding_unavailable", now.Add(retryDelay)
+	}
+	if errors.Is(err, auditgovernance.ErrEventRejected) {
+		return "dead_letter", "audit.event_rejected", now.Add(retryDelay)
+	}
+	if errors.Is(err, auditgovernance.ErrInvalidReceipt) {
+		if attempt >= maxAttempts {
+			return "dead_letter", "audit.invalid_receipt", now.Add(retryDelay)
+		}
+		return "pending", "audit.invalid_receipt", now.Add(retryDelay)
 	}
 	if attempt >= maxAttempts {
 		return "dead_letter", "audit.publication_failed", now.Add(retryDelay)

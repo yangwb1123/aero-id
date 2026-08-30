@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| Scope | `internal/connector/auditgovernance`, `internal/service/callback_audit.go` |
-| Status | Proposed; no implementation or migration in this change |
-| Compatibility | Internal Go error contract only; no HTTP, gRPC, protobuf, or database schema change |
+| Scope | `internal/connector/auditgovernance`, `internal/service/callback_audit.go`, lease-fenced publication/callback settlement |
+| Status | Implemented; lease-fencing hardening included |
+| Compatibility | Internal Go error contract plus additive migration `000064`; no HTTP, gRPC, or protobuf change |
 
 ## 1. Verification of supplied evidence
 
@@ -67,7 +67,7 @@ The response body, bearer token, credentials, URL, stack trace, and topology mus
 
 ### 2.3 Settlement API and ordering
 
-`publicationOutcome` remains an internal function; `AuditPublisher` and `AuditPublicationRepository` signatures do not change. Add classification branches in this order:
+`publicationOutcome` remains an internal function and `AuditPublisher` is unchanged. Publication and callback settlement APIs now carry the claim's `lease_generation`; this is an internal repository contract change. Add classification branches in this order:
 
 ```text
 nil                                             -> completed, ""
@@ -86,15 +86,18 @@ For `ErrInvalidReceipt`, use `audit.invalid_receipt` both before and at exhausti
 
 For all other failures, preserve the current attempt increment, delay, lease, bulkhead, and `MaxAttempts` behavior.
 
+Each claim increments a durable `lease_generation`. `FinishPublication` and `MarkDelivery` require the claimed generation, owner, delivering status, and a live database-clock lease (`lease_until >= now()`). This rejects both an expired finisher before reclaim and a stale finisher after the same worker ID reclaims the row. The attempt counter remains settlement-based: a crash after remote success but before settlement leaves `attempt` unchanged, and the re-claimed service attempt settles as the next committed attempt.
+
 ## 3. Compatibility constraints
 
 - No public HTTP/gRPC/protobuf or transport response changes.
 - No configuration changes; default `MaxAttempts` remains 8 and the upper bound remains 10.
 - No retry loop is added to `Publisher.Publish`.
+- The all-non-auth-4xx rule is status-based: HTTP 408/425/429 responses are permanent governance rejections, while a transport-level or context timeout remains transient and is retried by the durable drain.
 - No changes to OAuth token endpoint classification, 401 invalidation, 403 scope cooldown, receipt matching, or conflict receipt success.
 - Existing rows with `audit.publication_failed` are not rewritten. New permanent rejections use `audit.event_rejected`; invalid receipts use `audit.invalid_receipt`.
 - Existing dead-letter replay remains operator initiated and unchanged; its existing code/payload handling can distinguish the new settlement code.
-- No audit fact, audit persistence, migration, or new write path is added.
+- No audit fact, audit persistence, or new write path is added. Migration `000064` additively introduces non-null `lease_generation bigint DEFAULT 0` on `audit_publications` and `callback_deliveries`.
 - Every new `Publish` call in tests must check its error.
 - The sentinel is an internal-package Go API. Consumers must use `errors.Is`, never compare error strings.
 
@@ -102,7 +105,7 @@ For all other failures, preserve the current attempt increment, delay, lease, bu
 
 | Condition | Publisher result | Settlement |
 |---|---|---|
-| 400/404/413/422 or any other non-auth 4xx, including non-scope 403 | wraps `ErrEventRejected` | immediate `dead_letter`, `audit.event_rejected` |
+| Any non-auth 4xx (including 400/408/425/429, 404/413/422, and non-scope 403) | wraps `ErrEventRejected` | immediate `dead_letter`, `audit.event_rejected` |
 | 401 with scope marker | wraps `ErrTokenScopeMissing`; token invalidated | pending, `audit.binding_unavailable` |
 | 401 without scope marker | wraps `ErrTokenRejected`; token invalidated | pending, `audit.publication_failed` |
 | 403 with scope marker | wraps `ErrTokenScopeMissing`; cooldown marked | pending, `audit.binding_unavailable` |
@@ -120,9 +123,10 @@ A permanent rejection is still subject to the normal lease-guarded `FinishPublic
 2. Change only the non-202 4xx branch of `validateReceipt` and the non-scope branch of `handleForbidden`.
 3. Extend `publicationOutcome` with the binding, event-rejection, and invalid-receipt classifications in the order above.
 4. Add connector tests, then service settlement tests.
-5. Run the repository gates. No migration, generated code, composition-root, or replay changes are expected.
+5. Add the additive lease-generation migration and update repository/service settlement contracts and tests.
+6. Run the repository gates, including integration compilation and the lease-fencing integration tests.
 
-Rollback is a source-only revert: restore the two generic publisher errors and the old settlement branches. No data rollback is required because settlement codes are historical row values and no schema changes are made.
+Rollback of classification remains a source-only revert. If the fencing change is rolled back, first deploy a binary that no longer requires `lease_generation`, then revert migration `000064`; settlement codes are historical row values.
 
 ## 6. Test plan and acceptance mapping
 
@@ -143,7 +147,7 @@ Add a 5xx test asserting the error remains generic and does not satisfy `ErrEven
 
 ### Service unit tests — `internal/service/callback_audit_test.go`
 
-Extend the existing recording publication repository/fakes only as needed; no production interface changes are expected. Add:
+Extend the existing recording publication repository/fakes for the lease-generation parameter. Add:
 
 1. `publicationOutcome` cases for event rejection at attempts 1 and `MaxAttempts`, both producing `dead_letter/audit.event_rejected`.
 2. Invalid receipt at attempt 1 and at `MaxAttempts`, producing `pending/audit.invalid_receipt` and `dead_letter/audit.invalid_receipt` respectively.
@@ -153,7 +157,7 @@ Extend the existing recording publication repository/fakes only as needed; no pr
 
 ### Integration coverage
 
-In the existing tagged callback/repository integration harness, use a real `audit_publications` row and the real claim/finish path with a fake publisher returning each classification. Verify committed row state, attempt, lease clearing, and error code. Include one real `auditgovernance.Publisher` against an `httptest` 422/202-invalid-receipt endpoint if the harness wiring permits it; otherwise the connector test is the HTTP boundary and the integration test is the durable settlement boundary.
+In the existing tagged callback/repository integration harness, use real `audit_publications` and `callback_deliveries` rows and the real claim/settlement paths. Verify committed row state, attempt, lease clearing, and error code. Include expiry-before-reclaim and same-worker-ID reclaim cases for both row types. The crash-after-governance-success test must run the service settlement path and assert remote deliveries = 2 while the committed-settlement attempt is 1.
 
 ### Gate mapping
 

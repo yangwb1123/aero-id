@@ -100,7 +100,7 @@ func drivePublicationDeadLetter(t *testing.T, db *gorm.DB, publications reposito
 			target = item
 			continue
 		}
-		if err := publications.FinishPublication(ctx, item.ID, "test-worker", item.Attempt,
+		if err := publications.FinishPublication(ctx, item.ID, "test-worker", item.LeaseGeneration, item.Attempt,
 			"pending", "", time.Now().UTC()); err != nil {
 			t.Fatalf("restore foreign claim: %v", err)
 		}
@@ -108,7 +108,7 @@ func drivePublicationDeadLetter(t *testing.T, db *gorm.DB, publications reposito
 	if target == nil {
 		t.Fatalf("claimed batch %d did not include the seeded fact", len(claimed))
 	}
-	if err := publications.FinishPublication(ctx, target.ID, "test-worker", 1,
+	if err := publications.FinishPublication(ctx, target.ID, "test-worker", target.LeaseGeneration, 1,
 		"dead_letter", "audit.publication_failed", time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatalf("FinishPublication: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestRequeuePublicationResetsDeadLetterRows(t *testing.T) {
 		t.Fatalf("claim completed = %v, %v", claimedCompleted, err)
 	}
 	completedID := claimedCompleted[0].ID
-	if err := publications.FinishPublication(ctx, completedID, "test-worker", 1, "completed", "", time.Now().UTC()); err != nil {
+	if err := publications.FinishPublication(ctx, completedID, "test-worker", claimedCompleted[0].LeaseGeneration, 1, "completed", "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -509,7 +509,7 @@ func TestRequeuePublicationSecondRequeueMintsDistinctFact(t *testing.T) {
 	if target == nil {
 		t.Fatal("original fact row not claimed")
 	}
-	if err := publications.FinishPublication(ctx, target.ID, "worker-2", 1,
+	if err := publications.FinishPublication(ctx, target.ID, "worker-2", target.LeaseGeneration, 1,
 		"dead_letter", "audit.publication_failed", time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +708,7 @@ func TestRequeueDeadResetsDeliveries(t *testing.T) {
 		if err != nil || len(fetched) != 1 {
 			t.Fatalf("fetch = %v, %v; want 1", fetched, err)
 		}
-		if err := callbacks.MarkDelivery(ctx, fetched[0].ID, "test-worker", "dead_letter", 0, "", "delivery.failed",
+		if err := callbacks.MarkDelivery(ctx, fetched[0].ID, "test-worker", fetched[0].LeaseGeneration, "dead_letter", 0, "", "delivery.failed",
 			time.Now().UTC().Add(time.Minute)); err != nil {
 			t.Fatal(err)
 		}

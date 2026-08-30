@@ -62,7 +62,7 @@ func seedDeadLetterPublication(t *testing.T, db *gorm.DB, publications repositor
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim = %v, %v", claimed, err)
 	}
-	if err := publications.FinishPublication(ctx, claimed[0].ID, "seed-worker", 1,
+	if err := publications.FinishPublication(ctx, claimed[0].ID, "seed-worker", claimed[0].LeaseGeneration, 1,
 		"dead_letter", "audit.publication_failed", time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestAuditReplayCLIRunTwiceIsIdempotent(t *testing.T) {
 		t.Fatalf("claim for re-drive = %d, %v; want 1, nil", len(redrive), err)
 	}
 	target := redrive[0].ID
-	if err := publications.FinishPublication(context.Background(), target, "redrive-worker", 1,
+	if err := publications.FinishPublication(context.Background(), target, "redrive-worker", redrive[0].LeaseGeneration, 1,
 		"dead_letter", "audit.publication_failed", time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}

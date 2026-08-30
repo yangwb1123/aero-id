@@ -2,11 +2,14 @@ package auditgovernance
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +204,54 @@ func TestPublisherConflictReceiptMustEchoTheFact(t *testing.T) {
 	})
 }
 
+func TestValidateReceiptClassifiesSafeHTTPFailures(t *testing.T) {
+	fact := &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "account.viewed"}
+	const marker = "response-body-secret-token-and-topology"
+	for _, status := range []int{http.StatusBadRequest, http.StatusRequestTimeout, http.StatusTooEarly, http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			response := &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewBufferString(marker))}
+			err := validateReceipt(response, fact)
+			if !errors.Is(err, ErrEventRejected) {
+				t.Fatalf("status %d error = %v, want ErrEventRejected", status, err)
+			}
+			if errors.Is(err, ErrInvalidReceipt) || strings.Contains(err.Error(), marker) {
+				t.Fatalf("status %d error leaked classification/body: %v", status, err)
+			}
+		})
+	}
+	response := &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(bytes.NewBufferString(marker))}
+	err := validateReceipt(response, fact)
+	if err == nil || errors.Is(err, ErrEventRejected) || strings.Contains(err.Error(), marker) {
+		t.Fatalf("5xx error = %v, want safe generic error", err)
+	}
+}
+
+func TestValidateReceiptRejectsInvalidAcceptedReceipts(t *testing.T) {
+	fact := &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "audit.test"}
+	const acceptedAt = "2026-08-30T00:00:00Z"
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "malformed JSON", contentType: "application/json", body: "not-json"},
+		{name: "mismatched event", contentType: "application/json", body: `{"receipt":{"event_id":"00000000-0000-0000-0000-000000000001","tenant_id":"tenant-a","status":"ledgered","accepted_at":"` + acceptedAt + `"}}`},
+		{name: "mismatched tenant", contentType: "application/json", body: `{"receipt":{"event_id":"` + fact.ID.String() + `","tenant_id":"tenant-b","status":"ledgered","accepted_at":"` + acceptedAt + `"}}`},
+		{name: "missing accepted_at", contentType: "application/json", body: `{"receipt":{"event_id":"` + fact.ID.String() + `","tenant_id":"tenant-a","status":"ledgered"}}`},
+		{name: "unsupported status", contentType: "application/json", body: `{"receipt":{"event_id":"` + fact.ID.String() + `","tenant_id":"tenant-a","status":"received","accepted_at":"` + acceptedAt + `"}}`},
+		{name: "wrong content type", contentType: "text/plain", body: "{}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := &http.Response{StatusCode: http.StatusAccepted,
+				Header: http.Header{"Content-Type": []string{tc.contentType}}, Body: io.NopCloser(strings.NewReader(tc.body))}
+			err := validateReceipt(response, fact)
+			if !errors.Is(err, ErrInvalidReceipt) || errors.Is(err, ErrEventRejected) {
+				t.Fatalf("receipt error = %v, want only ErrInvalidReceipt", err)
+			}
+		})
+	}
+}
+
 func TestPublisherEventOmitsEmptySourceRegion(t *testing.T) {
 	publisher := &Publisher{schemaID: "aero.id.audit-fact", schemaVersion: 1}
 	fact := &domain.AuditFact{ID: idgen.NewID(), Action: "account.viewed", OccurredAt: time.Now()}
@@ -291,5 +342,133 @@ func auditBinding(baseURL, clientID string) OAuthBindingConfig {
 	return OAuthBindingConfig{
 		TokenURL: baseURL + "/token", ClientID: clientID, ClientSecret: "secret-for-" + clientID,
 		Scope: auditScope, Resources: []string{auditResource},
+	}
+}
+
+type fixedPublisherTokenSource struct{}
+
+func (fixedPublisherTokenSource) AccessToken(context.Context, SourceBinding) (string, error) {
+	return "publish-token", nil
+}
+func (fixedPublisherTokenSource) HasBinding(string) bool              { return true }
+func (fixedPublisherTokenSource) Invalidate(SourceBinding) error      { return nil }
+func (fixedPublisherTokenSource) BindingUnhealthy(SourceBinding) bool { return false }
+func (fixedPublisherTokenSource) MarkBindingUnhealthy(SourceBinding)  {}
+
+func TestPublisherClassifiesHTTPFailuresThroughPublish(t *testing.T) {
+	const marker = "governance-response-body-marker"
+	fact := &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "audit.test"}
+	for _, tc := range []struct {
+		name       string
+		status     int
+		wantReject bool
+	}{
+		{name: "400", status: http.StatusBadRequest, wantReject: true},
+		{name: "408", status: http.StatusRequestTimeout, wantReject: true},
+		{name: "425", status: http.StatusTooEarly, wantReject: true},
+		{name: "404", status: http.StatusNotFound, wantReject: true},
+		{name: "413", status: http.StatusRequestEntityTooLarge, wantReject: true},
+		{name: "422", status: http.StatusUnprocessableEntity, wantReject: true},
+		{name: "429", status: http.StatusTooManyRequests, wantReject: true},
+		{name: "403 non-scope", status: http.StatusForbidden, wantReject: true},
+		{name: "500", status: http.StatusInternalServerError, wantReject: false},
+		{name: "503", status: http.StatusServiceUnavailable, wantReject: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/events" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, marker)
+			}))
+			defer server.Close()
+			publisher, err := NewPublisher(Config{Endpoint: server.URL, SourcePrefix: "aero-id", AllowInsecureLoopback: true},
+				fixedPublisherTokenSource{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			publishErr := publisher.Publish(t.Context(), fact)
+			if publishErr == nil || errors.Is(publishErr, ErrInvalidReceipt) {
+				t.Fatalf("publish error = %v, want HTTP classification", publishErr)
+			}
+			if errors.Is(publishErr, ErrEventRejected) != tc.wantReject {
+				t.Fatalf("ErrEventRejected = %v, want %v: %v", errors.Is(publishErr, ErrEventRejected), tc.wantReject, publishErr)
+			}
+			if errors.Is(publishErr, ErrTokenScopeMissing) || errors.Is(publishErr, ErrTokenRejected) || errors.Is(publishErr, ErrTokenUnavailable) {
+				t.Fatalf("HTTP error was misclassified as authentication/transport: %v", publishErr)
+			}
+			if !strings.Contains(publishErr.Error(), fmt.Sprintf("HTTP %d", tc.status)) ||
+				strings.Contains(publishErr.Error(), marker) || strings.Contains(publishErr.Error(), "publish-token") ||
+				strings.Contains(publishErr.Error(), server.URL) {
+				t.Fatalf("unsafe HTTP error = %q", publishErr)
+			}
+		})
+	}
+}
+
+type trackingResponseBody struct {
+	io.ReadCloser
+	read   int
+	closed bool
+}
+
+func (b *trackingResponseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.read += n
+	return n, err
+}
+
+func (b *trackingResponseBody) Close() error {
+	b.closed = true
+	return b.ReadCloser.Close()
+}
+
+type trackingPublisherTransport struct {
+	base http.RoundTripper
+	body *trackingResponseBody
+}
+
+func (t *trackingPublisherTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	t.body = &trackingResponseBody{ReadCloser: response.Body}
+	response.Body = t.body
+	return response, nil
+}
+
+func TestPublisherBoundsAndClosesRejectedResponseBodies(t *testing.T) {
+	fact := &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "audit.test"}
+	const marker = "oversized-governance-response-marker"
+	for _, status := range []int{http.StatusUnprocessableEntity, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, strings.Repeat("x", maxReceiptBytes*2)+marker)
+			}))
+			defer server.Close()
+			tracker := &trackingPublisherTransport{base: http.DefaultTransport}
+			publisher, err := NewPublisher(Config{Endpoint: server.URL, SourcePrefix: "aero-id", AllowInsecureLoopback: true},
+				fixedPublisherTokenSource{}, &http.Client{Transport: tracker})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := publisher.Publish(t.Context(), fact); err == nil {
+				t.Fatal("oversized rejection unexpectedly succeeded")
+			}
+			if tracker.body == nil || !tracker.body.closed {
+				t.Fatal("response body was not closed")
+			}
+			limit := maxReceiptBytes
+			if status == http.StatusForbidden {
+				limit++
+			}
+			if tracker.body.read > limit {
+				t.Fatalf("response bytes read = %d, want <= %d", tracker.body.read, limit)
+			}
+		})
 	}
 }

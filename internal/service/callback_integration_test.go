@@ -145,7 +145,7 @@ func TestAuditPublicationDuplicateConflictReceiptSettlesCompleted(t *testing.T) 
 	if err := ledger.Append(ctx, fact); err != nil {
 		t.Fatal(err)
 	}
-	first, err := pubRepo.ClaimPublication(ctx, "worker-1", time.Minute, 50)
+	first, err := pubRepo.ClaimPublication(ctx, concrete.worker, time.Minute, 50)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("first claim = %d items, err %v; want 1", len(first), err)
 	}
@@ -154,11 +154,18 @@ func TestAuditPublicationDuplicateConflictReceiptSettlesCompleted(t *testing.T) 
 	if err := concrete.publishAuditFact(ctx, first[0].Fact); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
-	// Lease expires; worker-2 re-claims and re-delivers the same event.
+	var preSettlementAttempt int
+	if err := db.Raw(`SELECT attempt FROM audit_publications WHERE id = ?`, first[0].ID).Scan(&preSettlementAttempt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if preSettlementAttempt != 0 {
+		t.Fatalf("attempt after crash-before-settlement = %d, want 0", preSettlementAttempt)
+	}
+	// Lease expires; the same worker ID reclaims and re-delivers the same event.
 	if err := db.Exec(`UPDATE audit_publications SET lease_until = now() - interval '1 minute' WHERE id = ?`, first[0].ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	second, err := pubRepo.ClaimPublication(ctx, "worker-2", time.Minute, 50)
+	second, err := pubRepo.ClaimPublication(ctx, concrete.worker, time.Minute, 50)
 	if err != nil || len(second) != 1 {
 		t.Fatalf("re-claim = %d items, err %v; want 1", len(second), err)
 	}
@@ -166,14 +173,17 @@ func TestAuditPublicationDuplicateConflictReceiptSettlesCompleted(t *testing.T) 
 		t.Fatalf("re-claim attempt/id = %d/%v, want %d/same row (M-4: claim never increments)",
 			second[0].Attempt, second[0].ID, first[0].Attempt)
 	}
-	// Delivery #2: conflict receipt for the already-accepted event_id. With
-	// the FM-9 resolution this is idempotent success, so the row completes.
-	// The settlement persists the incremented attempt (2 = second delivery).
-	if err := concrete.publishAuditFact(ctx, second[0].Fact); err != nil {
-		t.Fatalf("duplicate publish must be idempotent success, got %v", err)
-	}
-	if err := pubRepo.FinishPublication(ctx, second[0].ID, "worker-2", 2, "completed", "", time.Now().UTC()); err != nil {
+	// Delivery #2: the service path receives a conflict receipt for the
+	// already-accepted event_id and settles it as completed. Attempt counts
+	// committed settlements, not remote delivery attempts: the crash left no
+	// committed settlement, so this re-claimed delivery settles as attempt 1.
+	concrete.finishPublicationAttempt(ctx, second[0])
+	var settledAttempt int
+	if err := db.Raw(`SELECT attempt FROM audit_publications WHERE id = ?`, second[0].ID).Scan(&settledAttempt).Error; err != nil {
 		t.Fatal(err)
+	}
+	if settledAttempt != 1 {
+		t.Fatalf("settled attempt = %d, want 1 (committed-settlement semantics)", settledAttempt)
 	}
 	remaining, err := pubRepo.ClaimPublication(ctx, "worker-1", time.Minute, 50)
 	if err != nil || len(remaining) != 0 {
@@ -497,7 +507,7 @@ func TestReplayDeliveryInFlightDoubleReplay(t *testing.T) {
 
 	// Stale worker: the re-set delivery is leased to nobody; the old worker's
 	// MarkDelivery must lose the lease (delivery state is not double-applied).
-	if err := repo.MarkDelivery(ctx, delivery.ID, "worker-1", "success", 200, "", "", time.Now().UTC()); !errors.Is(err, repository.ErrCallbackDeliveryLeaseLost) {
+	if err := repo.MarkDelivery(ctx, delivery.ID, "worker-1", 0, "success", 200, "", "", time.Now().UTC()); !errors.Is(err, repository.ErrCallbackDeliveryLeaseLost) {
 		t.Fatalf("stale worker MarkDelivery err = %v, want ErrCallbackDeliveryLeaseLost", err)
 	}
 }
@@ -688,7 +698,7 @@ func TestDrainSettlesClaimedBatchInReverseOrder(t *testing.T) {
 	}
 	// A stale finish after both settlements is fenced: rows are no longer
 	// delivering, so the guard UPDATE matches zero rows.
-	if err := pubRepo.FinishPublication(ctx, items[0].ID, svc.worker, 1, "completed", "", time.Now().UTC()); !errors.Is(err, repository.ErrAuditPublicationLeaseLost) {
+	if err := pubRepo.FinishPublication(ctx, items[0].ID, svc.worker, items[0].LeaseGeneration, 1, "completed", "", time.Now().UTC()); !errors.Is(err, repository.ErrAuditPublicationLeaseLost) {
 		t.Fatalf("stale finish error = %v, want ErrAuditPublicationLeaseLost", err)
 	}
 	// A second drain tick is a no-op: nothing re-claimed, nothing re-delivered.
@@ -750,7 +760,7 @@ func TestDrainStaleReclaimInterleavesFreshRow(t *testing.T) {
 		t.Fatalf("re-claim state = attempt %d owner %s, want 0/%s (claim never increments)", aItems[0].Attempt, aItems[0].LeaseOwner, svc.worker)
 	}
 	// The stale worker's finish is fenced while the new owner holds the lease.
-	if err := pubRepo.FinishPublication(ctx, aItems[0].ID, "worker-1", 1, "completed", "", time.Now().UTC()); !errors.Is(err, repository.ErrAuditPublicationLeaseLost) {
+	if err := pubRepo.FinishPublication(ctx, aItems[0].ID, "worker-1", 1, 1, "completed", "", time.Now().UTC()); !errors.Is(err, repository.ErrAuditPublicationLeaseLost) {
 		t.Fatalf("stale worker finish = %v, want ErrAuditPublicationLeaseLost", err)
 	}
 	svc.finishPublicationAttempt(ctx, aItems[0])
@@ -885,7 +895,7 @@ func TestRequeuedPublicationDrainsExactlyOnce(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim = %v, %v", claimed, err)
 	}
-	if err := svc.publications.FinishPublication(ctx, claimed[0].ID, "drain-worker", 1,
+	if err := svc.publications.FinishPublication(ctx, claimed[0].ID, "drain-worker", claimed[0].LeaseGeneration, 1,
 		"dead_letter", "audit.publication_failed", time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -1000,5 +1010,66 @@ func TestPurgeScanSkipsWhenGovernanceDisabled(t *testing.T) {
 	// The ledger fact survives the publication purge.
 	if n := countRows(t, db, `SELECT count(*) FROM audit_ledger WHERE event_id = ?`, eventID); n != 1 {
 		t.Fatalf("ledger facts after purge = %d, want 1", n)
+	}
+}
+
+// TestAuditPublicationFailureClassesPersistThroughClaimAndFinish exercises
+// the real audit_publications claim/finish path. The publisher is the only
+// fake: each committed row must clear its lease and retain the classification
+// chosen by publicationOutcome.
+func TestAuditPublicationFailureClassesPersistThroughClaimAndFinish(t *testing.T) {
+	ctx := t.Context()
+	db, svc, _, _, _ := drainHarness(t, "tenant-classification", "test.classification")
+	svc.cfg.MaxAttempts = 2
+	publisher := &failingAuditPublisher{}
+	svc.SetAuditPublishers(publisher)
+
+	tests := []struct {
+		name, status, code string
+		err                error
+		retry              bool
+	}{
+		{name: "event rejection", status: "dead_letter", code: "audit.event_rejected",
+			err: fmt.Errorf("%w: HTTP 422", auditgovernance.ErrEventRejected)},
+		{name: "invalid receipt", status: "dead_letter", code: "audit.invalid_receipt",
+			err: auditgovernance.ErrInvalidReceipt, retry: true},
+		{name: "governance 5xx", status: "dead_letter", code: "audit.publication_failed",
+			err: errors.New("audit governance: HTTP 503"), retry: true},
+		{name: "token unavailable", status: "dead_letter", code: "audit.publication_failed",
+			err: auditgovernance.ErrTokenUnavailable, retry: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fact := appendDrainFact(t, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{
+				SigningKey: "integration-audit-ledger-key-0123456789abcdef"}), "tenant-classification", "test.classification")
+			publisher.err = test.err
+			beforeCalls := publisher.calls
+			svc.drainPublications(ctx)
+			if publisher.calls != beforeCalls+1 {
+				t.Fatalf("publisher calls after first drain = %d, want one", publisher.calls-beforeCalls)
+			}
+			if test.retry {
+				assertPublicationState(t, db, fact.EventID, "pending", test.code)
+				if status, owner, attempt := publicationState(t, db, fact.EventID); status != "pending" || owner != "" || attempt != 1 {
+					t.Fatalf("first settlement = %s/owner %q/attempt %d, want pending//1", status, owner, attempt)
+				}
+				if err := db.Exec(`UPDATE audit_publications SET next_attempt_at = now() - interval '1 minute'
+					WHERE fact_id = (SELECT id FROM audit_ledger WHERE event_id = ?)`, fact.EventID).Error; err != nil {
+					t.Fatal(err)
+				}
+				svc.drainPublications(ctx)
+				if publisher.calls != beforeCalls+2 {
+					t.Fatalf("publisher calls after retry = %d, want two", publisher.calls-beforeCalls)
+				}
+			}
+			assertPublicationState(t, db, fact.EventID, test.status, test.code)
+			wantAttempt := 1
+			if test.retry {
+				wantAttempt = 2
+			}
+			if status, owner, attempt := publicationState(t, db, fact.EventID); status != test.status || owner != "" || attempt != wantAttempt {
+				t.Fatalf("final settlement = %s/owner %q/attempt %d, want %s//%d", status, owner, attempt, test.status, wantAttempt)
+			}
+		})
 	}
 }

@@ -20,7 +20,7 @@ type recordingPurgePublicationRepo struct {
 func (r *recordingPurgePublicationRepo) ClaimPublication(context.Context, string, time.Duration, int) ([]*domain.AuditPublication, error) {
 	return nil, nil
 }
-func (r *recordingPurgePublicationRepo) FinishPublication(context.Context, domain.ID, string, int, string, string, time.Time) error {
+func (r *recordingPurgePublicationRepo) FinishPublication(context.Context, domain.ID, string, int64, int, string, string, time.Time) error {
 	return nil
 }
 func (r *recordingPurgePublicationRepo) RequeuePublication(context.Context, []domain.ID, int, repository.ReplayIntent) (int, []*domain.AuditFact, error) {

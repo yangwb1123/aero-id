@@ -41,7 +41,7 @@ type AuditLedgerTransactionalRepository interface {
 
 type AuditPublicationRepository interface {
 	ClaimPublication(context.Context, string, time.Duration, int) ([]*domain.AuditPublication, error)
-	FinishPublication(context.Context, domain.ID, string, int, string, string, time.Time) error
+	FinishPublication(context.Context, domain.ID, string, int64, int, string, string, time.Time) error
 	// RequeuePublication moves dead_letter publications back to pending
 	// (attempt reset to 0, lease cleared, error_code manual_replay) with a
 	// mandatory operator intent: one in-tx audit fact per affected tenant

@@ -46,12 +46,15 @@ type AuditFactFilter struct {
 }
 
 type AuditPublication struct {
-	ID            ID
-	Fact          *AuditFact
-	Status        string
-	Attempt       int
-	LeaseOwner    string
-	LeaseUntil    *time.Time
-	NextAttemptAt time.Time
-	ErrorCode     string
+	ID      ID
+	Fact    *AuditFact
+	Status  string
+	Attempt int
+	// LeaseGeneration changes on every claim and fences stale finishers,
+	// including a reclaim by the same worker ID.
+	LeaseGeneration int64
+	LeaseOwner      string
+	LeaseUntil      *time.Time
+	NextAttemptAt   time.Time
+	ErrorCode       string
 }

@@ -13,16 +13,17 @@ import (
 )
 
 type auditPublicationRow struct {
-	ID            uuid.UUID  `gorm:"column:id;primaryKey"`
-	FactID        uuid.UUID  `gorm:"column:fact_id"`
-	Status        string     `gorm:"column:status"`
-	Attempt       int        `gorm:"column:attempt"`
-	LeaseOwner    string     `gorm:"column:lease_owner"`
-	LeaseUntil    *time.Time `gorm:"column:lease_until"`
-	NextAttemptAt time.Time  `gorm:"column:next_attempt_at"`
-	ErrorCode     string     `gorm:"column:error_code"`
-	CreatedAt     time.Time  `gorm:"column:created_at"`
-	UpdatedAt     time.Time  `gorm:"column:updated_at"`
+	ID              uuid.UUID  `gorm:"column:id;primaryKey"`
+	FactID          uuid.UUID  `gorm:"column:fact_id"`
+	Status          string     `gorm:"column:status"`
+	Attempt         int        `gorm:"column:attempt"`
+	LeaseGeneration int64      `gorm:"column:lease_generation"`
+	LeaseOwner      string     `gorm:"column:lease_owner"`
+	LeaseUntil      *time.Time `gorm:"column:lease_until"`
+	NextAttemptAt   time.Time  `gorm:"column:next_attempt_at"`
+	ErrorCode       string     `gorm:"column:error_code"`
+	CreatedAt       time.Time  `gorm:"column:created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at"`
 }
 
 func (auditPublicationRow) TableName() string { return "audit_publications" }
@@ -60,6 +61,7 @@ func (r *auditLedgerRepo) ClaimPublication(ctx context.Context, worker string, l
 		for i := range rows {
 			if err := tx.Model(&auditPublicationRow{}).Where("id = ?", rows[i].ID).Updates(map[string]any{
 				"status": "delivering", "lease_owner": worker,
+				"lease_generation": gorm.Expr("lease_generation + 1"),
 				// M-1: the lease window is written and compared in DB time; the
 				// app clock never participates in the fencing decision.
 				"lease_until": gorm.Expr("now() + make_interval(secs => ?)", lease.Seconds()),
@@ -68,6 +70,7 @@ func (r *auditLedgerRepo) ClaimPublication(ctx context.Context, worker string, l
 				return err
 			}
 			rows[i].Status = "delivering"
+			rows[i].LeaseGeneration++
 			rows[i].LeaseOwner = worker
 		}
 		return nil
@@ -85,7 +88,7 @@ func (r *auditLedgerRepo) ClaimPublication(ctx context.Context, worker string, l
 // are untouched (M-4), so no premature dead_letter. The persisted lease_until
 // is DB-clock; the returned struct carries an app-clock approximation for
 // tests/logs only — the drain never makes fencing decisions from it (finish
-// fences on (id, status, lease_owner)).
+// fences on (id, status, lease_owner, lease_generation) and lease_until).
 func (r *auditLedgerRepo) hydratePublications(ctx context.Context, rows []auditPublicationRow, lease time.Duration) ([]*domain.AuditPublication, error) {
 	until := time.Now().UTC().Add(lease)
 	result := make([]*domain.AuditPublication, 0, len(rows))
@@ -102,14 +105,17 @@ func (r *auditLedgerRepo) hydratePublications(ctx context.Context, rows []auditP
 			return result, fmt.Errorf("%w: fact %s: %w", ErrAuditPublicationFactHydration, rows[i].FactID, err)
 		}
 		result = append(result, &domain.AuditPublication{ID: rows[i].ID, Fact: auditLedgerRowToFact(&factRow), Status: rows[i].Status,
-			Attempt: rows[i].Attempt, LeaseOwner: rows[i].LeaseOwner, LeaseUntil: rows[i].LeaseUntil,
+			Attempt: rows[i].Attempt, LeaseGeneration: rows[i].LeaseGeneration, LeaseOwner: rows[i].LeaseOwner, LeaseUntil: rows[i].LeaseUntil,
 			NextAttemptAt: rows[i].NextAttemptAt, ErrorCode: rows[i].ErrorCode})
 	}
 	return result, nil
 }
 
-func (r *auditLedgerRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, attempt int, status, errorCode string, next time.Time) error {
-	result := r.db.WithContext(ctx).Model(&auditPublicationRow{}).Where("id = ? AND status = 'delivering' AND lease_owner = ?", id, worker).
+func (r *auditLedgerRepo) FinishPublication(ctx context.Context, id domain.ID, worker string,
+	generation int64, attempt int, status, errorCode string, next time.Time) error {
+	result := r.db.WithContext(ctx).Model(&auditPublicationRow{}).
+		Where("id = ? AND status = 'delivering' AND lease_owner = ? AND lease_generation = ? AND lease_until >= now()",
+			id, worker, generation).
 		Updates(map[string]any{"status": status, "attempt": attempt, "error_code": errorCode, "next_attempt_at": next,
 			"lease_owner": "", "lease_until": nil, "updated_at": time.Now().UTC()})
 	if result.Error != nil {

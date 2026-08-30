@@ -24,7 +24,7 @@ type CallbackRepository interface {
 	ListEnabledByAction(context.Context, string, string) ([]*domain.CallbackSubscription, error)
 	EnqueueDelivery(context.Context, *domain.CallbackDelivery) error
 	FetchDueDeliveries(context.Context, int, string, time.Duration) ([]*domain.CallbackDelivery, error)
-	MarkDelivery(context.Context, domain.ID, string, string, int, string, string, time.Time) error
+	MarkDelivery(context.Context, domain.ID, string, int64, string, int, string, string, time.Time) error
 	ResetDelivery(context.Context, domain.ID) error
 	GetDelivery(context.Context, domain.ID) (*domain.CallbackDelivery, error)
 	// RequeueDead moves dead_letter deliveries back to pending (attempt reset
@@ -75,22 +75,23 @@ type callbackSubscriptionRow struct {
 func (callbackSubscriptionRow) TableName() string { return "callback_subscriptions" }
 
 type callbackDeliveryRow struct {
-	ID             uuid.UUID               `gorm:"column:id;primaryKey"`
-	SubscriptionID uuid.UUID               `gorm:"column:subscription_id"`
-	EventID        uuid.UUID               `gorm:"column:event_id"`
-	Action         string                  `gorm:"column:action"`
-	Payload        datatypes.JSON          `gorm:"column:payload"`
-	Status         string                  `gorm:"column:status"`
-	Attempt        int                     `gorm:"column:attempt"`
-	LeaseOwner     string                  `gorm:"column:lease_owner"`
-	LeaseUntil     *time.Time              `gorm:"column:lease_until"`
-	NextAttemptAt  time.Time               `gorm:"column:next_attempt_at"`
-	StatusCode     int                     `gorm:"column:status_code"`
-	ResponseBody   string                  `gorm:"column:response_body"`
-	ErrorCode      string                  `gorm:"column:error_code"`
-	CreatedAt      time.Time               `gorm:"column:created_at"`
-	UpdatedAt      time.Time               `gorm:"column:updated_at"`
-	Subscription   callbackSubscriptionRow `gorm:"foreignKey:SubscriptionID;references:ID"`
+	ID              uuid.UUID               `gorm:"column:id;primaryKey"`
+	SubscriptionID  uuid.UUID               `gorm:"column:subscription_id"`
+	EventID         uuid.UUID               `gorm:"column:event_id"`
+	Action          string                  `gorm:"column:action"`
+	Payload         datatypes.JSON          `gorm:"column:payload"`
+	Status          string                  `gorm:"column:status"`
+	Attempt         int                     `gorm:"column:attempt"`
+	LeaseGeneration int64                   `gorm:"column:lease_generation"`
+	LeaseOwner      string                  `gorm:"column:lease_owner"`
+	LeaseUntil      *time.Time              `gorm:"column:lease_until"`
+	NextAttemptAt   time.Time               `gorm:"column:next_attempt_at"`
+	StatusCode      int                     `gorm:"column:status_code"`
+	ResponseBody    string                  `gorm:"column:response_body"`
+	ErrorCode       string                  `gorm:"column:error_code"`
+	CreatedAt       time.Time               `gorm:"column:created_at"`
+	UpdatedAt       time.Time               `gorm:"column:updated_at"`
+	Subscription    callbackSubscriptionRow `gorm:"foreignKey:SubscriptionID;references:ID"`
 }
 
 func (callbackDeliveryRow) TableName() string { return "callback_deliveries" }
@@ -179,7 +180,7 @@ func (r *callbackRepo) EnqueueDelivery(ctx context.Context, value *domain.Callba
 	}
 	row := &callbackDeliveryRow{ID: value.ID, SubscriptionID: value.SubscriptionID, EventID: value.EventID,
 		Action: value.Action, Payload: datatypes.JSON(payload), Status: "pending", Attempt: value.Attempt,
-		NextAttemptAt: value.NextAttemptAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+		LeaseGeneration: value.LeaseGeneration, NextAttemptAt: value.NextAttemptAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error
 }
 
@@ -201,11 +202,14 @@ func (r *callbackRepo) FetchDueDeliveries(ctx context.Context, limit int, worker
 		until := now.Add(lease)
 		for i := range rows {
 			if err := tx.Model(&callbackDeliveryRow{}).Where("id = ?", rows[i].ID).Updates(map[string]any{
-				"status": "delivering", "lease_owner": worker, "lease_until": until, "updated_at": now,
+				"status": "delivering", "lease_owner": worker,
+				"lease_generation": gorm.Expr("lease_generation + 1"),
+				"lease_until":      until, "updated_at": now,
 			}).Error; err != nil {
 				return err
 			}
 			rows[i].Status = "delivering"
+			rows[i].LeaseGeneration++
 			rows[i].LeaseOwner = worker
 			rows[i].LeaseUntil = &until
 		}
@@ -226,10 +230,10 @@ func (r *callbackRepo) FetchDueDeliveries(ctx context.Context, limit int, worker
 	return result, nil
 }
 
-func (r *callbackRepo) MarkDelivery(ctx context.Context, id domain.ID, worker, status string, code int,
+func (r *callbackRepo) MarkDelivery(ctx context.Context, id domain.ID, worker string, generation int64, status string, code int,
 	response, errorCode string, nextAttempt time.Time) error {
 	result := r.db.WithContext(ctx).Model(&callbackDeliveryRow{}).
-		Where("id = ? AND status = 'delivering' AND lease_owner = ?", id, worker).
+		Where("id = ? AND status = 'delivering' AND lease_owner = ? AND lease_generation = ? AND lease_until >= now()", id, worker, generation).
 		Updates(map[string]any{
 			"status": status, "status_code": code, "response_body": response, "error_code": errorCode,
 			"attempt": gorm.Expr("attempt + 1"), "next_attempt_at": nextAttempt, "lease_owner": "", "lease_until": nil, "updated_at": time.Now().UTC(),
@@ -274,7 +278,8 @@ func callbackDeliveryToDomain(row *callbackDeliveryRow) *domain.CallbackDelivery
 	var payload map[string]any
 	_ = json.Unmarshal(row.Payload, &payload)
 	return &domain.CallbackDelivery{ID: row.ID, SubscriptionID: row.SubscriptionID, EventID: row.EventID, Action: row.Action,
-		TenantID: row.Subscription.TenantID, Payload: payload, Status: row.Status, Attempt: row.Attempt, LeaseOwner: row.LeaseOwner, LeaseUntil: row.LeaseUntil,
+		TenantID: row.Subscription.TenantID, Payload: payload, Status: row.Status, Attempt: row.Attempt,
+		LeaseGeneration: row.LeaseGeneration, LeaseOwner: row.LeaseOwner, LeaseUntil: row.LeaseUntil,
 		NextAttemptAt: row.NextAttemptAt, StatusCode: row.StatusCode,
 		ResponseBody: row.ResponseBody, ErrorCode: row.ErrorCode, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		Endpoint: row.Subscription.Endpoint, SecretCiphertext: row.Subscription.SecretCiphertext, OwnerUID: row.Subscription.OwnerUID}

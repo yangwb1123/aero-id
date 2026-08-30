@@ -207,7 +207,7 @@ func TestAuditPublicationDrainCycleSingleDelivery(t *testing.T) {
 	// Failing finish: keep the row pending with a past next attempt. The
 	// caller persists the incremented attempt (1 = this delivery attempt).
 	past := time.Now().UTC().Add(-time.Minute)
-	if err := pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", 1, "pending", "audit.publication_failed", past); err != nil {
+	if err := pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", items[0].LeaseGeneration, 1, "pending", "audit.publication_failed", past); err != nil {
 		t.Fatal(err)
 	}
 	// Re-claim: same row, attempt untouched by the claim (the persisted value
@@ -221,7 +221,7 @@ func TestAuditPublicationDrainCycleSingleDelivery(t *testing.T) {
 	}
 	// Completed finish (attempt 2 = second delivery attempt); claim is now
 	// empty; still exactly one row.
-	if err := pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", 2, "completed", "", time.Now().UTC()); err != nil {
+	if err := pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", items[0].LeaseGeneration, 2, "completed", "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	items, err = pubRepo.ClaimPublication(ctx, "worker-1", time.Minute, 50)
@@ -260,7 +260,7 @@ func TestDeadLetterPublicationNeverReclaimed(t *testing.T) {
 	// dead_letter decision; the repo-level test drives FinishPublication
 	// directly — the end-to-end MaxAttempts leg is A-4.3). The caller
 	// persists the incremented attempt (1 = this delivery attempt).
-	if err := pubRepo.FinishPublication(ctx, id, "worker-1", 1, "dead_letter", "audit.publication_failed",
+	if err := pubRepo.FinishPublication(ctx, id, "worker-1", items[0].LeaseGeneration, 1, "dead_letter", "audit.publication_failed",
 		time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -361,12 +361,12 @@ func TestExpiredLeasePublicationReclaimedByAnotherWorker(t *testing.T) {
 	}
 
 	// Stale finish from the original worker is fenced by the lease guard.
-	if err := pubRepo.FinishPublication(ctx, id, "worker-1", 1, "completed", "", time.Now().UTC()); !errors.Is(err, ErrAuditPublicationLeaseLost) {
+	if err := pubRepo.FinishPublication(ctx, id, "worker-1", 1, 1, "completed", "", time.Now().UTC()); !errors.Is(err, ErrAuditPublicationLeaseLost) {
 		t.Fatalf("stale finish error = %v, want ErrAuditPublicationLeaseLost", err)
 	}
 
 	// The new owner settles exactly once; the row is terminal and unclaimable.
-	if err := pubRepo.FinishPublication(ctx, id, "worker-2", 1, "completed", "", time.Now().UTC()); err != nil {
+	if err := pubRepo.FinishPublication(ctx, id, "worker-2", items[0].LeaseGeneration, 1, "completed", "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	items, err = pubRepo.ClaimPublication(ctx, "worker-2", 5*time.Minute, 50)
@@ -493,7 +493,7 @@ func TestClaimPublicationPoisonRowReturnsRawError(t *testing.T) {
 		t.Fatalf("claim after poison removal = %d items, err %v; want 2", len(items), err)
 	}
 	for _, item := range items {
-		if err := pubRepo.FinishPublication(ctx, item.ID, "worker-1", 1, "completed", "", time.Now().UTC()); err != nil {
+		if err := pubRepo.FinishPublication(ctx, item.ID, "worker-1", item.LeaseGeneration, 1, "completed", "", time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -527,7 +527,7 @@ func TestFinishPublicationRawDBErrorReturned(t *testing.T) {
 	}
 	installFinishCompletedTrigger(t, db)
 
-	err = pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", 1, "completed", "", time.Now().UTC())
+	err = pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", items[0].LeaseGeneration, 1, "completed", "", time.Now().UTC())
 	if err == nil {
 		t.Fatal("finish must fail on the injected trigger")
 	}
@@ -556,7 +556,7 @@ func TestFinishPublicationRawDBErrorReturned(t *testing.T) {
 	// Poison removed: the same finish commits.
 	_ = db.Exec(`DROP TRIGGER IF EXISTS fail_completed_finish_trigger ON audit_publications`).Error
 	_ = db.Exec(`DROP FUNCTION IF EXISTS fail_completed_finish()`).Error
-	if err := pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", 1, "completed", "", time.Now().UTC()); err != nil {
+	if err := pubRepo.FinishPublication(ctx, items[0].ID, "worker-1", items[0].LeaseGeneration, 1, "completed", "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	var status string
@@ -645,7 +645,7 @@ func TestConcurrentClaimPublicationPartition(t *testing.T) {
 				perWorker[w] += len(items)
 				claimsMu.Unlock()
 				for _, item := range items {
-					if err := pubRepo.FinishPublication(ctx, item.ID, workerID, 1, "completed", "", time.Now().UTC()); err != nil {
+					if err := pubRepo.FinishPublication(ctx, item.ID, workerID, item.LeaseGeneration, 1, "completed", "", time.Now().UTC()); err != nil {
 						errCh <- fmt.Errorf("worker %d finish %s: %w", w, item.ID, err)
 						return
 					}
@@ -700,7 +700,7 @@ func TestConcurrentClaimPublicationPartition(t *testing.T) {
 		fenceID = id
 		break
 	}
-	if err := pubRepo.FinishPublication(ctx, fenceID, "fence-probe-worker", 2, "completed", "", time.Now().UTC()); !errors.Is(err, ErrAuditPublicationLeaseLost) {
+	if err := pubRepo.FinishPublication(ctx, fenceID, "fence-probe-worker", 1, 2, "completed", "", time.Now().UTC()); !errors.Is(err, ErrAuditPublicationLeaseLost) {
 		t.Fatalf("duplicate finish error = %v, want ErrAuditPublicationLeaseLost", err)
 	}
 }

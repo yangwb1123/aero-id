@@ -15,9 +15,13 @@ import (
 )
 
 var (
-	ErrInvalidConfig     = errors.New("audit governance: invalid configuration")
-	ErrInvalidEvent      = errors.New("audit governance: invalid event")
-	ErrInvalidReceipt    = errors.New("audit governance: invalid receipt")
+	ErrInvalidConfig  = errors.New("audit governance: invalid configuration")
+	ErrInvalidEvent   = errors.New("audit governance: invalid event")
+	ErrInvalidReceipt = errors.New("audit governance: invalid receipt")
+	// ErrEventRejected classifies a permanent rejection returned by the events
+	// endpoint. It may be wrapped with safe status metadata only; response
+	// bodies, credentials, tokens, URLs, and transport details must not escape.
+	ErrEventRejected     = errors.New("audit governance: event rejected")
 	ErrTokenUnavailable  = errors.New("audit governance: token unavailable")
 	ErrTenantUnbound     = errors.New("audit governance: tenant binding unavailable")
 	ErrTokenRejected     = errors.New("audit governance: token rejected")      // events-endpoint 401, non-scope body
@@ -31,7 +35,7 @@ var (
 	// one increment per condition). It must NEVER be emitted at the events-
 	// endpoint site (publisher.go:112).
 	ErrTokenEndpointScopeMissing = errors.New("audit governance: token endpoint scope missing")
-	errEpochDiscarded    = errors.New("audit governance: epoch discarded")     // stale in-flight fetch, internal only
+	errEpochDiscarded            = errors.New("audit governance: epoch discarded") // stale in-flight fetch, internal only
 )
 
 type Config struct {

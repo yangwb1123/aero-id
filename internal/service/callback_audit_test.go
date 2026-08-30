@@ -31,6 +31,79 @@ func TestPublicationOutcomeDeadLettersBoundPublisherFailure(t *testing.T) {
 	}
 }
 
+func TestPublicationOutcomeClassifiesGovernanceFailures(t *testing.T) {
+	now := time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)
+	delay := time.Minute
+	tests := []struct {
+		name, wantStatus, wantCode string
+		err                        error
+		attempt                    int
+	}{
+		{"event rejection first attempt", "dead_letter", "audit.event_rejected", fmt.Errorf("%w: HTTP 422", auditgovernance.ErrEventRejected), 1},
+		{"event rejection at exhaustion", "dead_letter", "audit.event_rejected", auditgovernance.ErrEventRejected, 8},
+		{"invalid receipt retry", "pending", "audit.invalid_receipt", auditgovernance.ErrInvalidReceipt, 1},
+		{"invalid receipt at exhaustion", "dead_letter", "audit.invalid_receipt", auditgovernance.ErrInvalidReceipt, 8},
+		{"scope failure first attempt", "pending", "audit.binding_unavailable", auditgovernance.ErrTokenScopeMissing, 1},
+		{"scope failure at exhaustion", "pending", "audit.binding_unavailable", auditgovernance.ErrTokenScopeMissing, 8},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			status, code, next := publicationOutcome(test.err, test.attempt, 8, now, delay)
+			if status != test.wantStatus || code != test.wantCode || !next.Equal(now.Add(delay)) {
+				t.Fatalf("outcome = %q/%q/%s, want %q/%q/%s", status, code, next, test.wantStatus, test.wantCode, now.Add(delay))
+			}
+		})
+	}
+}
+
+func TestDrainEventRejectionSettlesOnceWithoutRetry(t *testing.T) {
+	metrics := &metricSpy{}
+	repo := &settlingPublicationRepo{}
+	publisher := &failingAuditPublisher{err: fmt.Errorf("%w: HTTP 422", auditgovernance.ErrEventRejected)}
+	svc := newCallbackTestService(newCallbackFakeRepo(), CallbackConfig{MaxAttempts: 8, RetryBase: time.Second}, nil)
+	svc.publications = repo
+	svc.publishers = []AuditPublisher{publisher}
+	svc.metrics = metrics
+	repo.items = []*domain.AuditPublication{{ID: idgen.NewID(), Status: "delivering", Attempt: 0,
+		Fact: &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "account.provisioned"}}}
+
+	svc.drainPublications(t.Context())
+	if publisher.calls != 1 || len(repo.finishes) != 1 || len(metrics.outcomes) != 1 {
+		t.Fatalf("publish/finish/outcome counts = %d/%d/%d, want 1/1/1", publisher.calls, len(repo.finishes), len(metrics.outcomes))
+	}
+	if repo.finishes[0] != "dead_letter" || repo.codes[0] != "audit.event_rejected" || repo.attempts[0] != 1 {
+		t.Fatalf("persisted settlement = %s/%s/attempt %d, want dead_letter/audit.event_rejected/1", repo.finishes[0], repo.codes[0], repo.attempts[0])
+	}
+	// ClaimPublication consumes the fake row, modeling the terminal row no
+	// longer being claimable on the next drain tick.
+	svc.drainPublications(t.Context())
+	if publisher.calls != 1 || len(repo.finishes) != 1 {
+		t.Fatalf("after second drain publish/finish = %d/%d, want 1/1", publisher.calls, len(repo.finishes))
+	}
+}
+
+func TestFinishPublicationTransientClassificationsExhaustNormally(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "governance 5xx", err: errors.New("audit governance: HTTP 503")},
+		{name: "token unavailable", err: auditgovernance.ErrTokenUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &settlingPublicationRepo{}
+			svc := newCallbackTestService(newCallbackFakeRepo(), CallbackConfig{MaxAttempts: 8, RetryBase: time.Second}, nil)
+			svc.publications = repo
+			svc.publishers = []AuditPublisher{&failingAuditPublisher{err: tc.err}}
+			svc.finishPublicationAttempt(t.Context(), &domain.AuditPublication{ID: idgen.NewID(), Status: "delivering", Attempt: 7,
+				Fact: &domain.AuditFact{ID: idgen.NewID(), TenantID: "tenant-a", Action: "account.provisioned"}})
+			if len(repo.finishes) != 1 || repo.finishes[0] != "dead_letter" || repo.codes[0] != "audit.publication_failed" || repo.attempts[0] != 8 {
+				t.Fatalf("persisted settlement = %v/%v/%v, want dead_letter/audit.publication_failed/8", repo.finishes, repo.codes, repo.attempts)
+			}
+		})
+	}
+}
+
 // failingPublicationRepo models a FinishPublication failure (lease lost / DB
 // error): the row is re-claimed after lease expiry, at-least-once is preserved.
 type failingPublicationRepo struct {
@@ -40,7 +113,7 @@ type failingPublicationRepo struct {
 func (f *failingPublicationRepo) ClaimPublication(ctx context.Context, worker string, lease time.Duration, limit int) ([]*domain.AuditPublication, error) {
 	return nil, nil
 }
-func (f *failingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, attempt int, status, errorCode string, next time.Time) error {
+func (f *failingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, generation int64, attempt int, status, errorCode string, next time.Time) error {
 	return f.fail
 }
 func (f *failingPublicationRepo) RequeuePublication(context.Context, []domain.ID, int, repository.ReplayIntent) (int, []*domain.AuditFact, error) {
@@ -62,15 +135,18 @@ func (f *failingPublicationRepo) DeadLetterTenants(context.Context, []domain.ID,
 // only at settlement, never at claim time) and the publicationOutcome code
 // (audit.binding_unavailable vs audit.publication_failed).
 type settlingPublicationRepo struct {
+	items    []*domain.AuditPublication
 	finishes []string
 	codes    []string
 	attempts []int
 }
 
 func (s *settlingPublicationRepo) ClaimPublication(ctx context.Context, worker string, lease time.Duration, limit int) ([]*domain.AuditPublication, error) {
-	return nil, nil
+	items := s.items
+	s.items = nil
+	return items, nil
 }
-func (s *settlingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, attempt int, status, errorCode string, next time.Time) error {
+func (s *settlingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, generation int64, attempt int, status, errorCode string, next time.Time) error {
 	s.finishes = append(s.finishes, status)
 	s.codes = append(s.codes, errorCode)
 	s.attempts = append(s.attempts, attempt)
@@ -93,10 +169,14 @@ func (s *settlingPublicationRepo) DeadLetterTenants(context.Context, []domain.ID
 // the drain loop's only failure input on the dead-letter path.
 type failingAuditPublisher struct {
 	calls int
+	err   error
 }
 
 func (f *failingAuditPublisher) Publish(context.Context, *domain.AuditFact) error {
 	f.calls++
+	if f.err != nil {
+		return f.err
+	}
 	return errors.New("governance endpoint unavailable")
 }
 
@@ -205,7 +285,7 @@ type claimingPublicationRepo struct {
 func (f *claimingPublicationRepo) ClaimPublication(ctx context.Context, worker string, lease time.Duration, limit int) ([]*domain.AuditPublication, error) {
 	return nil, f.fail
 }
-func (f *claimingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, attempt int, status, errorCode string, next time.Time) error {
+func (f *claimingPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, generation int64, attempt int, status, errorCode string, next time.Time) error {
 	return nil
 }
 func (f *claimingPublicationRepo) RequeuePublication(context.Context, []domain.ID, int, repository.ReplayIntent) (int, []*domain.AuditFact, error) {
@@ -255,7 +335,7 @@ type hydrationGapPublicationRepo struct {
 func (h *hydrationGapPublicationRepo) ClaimPublication(ctx context.Context, worker string, lease time.Duration, limit int) ([]*domain.AuditPublication, error) {
 	return h.items, h.err
 }
-func (h *hydrationGapPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, attempt int, status, errorCode string, next time.Time) error {
+func (h *hydrationGapPublicationRepo) FinishPublication(ctx context.Context, id domain.ID, worker string, generation int64, attempt int, status, errorCode string, next time.Time) error {
 	return nil
 }
 func (h *hydrationGapPublicationRepo) RequeuePublication(context.Context, []domain.ID, int, repository.ReplayIntent) (int, []*domain.AuditFact, error) {

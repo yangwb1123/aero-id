@@ -43,10 +43,13 @@ func (m *memStore) Reserve(_ context.Context, uid, endpoint, k string) (*idempot
 	return nil, true, nil
 }
 
-func (m *memStore) Complete(_ context.Context, uid, endpoint, k string, rec idempotency.Record, _ time.Duration) error {
+func (m *memStore) Complete(ctx context.Context, uid, endpoint, k string, rec idempotency.Record, _ time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completeCalls++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.failComplete != nil {
 		return m.failComplete // receipt is never persisted
 	}
@@ -285,6 +288,24 @@ func TestIdempotency_ReplaysStoredResponse(t *testing.T) {
 	}
 	if second.Header().Get("Idempotent-Replayed") != "true" {
 		t.Error("replayed response should carry Idempotent-Replayed: true")
+	}
+}
+
+func TestIdempotency_SettlesAfterClientDisconnect(t *testing.T) {
+	store := newMemStore()
+	calls := 0
+	e := setupIdemRouter(store, nil, &calls)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(ctx)
+	request.Header.Set("Idempotency-Key", "disconnect")
+	first := httptest.NewRecorder()
+	e.ServeHTTP(first, request)
+	second := postWithKey(e, "disconnect")
+
+	if calls != 1 || second.Code != http.StatusCreated || second.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatalf("calls/second status/replayed = %d/%d/%q, want 1/201/true", calls, second.Code, second.Header().Get("Idempotent-Replayed"))
 	}
 }
 

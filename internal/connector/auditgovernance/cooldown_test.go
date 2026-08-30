@@ -53,8 +53,8 @@ func TestPublish403ScopeFailureCooldownRetainsTokenAndRecovers(t *testing.T) {
 	}
 	binding := SourceBinding{TenantID: tenantID, SourceSystem: mustSource(t, tenantID)}
 
-	if err := publisher.Publish(t.Context(), fact); !errors.Is(err, ErrTokenScopeMissing) {
-		t.Fatalf("first 403 error = %v, want ErrTokenScopeMissing", err)
+	if err := publisher.Publish(t.Context(), fact); !errors.Is(err, ErrTokenScopeMissing) || errors.Is(err, ErrEventRejected) {
+		t.Fatalf("first 403 error = %v, want only ErrTokenScopeMissing", err)
 	}
 	if tokenPosts.Load() != 1 || eventPosts.Load() != 1 {
 		t.Fatalf("first probe counts = token %d/events %d, want 1/1", tokenPosts.Load(), eventPosts.Load())
@@ -95,7 +95,7 @@ func TestPublish403ScopeFailureCooldownRetainsTokenAndRecovers(t *testing.T) {
 	}
 }
 
-func TestPublish403NonScopeResponsesRemainGenericAndHealthy(t *testing.T) {
+func TestPublish403NonScopeResponsesAreRejectedAndHealthy(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
@@ -130,8 +130,8 @@ func TestPublish403NonScopeResponsesRemainGenericAndHealthy(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = publisher.Publish(t.Context(), fact)
-			if err == nil || errors.Is(err, ErrTokenScopeMissing) {
-				t.Fatalf("403 error = %v, want generic non-scope error", err)
+			if err == nil || !errors.Is(err, ErrEventRejected) || errors.Is(err, ErrTokenScopeMissing) {
+				t.Fatalf("403 error = %v, want ErrEventRejected (not scope-missing)", err)
 			}
 			if strings.Contains(err.Error(), "access_denied") || strings.Contains(err.Error(), "invalid_scope") {
 				t.Fatalf("403 error leaked response body: %v", err)

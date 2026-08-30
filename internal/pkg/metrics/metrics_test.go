@@ -135,12 +135,16 @@ func TestControlPlaneMetrics_TextOutput(t *testing.T) {
 	reg.ObserveAuditPublicationOutcome("dead_letter")
 	reg.ObserveAuditPublicationOutcome("completed")
 	reg.ObserveAuditPublicationDrainSkipped()
-	reg.ObserveAuditPublicationClaimFailed("claim_tx", errors.New("claim tx failed"))
-	reg.ObserveAuditPublicationFinishFailure("pending", errors.New("finish lease lost"))
+	const sensitiveError = "Bearer token-secret https://governance.internal.example:8443/audit"
+	reg.ObserveAuditPublicationClaimFailed("claim_tx", errors.New(sensitiveError))
+	reg.ObserveAuditPublicationFinishFailure("pending", errors.New(sensitiveError))
 
 	var buf strings.Builder
 	reg.WriteText(&buf)
 	out := buf.String()
+	if strings.Contains(out, sensitiveError) {
+		t.Fatalf("metrics exposed dependency error details: %q", sensitiveError)
+	}
 	for _, want := range []string{
 		`aero_control_events_applied_total{dataset="aero-vault.buckets"} 2`,
 		`aero_control_events_quarantined_total{dataset="aero-im.rooms"} 1`,

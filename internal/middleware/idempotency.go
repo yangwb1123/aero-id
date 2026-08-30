@@ -14,6 +14,12 @@ import (
 
 const defaultIdempotencyTTL = 24 * time.Hour
 
+// idempotencySettlementTimeout keeps response persistence alive briefly after
+// a client disconnects. The mutation may already have committed when the
+// request context is canceled; using that canceled context here would leave a
+// reclaimable reservation and let the retry execute the mutation again.
+const idempotencySettlementTimeout = 5 * time.Second
+
 // maxIdempotencyCaptureBytes bounds the buffered response per keyed POST.
 // Larger responses are delivered intact but never stored: the reservation is
 // released so a retry re-executes the mutation (see IdempotencyObserver.
@@ -30,11 +36,11 @@ type IdempotencyObserver interface {
 }
 
 // Idempotency makes POST requests that carry an Idempotency-Key safe to retry: the
-// first request for a (actor, endpoint, key) runs the handler and its response is
-// stored; identical retries replay that stored response without re-executing. A
-// concurrent duplicate still in flight gets 409. Store errors fail open so the
-// idempotency layer can never take writes down; failures and degrades are reported
-// to obs (a nil observer is a no-op).
+// first request for a (actor, concrete request path, key) runs the handler and
+// its response is stored; identical retries replay that stored response without
+// re-executing. A concurrent duplicate still in flight gets 409. Store errors
+// fail open so the idempotency layer can never take writes down; failures and
+// degrades are reported to obs (a nil observer is a no-op).
 func Idempotency(store idempotency.Store, ttl time.Duration, obs IdempotencyObserver) gin.HandlerFunc {
 	if ttl <= 0 {
 		ttl = defaultIdempotencyTTL
@@ -46,7 +52,14 @@ func Idempotency(store idempotency.Store, ttl time.Duration, obs IdempotencyObse
 			return
 		}
 		uid := c.GetString("actor_uid")
-		endpoint := c.Request.Method + " " + c.FullPath()
+		// Scope a key to the concrete resource path, not Gin's route template.
+		// A callback replay key for /deliveries/A must never replay the response
+		// for /deliveries/B. Query parameters are part of the command identity as
+		// well; keyed POST handlers must not silently alias distinct requests.
+		endpoint := c.Request.Method + " " + c.Request.URL.EscapedPath()
+		if c.Request.URL.RawQuery != "" {
+			endpoint += "?" + c.Request.URL.RawQuery
+		}
 		ctx := c.Request.Context()
 
 		var rec *idempotency.Record
@@ -99,7 +112,8 @@ func handleIdempotencyReservation(c *gin.Context, store idempotency.Store, obs I
 func finalizeIdempotency(c *gin.Context, cw *captureWriter, obs IdempotencyObserver,
 	store idempotency.Store, uid, endpoint, key string, ttl time.Duration, leaseToken string) {
 	status := c.Writer.Status()
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), idempotencySettlementTimeout)
+	defer cancel()
 	required, replayBody := idempotencyReplayPolicy(c)
 	if cw != nil && cw.overflowed {
 		notify(obs, func() { obs.Overflowed() })

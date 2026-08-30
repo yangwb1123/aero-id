@@ -2,11 +2,13 @@ package http
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/middleware"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/httpx"
 	"github.com/aero/aero-id/internal/service"
 )
@@ -92,6 +94,22 @@ func (h *CallbackHandler) Delete(c *gin.Context) {
 }
 
 func (h *CallbackHandler) Replay(c *gin.Context) {
+	// A replay changes durable delivery state and appends an audit fact. The
+	// response is therefore not safe to lose and retry without a stable command
+	// identity: ReplayDelivery intentionally mints a fresh audit event for each
+	// user intent. Require the HTTP key at this boundary so a transport retry
+	// replays the stored response instead of creating a second intent.
+	key := c.GetHeader("Idempotency-Key")
+	if strings.TrimSpace(key) == "" {
+		httpx.WriteError(c, apperr.BadRequest("callback.replay_idempotency_key_required",
+			"Idempotency-Key is required when replaying a callback delivery"))
+		return
+	}
+	if len(key) > 200 {
+		httpx.WriteError(c, apperr.BadRequest("callback.replay_idempotency_key_invalid",
+			"Idempotency-Key is too long"))
+		return
+	}
 	id, err := httpx.ParseIDFromParam(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)
