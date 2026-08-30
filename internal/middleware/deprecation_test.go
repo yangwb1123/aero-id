@@ -51,24 +51,24 @@ func TestLegacyDeprecation_NoHeadersOnControlPlane(t *testing.T) {
 
 func TestIsLegacyPath(t *testing.T) {
 	cases := map[string]bool{
-		"/v1/files":                 true,
-		"/v1/files/abc/url":         true,
-		"/v1/messages":              true,
-		"/v1/comments/abc/replies":  true,
-		"/v1/conversations/u1":      true,
-		"/v1/notifications":         true,
-		"/v1/search":                true,
-		"/v1/blocks":                true,
-		"/v1/events":                true,
-		"/v1/me":                    false,
-		"/v1/me/overview":           false,
-		"/v1/operations":            false,
-		"/v1/audit/events":          false,
-		"/v1/admin/accounts":        false,
-		"/v1/account-datasets":      false,
-		"/v1/files-shared":          false, // prefix must be path-segment aware
-		"/v1/file-metadata":         false,
-		"/v1/notifications-prefs":   false,
+		"/v1/files":                true,
+		"/v1/files/abc/url":        true,
+		"/v1/messages":             true,
+		"/v1/comments/abc/replies": true,
+		"/v1/conversations/u1":     true,
+		"/v1/notifications":        true,
+		"/v1/search":               true,
+		"/v1/blocks":               true,
+		"/v1/events":               true,
+		"/v1/me":                   false,
+		"/v1/me/overview":          false,
+		"/v1/operations":           false,
+		"/v1/audit/events":         false,
+		"/v1/admin/accounts":       false,
+		"/v1/account-datasets":     false,
+		"/v1/files-shared":         false, // prefix must be path-segment aware
+		"/v1/file-metadata":        false,
+		"/v1/notifications-prefs":  false,
 	}
 	for path, want := range cases {
 		if got := isLegacyPath(path); got != want {

@@ -255,3 +255,12 @@ func (w *captureWriter) WriteString(s string) (int, error) {
 	w.capture([]byte(s))
 	return w.ResponseWriter.WriteString(s)
 }
+
+// Unwrap keeps net/http's ResponseController compatible with a response that
+// is also wrapped by another middleware (for example, region epoch headers).
+func (w *captureWriter) Unwrap() http.ResponseWriter {
+	if unwrapper, ok := w.ResponseWriter.(interface{ Unwrap() http.ResponseWriter }); ok {
+		return unwrapper.Unwrap()
+	}
+	return w.ResponseWriter
+}

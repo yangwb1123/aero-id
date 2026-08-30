@@ -46,8 +46,8 @@ func LegacyCutoverGuard(checker CutoverChecker) gin.HandlerFunc {
 		c.Header("Link", `</docs/plans/2026-08-04-distributed-account-aggregation.md>; rel="deprecation"`)
 		c.AbortWithStatusJSON(http.StatusGone, gin.H{
 			"error": gin.H{
-				"code":      "legacy.cut_over",
-				"message":   "this tenant's legacy API has moved to the new authority",
+				"code":       "legacy.cut_over",
+				"message":    "this tenant's legacy API has moved to the new authority",
 				"request_id": c.GetString("request_id"),
 			},
 		})

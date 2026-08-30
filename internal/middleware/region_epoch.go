@@ -52,8 +52,16 @@ func (h *RegionEpochHeader) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		epoch, ok := h.currentEpoch(c.Request.Context())
 		h.markStaleReads(c, epoch, ok)
+
+		base := c.Writer
+		wrapped := newRegionEpochWriter(base, h.localRegion, epoch, ok && isWriteMethod(c.Request.Method))
+		c.Writer = wrapped
+		defer func() { c.Writer = base }()
+
 		c.Next()
-		h.tagWrites(c, epoch, ok)
+		// Prepare metadata for handlers that only select a status. Gin commits
+		// those responses after the middleware chain returns.
+		wrapped.prepare()
 	}
 }
 
@@ -68,20 +76,6 @@ func (h *RegionEpochHeader) markStaleReads(c *gin.Context, epoch int64, ok bool)
 	region, clientEpoch, err := parseWriteEpoch(raw)
 	if err == nil && (region != h.localRegion || clientEpoch != epoch) {
 		c.Header("X-Aero-Stale-Read", "true")
-	}
-}
-
-// tagWrites stamps successful account-affecting writes with the writer
-// generation (P6-05 read-your-writes token).
-func (h *RegionEpochHeader) tagWrites(c *gin.Context, epoch int64, ok bool) {
-	if !ok || !isWriteMethod(c.Request.Method) {
-		return
-	}
-	if c.Writer.Status() >= 200 && c.Writer.Status() < 300 {
-		if c.Writer.Header().Get("X-Aero-Write-Epoch") != "" {
-			return // the handler selected a different writer generation
-		}
-		c.Header("X-Aero-Write-Epoch", writeEpochHeader(h.localRegion, epoch))
 	}
 }
 

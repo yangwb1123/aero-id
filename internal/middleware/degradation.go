@@ -212,10 +212,15 @@ const degradationStateKey = "__deg_state"
 // It does not block or modify the response body; it only decorates the response
 // with operational metadata and provides the state reference.
 func DegradationHeader(state *DegradationState) gin.HandlerFunc {
+	if state == nil {
+		return func(c *gin.Context) { c.Next() }
+	}
 	return func(c *gin.Context) {
 		c.Set(degradationStateKey, state)
-		c.Next()
+		// Set operational metadata before the handler can commit the response.
+		// The value is intentionally sampled once for a consistent response.
 		c.Header("X-Aero-Degraded", state.Status())
+		c.Next()
 	}
 }
 
