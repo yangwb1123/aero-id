@@ -31,6 +31,8 @@ type ControlPlaneMetrics interface {
 	ObserveReconcileDrift(source string)
 	ObserveProjectionLag(source, dataset string, lag time.Duration)
 	ObserveConsumerLag(source string, lag time.Duration)
+	ObserveReplicationStall(reason string)
+	ObserveReplicationFailure(class string)
 	ObserveOperationAge(status string, age time.Duration)
 }
 
@@ -53,6 +55,8 @@ func (noopControlPlaneMetrics) ObserveCallbackOutcome(string)                   
 func (noopControlPlaneMetrics) ObserveReconcileDrift(string)                       {}
 func (noopControlPlaneMetrics) ObserveProjectionLag(string, string, time.Duration) {}
 func (noopControlPlaneMetrics) ObserveConsumerLag(string, time.Duration)           {}
+func (noopControlPlaneMetrics) ObserveReplicationStall(string)                     {}
+func (noopControlPlaneMetrics) ObserveReplicationFailure(string)                   {}
 func (noopControlPlaneMetrics) ObserveOperationAge(string, time.Duration)          {}
 
 // RegistryControlPlaneMetrics adapts the metrics.Registry to the service seam.
@@ -114,6 +118,12 @@ func (r *RegistryControlPlaneMetrics) ObserveProjectionLag(source, dataset strin
 }
 func (r *RegistryControlPlaneMetrics) ObserveConsumerLag(source string, lag time.Duration) {
 	r.registry.ObserveConsumerLag(source, lag)
+}
+func (r *RegistryControlPlaneMetrics) ObserveReplicationStall(reason string) {
+	r.registry.ObserveReplicationStall(reason)
+}
+func (r *RegistryControlPlaneMetrics) ObserveReplicationFailure(class string) {
+	r.registry.ObserveReplicationFailure(class)
 }
 func (r *RegistryControlPlaneMetrics) ObserveOperationAge(status string, age time.Duration) {
 	r.registry.ObserveOperationAge(status, age)

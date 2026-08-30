@@ -211,6 +211,7 @@ replication:                      # optional cross-region projection replication
   interval: 5s
   lease: 2m
   batch_size: 500
+  max_terminal_attempts: 3 # 0 = default; maximum 10
   transport: nats                # nats | http
   nats_subject: aero.events.canonical
   http_endpoint: ""               # transport=http: remote region ingest URL

@@ -271,6 +271,8 @@ func (m *metricSpy) ObserveCallbackOutcome(status string) {
 func (m *metricSpy) ObserveReconcileDrift(string)                       {}
 func (m *metricSpy) ObserveProjectionLag(string, string, time.Duration) {}
 func (m *metricSpy) ObserveConsumerLag(string, time.Duration)           {}
+func (m *metricSpy) ObserveReplicationStall(string)                     {}
+func (m *metricSpy) ObserveReplicationFailure(string)                   {}
 func (m *metricSpy) ObserveOperationAge(status string, age time.Duration) {
 	m.operationAges = append(m.operationAges, operationAgeObservation{status: status, age: age})
 }

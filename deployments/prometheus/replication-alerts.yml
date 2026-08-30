@@ -1,0 +1,24 @@
+groups:
+  - name: aero-id-replication
+    rules:
+      # Parking is durable and requires operator action; it is not an outage
+      # that should be hidden by a disappearing process-local counter.
+      - alert: AeroIDReplicationTerminalRejectionParked
+        expr: increase(aero_control_replication_stalls_total{reason="terminal_rejection"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: aero-id parked a cross-region replication event
+          description: A deterministic remote rejection crossed the terminal-attempt limit. Inspect replication_terminal_failures before any retry or deployment.
+          runbook: docs/runbooks/replication-parked.md
+
+      - alert: AeroIDReplicationFailures
+        expr: increase(aero_control_replication_failures_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: aero-id replication runs are failing
+          description: Replication is failing; distinguish terminal, transient, and unknown classes in the metric labels and inspect the worker logs.
+          runbook: docs/runbooks/replication-parked.md

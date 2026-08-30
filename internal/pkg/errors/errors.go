@@ -61,6 +61,24 @@ func Unavailable(code, msg string) *AppError {
 	return &AppError{Code: code, Message: msg, HTTP: http.StatusServiceUnavailable, GRPC: codes.Unavailable}
 }
 
+// RemoteRejected describes a response which proves that the remote cannot
+// accept this event. The supplied status is retained only for safe 4xx values;
+// malformed or non-client statuses are rendered as a generic bad request.
+func RemoteRejected(statusCode int) *AppError {
+	if statusCode < http.StatusBadRequest || statusCode >= http.StatusInternalServerError {
+		statusCode = http.StatusBadRequest
+	}
+	return &AppError{Code: "event.remote_rejected", Message: "remote event ingest rejected the event",
+		HTTP: statusCode, GRPC: codes.InvalidArgument}
+}
+
+// RemoteUnavailable is deliberately cause-free: transport errors frequently
+// contain the destination URL and must never cross a service boundary.
+func RemoteUnavailable() *AppError {
+	return &AppError{Code: "event.remote_unavailable", Message: "remote event ingest is unavailable",
+		HTTP: http.StatusServiceUnavailable, GRPC: codes.Unavailable}
+}
+
 // GRPCError converts a service error to a gRPC status error. An AppError keeps
 // its safe message and carries its stable dotted code as an ErrorInfo detail;
 // deadline and cancellation errors retain their canonical gRPC status. Other

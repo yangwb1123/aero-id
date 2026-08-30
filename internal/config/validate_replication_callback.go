@@ -55,6 +55,9 @@ func validateCallbackCaps(value CallbackConfig) error {
 }
 
 func validateReplication(value ReplicationConfig) error {
+	if value.MaxTerminalAttempts < 0 || value.MaxTerminalAttempts > MaxReplicationTerminalAttempts {
+		return fmt.Errorf("replication.max_terminal_attempts must be between 0 and %d", MaxReplicationTerminalAttempts)
+	}
 	if !value.Enabled {
 		return nil
 	}

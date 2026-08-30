@@ -36,6 +36,10 @@ type ReplicationSnapshotRepository interface {
 type ReplicableSnapshot struct {
 	Snapshot *domain.AccountSnapshot
 	TenantID string
+	// Revision is an immutable database change-log position. Zero means a
+	// legacy timestamp/UUID scan item supplied by an older implementation.
+	Revision int64
+	Deleted  bool
 }
 
 // SnapshotReconciler is the optional write seam used only after a source has
@@ -152,13 +156,19 @@ func (r *accountSnapshotRepo) UpsertSnapshot(ctx context.Context, snapshot *doma
 	}
 	snapshot.UpdatedAt = now
 	row := snapshotDomainToRow(snapshot)
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "dataset"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"source_region", "status", "version", "generated_at", "last_synced_at", "expires_at", "error_code", "data", "updated_at",
-		}),
-		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_snapshots.version <= EXCLUDED.version"}}},
-	}).Create(row).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "dataset"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"source_region", "status", "version", "generated_at", "last_synced_at", "expires_at", "error_code", "data", "updated_at",
+			}),
+			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_snapshots.version <= EXCLUDED.version"}}},
+		}).Create(row)
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		return appendReplicationChange(tx, snapshot, false)
+	})
 }
 
 // replicableSnapshotScan is the explicit-column scan target for
@@ -250,9 +260,29 @@ func (r *accountSnapshotRepo) MarkUnavailable(ctx context.Context, accountID dom
 	for i, dataset := range datasets {
 		names[i] = string(dataset)
 	}
-	result := r.db.WithContext(ctx).Model(&accountSnapshotRow{}).
-		Where("account_id = ? AND source = ? AND dataset IN ? AND version <= ?", accountID, source, names, version).
-		Updates(map[string]any{"status": string(domain.SnapshotUnavailable), "version": version,
-			"error_code": "source.reconciled_absent", "last_synced_at": time.Now().UTC(), "updated_at": time.Now().UTC()})
-	return int(result.RowsAffected), result.Error
+	changed := 0
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []accountSnapshotRow
+		if err := tx.Where("account_id = ? AND source = ? AND dataset IN ? AND version <= ?", accountID, source, names, version).Find(&rows).Error; err != nil {
+			return err
+		}
+		for i := range rows {
+			now := time.Now().UTC()
+			if err := tx.Model(&accountSnapshotRow{}).Where("id = ?", rows[i].ID).Updates(map[string]any{
+				"status": string(domain.SnapshotUnavailable), "version": version, "error_code": "source.reconciled_absent",
+				"last_synced_at": now, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			updated := snapshotRowToDomain(&rows[i])
+			updated.Status = domain.SnapshotUnavailable
+			updated.Version, updated.ErrorCode = version, "source.reconciled_absent"
+			updated.LastSyncedAt, updated.UpdatedAt = &now, now
+			if err := appendReplicationChange(tx, updated, false); err != nil {
+				return err
+			}
+			changed++
+		}
+		return nil
+	})
+	return changed, err
 }

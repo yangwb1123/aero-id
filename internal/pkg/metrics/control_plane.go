@@ -90,6 +90,8 @@ type controlPlaneMetrics struct {
 	auditClaimFail    counterMap // count -> drain cycles whose ClaimPublication errored outright
 	auditPurged       counterMap // kind -> dead-letter rows purged by the drain retention scan
 	auditPurgeFail    counterMap // kind -> dead-letter purge scan failures
+	replicationStalls counterMap // controlled reason -> parking transitions
+	replicationFails  counterMap // controlled class -> run failures
 }
 
 // ObserveEventApplied records one applied source event per dataset.
@@ -208,6 +210,20 @@ func (r *Registry) ObserveConsumerLag(source string, lag time.Duration) {
 	r.control.consumerLag.set(source, lag.Seconds())
 }
 
+func (r *Registry) ObserveReplicationStall(reason string) {
+	if reason != "terminal_rejection" {
+		reason = "unknown"
+	}
+	r.control.replicationStalls.add(reason, 1)
+}
+
+func (r *Registry) ObserveReplicationFailure(class string) {
+	if class != "terminal" && class != "transient" {
+		class = "unknown"
+	}
+	r.control.replicationFails.add(class, 1)
+}
+
 // ObserveOperationAge records the age of the oldest open operation per status.
 func (r *Registry) ObserveOperationAge(status string, age time.Duration) {
 	r.control.operationAge.set(status, age.Seconds())
@@ -234,6 +250,7 @@ func (r *Registry) writeControlPlaneText(w io.Writer) {
 	writeAuditPublicationDrainSkipped(w, r.control.auditPubSkipped.snapshot())
 	writeAuditPublicationClaimFailed(w, r.control.auditClaimFail.snapshot())
 	writeAuditPurgeMetrics(w, r.control.auditPurged.snapshot(), r.control.auditPurgeFail.snapshot())
+	writeReplicationMetrics(w, r.control.replicationStalls.snapshot(), r.control.replicationFails.snapshot())
 	writeOperationAndCallbackCounters(w, r.control.operations.snapshot(), r.control.callbacks.snapshot())
 	for key, value := range r.control.reconcileDrift.snapshot() {
 		fmt.Fprintf(w, "aero_control_reconcile_drift_total{source=%q} %d\n", key, value)
@@ -304,6 +321,15 @@ func writeAuditPurgeMetrics(w io.Writer, purged, failed map[string]uint64) {
 // writeOperationAndCallbackCounters emits the operation and callback delivery
 // outcome counters (extracted to keep writeControlPlaneText under the
 // cyclomatic gate).
+func writeReplicationMetrics(w io.Writer, stalls, failures map[string]uint64) {
+	for key, value := range stalls {
+		fmt.Fprintf(w, "aero_control_replication_stalls_total{reason=%q} %d\n", key, value)
+	}
+	for key, value := range failures {
+		fmt.Fprintf(w, "aero_control_replication_failures_total{class=%q} %d\n", key, value)
+	}
+}
+
 func writeOperationAndCallbackCounters(w io.Writer, operations, callbacks map[string]uint64) {
 	for key, value := range operations {
 		fmt.Fprintf(w, "aero_control_operations_total{status=%q} %d\n", key, value)

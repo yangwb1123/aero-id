@@ -102,16 +102,22 @@ type NATSBusConfig struct {
 // ReplicationConfig configures cross-region projection replication (P6-03).
 // Transport is one of "nats" (subject) or "http" (remote ingest endpoint with
 // the same HMAC scheme the ingest handler verifies).
+const (
+	DefaultReplicationMaxTerminalAttempts = 3
+	MaxReplicationTerminalAttempts        = 10
+)
+
 type ReplicationConfig struct {
-	Enabled         bool          `mapstructure:"enabled"`
-	Interval        time.Duration `mapstructure:"interval"`
-	Lease           time.Duration `mapstructure:"lease"` // worker lease; 0 = service default
-	BatchSize       int           `mapstructure:"batch_size"`
-	Transport       string        `mapstructure:"transport"`         // nats | http
-	NATSSubject     string        `mapstructure:"nats_subject"`      // transport=nats
-	HTTPEndpoint    string        `mapstructure:"http_endpoint"`     // transport=http
-	HTTPKey         string        `mapstructure:"http_key"`          // transport=http; HMAC key for the remote ingest
-	HTTPBearerToken string        `mapstructure:"http_bearer_token"` // transport=http; service identity token, secret provider/env only
+	Enabled             bool          `mapstructure:"enabled"`
+	Interval            time.Duration `mapstructure:"interval"`
+	Lease               time.Duration `mapstructure:"lease"` // worker lease; 0 = service default
+	BatchSize           int           `mapstructure:"batch_size"`
+	MaxTerminalAttempts int           `mapstructure:"max_terminal_attempts"`
+	Transport           string        `mapstructure:"transport"`         // nats | http
+	NATSSubject         string        `mapstructure:"nats_subject"`      // transport=nats
+	HTTPEndpoint        string        `mapstructure:"http_endpoint"`     // transport=http
+	HTTPKey             string        `mapstructure:"http_key"`          // transport=http; HMAC key for the remote ingest
+	HTTPBearerToken     string        `mapstructure:"http_bearer_token"` // transport=http; service identity token, secret provider/env only
 }
 
 type AuditLedgerConfig struct {
@@ -426,6 +432,7 @@ func Load(path string) (*Config, error) {
 	v.AutomaticEnv()
 	keys := []string{
 		"sources.aero_im.allow_insecure_loopback", "sources.snaplink.allow_insecure_loopback",
+		"replication.max_terminal_attempts",
 	}
 	for _, source := range []string{"snaplink", "aero_im", "aero_vault"} {
 		for _, setting := range []string{"query_max_concurrency", "command_max_concurrency", "health_max_concurrency"} {
@@ -450,6 +457,9 @@ func Load(path string) (*Config, error) {
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+	if cfg.Replication.MaxTerminalAttempts == 0 {
+		cfg.Replication.MaxTerminalAttempts = DefaultReplicationMaxTerminalAttempts
 	}
 	return &cfg, nil
 }

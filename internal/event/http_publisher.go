@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 )
 
 // HTTPPublisher delivers canonical envelopes to a remote region's ingest
@@ -97,15 +99,45 @@ func (p *HTTPPublisher) Publish(ctx context.Context, envelope *Envelope) error {
 	request.Header.Set("X-Aero-Event-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	request.Header.Set("X-Aero-Event-Timestamp", timestamp)
 	response, err := p.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("publish projection: %w", err)
+	if err != nil || response == nil {
+		return apperr.RemoteUnavailable()
+	}
+	if response.Body == nil {
+		response.Body = io.NopCloser(strings.NewReader(""))
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("publish projection: remote ingest returned HTTP %d", response.StatusCode)
+	// Drain every response, but never retain or expose more than the bounded
+	// diagnostic prefix. Classification is independent of body read errors.
+	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	return classifyRemoteResponse(response.StatusCode, responseBody)
+}
+
+func classifyRemoteResponse(status int, body []byte) error {
+	if status == http.StatusOK || status == http.StatusAccepted {
+		return nil
 	}
-	return nil
+	if status >= 500 && status <= 599 {
+		return apperr.RemoteUnavailable()
+	}
+	if remoteInFlight(body) {
+		return apperr.Conflict("event.in_flight", "remote event is already being processed")
+	}
+	return apperr.RemoteRejected(status)
+}
+
+// remoteInFlight recognizes the stable machine code used by the ingest API;
+// response prose is intentionally ignored so secrets can never affect errors.
+func remoteInFlight(body []byte) bool {
+	var response struct {
+		Code  string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &response) != nil {
+		return false
+	}
+	return response.Code == "event.in_flight" || response.Error.Code == "event.in_flight"
 }
 
 func validateHTTPPublisherEndpoint(raw string) error {

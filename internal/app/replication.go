@@ -51,6 +51,8 @@ func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logge
 		repository.NewAccountSnapshotRepository(gdb),
 		repository.NewReplicationCursorRepository(gdb),
 		publisher,
+		service.WithProjectionReplicationTerminalFailures(repository.NewReplicationTerminalFailureRepository(gdb)),
+		service.WithProjectionReplicationMaxTerminalAttempts(cfg.Replication.MaxTerminalAttempts),
 		service.WithProjectionReplicationMetrics(service.NewRegistryControlPlaneMetrics(metricsReg)),
 		service.WithProjectionReplicationLease(cfg.Replication.Lease),
 		service.WithProjectionReplicationAudit(auditLedger))
@@ -62,6 +64,14 @@ func buildProjectionReplication(cfg *config.Config, gdb *gorm.DB, log *zap.Logge
 	log.Info("projection replication enabled",
 		zap.String("region", cfg.Account.Region),
 		zap.String("transport", cfg.Replication.Transport),
-		zap.Duration("interval", interval))
+		zap.Duration("interval", interval),
+		zap.Int("max_terminal_attempts", effectiveReplicationAttempts(cfg.Replication.MaxTerminalAttempts)))
 	return worker, stop, nil
+}
+
+func effectiveReplicationAttempts(value int) int {
+	if value <= 0 {
+		return config.DefaultReplicationMaxTerminalAttempts
+	}
+	return value
 }

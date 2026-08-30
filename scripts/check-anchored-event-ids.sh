@@ -64,7 +64,7 @@ PROJECTION_FILE="internal/service/projection_replication.go"
 #   legacy.cutover.set    (G11-G13)        sync.job.finished   (G8)
 # The operation.* family (G1-G7) is documented only: the live operation site
 # passes its action dynamically, so those discriminators are never extracted.
-ANCHOR_MANIFEST="audit.region.promote audit.preference.set audit_hold.set audit_hold.removed legacy.cutover.set sync.job.finished"
+ANCHOR_MANIFEST="audit.region.promote audit.preference.set audit_hold.set audit_hold.removed legacy.cutover.set sync.job.finished projection.replication.quarantine.v1"
 
 # extract_anchors <root> — emit one joined leading-literal discriminator per
 # line for every idgen.Anchor("lit", ...) call in the root, joined from the

@@ -55,6 +55,7 @@ MANIFEST=(
   "internal/service/message_audit.go|auditMessageUnreact|standalone-fact|-"
   "internal/service/preference.go|AuditPreferenceSet|standalone-fact|-"
   "internal/service/projection_replication.go|AuditProjectionReplicationPublish|standalone-fact|-"
+  "internal/service/projection_replication_failures.go|AuditProjectionReplicationQuarantine|standalone-fact|-"
   "internal/service/projection_replay.go|auditProjectionReplay|standalone-fact|-"
   "internal/service/sync_export.go|exportDownloadAudit|standalone-fact|-"
 )
