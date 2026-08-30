@@ -86,6 +86,32 @@ func TestEmptyEraseCreateExpandsEverySourceOwnedScope(t *testing.T) {
 	}
 }
 
+func TestEmptySyncCreatePreservesFullScopeNormalization(t *testing.T) {
+	want := allDatasets()
+	for _, tc := range []struct {
+		name     string
+		datasets []domain.AccountDataset
+	}{
+		{name: "nil"},
+		{name: "empty", datasets: []domain.AccountDataset{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &syncScopeCreateRepo{}
+			service := NewSyncJobServiceWithOptions(repo, nil, nil, nil, nil, nil, nil)
+			ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "actor-1", TenantID: "tenant-a"})
+			job, err := service.Create(ctx, SyncJobInput{AccountID: domain.ID{1}, JobType: domain.SyncJobSync,
+				IdempotencyKey: "sync-all-" + tc.name, Datasets: tc.datasets})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := job.Request["datasets"].([]domain.AccountDataset)
+			if !ok || !reflect.DeepEqual(got, want) {
+				t.Fatalf("persisted datasets = %#v, want full registry %v", job.Request["datasets"], want)
+			}
+		})
+	}
+}
+
 func TestEraseCreateRejectsDuplicateScopeBeforePersistence(t *testing.T) {
 	repo := &syncScopeCreateRepo{}
 	service := NewSyncJobServiceWithOptions(repo, nil, nil, nil, nil, nil, nil)

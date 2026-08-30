@@ -84,7 +84,11 @@ func assertStaticBearerSurfaces(t *testing.T, source Source) {
 	if err != nil {
 		t.Fatalf("static bearer constructor: %v", err)
 	}
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{1}}); err != nil {
+	summaryRequest := SummaryRequest{AccountID: domain.ID{1}}
+	if source == SourceSnaplink {
+		summaryRequest.Datasets = []domain.AccountDataset{"snaplink.identity"}
+	}
+	if _, err := client.Summary(t.Context(), summaryRequest); err != nil {
 		t.Fatalf("summary: %v", err)
 	}
 	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-1",

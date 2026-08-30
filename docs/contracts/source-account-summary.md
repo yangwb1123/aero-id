@@ -1,6 +1,6 @@
 # Source account-summary and command contract
 
-This document is the aero-id-side contract for the published HTTP seam used by
+This document is the aero-id-side contract for the HTTP seam intended for use by
 the Snaplink, Aero IM, and Aero Vault connectors. It is intentionally a source
 API contract, not a database integration contract. Each source team must expose
 an adapter that enforces its own resource authorization and residency policy.
@@ -11,10 +11,34 @@ The configured summary path receives `GET` requests. The checked-in Aero Vault s
 
 - `account_id`: aero-id UUID, opaque to the source
 - `region`: requested source region when present
-- repeated `dataset`: allow-listed dataset names. Aero Vault summary requests always carry a concrete, source-owned dataset list; an empty summary selection expands locally in registry order.
+- repeated `dataset`: allow-listed dataset names. Snaplink summary requests require a concrete, non-empty, source-owned dataset list. Aero Vault summary requests also carry a concrete list on the wire; an omitted selection expands locally in registry order.
 - `reconcile=true` only for a bounded reconciliation call on sources that
   explicitly publish that parameter. The bound Aero IM path rejects this
   parameter; reconciliation is an aero-id workflow mode, not an IM wire field.
+
+### Snaplink deployment verification and scope semantics
+
+The checked-in Snaplink source snapshot (`ac5d367041bc6042a30b6695777dd8d600aeed4d`) does not expose
+`GET /internal/account-summary`: it contains no account-summary route, handler, or dataset parser. The
+Aero ID deployment manifests likewise use a placeholder Snaplink endpoint, and leave `erase_path` empty.
+Therefore the deployed Snaplink API's response semantics for omitted or empty dataset scopes cannot be
+confirmed from the available source and deployment artifacts; this document does not claim a Snaplink HTTP
+status or error body for those cases.
+
+The current **Aero ID connector contract**, pending deployment and owner confirmation of that Snaplink seam,
+is fail-closed:
+
+- Summary requires one or more concrete Snaplink registry datasets. An omitted `dataset` query, an explicit
+  empty `dataset=` value, and nil or zero-length direct request scopes return local
+  `source.dataset_scope_invalid` (`ErrorInvalid`, non-temporary), before token acquisition or HTTP.
+- Erase likewise requires a concrete non-empty dataset array. An omitted, `null`, or empty JSON array is
+  rejected locally with the same error before idempotency checks, credentials, or HTTP.
+- Service compatibility paths may expand an empty legacy Snaplink summary selection before calling the
+  connector. That compatibility behavior does not make an empty direct connector scope valid.
+
+Before calling this a deployed Snaplink API contract, Snaplink owners must publish and verify the endpoint's
+behavior for omitted `dataset`, `dataset=`, omitted erase `datasets`, and `datasets: []`/`null`, including its
+status and stable error shape. Until then, callers must send explicit allow-listed datasets.
 
 The connector also propagates `X-Request-ID`, `X-Aero-Operation-ID`,
 `X-Aero-Account-ID`, `X-Aero-Canonical-UID`, `X-Aero-Actor-UID`,
@@ -91,7 +115,7 @@ class-scoped, so a source health outage does not make account reads fail fast.
 
 ## Commands and scope rules
 
-Erase requests require a concrete, non-empty dataset array owned by the target source. Aero Vault rejects an empty erase scope locally before idempotency validation, bulkhead acquisition, credentials, or HTTP execution. Invalid, duplicate, mixed-source, malformed, and oversized scopes are local `source.dataset_scope_invalid` failures and never trigger source authorization or network I/O.
+At the aero-id connector boundary, erase requests require a concrete, non-empty dataset array owned by the target source. Snaplink, Aero IM, and Aero Vault reject an empty erase scope locally before idempotency validation, bulkhead acquisition, credentials, or HTTP execution. Invalid, duplicate, mixed-source, malformed, and oversized scopes are local `source.dataset_scope_invalid` failures and never trigger source authorization or network I/O.
 
 The currently deployed Aero Vault adapter publishes the read-only summary seam
 only; its erase and status paths remain unset in the checked-in deployment

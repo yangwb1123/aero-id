@@ -155,8 +155,8 @@ func assertInvalidDatasetScopeForSource(t *testing.T, source Source, err error) 
 	t.Helper()
 	var remote *RemoteError
 	if !errors.As(err, &remote) || remote.Source != source || remote.Kind != ErrorInvalid ||
-		remote.Code != "source.dataset_scope_invalid" || remote.Temporary {
-		t.Fatalf("error = %+v, want %s non-temporary invalid dataset scope", err, source)
+		remote.Code != "source.dataset_scope_invalid" || remote.Temporary || remote.Cause != nil {
+		t.Fatalf("error = %+v, want %s non-temporary invalid dataset scope without cause", err, source)
 	}
 	if strings.Contains(err.Error(), "profile") || strings.Contains(err.Error(), "tenants") {
 		t.Fatalf("dataset value leaked through the error: %v", err)
@@ -196,10 +196,6 @@ func TestResolveDatasetScopeModesAndDefensiveCopies(t *testing.T) {
 	if got, err := ResolveDatasetScope(SourceAeroIM, []string{}, DatasetScopeSummary); err == nil || got != nil {
 		t.Fatalf("empty Aero IM summary = %v/%v, want invalid", got, err)
 	}
-	if got, err := ResolveDatasetScope(SourceSnaplink, []domain.AccountDataset(nil), DatasetScopeSummary); err != nil || len(got) != 0 {
-		t.Fatalf("empty legacy summary = %v/%v, want accepted empty scope", got, err)
-	}
-
 	invalid := []any{
 		[]any{"aero-vault.tenants", "aero-vault.tenants"},
 		[]any{"aero-vault.tenants", "aero-im.profile"},
@@ -217,54 +213,104 @@ func TestResolveDatasetScopeModesAndDefensiveCopies(t *testing.T) {
 	}
 }
 
-func TestLegacySnaplinkEmptySummaryKeepsSourceWideCoverage(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if values := r.URL.Query()["dataset"]; len(values) != 0 {
-			t.Fatalf("legacy empty summary sent dataset parameters: %v", values)
+func TestSnaplinkEmptyDatasetScopeRejectsAllRepresentations(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  any
+	}{
+		{name: "nil", raw: nil},
+		{name: "nil domain slice", raw: []domain.AccountDataset(nil)},
+		{name: "empty domain slice", raw: []domain.AccountDataset{}},
+		{name: "nil string slice", raw: []string(nil)},
+		{name: "empty string slice", raw: []string{}},
+		{name: "nil any slice", raw: []any(nil)},
+		{name: "empty any slice", raw: []any{}},
+	}
+	for _, mode := range []DatasetScopeMode{DatasetScopeSummary, DatasetScopeDestructive} {
+		for _, tc := range cases {
+			t.Run(string(mode)+"/"+tc.name, func(t *testing.T) {
+				got, err := ResolveDatasetScope(SourceSnaplink, tc.raw, mode)
+				if got != nil {
+					t.Fatalf("resolved scope = %#v, want nil", got)
+				}
+				assertInvalidDatasetScopeForSource(t, SourceSnaplink, err)
+			})
 		}
-		_, _ = io.WriteString(w, `{"source_region":"local","version":1,"generated_at":"2026-08-20T00:00:00Z","datasets":{}}`)
-	}))
-	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL,
-		SummaryPath: "/summary", AllowInsecureLoopback: true, Environment: "test", Client: server.Client(),
-		BearerToken: "snaplink-token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	summary, err := client.Summary(t.Context(), SummaryRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []domain.AccountDataset{"snaplink.identity", "snaplink.tenants", "snaplink.permissions", "snaplink.security"}
-	if !reflect.DeepEqual(summary.Coverage.Datasets, want) {
-		t.Fatalf("legacy coverage = %v, want %v", summary.Coverage.Datasets, want)
 	}
 }
 
-func TestLegacySnaplinkEmptyEraseKeepsWireCompatibility(t *testing.T) {
+func TestSnaplinkEmptyDatasetRequestsRejectBeforeTokenOrTransport(t *testing.T) {
+	var tokenCalls, sourceCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/erase" {
-			t.Fatalf("path = %q, want /erase", r.URL.Path)
+		if r.URL.Path == "/token" {
+			tokenCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"access_token":"snaplink-token","token_type":"Bearer","expires_in":300}`)
+			return
 		}
-		var body struct {
-			Datasets []domain.AccountDataset `json:"datasets"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body.Datasets == nil || len(body.Datasets) != 0 {
-			t.Fatalf("legacy datasets = %#v, want an empty array", body.Datasets)
-		}
-		_, _ = io.WriteString(w, `{"status":"completed"}`)
+		sourceCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL,
-		ErasePath: "/erase", AllowInsecureLoopback: true, Environment: "test", BearerToken: "snaplink-token"})
+	client, err := NewJSONSummaryConnector(SourceSnaplink, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary", ErasePath: "/erase",
+		AllowInsecureLoopback: true, Environment: "test", Client: server.Client(), MaxAttempts: 1,
+		OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token", ClientID: "client",
+			ClientSecret: "secret", Scope: "summary:read", Resource: "snaplink"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Erase(t.Context(), EraseRequest{IdempotencyKey: "legacy-erase"}); err != nil {
-		t.Fatalf("legacy empty erase: %v", err)
+	cases := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "summary nil", run: func() error {
+			_, err := client.Summary(t.Context(), SummaryRequest{})
+			return err
+		}},
+		{name: "summary empty", run: func() error {
+			_, err := client.Summary(t.Context(), SummaryRequest{Datasets: []domain.AccountDataset{}})
+			return err
+		}},
+		{name: "erase nil", run: func() error {
+			_, err := client.Erase(t.Context(), EraseRequest{})
+			return err
+		}},
+		{name: "erase empty", run: func() error {
+			_, err := client.Erase(t.Context(), EraseRequest{Datasets: []domain.AccountDataset{}})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertInvalidDatasetScopeForSource(t, SourceSnaplink, tc.run())
+		})
+	}
+	if tokenCalls.Load() != 0 || sourceCalls.Load() != 0 {
+		t.Fatalf("token/source calls = %d/%d, want 0/0", tokenCalls.Load(), sourceCalls.Load())
+	}
+}
+
+func TestNewEraseRequestRejectsEmptySnaplinkScope(t *testing.T) {
+	client := &JSONSummaryConnector{source: SourceSnaplink, cfg: HTTPConfig{Endpoint: "http://invalid"}}
+	for _, datasets := range [][]domain.AccountDataset{nil, {}} {
+		request, body, err := client.newEraseRequest(t.Context(), EraseRequest{Datasets: datasets})
+		if request != nil || body != nil {
+			t.Fatalf("request/body = %#v/%q, want nil/nil", request, body)
+		}
+		assertInvalidDatasetScopeForSource(t, SourceSnaplink, err)
+	}
+}
+
+func TestRequestedSummaryDatasetsOnlyExpandsVault(t *testing.T) {
+	for _, source := range []Source{SourceSnaplink, SourceAeroIM} {
+		if got := requestedSummaryDatasets(source, nil); len(got) != 0 {
+			t.Fatalf("%s empty requested datasets = %v, want empty", source, got)
+		}
+	}
+	got := requestedSummaryDatasets(SourceAeroVault, nil)
+	want := sourceDatasetScope(SourceAeroVault)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Vault empty requested datasets = %v, want %v", got, want)
 	}
 }
 

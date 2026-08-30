@@ -128,7 +128,7 @@ func setBearer(request *http.Request, token string) {
 }
 
 func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseRequest) (*http.Request, []byte, error) {
-	if len(req.Datasets) == 0 && (c.source == SourceAeroIM || c.source == SourceAeroVault) {
+	if len(req.Datasets) == 0 && (c.source == SourceSnaplink || c.source == SourceAeroIM || c.source == SourceAeroVault) {
 		return nil, nil, invalidDatasetScope(c.source)
 	}
 	endpoint, err := url.Parse(strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.ErasePath)
@@ -307,7 +307,7 @@ func normalizeSummaryCoverage(result *Summary, requested []domain.AccountDataset
 }
 
 func requestedSummaryDatasets(source Source, requested []domain.AccountDataset) []domain.AccountDataset {
-	if source != SourceAeroIM && len(requested) == 0 {
+	if source == SourceAeroVault && len(requested) == 0 {
 		return sourceDatasetScope(source)
 	}
 	return append([]domain.AccountDataset(nil), requested...)

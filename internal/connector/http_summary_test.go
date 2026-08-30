@@ -130,7 +130,8 @@ func TestJSONSummaryConnectorRejectsOversizedBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{3}}); err == nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{3},
+		Datasets: []domain.AccountDataset{"snaplink.identity"}}); err == nil {
 		t.Fatal("oversized response was accepted")
 	}
 }

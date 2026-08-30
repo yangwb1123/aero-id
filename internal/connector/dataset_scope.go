@@ -100,13 +100,12 @@ func resolveEmptyDatasetScope(source Source, mode DatasetScopeMode) ([]domain.Ac
 		}
 		return nil, invalidDatasetScope(source)
 	}
-	if source == SourceAeroIM || (source == SourceAeroVault && mode != DatasetScopeSummary) {
+	if source == SourceSnaplink || source == SourceAeroIM || (source == SourceAeroVault && mode != DatasetScopeSummary) {
 		return nil, invalidDatasetScope(source)
 	}
 	// Preserve the legacy empty behavior for sources that have not adopted a
-	// strict dataset contract. Direct legacy erase calls may still rely on the
-	// source's historical empty-scope handling; operation creation applies its
-	// stricter destructive-mode rule before persistence.
+	// strict dataset contract. Operation creation applies its stricter
+	// destructive-mode rule before persistence.
 	return []domain.AccountDataset{}, nil
 }
 

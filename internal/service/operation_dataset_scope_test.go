@@ -60,6 +60,64 @@ func TestOperationDatasetsKeepsUntouchedLegacySemantics(t *testing.T) {
 	}
 }
 
+func TestLegacyOperationRunnerExpandsEmptySnaplinkSummaryScope(t *testing.T) {
+	want := []domain.AccountDataset{"snaplink.identity", "snaplink.tenants", "snaplink.permissions", "snaplink.security"}
+	for _, action := range []string{"sync", "summary", "source.summary"} {
+		for _, tc := range []struct {
+			name    string
+			payload map[string]any
+		}{
+			{name: "missing payload"},
+			{name: "missing datasets", payload: map[string]any{}},
+			{name: "nil datasets", payload: map[string]any{"datasets": nil}},
+			{name: "empty json array", payload: map[string]any{"datasets": []any{}}},
+			{name: "empty string array", payload: map[string]any{"datasets": []string{}}},
+		} {
+			t.Run(action+"/"+tc.name, func(t *testing.T) {
+				client := &legacySnaplinkSummaryConnector{}
+				application := &operationRunnerSummaryApplication{}
+				runner := NewConnectorOperationRunner(&operationScopeAccountRepo{}, application, client)
+				operation := &domain.Operation{ID: domain.ID{1}, AccountID: domain.ID{2}, TenantID: "tenant-a", ActorUID: "actor-1"}
+				step := &domain.OperationStep{ID: domain.ID{3}, Source: string(connector.SourceSnaplink), Action: action, RequestPayload: tc.payload}
+				if _, _, err := runner.Run(t.Context(), operation, step); err != nil {
+					t.Fatalf("runner.Run: %v", err)
+				}
+				if client.calls != 1 {
+					t.Fatalf("summary calls = %d, want 1", client.calls)
+				}
+				if !reflect.DeepEqual(client.request.Datasets, want) {
+					t.Fatalf("connector datasets = %v, want %v", client.request.Datasets, want)
+				}
+				if !reflect.DeepEqual(application.request.RequestedDatasets, want) {
+					t.Fatalf("application datasets = %v, want %v", application.request.RequestedDatasets, want)
+				}
+			})
+		}
+	}
+}
+
+type legacySnaplinkSummaryConnector struct {
+	request connector.SummaryRequest
+	calls   int
+}
+
+func (c *legacySnaplinkSummaryConnector) Source() connector.Source   { return connector.SourceSnaplink }
+func (*legacySnaplinkSummaryConnector) Health(context.Context) error { return nil }
+func (c *legacySnaplinkSummaryConnector) Summary(_ context.Context, request connector.SummaryRequest) (*connector.Summary, error) {
+	c.calls++
+	c.request = request
+	return &connector.Summary{Source: connector.SourceSnaplink, SourceRegion: "local", Version: 1, Complete: true}, nil
+}
+
+type operationRunnerSummaryApplication struct {
+	request domain.SummaryApplicationRequest
+}
+
+func (a *operationRunnerSummaryApplication) ApplySummary(_ context.Context, request domain.SummaryApplicationRequest) (domain.SummaryApplicationResult, error) {
+	a.request = request
+	return domain.SummaryApplicationResult{Outcome: domain.SummaryApplied}, nil
+}
+
 func TestDestructiveOperationScopeIsSourceBound(t *testing.T) {
 	valid, err := parseOperationDatasetsForSource(
 		map[string]any{"datasets": []any{"aero-vault.tenants", "aero-vault.buckets"}}, connector.SourceAeroVault)
@@ -256,3 +314,7 @@ func TestOperationRunnerRejectsMalformedStoredAeroIMScopesBeforeConnectorCalls(t
 }
 
 type operationScopeAccountRepo struct{ repository.AccountRepository }
+
+func (*operationScopeAccountRepo) GetByID(_ context.Context, tenantID string, id domain.ID) (*domain.Account, error) {
+	return &domain.Account{ID: id, TenantID: tenantID, CanonicalUID: "canonical-1", HomeRegion: "local", Status: domain.AccountActive}, nil
+}
