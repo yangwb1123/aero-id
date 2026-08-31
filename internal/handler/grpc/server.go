@@ -259,20 +259,42 @@ func AuthInterceptor(v TokenValidator) grpc.UnaryServerInterceptor {
 		if token == "" {
 			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
 		}
-		identity, uid, err := validateIdentity(ctx, v, token)
-		if err != nil || uid == "" {
-			middleware.InvalidateTokenOnValidationFailure(v, token, err)
-			return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
+		if info != nil && controlPlaneRPC(info.FullMethod) {
+			return authenticateControlPlaneRPC(ctx, req, handler, v, token)
 		}
-		ctx = logger.WithActor(ctx, uid)
-		if identity != nil {
-			return handler(service.WithIdentity(ctx, identity), req)
-		}
-		return handler(service.WithActor(ctx, uid), req)
+		return authenticateLegacyRPC(ctx, req, handler, v, token)
 	}
 }
 
+func authenticateControlPlaneRPC(ctx context.Context, req any, handler grpc.UnaryHandler,
+	validator TokenValidator, token string) (any, error) {
+	identity, err := validateControlPlaneRPC(ctx, validator, token)
+	if err != nil {
+		middleware.InvalidateTokenOnValidationFailure(validator, token, err)
+		return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
+	}
+	ctx = logger.WithActor(ctx, identity.UID)
+	return handler(service.WithIdentity(ctx, identity), req)
+}
+
+func authenticateLegacyRPC(ctx context.Context, req any, handler grpc.UnaryHandler,
+	validator TokenValidator, token string) (any, error) {
+	identity, uid, err := validateIdentity(ctx, validator, token)
+	if err != nil || uid == "" {
+		middleware.InvalidateTokenOnValidationFailure(validator, token, err)
+		return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
+	}
+	ctx = logger.WithActor(ctx, uid)
+	if identity != nil {
+		return handler(service.WithIdentity(ctx, identity), req)
+	}
+	return handler(service.WithActor(ctx, uid), req)
+}
+
 func validateIdentity(ctx context.Context, validator TokenValidator, token string) (*domain.TokenIdentity, string, error) {
+	if middleware.IsNilTokenValidator(validator) {
+		return nil, "", status.Error(codes.Unauthenticated, "invalid or expired token")
+	}
 	if identityValidator, ok := validator.(interface {
 		ValidateIdentity(context.Context, string) (*domain.TokenIdentity, error)
 	}); ok {

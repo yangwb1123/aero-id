@@ -194,7 +194,7 @@ event_ingest:
   require_timestamp: true        # reject signatures without X-Aero-Event-Timestamp
   max_body_bytes: 1048576
   clock_skew: 5m
-  bindings: {}                   # verified Snaplink client_id -> {tenant_id, source, source_region}
+  bindings: {}                   # verified Snaplink client_id -> {tenant_id, source, source_region, allowed_tenants}
   allowed_regions: []            # residency allow-list (P6-04); empty = accept any source region
 event_bus:                       # optional canonical-event consumer transport (P3-04)
   nats:

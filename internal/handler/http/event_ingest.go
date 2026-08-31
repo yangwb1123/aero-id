@@ -22,7 +22,7 @@ import (
 
 type EventIngestHandler struct {
 	service      service.EventIngestService
-	bindings     event.SourceBindings
+	resolver     event.SourceBindingResolver
 	permissions  middleware.PermissionChecker
 	signingKey   []byte
 	sourceKeys   map[string][]byte
@@ -52,7 +52,11 @@ func WithEventTimestampRequired(required bool) EventIngestOption {
 }
 
 func WithEventSourceBindings(bindings event.SourceBindings) EventIngestOption {
-	return func(h *EventIngestHandler) { h.bindings = bindings }
+	return func(h *EventIngestHandler) { h.resolver = bindings }
+}
+
+func WithEventSourceBindingResolver(resolver event.SourceBindingResolver) EventIngestOption {
+	return func(h *EventIngestHandler) { h.resolver = resolver }
 }
 
 func WithEventPermissionChecker(checker middleware.PermissionChecker) EventIngestOption {
@@ -80,7 +84,7 @@ func NewEventIngestHandler(ingest service.EventIngestService, signingKey string,
 }
 
 func (h *EventIngestHandler) RegisterRoutes(r Routes) {
-	group := r.InternalAuth.Group("/internal/v1/events")
+	group := r.InternalControlPlane.Group("/internal/v1/events")
 	if h.permissions != nil {
 		group.Use(middleware.RequirePermission(domain.PermSourceEventIngest, h.permissions))
 	}
@@ -120,7 +124,10 @@ func (h *EventIngestHandler) Ingest(c *gin.Context) {
 
 func (h *EventIngestHandler) bindSource(c *gin.Context, events []event.Envelope) error {
 	identity, _ := service.IdentityFrom(c.Request.Context())
-	binding, err := h.bindings.Resolve(identity)
+	if h.resolver == nil {
+		return apperr.Forbidden("event.source_unauthorized", "event source is not authorized")
+	}
+	binding, err := h.resolver.Resolve(identity)
 	if err != nil {
 		return apperr.Forbidden("event.source_unauthorized", "event source is not authorized")
 	}

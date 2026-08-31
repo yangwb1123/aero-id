@@ -22,12 +22,12 @@ func NewAggregationHandler(aggregation service.AggregationService, permission mi
 }
 
 func (h *AggregationHandler) RegisterRoutes(r Routes) {
-	r.Auth.GET("/me/overview", h.GetMeOverview)
-	r.Auth.GET("/me/resources", h.GetMeOverview)
-	r.Auth.GET("/me/data", h.GetMeOverview)
-	r.Auth.GET("/me/activity", h.GetMeActivity)
-	r.Auth.GET("/account-datasets", h.ListDatasets)
-	admin := r.Auth.Group("/admin/accounts")
+	r.ControlPlane.GET("/me/overview", h.GetMeOverview)
+	r.ControlPlane.GET("/me/resources", h.GetMeOverview)
+	r.ControlPlane.GET("/me/data", h.GetMeOverview)
+	r.ControlPlane.GET("/me/activity", h.GetMeActivity)
+	r.ControlPlane.GET("/account-datasets", h.ListDatasets)
+	admin := r.ControlPlane.Group("/admin/accounts")
 	if h.permission != nil {
 		admin.Use(middleware.RequirePermission(service.AccountReadPermission, h.permission))
 	}

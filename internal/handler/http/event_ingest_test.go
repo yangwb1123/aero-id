@@ -42,7 +42,7 @@ func TestEventIngestHandler_VerifiesTimestampBoundSourceSignature(t *testing.T) 
 		}))
 		c.Next()
 	})
-	handler.RegisterRoutes(httpapi.Routes{InternalAuth: engine.Group("")})
+	handler.RegisterRoutes(httpapi.Routes{InternalControlPlane: engine.Group("")})
 
 	body := validEventBody(t, "aero-im")
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
@@ -73,7 +73,7 @@ func TestEventIngestHandler_RejectsUnsignedTimestampAndWrongSourceKey(t *testing
 		}))
 		c.Next()
 	})
-	handler.RegisterRoutes(httpapi.Routes{InternalAuth: engine.Group("")})
+	handler.RegisterRoutes(httpapi.Routes{InternalControlPlane: engine.Group("")})
 	body := validEventBody(t, "aero-im")
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 

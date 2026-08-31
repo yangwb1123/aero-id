@@ -111,6 +111,13 @@ func bootConfigFromShippedFile(t *testing.T) (*config.Config, *gorm.DB) {
 	cfg.Server.GRPC.Port = 0
 	cfg.Storage.Local.Root = t.TempDir()
 	cfg.SSO.Endpoint = "" // lazy grpc.NewClient; hermetic (no dial at boot)
+	// The shipped config intentionally leaves JWKS unset so a standard
+	// production composition fails closed. This fixture opts into a valid,
+	// unreachable HTTPS URL because app.New constructs (but does not fetch) the
+	// verifier; no token validation is exercised by these boot tests.
+	cfg.SSO.JWKSURL = "https://snaplink.example.test/.well-known/jwks.json"
+	cfg.SSO.Issuer = "snaplink"
+	cfg.SSO.Audience = "aero-id"
 	cfg.Callback.WorkerInterval = 50 * time.Millisecond
 	testpg.Migrate(t, bd.db, filepath.Join(testpg.RepoRoot(t), "migrations"))
 	return cfg, bd.db

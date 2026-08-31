@@ -235,6 +235,8 @@ type EventIngestResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventId       string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	ErrorCode     string                 `protobuf:"bytes,3,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	Retryable     bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -281,6 +283,20 @@ func (x *EventIngestResult) GetStatus() string {
 		return x.Status
 	}
 	return ""
+}
+
+func (x *EventIngestResult) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *EventIngestResult) GetRetryable() bool {
+	if x != nil {
+		return x.Retryable
+	}
+	return false
 }
 
 type IngestEventsResponse struct {
@@ -354,10 +370,13 @@ const file_aero_id_v1_event_proto_rawDesc = "" +
 	"occurredAt\x121\n" +
 	"\apayload\x18\x10 \x01(\v2\x17.google.protobuf.StructR\apayload\"I\n" +
 	"\x13IngestEventsRequest\x122\n" +
-	"\x06events\x18\x01 \x03(\v2\x1a.aero_id.v1.CanonicalEventR\x06events\"F\n" +
+	"\x06events\x18\x01 \x03(\v2\x1a.aero_id.v1.CanonicalEventR\x06events\"\x83\x01\n" +
 	"\x11EventIngestResult\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"O\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x03 \x01(\tR\terrorCode\x12\x1c\n" +
+	"\tretryable\x18\x04 \x01(\bR\tretryable\"O\n" +
 	"\x14IngestEventsResponse\x127\n" +
 	"\aresults\x18\x01 \x03(\v2\x1d.aero_id.v1.EventIngestResultR\aresults2h\n" +
 	"\x13SourceIngestService\x12Q\n" +

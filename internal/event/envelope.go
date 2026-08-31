@@ -2,9 +2,11 @@
 package event
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
@@ -34,6 +36,19 @@ type Envelope struct {
 	Payload          map[string]any `json:"payload"`
 }
 
+const (
+	MaxEventBytes         = 256 * 1024
+	MaxSourceBytes        = 64
+	MaxRegionBytes        = 64
+	MaxEventTypeBytes     = 128
+	MaxAggregateTypeBytes = 128
+	MaxAggregateIDBytes   = 256
+	MaxActorUIDBytes      = 256
+	MaxTenantIDBytes      = 256
+	MaxTraceIDBytes       = 256
+	MaxIDBytes            = 64
+)
+
 type SnapshotMutation struct {
 	AccountID    domain.ID
 	Dataset      domain.AccountDataset
@@ -50,6 +65,9 @@ func (e *Envelope) Validate() error {
 	}
 	if e.EventID == (domain.ID{}) {
 		return fmt.Errorf("event_id is required")
+	}
+	if err := e.validateBounds(); err != nil {
+		return err
 	}
 	checks := []func() error{e.validateSource, e.validateType, e.validateAggregate, e.validatePayload}
 	for _, check := range checks {
@@ -95,6 +113,44 @@ func (e *Envelope) validateAggregate() error {
 func (e *Envelope) validatePayload() error {
 	if e.Payload == nil {
 		return fmt.Errorf("payload is required")
+	}
+	encoded, err := json.Marshal(e.Payload)
+	if err != nil {
+		return fmt.Errorf("payload is not serializable")
+	}
+	if len(encoded) > MaxEventBytes {
+		return fmt.Errorf("payload is too large")
+	}
+	return nil
+}
+
+func containsControl(value string) bool {
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Envelope) validateBounds() error {
+	fields := []struct {
+		name  string
+		value string
+		max   int
+	}{
+		{"source", e.Source, MaxSourceBytes}, {"source_region", e.SourceRegion, MaxRegionBytes},
+		{"event_type", e.EventType, MaxEventTypeBytes}, {"aggregate_type", e.AggregateType, MaxAggregateTypeBytes},
+		{"aggregate_id", e.AggregateID, MaxAggregateIDBytes}, {"actor_uid", e.ActorUID, MaxActorUIDBytes},
+		{"tenant_id", e.TenantID, MaxTenantIDBytes}, {"trace_id", e.TraceID, MaxTraceIDBytes},
+	}
+	for _, field := range fields {
+		if len(field.value) > field.max {
+			return fmt.Errorf("%s is too long", field.name)
+		}
+		if !utf8.ValidString(field.value) || containsControl(field.value) {
+			return fmt.Errorf("%s is invalid", field.name)
+		}
 	}
 	return nil
 }

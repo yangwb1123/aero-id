@@ -428,7 +428,9 @@ func TestStandaloneSiteReplicationDedup(t *testing.T) {
 	if err := snapshots.UpsertSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	envelope := replicationEnvelope("local", "tenant-a", snapshot)
+	// UpsertSnapshot creates the first durable change-log revision, which is
+	// part of the event identity used by the sequence-aware worker.
+	envelope := replicationEnvelopeAtRevision("local", "tenant-a", snapshot, 1)
 	for i := 0; i < 2; i++ {
 		// A fresh cursor each run so both runs publish the same snapshot.
 		svc := NewProjectionReplicationService("local", snapshots, repository.NewReplicationCursorRepository(h.db),

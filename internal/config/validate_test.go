@@ -591,7 +591,7 @@ func TestValidateBindingRegions(t *testing.T) {
 }
 
 func TestValidateEventBindingWildcardIsReplicationOnly(t *testing.T) {
-	valid := EventSourceBindingConfig{TenantID: "*", Source: "aero-id", SourceRegion: "local"}
+	valid := EventSourceBindingConfig{TenantID: "*", Source: "aero-id", SourceRegion: "local", AllowedTenants: []string{"tenant-a"}}
 	if err := validateEventBinding("replication-client", valid); err != nil {
 		t.Fatalf("replication wildcard binding rejected: %v", err)
 	}

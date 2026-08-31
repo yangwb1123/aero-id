@@ -46,6 +46,16 @@ func RequireVersion(db *gorm.DB, min uint64) error {
 	if version < min {
 		return errors.New(schemaVersionMessage(version, min))
 	}
+	// A high watermark alone is not sufficient: an operator can remove an
+	// older bookkeeping row while leaving a later migration recorded. Require
+	// the gate's exact version as well, so a partial rollback fails closed.
+	var present bool
+	if err := db.Raw("SELECT EXISTS (SELECT 1 FROM "+migrationsTable+" WHERE version = ?)", min).Scan(&present).Error; err != nil {
+		return fmt.Errorf("check required schema version %06d: %w", min, err)
+	}
+	if !present {
+		return errors.New(schemaVersionMessage(version, min))
+	}
 	return nil
 }
 

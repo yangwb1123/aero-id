@@ -34,6 +34,20 @@ type EventReceiptRepository interface {
 	QuarantineEvent(context.Context, *event.Envelope, string) error
 }
 
+// EventQuarantineDetails carries bounded provenance for events that failed
+// before canonicalization. It is persistence metadata, not source content.
+type EventQuarantineDetails struct {
+	Stage           string
+	OriginalWireID  string
+	WireFingerprint string
+}
+
+// EventQuarantineRepository is an optional detail-aware extension. The base
+// interface remains unchanged for compatibility with existing adapters.
+type EventQuarantineRepository interface {
+	QuarantineEventWithDetails(context.Context, *event.Envelope, string, EventQuarantineDetails) error
+}
+
 type EventSnapshotAuditRepository interface {
 	ApplySnapshotEventWithAudit(context.Context, *event.Envelope, *event.SnapshotMutation, *domain.AuditFact) (EventApplyResult, error)
 }
@@ -208,24 +222,38 @@ func (r *eventReceiptRepo) appendEventAudit(ctx context.Context, tx *gorm.DB, fa
 }
 
 func (r *eventReceiptRepo) QuarantineEvent(ctx context.Context, envelope *event.Envelope, code string) error {
-	contentHash, err := event.CanonicalContentHash(envelope)
+	return r.QuarantineEventWithDetails(ctx, envelope, code, EventQuarantineDetails{})
+}
+
+// QuarantineEventDetailed is a naming-compatible alias for detail-aware
+// adapters introduced after the original receipt interface.
+func (r *eventReceiptRepo) QuarantineEventDetailed(ctx context.Context, envelope *event.Envelope,
+	code string, details EventQuarantineDetails) error {
+	return r.QuarantineEventWithDetails(ctx, envelope, code, details)
+}
+
+func (r *eventReceiptRepo) QuarantineEventWithDetails(ctx context.Context, envelope *event.Envelope, code string, details EventQuarantineDetails) error {
+	contentHash, err := quarantineContentHash(envelope, details)
 	if err != nil {
 		return fmt.Errorf("canonical quarantined event content: %w", err)
 	}
-	payload, err := marshalRedactedEventPayload(envelope)
+	payload, err := marshalQuarantinedEventPayload(envelope, details)
 	if err != nil {
 		return fmt.Errorf("marshal quarantined event payload: %w", err)
 	}
 	now := time.Now().UTC()
+	// The canonical hash above protects integrity; the row itself receives only
+	// bounded fields and fixed quarantine metadata.
+	stored := event.BoundedEnvelope(envelope)
 	row := &eventReceiptRow{
-		ID: idgen.NewID(), TenantID: envelope.TenantID, Source: envelope.Source, EventID: envelope.EventID,
-		SourceRegion: envelope.SourceRegion, AggregateType: envelope.AggregateType,
-		AggregateID: envelope.AggregateID, AggregateVersion: envelope.AggregateVersion,
+		ID: idgen.NewID(), TenantID: stored.TenantID, Source: stored.Source, EventID: stored.EventID,
+		SourceRegion: stored.SourceRegion, AggregateType: stored.AggregateType,
+		AggregateID: stored.AggregateID, AggregateVersion: stored.AggregateVersion,
 		Status: string(EventQuarantined), ErrorCode: code, Payload: datatypes.JSON(payload), ContentHash: contentHash,
 		Attempt: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return quarantineEventTx(tx, envelope, row, contentHash, code, now)
+		return quarantineEventTx(tx, stored, row, contentHash, code, now)
 	})
 }
 

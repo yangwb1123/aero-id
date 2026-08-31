@@ -17,7 +17,7 @@ func (s *syncJobService) Reconcile(ctx context.Context, id domain.ID, worker str
 	if err != nil {
 		return nil, err
 	}
-	if job.Status != domain.SyncJobUnknown {
+	if job.Status != domain.SyncJobUnknown && !retryableEraseProjectionFailure(job) {
 		return job, nil
 	}
 	// Validate erase scopes before home-region/account loading or a status
@@ -25,17 +25,7 @@ func (s *syncJobService) Reconcile(ctx context.Context, id domain.ID, worker str
 	// instruction to probe a source with an implicit scope.
 	if job.JobType == domain.SyncJobErase {
 		if scopeErr := validatePersistedSyncJobScope(job); scopeErr != nil {
-			claimCtx, claimCancel := syncPersistenceContext(ctx)
-			claimed, claimErr := s.repo.ClaimUnknown(claimCtx, id, workerOrDefault(worker), syncLeaseDuration)
-			claimCancel()
-			if errors.Is(claimErr, gorm.ErrRecordNotFound) {
-				return nil, apperr.Conflict("sync.not_reconcilable", "sync job is already being reconciled or is no longer unknown")
-			}
-			if claimErr != nil {
-				return nil, apperr.Internal("sync.reconcile_claim_failed", "failed to claim unknown sync job").Wrap(claimErr)
-			}
-			code, message := syncJobScopeFailure(job.JobType)
-			return nil, s.finishJobFailure(ctx, claimed, domain.SyncJobFailed, code, message, job.Result, scopeErr)
+			return s.failInvalidPersistedScope(ctx, id, worker, job, scopeErr)
 		}
 	}
 	if err := requireHomeRegion(ctx, s.accountRepo, job.AccountID, s.region); err != nil {
@@ -51,12 +41,34 @@ func (s *syncJobService) Reconcile(ctx context.Context, id domain.ID, worker str
 	return s.reconcileClaimed(ctx, claimed)
 }
 
-func (s *syncJobService) reconcileClaimed(ctx context.Context, claimed *domain.SyncJob) (*domain.SyncJob, error) {
-	if claimed.JobType != domain.SyncJobErase {
-		return s.finishJobAndLoad(ctx, claimed, domain.SyncJobUnknown, "sync.reconcile_unsupported",
-			"this sync job type has no outcome reconciler", claimed.Result)
+func (s *syncJobService) failInvalidPersistedScope(ctx context.Context, id domain.ID, worker string,
+	job *domain.SyncJob, scopeErr error) (*domain.SyncJob, error) {
+	claimCtx, claimCancel := syncPersistenceContext(ctx)
+	claimed, claimErr := s.repo.ClaimUnknown(claimCtx, id, workerOrDefault(worker), syncLeaseDuration)
+	claimCancel()
+	if errors.Is(claimErr, gorm.ErrRecordNotFound) {
+		return nil, apperr.Conflict("sync.not_reconcilable", "sync job is already being reconciled or is no longer unknown")
 	}
-	return s.reconcileErase(ctx, claimed)
+	if claimErr != nil {
+		return nil, apperr.Internal("sync.reconcile_claim_failed", "failed to claim unknown sync job").Wrap(claimErr)
+	}
+	code, message := syncJobScopeFailure(job.JobType)
+	return nil, s.finishJobFailure(ctx, claimed, domain.SyncJobFailed, code, message, job.Result, scopeErr)
+}
+
+func (s *syncJobService) reconcileClaimed(ctx context.Context, claimed *domain.SyncJob) (*domain.SyncJob, error) {
+	switch claimed.JobType {
+	case domain.SyncJobSync, domain.SyncJobReconcile:
+		return s.reconcileSync(ctx, claimed)
+	case domain.SyncJobExport:
+		return s.executeExport(ctx, claimed)
+	case domain.SyncJobAuditExport:
+		return s.executeAuditExport(ctx, claimed)
+	case domain.SyncJobErase:
+		return s.reconcileErase(ctx, claimed)
+	default:
+		return s.recoveryFailure(ctx, claimed, "sync.invalid_job_type", "sync job type cannot be recovered", errors.New("unsupported sync job type"))
+	}
 }
 
 //nolint:cyclop,funlen // erase reconciliation aggregates per-source completed, failed, and unknown states.
@@ -73,15 +85,31 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 	}
 	result := cloneSyncResult(job.Result)
 	sources := syncResultSources(result)
+	if durableSources, durableErr := s.durableEraseSources(ctx, job, required); durableErr != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobUnknown, "erase.outcome_checkpoint_failed",
+			"source erase outcome could not be recovered", result, durableErr)
+	} else if durableSources != nil {
+		sources = durableSources
+		result["sources"] = sources
+	}
 	unknown := len(sources) == 0
+	failures := 0
 	for source, rawValue := range sources {
 		if len(required[connector.Source(source)]) == 0 {
 			return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
 				"erase job contains a source outcome outside its dataset scope", job.Result, invalidSyncDatasetScope())
 		}
-		if _, ok := rawValue.(map[string]any); !ok {
+		value, ok := rawValue.(map[string]any)
+		if !ok {
 			return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
 				"erase job contains an invalid source outcome", job.Result, invalidSyncDatasetScope())
+		}
+		status, _ := value["status"].(string)
+		if eraseFailureStatus(status) {
+			failures++
+		}
+		if eraseStatusNeedsReconcile(value) {
+			unknown = true
 		}
 	}
 	for source := range required {
@@ -97,7 +125,6 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobUnknown, "erase.account_load_failed", "failed to load account", job.Result, cause)
 	}
-	failures := 0
 	for source, rawValue := range sources {
 		value := rawValue.(map[string]any)
 		if !eraseStatusNeedsReconcile(value) {
@@ -118,11 +145,19 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 			entry["source_operation_id"] = sourceOperationID
 		}
 		for key, item := range sourceResult {
-			if key != "status" && key != "source_operation_id" {
+			if key != "status" && key != "source_operation_id" && key != "error_code" {
 				entry[key] = item
 			}
 		}
 		sources[source] = entry
+		checkpointCode := ""
+		if reconcileErr != nil {
+			checkpointCode = remoteErrorCode(reconcileErr)
+		}
+		if checkpointErr := s.checkpointEraseOutcome(ctx, job, connector.Source(source), status,
+			sourceOperationID, checkpointCode, sourceResult); checkpointErr != nil {
+			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "erase.outcome_checkpoint_failed", "source erase outcome could not be recorded", result)
+		}
 		if status == "unknown" {
 			unknown = true
 		}
@@ -134,7 +169,7 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 	status, code, message := eraseReconcileStatus(unknown, failures)
 	if status == domain.SyncJobCompleted {
 		persistCtx, persistCancel := syncPersistenceContext(ctx)
-		err := s.accountRepo.EraseAccount(persistCtx, job.TenantID, job.AccountID)
+		err := s.eraseAccountWithLease(persistCtx, job)
 		persistCancel()
 		if err != nil {
 			status = domain.SyncJobPartiallyComplete
@@ -144,6 +179,7 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 	return s.finishJobAndLoad(ctx, job, status, code, message, result)
 }
 
+//nolint:cyclop,funlen // status reconciliation and explicit not-accepted retry are bounded remote states.
 func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *domain.Account, job *domain.SyncJob,
 	source string, value map[string]any) (string, string, map[string]any, error) {
 	client, ok := s.connectors[connector.Source(source)]
@@ -173,7 +209,44 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 	if operationID == "" {
 		operationID = sourceOperationID(value)
 	}
+	// An operation-status API without an operation identifier is only safe
+	// when the source explicitly says the command was not accepted. For every
+	// other status, retrying or guessing could erase the wrong command.
+	if operationID == "" && !notAcceptedStatus(status) {
+		return "unknown", "", nil, remoteUnknownError(source, "source.operation_id_missing")
+	}
+	if notAcceptedStatus(status) {
+		command, ok := client.(connector.CommandConnector)
+		if !ok {
+			return "unknown", operationID, nil, remoteUnknownError(source, "source.command_not_configured")
+		}
+		remoteCtx, remoteCancel = syncRemoteContext(ctx)
+		retried, retryErr := command.Erase(remoteCtx, eraseRequestForJob(account, job, connector.Source(source), requiredDatasetsForOutcome(job, source)))
+		remoteCancel()
+		if retryErr != nil {
+			return "unknown", operationID, nil, retryErr
+		}
+		if retried == nil {
+			return "unknown", operationID, nil, remoteUnknownError(source, "source.empty_command_result")
+		}
+		status = normalizedCommandStatus(retried.Status)
+		if strings.TrimSpace(retried.SourceOperationID) != "" {
+			operationID = strings.TrimSpace(retried.SourceOperationID)
+		}
+		return eraseSourceOutcome(status), operationID, connector.RedactSummaryData(retried.Result), nil
+	}
 	return eraseSourceOutcome(status), operationID, result.Result, nil
+}
+
+func notAcceptedStatus(status string) bool {
+	status = normalizedCommandStatus(status)
+	return status == "not_accepted" || status == "not accepted" || status == "not-accepted"
+}
+
+func requiredDatasetsForOutcome(job *domain.SyncJob, source string) []domain.AccountDataset {
+	datasets, _ := parsePersistedDatasets(job.Request, true)
+	bySource, _ := validatedDatasetsBySource(datasets)
+	return bySource[connector.Source(source)]
 }
 
 func remoteUnknownError(source, code string) error {
@@ -208,7 +281,7 @@ func eraseStatusNeedsReconcile(value map[string]any) bool {
 
 func eraseFailureStatus(status string) bool {
 	switch normalizedCommandStatus(status) {
-	case "failed", "failure", "rejected", "cancelled", "canceled":
+	case "failed", "failure", "rejected", "cancelled", "canceled", "not_configured":
 		return true
 	default:
 		return false
@@ -244,6 +317,11 @@ func sourceOperationID(value map[string]any) string {
 	return strings.TrimSpace(raw)
 }
 
+func retryableEraseProjectionFailure(job *domain.SyncJob) bool {
+	return job != nil && job.JobType == domain.SyncJobErase &&
+		job.Status == domain.SyncJobPartiallyComplete && job.ErrorCode == "erase.local_projection_failed"
+}
+
 func cloneSyncResult(value map[string]any) map[string]any {
 	result := make(map[string]any, len(value))
 	for key, item := range value {
@@ -254,7 +332,7 @@ func cloneSyncResult(value map[string]any) map[string]any {
 		for source, entry := range sources {
 			cloned[source] = entry
 		}
-		result["sources"] = cloned
+		result["sources"] = connector.RedactSummaryData(cloned)
 	} else {
 		result["sources"] = map[string]any{}
 	}

@@ -9,8 +9,12 @@ import (
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
 )
 
-//nolint:cyclop,funlen // sync execution aggregates concurrent source outcomes into a durable partial result.
 func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
+	return s.executeSyncForSources(ctx, job, nil)
+}
+
+//nolint:cyclop,funlen // sync execution aggregates concurrent source outcomes into a durable partial result.
+func (s *syncJobService) executeSyncForSources(ctx context.Context, job *domain.SyncJob, skip map[connector.Source]bool) (*domain.SyncJob, error) {
 	datasets, scopeErr := parsePersistedSyncDatasets(job.Request, true)
 	if scopeErr != nil {
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.invalid_dataset_scope",
@@ -34,6 +38,9 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 	var unknown int
 	var missing int
 	for source, requested := range required {
+		if skip[source] {
+			continue
+		}
 		if _, configured := s.connectors[source]; configured {
 			continue
 		}
@@ -43,6 +50,9 @@ func (s *syncJobService) executeSync(ctx context.Context, job *domain.SyncJob) (
 		}
 	}
 	for source, client := range s.connectors {
+		if skip[source] {
+			continue
+		}
 		requested := required[source]
 		if len(requested) == 0 {
 			continue

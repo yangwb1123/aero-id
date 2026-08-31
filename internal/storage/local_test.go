@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/storage"
 )
 
@@ -25,6 +26,64 @@ func newLocalAt(t *testing.T, root string) storage.FileStorage {
 		SigningKey:    "test-signing-key",
 		PublicBaseURL: "http://example.com",
 	})
+}
+
+func TestLocal_JobArtifactOverwriteIsDeterministicAndAtomic(t *testing.T) {
+	store := storage.NewLocal(storage.LocalConfig{Root: t.TempDir()})
+	writer, ok := any(store).(storage.JobArtifactWriter)
+	if !ok {
+		t.Fatal("local storage does not implement JobArtifactWriter")
+	}
+	jobID := domain.ID{1}
+	key1, _, err := writer.PutJobArtifact(t.Context(), "owner", jobID, "export", strings.NewReader("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, _, err := writer.PutJobArtifact(t.Context(), "owner", jobID, "export", strings.NewReader("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key1 != key2 {
+		t.Fatalf("artifact keys differ: %q != %q", key1, key2)
+	}
+	reader, err := store.Get(t.Context(), key1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "second" {
+		t.Fatalf("artifact = %q, want second", data)
+	}
+	if _, err := store.Stat(t.Context(), key1); err != nil {
+		t.Fatal(err)
+	}
+
+	// A replacement claim uses a new opaque lease token. Its write must not
+	// overwrite the object belonging to the expired attempt; the database
+	// checkpoint selects which key is live after the write.
+	key3, _, err := writer.PutJobArtifact(t.Context(), "replacement-lease", jobID, "export", strings.NewReader("replacement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key3 == key1 {
+		t.Fatalf("replacement claim reused stale artifact key %q", key3)
+	}
+	oldReader, err := store.Get(t.Context(), key1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldReader.Close()
+	oldData, err := io.ReadAll(oldReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(oldData) != "second" {
+		t.Fatalf("stale artifact changed to %q", oldData)
+	}
 }
 
 func TestLocal_RejectsTraversalKeys(t *testing.T) {

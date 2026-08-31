@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/aero/aero-id/internal/domain"
 	"io"
 	"net/url"
 	"os"
@@ -76,6 +77,21 @@ func (l *Local) NewKey(ownerUID string) string {
 
 func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, int64, error) {
 	key := l.NewKey(ownerUID)
+	return l.putAt(ctx, key, r)
+}
+
+func (l *Local) PutJobArtifact(ctx context.Context, ownerUID string, jobID domain.ID, kind string, r io.Reader) (string, int64, error) {
+	key, err := JobArtifactKey(ownerUID, jobID, kind)
+	if err != nil {
+		return "", 0, err
+	}
+	return l.putAt(ctx, key, r)
+}
+
+func (l *Local) putAt(ctx context.Context, key string, r io.Reader) (string, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	path, err := l.keyToPath(key)
 	if err != nil {
 		return "", 0, err
@@ -83,15 +99,24 @@ func (l *Local) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (strin
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
 	}
-	f, err := os.Create(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".artifact-*")
 	if err != nil {
 		return "", 0, fmt.Errorf("create: %w", err)
 	}
-	defer f.Close()
-	n, err := io.Copy(f, r)
-	if err != nil {
-		_ = os.Remove(path) // don't leak a partial object when the write fails
-		return "", 0, fmt.Errorf("write: %w", err)
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmpPath) }
+	n, copyErr := io.Copy(tmp, r)
+	if copyErr != nil {
+		cleanup()
+		return "", 0, fmt.Errorf("write: %w", copyErr)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", 0, fmt.Errorf("close: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", 0, fmt.Errorf("replace: %w", err)
 	}
 	return key, n, nil
 }

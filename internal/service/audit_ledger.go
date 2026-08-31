@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -162,6 +163,9 @@ func (s *auditLedgerService) List(ctx context.Context, filter domain.AuditFactFi
 	if err != nil {
 		return nil, "", apperr.Unavailable("audit.list_failed", "audit ledger query failed").Wrap(err)
 	}
+	for i, fact := range facts {
+		facts[i] = redactedAuditFact(fact)
+	}
 	if err := s.Record(ctx, auditReadFactInput(tenantID, filter)); err != nil {
 		return nil, "", err
 	}
@@ -206,21 +210,46 @@ func auditTenantPartition(tenantID, partition string) string {
 	return strings.TrimSpace(tenantID) + ":" + strings.TrimSpace(partition)
 }
 
+const maxAuditPayloadBytes = 64 * 1024
+
+func redactedAuditFact(fact *domain.AuditFact) *domain.AuditFact {
+	if fact == nil {
+		return nil
+	}
+	copy := *fact
+	copy.Payload = redactAuditPayload(fact.Payload)
+	return &copy
+}
+
 func redactAuditPayload(input map[string]any) map[string]any {
 	if input == nil {
 		return map[string]any{}
 	}
+	result := redactAuditMap(input, 0)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return map[string]any{"truncated": true, "reason": "unserializable"}
+	}
+	if len(encoded) > maxAuditPayloadBytes {
+		return map[string]any{"truncated": true, "sha256": hashAuditBytes(encoded)}
+	}
+	return result
+}
+
+func redactAuditMap(input map[string]any, depth int) map[string]any {
+	if depth >= 4 {
+		return map[string]any{"truncated": true}
+	}
 	result := make(map[string]any, len(input))
 	for key, value := range input {
+		if !auditPayloadKeyAllowed(key) {
+			continue
+		}
 		if sensitiveAuditKey(key) {
 			result[key] = "[REDACTED]"
 			continue
 		}
-		result[key] = redactAuditValue(value, 0)
-	}
-	encoded, err := json.Marshal(result)
-	if err == nil && len(encoded) > 64*1024 {
-		return map[string]any{"truncated": true, "sha256": hashAuditBytes(encoded)}
+		result[key] = redactAuditValue(value, depth+1)
 	}
 	return result
 }
@@ -231,26 +260,100 @@ func redactAuditValue(value any, depth int) any {
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		return redactAuditPayload(typed)
+		return redactAuditMap(typed, depth)
 	case []any:
-		result := make([]any, 0, len(typed))
-		for _, item := range typed {
-			result = append(result, redactAuditValue(item, depth+1))
-		}
-		return result
+		return redactAuditArray(typed, depth)
 	default:
+		return redactAuditScalar(typed)
+	}
+}
+
+func redactAuditArray(values []any, depth int) any {
+	result := make([]any, 0, len(values))
+	for _, item := range values {
+		result = append(result, redactAuditValue(item, depth+1))
+	}
+	return result
+}
+
+func redactAuditScalar(value any) any {
+	if value == nil {
+		return nil
+	}
+	if typed, ok := value.(time.Time); ok {
+		return typed.UTC().Format(time.RFC3339Nano)
+	}
+	if typed, ok := value.(*time.Time); ok {
+		return redactAuditTimePointer(typed)
+	}
+	if typed, ok := value.([]string); ok {
+		// Strings cannot contain nested keys, so preserve this typed slice.
+		return typed
+	}
+	if isAuditPrimitive(value) {
 		return value
 	}
+	return "[UNSUPPORTED]"
+}
+
+func redactAuditTimePointer(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func isAuditPrimitive(value any) bool {
+	switch reflect.TypeOf(value).Kind() {
+	case reflect.Bool, reflect.String, reflect.Float32, reflect.Float64,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+var auditPayloadAllowList = map[string]struct{}{
+	"_quarantine": {}, "account_id": {}, "action": {}, "action_filter": {}, "actor_uid": {}, "actor_filter_present": {},
+	"aggregate_version": {}, "anchored_at": {}, "application_outcome": {}, "audit": {}, "bytes": {}, "canceled": {},
+	"chain_sequence": {}, "challenge": {}, "comment_count": {}, "comment_id": {}, "command_count": {}, "commands": {},
+	"complete": {}, "completed": {}, "conflict": {}, "continuation_job_id": {}, "created_at": {}, "current_state": {},
+	"cursor": {}, "cursor_present": {}, "data": {}, "dataset": {}, "datasets": {}, "delivery": {}, "dimension": {},
+	"drift_count": {}, "effective_at": {}, "envelope_event_id": {}, "erase": {}, "error_code": {}, "event_count": {},
+	"event_id": {}, "event_type": {}, "event_types": {}, "expected_epoch": {}, "expired": {}, "expires_at": {},
+	"failed": {}, "features": {}, "fields": {}, "from_present": {}, "from_uid": {}, "generated_at": {}, "hard": {},
+	"historical_operation_id": {}, "home_region": {}, "identity_kind": {}, "issuer": {}, "job_type": {}, "k": {},
+	"kind": {}, "last_synced_at": {}, "limit": {}, "locale": {}, "manifest_digest": {}, "matched": {}, "mode": {}, "n": {},
+	"note": {}, "occurred_at": {}, "one_time": {}, "operation_filter_present": {}, "operation_id": {}, "outcome": {},
+	"owner_uid": {}, "page_limit": {}, "partition": {}, "payload": {}, "peer_uid": {}, "plan": {}, "preferences": {},
+	"previous": {}, "previous_anchor_hash": {}, "quantity": {}, "reason": {}, "reason_code": {}, "record_hash": {},
+	"reconciled": {}, "recovery": {}, "replayed_events": {}, "request_filter_present": {}, "resource_id": {},
+	"resource_type": {}, "resource_type_filter": {}, "revision": {}, "role": {}, "schema_version": {}, "scope_id": {},
+	"scope_type": {}, "sha256": {}, "sidebar": {}, "signature_version": {}, "snapshot_id": {}, "snapshot_version": {},
+	"source": {}, "source_account_id": {}, "source_available": {}, "source_filter": {}, "source_member_id": {},
+	"source_operation_id": {}, "source_region": {}, "sources": {}, "stage": {}, "status": {}, "step_count": {},
+	"step_id": {}, "step_key": {}, "steps": {}, "storage_type": {}, "subscription_id": {}, "success": {}, "sync": {},
+	"target": {}, "target_id": {}, "target_region": {}, "target_type": {}, "tenant_id": {}, "terminal_attempts": {},
+	"to_present": {}, "to_uid": {}, "truncated": {}, "type": {}, "updated_at": {}, "usage_bytes": {}, "version": {},
+	"worker": {}, "worker_role": {}, "would_execute": {}, "target_uid": {}, "wire_event_id": {}, "wire_fingerprint": {},
+}
+
+func auditPayloadKeyAllowed(key string) bool {
+	_, ok := auditPayloadAllowList[strings.ToLower(strings.ReplaceAll(key, "-", "_"))]
+	return ok
 }
 
 func sensitiveAuditKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-	for _, part := range []string{"token", "cookie", "password", "secret", "mfa", "recovery", "object_bytes", "message_body", "bearer"} {
+	for _, part := range []string{"token", "cookie", "password", "secret", "mfa", "recovery", "credential",
+		"private_key", "privatekey", "access_key", "accesskey", "api_key", "apikey", "jwt", "bearer",
+		"object_bytes", "object_data", "message_body", "message_content"} {
 		if strings.Contains(key, part) {
 			return true
 		}
 	}
-	return key == "content" || key == "body" || key == "raw"
+	return key == "authorization" || key == "content" || key == "body" || key == "raw"
 }
 
 func hashAuditBytes(value []byte) string {

@@ -39,8 +39,8 @@ func TestSourceBindingRejectsUnknownOrConflictingClaims(t *testing.T) {
 }
 
 func TestSourceBindingAllowsWildcardTenantOnlyForReplication(t *testing.T) {
-	bindings := SourceBindings{"replication-client": {TenantID: "*", Source: "aero-id", SourceRegion: "west"}}
-	binding, err := bindings.Resolve(&domain.TokenIdentity{ClientID: "replication-client"})
+	bindings := SourceBindings{"replication-client": {TenantID: "*", Source: "aero-id", SourceRegion: "west", AllowedTenants: []string{"tenant-a"}}}
+	binding, err := bindings.Resolve(&domain.TokenIdentity{Verified: true, ClientID: "replication-client", AllowedTenants: []string{"tenant-a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,9 @@ func TestSourceBindingAllowsWildcardTenantOnlyForReplication(t *testing.T) {
 	}
 	if envelope.TenantID != "tenant-a" || envelope.Source != "aero-id" || envelope.SourceRegion != "west" {
 		t.Fatalf("wildcard binding changed event scope: %+v", envelope)
+	}
+	if err := binding.Apply(&Envelope{TenantID: "tenant-b", Source: "aero-id", SourceRegion: "west"}); err == nil {
+		t.Fatal("wildcard binding accepted an undelegated tenant")
 	}
 	if err := binding.Apply(&Envelope{Source: "aero-id", SourceRegion: "west"}); err == nil {
 		t.Fatal("wildcard binding accepted an event without a tenant")

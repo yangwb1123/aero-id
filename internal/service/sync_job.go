@@ -370,6 +370,10 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 	}
 	result := map[string]any{"sources": map[string]any{}}
 	statuses := result["sources"].(map[string]any)
+	if err := s.ensureEraseOutcomeRows(ctx, job, required); err != nil {
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobUnknown, "erase.outcome_checkpoint_failed",
+			"source erase outcome could not be checkpointed", result, err)
+	}
 	unknown := false
 	failures := 0
 	var wait sync.WaitGroup
@@ -377,14 +381,26 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 	for source, requested := range required {
 		client, configured := s.connectors[source]
 		if !configured {
-			statuses[string(source)] = map[string]any{"status": "not_configured"}
-			unknown = true
+			statuses[string(source)] = map[string]any{"status": "failed", "error_code": "source.not_configured"}
+			if err := s.checkpointEraseOutcome(ctx, job, source, "failed", "", "source.not_configured", nil); err != nil {
+				statuses[string(source)].(map[string]any)["status"] = "unknown"
+				statuses[string(source)].(map[string]any)["error_code"] = eraseCheckpointCode(err)
+				unknown = true
+			} else {
+				failures++
+			}
 			continue
 		}
 		command, ok := client.(connector.CommandConnector)
 		if !ok {
-			statuses[string(source)] = map[string]any{"status": "not_configured"}
-			unknown = true
+			statuses[string(source)] = map[string]any{"status": "failed", "error_code": "source.operation_not_configured"}
+			if err := s.checkpointEraseOutcome(ctx, job, source, "failed", "", "source.operation_not_configured", nil); err != nil {
+				statuses[string(source)].(map[string]any)["status"] = "unknown"
+				statuses[string(source)].(map[string]any)["error_code"] = eraseCheckpointCode(err)
+				unknown = true
+			} else {
+				failures++
+			}
 			continue
 		}
 		wait.Add(1)
@@ -397,28 +413,46 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 			defer mu.Unlock()
 			if callErr != nil {
 				status, outcomeUnknown, outcomeFailed := eraseCallOutcome(callErr)
+				code := remoteErrorCode(callErr)
+				if checkpointErr := s.checkpointEraseOutcome(ctx, job, source, eraseOutcomeStatus(status), "", code, nil); checkpointErr != nil {
+					status, outcomeUnknown, outcomeFailed, code = "unknown", true, false, eraseCheckpointCode(checkpointErr)
+				}
 				if outcomeUnknown {
 					unknown = true
 				}
 				if outcomeFailed {
 					failures++
 				}
-				statuses[string(source)] = map[string]any{"status": status, "error_code": remoteErrorCode(callErr)}
+				statuses[string(source)] = map[string]any{"status": status, "error_code": code}
 				return
 			}
 			if commandResult == nil {
 				unknown = true
-				statuses[string(source)] = map[string]any{"status": "unknown", "error_code": "source.empty_command_result"}
+				code := "source.empty_command_result"
+				if checkpointErr := s.checkpointEraseOutcome(ctx, job, source, "unknown", "", code, nil); checkpointErr != nil {
+					code = eraseCheckpointCode(checkpointErr)
+				}
+				statuses[string(source)] = map[string]any{"status": "unknown", "error_code": code}
 				return
 			}
 			commandStatus := normalizedCommandStatus(commandResult.Status)
-			statuses[string(source)] = map[string]any{"status": commandStatus, "source_operation_id": commandResult.SourceOperationID}
+			outcomeStatus := eraseOutcomeStatus(commandStatus)
+			code := ""
 			if !commandSucceeded(commandStatus) {
-				if eraseFailureStatus(commandStatus) {
-					failures++
-				} else {
-					unknown = true
-				}
+				code = "source.command_failed"
+			}
+			if checkpointErr := s.checkpointEraseOutcome(ctx, job, source, outcomeStatus,
+				commandResult.SourceOperationID, code, commandResult.Result); checkpointErr != nil {
+				outcomeStatus, code, unknown = "unknown", eraseCheckpointCode(checkpointErr), true
+			}
+			statuses[string(source)] = map[string]any{"status": outcomeStatus, "source_operation_id": commandResult.SourceOperationID}
+			if code != "" {
+				statuses[string(source)].(map[string]any)["error_code"] = code
+			}
+			if outcomeStatus == "failed" {
+				failures++
+			} else if outcomeStatus == "unknown" {
+				unknown = true
 			}
 		}(source, command, requested)
 	}
@@ -433,7 +467,7 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 		code, message = "erase.partial_failure", "one or more source deletion commands failed"
 	} else {
 		persistCtx, persistCancel := syncPersistenceContext(ctx)
-		err := s.accountRepo.EraseAccount(persistCtx, job.TenantID, job.AccountID)
+		err := s.eraseAccountWithLease(persistCtx, job)
 		persistCancel()
 		if err != nil {
 			status = domain.SyncJobPartiallyComplete

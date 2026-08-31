@@ -60,11 +60,12 @@ PROJECTION_FILE="internal/service/projection_replication.go"
 # live idgen.Anchor call must satisfy, mirroring the golden case set in
 # internal/pkg/idgen/idgen_test.go:
 #   audit.region.promote  (G14/G14b/G14c)  audit.preference.set (G15)
+#   event.quarantine.v1   (G17)
 #   audit_hold.set        (G9/G9b)         audit_hold.removed  (G10)
 #   legacy.cutover.set    (G11-G13)        sync.job.finished   (G8)
 # The operation.* family (G1-G7) is documented only: the live operation site
 # passes its action dynamically, so those discriminators are never extracted.
-ANCHOR_MANIFEST="audit.region.promote audit.preference.set audit_hold.set audit_hold.removed legacy.cutover.set sync.job.finished projection.replication.quarantine.v1"
+ANCHOR_MANIFEST="audit.region.promote audit.preference.set event.quarantine.v1 audit_hold.set audit_hold.removed legacy.cutover.set sync.job.finished projection.replication.quarantine.v1"
 
 # extract_anchors <root> — emit one joined leading-literal discriminator per
 # line for every idgen.Anchor("lit", ...) call in the root, joined from the

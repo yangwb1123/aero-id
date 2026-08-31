@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/aero/aero-id/internal/connector"
@@ -55,6 +57,38 @@ func (fakeAccountService) UpsertMembership(context.Context, *domain.AccountMembe
 	return nil
 }
 
+type recoveryProjectionRepo struct {
+	repository.SyncJobRepository
+	saved   []repository.SummaryReplayInput
+	saveErr error
+}
+
+func (f *recoveryProjectionRepo) SaveSummaryReplay(_ context.Context, input repository.SummaryReplayInput) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = append(f.saved, input)
+	return nil
+}
+func (f *recoveryProjectionRepo) ListSummaryReplays(context.Context, domain.ID) ([]repository.SummaryReplay, error) {
+	return nil, nil
+}
+func (f *recoveryProjectionRepo) ResolveSummaryReplay(context.Context, domain.ID, string, int, string) error {
+	return nil
+}
+func (f *recoveryProjectionRepo) EnsureEraseOutcomes(context.Context, domain.ID, string, []repository.EraseOutcomeInput) error {
+	return nil
+}
+func (f *recoveryProjectionRepo) ListEraseOutcomes(context.Context, domain.ID) ([]repository.EraseOutcome, error) {
+	return nil, nil
+}
+func (f *recoveryProjectionRepo) CheckpointEraseOutcome(context.Context, repository.EraseOutcomeCheckpoint) error {
+	return nil
+}
+func (f *recoveryProjectionRepo) CheckpointArtifact(context.Context, repository.ArtifactCheckpoint) error {
+	return nil
+}
+
 type fakeSummaryApplication struct {
 	requests []domain.SummaryApplicationRequest
 }
@@ -78,6 +112,38 @@ var vaultDatasets = []domain.AccountDataset{
 	domain.AccountDataset("aero-vault.tenants"),
 	domain.AccountDataset("aero-vault.buckets"),
 	domain.AccountDataset("aero-vault.usage"),
+}
+
+func TestPersistSyncSummaryPersistsExactRequestBeforeApplying(t *testing.T) {
+	recovery := &recoveryProjectionRepo{}
+	application := &fakeSummaryApplication{}
+	svc := &syncJobService{repo: recovery, application: application}
+	job := &domain.SyncJob{ID: idgen.NewID(), AccountID: idgen.NewID(), Attempt: 4, LeaseOwner: "worker"}
+	summary := &connector.Summary{Source: connector.SourceAeroIM, SourceRegion: "local", Version: 9, Complete: true,
+		Coverage: domain.SummaryCoverage{Datasets: []domain.AccountDataset{"aero-im.profile"}, Explicit: true}}
+	if err := svc.persistSyncSummary(t.Context(), job, nil, connector.SourceAeroIM, []domain.AccountDataset{"aero-im.profile"}, summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery.saved) != 1 || len(application.requests) != 1 {
+		t.Fatalf("saved/applied = %d/%d, want one each", len(recovery.saved), len(application.requests))
+	}
+	if !reflect.DeepEqual(recovery.saved[0].Request, application.requests[0]) {
+		t.Fatal("persisted summary request differs from applied request")
+	}
+}
+
+func TestPersistSyncSummaryDoesNotCallApplicationWhenReplayPersistenceFails(t *testing.T) {
+	recovery := &recoveryProjectionRepo{saveErr: errors.New("database unavailable")}
+	application := &fakeSummaryApplication{}
+	svc := &syncJobService{repo: recovery, application: application}
+	job := &domain.SyncJob{ID: idgen.NewID(), AccountID: idgen.NewID(), Attempt: 1, LeaseOwner: "worker"}
+	summary := &connector.Summary{Source: connector.SourceAeroIM, Version: 1, Complete: true}
+	if err := svc.persistSyncSummary(t.Context(), job, nil, connector.SourceAeroIM, nil, summary); err == nil {
+		t.Fatal("persistence failure was ignored")
+	}
+	if len(application.requests) != 0 {
+		t.Fatal("application was called after replay persistence failed")
+	}
 }
 
 func TestSyncSummaryStatusSurfacesIncompleteResults(t *testing.T) {

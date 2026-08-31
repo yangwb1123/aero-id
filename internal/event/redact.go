@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // RedactPayload applies the canonical event boundary policy before a receipt or
@@ -15,19 +17,48 @@ func RedactPayload(value map[string]any) map[string]any {
 }
 
 func redactedEnvelope(envelope *Envelope) *Envelope {
+	return BoundedEnvelope(envelope)
+}
+
+// BoundedEnvelope returns a persistence-safe copy. Oversized scalar fields are
+// represented by a complete hash, never a truncated identity key. This is
+// used for quarantine, where the original wire event may intentionally be
+// malformed.
+func BoundedEnvelope(envelope *Envelope) *Envelope {
 	if envelope == nil {
 		return nil
 	}
 	copy := *envelope
+	copy.Source = boundedScalar(envelope.Source, MaxSourceBytes)
+	copy.SourceRegion = boundedScalar(envelope.SourceRegion, MaxRegionBytes)
+	copy.EventType = boundedScalar(envelope.EventType, MaxEventTypeBytes)
+	copy.AggregateType = boundedScalar(envelope.AggregateType, MaxAggregateTypeBytes)
+	copy.AggregateID = boundedScalar(envelope.AggregateID, MaxAggregateIDBytes)
+	copy.ActorUID = boundedScalar(envelope.ActorUID, MaxActorUIDBytes)
+	copy.TenantID = boundedScalar(envelope.TenantID, MaxTenantIDBytes)
+	copy.TraceID = boundedScalar(envelope.TraceID, MaxTraceIDBytes)
 	copy.Payload = RedactPayload(envelope.Payload)
 	return &copy
+}
+
+func boundedScalar(value string, max int) string {
+	if len(value) <= max && utf8.ValidString(value) && !containsControl(value) {
+		return value
+	}
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 const maxProjectionDataBytes = 64 * 1024
 
 func boundedProjectionData(value map[string]any) map[string]any {
 	encoded, err := json.Marshal(value)
-	if err == nil && len(encoded) > maxProjectionDataBytes {
+	if err != nil {
+		// Never return the original value after serialization failure: doing so
+		// lets an unsupported value bypass the storage boundary.
+		return map[string]any{"truncated": true, "reason": "unserializable"}
+	}
+	if len(encoded) > maxProjectionDataBytes {
 		sum := sha256.Sum256(encoded)
 		return map[string]any{"truncated": true, "sha256": hex.EncodeToString(sum[:])}
 	}
@@ -36,7 +67,8 @@ func boundedProjectionData(value map[string]any) map[string]any {
 
 var projectionSensitiveParts = []string{
 	"password", "token", "secret", "cookie", "mfa", "recovery", "credential", "private_key",
-	"access_key", "refresh", "authorization", "object_bytes", "blob", "message_body",
+	"privatekey", "access_key", "accesskey", "api_key", "apikey", "jwt", "refresh", "authorization",
+	"object_bytes", "object_data", "blob", "message_body", "message_content",
 }
 
 func redactProjectionData(value map[string]any, depth int) map[string]any {
@@ -54,17 +86,43 @@ func redactProjectionData(value map[string]any, depth int) map[string]any {
 }
 
 func redactProjectionValue(value any, depth int) any {
+	if depth >= 6 {
+		return map[string]any{"truncated": true}
+	}
 	switch nested := value.(type) {
 	case map[string]any:
 		return redactProjectionData(nested, depth)
 	case []any:
-		result := make([]any, 0, len(nested))
-		for _, child := range nested {
-			result = append(result, redactProjectionValue(child, depth))
-		}
-		return result
+		return redactProjectionArray(nested, depth)
 	default:
+		return redactProjectionScalar(nested)
+	}
+}
+
+func redactProjectionArray(values []any, depth int) any {
+	result := make([]any, 0, len(values))
+	for _, child := range values {
+		result = append(result, redactProjectionValue(child, depth+1))
+	}
+	return result
+}
+
+func redactProjectionScalar(value any) any {
+	switch nested := value.(type) {
+	case time.Time:
+		return nested.UTC().Format(time.RFC3339Nano)
+	case *time.Time:
+		if nested == nil {
+			return nil
+		}
+		return nested.UTC().Format(time.RFC3339Nano)
+	case []string:
+		return nested
+	case nil, string, bool, float64, float32, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, json.Number:
 		return value
+	default:
+		return map[string]any{"truncated": true, "reason": "unsupported"}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
+	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/storage"
 )
 
@@ -93,7 +94,8 @@ func (s *syncJobService) executeExport(ctx context.Context, job *domain.SyncJob)
 			datasets = append(datasets, exportSnapshot(snapshot))
 		}
 	}
-	manifest := map[string]any{"schema_version": 1, "account": exportAccount(account), "profile": exportProfile(profile),
+	manifest := map[string]any{"schema_version": 1, "type": "export", "job_id": job.ID.String(), "tenant_id": job.TenantID,
+		"account_id": job.AccountID.String(), "account": exportAccount(account), "profile": exportProfile(profile),
 		"sources": exportSources(sources), "memberships": exportMemberships(memberships), "datasets": datasets,
 		"generated_at": time.Now().UTC()}
 	if s.store == nil {
@@ -118,8 +120,13 @@ func (s *syncJobService) executeExport(ctx context.Context, job *domain.SyncJob)
 		cause := apperr.Internal("export.encrypt_failed", "failed to encrypt export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.encrypt_failed", "failed to encrypt export artifact", nil, cause)
 	}
-	key, _, err := s.store.Put(ctx, job.ActorUID, "account-export-"+job.ID.String()+".bin", bytes.NewReader(encrypted))
+	key, _, err := s.putSyncArtifact(ctx, job, "export", encrypted, manifest, "account-export-"+job.ID.String()+".bin")
 	if err != nil {
+		var checkpointErr *artifactCheckpointError
+		if errors.As(err, &checkpointErr) {
+			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "export.artifact_checkpoint_unknown",
+				"export artifact metadata outcome is unknown", nil)
+		}
 		cause := apperr.Internal("export.write_failed", "failed to write export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.write_failed", "failed to write export artifact", nil, cause)
 	}
@@ -132,6 +139,24 @@ func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID, oneTi
 	job, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if s.permission != nil {
+		allowed, permissionErr := s.permission.HasPermission(ctx, actorFromContext(ctx), syncPermission(job.JobType))
+		if permissionErr != nil {
+			return nil, apperr.Internal("export.permission_check_failed", "failed to verify export permission").Wrap(permissionErr)
+		}
+		if !allowed {
+			return nil, apperr.Forbidden("export.forbidden", "export permission is required")
+		}
+	}
+	if s.accountRepo != nil {
+		account, accountErr := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
+		if accountErr != nil {
+			return nil, apperr.NotFound("export.not_found", "export artifact not found")
+		}
+		if account == nil || account.Status == domain.AccountErased {
+			return nil, apperr.Forbidden("export.account_erased", "export is unavailable for an erased account")
+		}
 	}
 	if job.Status != domain.SyncJobCompleted || len(s.exportKey) == 0 {
 		return nil, apperr.Conflict("export.not_available", "export artifact is not available")
@@ -203,6 +228,9 @@ func (s *syncJobService) readExportArtifact(ctx context.Context, job *domain.Syn
 	if err := json.Unmarshal(plain, &manifest); err != nil {
 		return nil, "", apperr.Internal("export.invalid_artifact", "export artifact is invalid").Wrap(err)
 	}
+	if err := s.validateDownloadedArtifact(ctx, job, key, len(data), manifest); err != nil {
+		return nil, "", err
+	}
 	return plain, key, nil
 }
 
@@ -219,6 +247,22 @@ func exportDownloadAudit(ctx context.Context, job *domain.SyncJob, oneTime bool,
 // burnExportArtifact removes the artifact and its storage key from the job so
 // a one-time download cannot be repeated.
 func (s *syncJobService) burnExportArtifact(ctx context.Context, job *domain.SyncJob, key string) error {
+	if burner, ok := s.repo.(repository.SyncJobArtifactBurner); ok {
+		// Remove the pointer first. A storage delete is not transactional, but
+		// an object left behind after a delete failure is no longer reachable.
+		if err := burner.BurnArtifact(ctx, job.ID, string(job.JobType), key); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return apperr.NotFound("export.not_found", "export artifact not found")
+			}
+			return err
+		}
+		if s.store != nil {
+			if err := s.store.Delete(ctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+				return err
+			}
+		}
+		return nil
+	}
 	if s.store != nil {
 		if err := s.store.Delete(ctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return err

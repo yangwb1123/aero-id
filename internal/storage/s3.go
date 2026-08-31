@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/aero/aero-id/internal/domain"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 )
 
@@ -81,21 +82,23 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 func (s *S3) Put(ctx context.Context, ownerUID, _ string, r io.Reader) (string, int64, error) {
-	// Stream straight to S3 with the multipart manager so memory stays bounded
-	// regardless of object size; a countingReader gives us the byte total without
-	// buffering. Any size-cap/hashing wrappers the service layered onto r are
-	// honored here because they sit upstream in the same single read pass.
-	cr := &countingReader{r: r}
-	key := s.buildKey(ownerUID)
-	uploader := manager.NewUploader(s.client)
-	_, err := uploader.Upload(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.cfg.Bucket),
-		Key:    aws.String(key),
-		Body:   cr,
-	})
+	return s.put(ctx, s.buildKey(ownerUID), r)
+}
+
+func (s *S3) PutJobArtifact(ctx context.Context, ownerUID string, jobID domain.ID, kind string, r io.Reader) (string, int64, error) {
+	key, err := JobArtifactKey(ownerUID, jobID, kind)
 	if err != nil {
-		// Best-effort cleanup of any partial/aborted multipart object before surfacing
-		// the error (e.g. the service's size cap tripping mid-stream).
+		return "", 0, err
+	}
+	return s.put(ctx, key, r)
+}
+
+func (s *S3) put(ctx context.Context, key string, r io.Reader) (string, int64, error) {
+	// Stream straight to S3 with the multipart manager so memory stays bounded.
+	cr := &countingReader{r: r}
+	uploader := manager.NewUploader(s.client)
+	_, err := uploader.Upload(ctx, &s3.PutObjectInput{Bucket: aws.String(s.cfg.Bucket), Key: aws.String(key), Body: cr})
+	if err != nil {
 		_ = s.Delete(ctx, key)
 		return "", 0, fmt.Errorf("upload object: %w", err)
 	}

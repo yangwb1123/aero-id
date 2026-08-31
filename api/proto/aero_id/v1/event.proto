@@ -30,6 +30,8 @@ message IngestEventsRequest { repeated CanonicalEvent events = 1; }
 message EventIngestResult {
   string event_id = 1;
   string status = 2;
+  string error_code = 3;
+  bool retryable = 4;
 }
 message IngestEventsResponse { repeated EventIngestResult results = 1; }
 

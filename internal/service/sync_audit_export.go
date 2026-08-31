@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -43,7 +42,7 @@ func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.Syn
 	}
 	generatedAt := time.Now().UTC()
 	manifest := map[string]any{
-		"schema_version": 1, "type": "audit_export", "tenant_id": job.TenantID,
+		"schema_version": 1, "type": "audit_export", "job_id": job.ID.String(), "tenant_id": job.TenantID,
 		"account_id": job.AccountID.String(), "generated_at": generatedAt,
 		"event_count": len(events), "events": events,
 	}
@@ -59,6 +58,7 @@ func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.Syn
 	return s.writeAuditExportArtifact(ctx, job, manifest, generatedAt)
 }
 
+//nolint:cyclop // export validates bounded serialization, encryption, storage, and checkpoint outcomes.
 func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *domain.SyncJob,
 	manifest map[string]any, generatedAt time.Time) (*domain.SyncJob, error) {
 	if s.store == nil {
@@ -92,8 +92,13 @@ func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *doma
 		cause := apperr.Internal("audit_export.encrypt_failed", "failed to encrypt audit export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.encrypt_failed", "failed to encrypt audit export artifact", nil, cause)
 	}
-	key, _, err := s.store.Put(ctx, job.ActorUID, "audit-export-"+job.ID.String()+".bin", bytes.NewReader(encrypted))
+	key, _, err := s.putSyncArtifact(ctx, job, "audit_export", encrypted, artifactManifest, "audit-export-"+job.ID.String()+".bin")
 	if err != nil {
+		var checkpointErr *artifactCheckpointError
+		if errors.As(err, &checkpointErr) {
+			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "audit_export.artifact_checkpoint_unknown",
+				"audit export artifact metadata outcome is unknown", nil)
+		}
 		cause := apperr.Internal("audit_export.write_failed", "failed to write audit export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.write_failed", "failed to write audit export artifact", nil, cause)
 	}
@@ -164,6 +169,11 @@ func listAuditExportPage(ctx context.Context, ledger repository.AuditLedgerRepos
 	if len(facts) > limit {
 		return nil, "", errors.New("audit export ledger returned an oversized page")
 	}
+	for _, fact := range facts {
+		if fact == nil || fact.TenantID != tenant {
+			return nil, "", errors.New("audit export ledger returned a cross-tenant fact")
+		}
+	}
 	return facts, next, nil
 }
 
@@ -182,7 +192,9 @@ func auditExportEvent(fact *domain.AuditFact) map[string]any {
 		"operation_id":  fact.OperationID.String(),
 		"occurred_at":   fact.OccurredAt.UTC(),
 		"record_hash":   fact.RecordHash,
-		"payload":       fact.Payload,
+		// Ledger rows can predate the service redaction boundary or arrive
+		// through an internal importer. Re-apply the allow-list at export time.
+		"payload": redactAuditPayload(fact.Payload),
 	}
 }
 
@@ -192,7 +204,7 @@ func auditExportDigest(manifest map[string]any) string {
 	hasher := sha256.New()
 	header, _ := json.Marshal(map[string]any{
 		"schema_version": manifest["schema_version"], "type": manifest["type"],
-		"tenant_id": manifest["tenant_id"], "account_id": manifest["account_id"],
+		"job_id": manifest["job_id"], "tenant_id": manifest["tenant_id"], "account_id": manifest["account_id"],
 		"generated_at": manifest["generated_at"], "event_count": manifest["event_count"],
 	})
 	_, _ = hasher.Write(header)

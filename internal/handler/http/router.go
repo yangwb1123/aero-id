@@ -21,9 +21,11 @@ type RouteRegistrar interface {
 
 // Routes carries the groups handed to each registrar.
 type Routes struct {
-	Auth         *gin.RouterGroup // mounted at /v1, requires a valid SSO token
-	InternalAuth *gin.RouterGroup // mounted at /, requires the same valid SSO token
-	Public       *gin.RouterGroup // anonymous, e.g. signature-verified file downloads
+	Auth                 *gin.RouterGroup // legacy-compatible /v1 authentication
+	InternalAuth         *gin.RouterGroup // legacy-compatible root authentication
+	ControlPlane         *gin.RouterGroup // claims-capable /v1 authentication
+	InternalControlPlane *gin.RouterGroup // claims-capable root authentication
+	Public               *gin.RouterGroup // anonymous, e.g. signature-verified file downloads
 }
 
 // RouterConfig holds cross-cutting router settings.
@@ -78,9 +80,11 @@ func NewRouter(
 	}
 
 	routes := Routes{
-		Public:       e.Group("", publicMiddleware(cfg)...),
-		Auth:         e.Group("/v1", authenticatedMiddleware(cfg, validator)...),
-		InternalAuth: e.Group("", authenticatedMiddleware(cfg, validator)...),
+		Public:               e.Group("", publicMiddleware(cfg)...),
+		Auth:                 e.Group("/v1", authenticatedMiddleware(cfg, validator)...),
+		InternalAuth:         e.Group("", authenticatedMiddleware(cfg, validator)...),
+		ControlPlane:         e.Group("/v1", controlPlaneMiddleware(cfg, validator)...),
+		InternalControlPlane: e.Group("", controlPlaneMiddleware(cfg, validator)...),
 	}
 	for _, r := range registrars {
 		r.RegisterRoutes(routes)
@@ -89,9 +93,17 @@ func NewRouter(
 }
 
 func authenticatedMiddleware(cfg RouterConfig, validator middleware.TokenValidator) []gin.HandlerFunc {
+	return authMiddlewareChain(cfg, middleware.Auth(validator), true)
+}
+
+func controlPlaneMiddleware(cfg RouterConfig, validator middleware.TokenValidator) []gin.HandlerFunc {
+	return authMiddlewareChain(cfg, middleware.ControlPlaneAuth(validator), false)
+}
+
+func authMiddlewareChain(cfg RouterConfig, auth gin.HandlerFunc, legacy bool) []gin.HandlerFunc {
 	// Ban runs after auth and before rate limiting so rejected users do not consume
 	// a rate-limit slot. Idempotency keys are scoped by the authenticated actor.
-	result := []gin.HandlerFunc{middleware.Auth(validator)}
+	result := []gin.HandlerFunc{auth}
 	if cfg.BanChecker != nil {
 		result = append(result, middleware.Ban(cfg.BanChecker))
 	}
@@ -102,6 +114,9 @@ func authenticatedMiddleware(cfg RouterConfig, validator middleware.TokenValidat
 			obs = middleware.NewMetricsIdempotencyObserver(cfg.Metrics)
 		}
 		result = append(result, middleware.Idempotency(cfg.Idempotency, cfg.IdempotencyTTL, obs))
+	}
+	if !legacy {
+		return result
 	}
 	if cfg.LegacySunset != "" {
 		// ADR-011: files/messages/comments stay a compatibility source; mark them

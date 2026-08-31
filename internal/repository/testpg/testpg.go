@@ -87,30 +87,13 @@ func Start(t *testing.T) *gorm.DB {
 	return db
 }
 
-// Migrate executes every discovered *.up.sql under migrationsDir in ascending
-// version order and records the same watermark used by production. Keeping
-// test databases' schema_migrations current makes startup compatibility gates
-// exercise the real deployment contract instead of silently running at version 0.
+// Migrate applies the migration set using the same runner as production. This
+// keeps integration databases subject to the canonical discovery, bookkeeping,
+// transaction, and advisory-lock semantics.
 func Migrate(t *testing.T, db *gorm.DB, migrationsDir string) {
 	t.Helper()
-	if err := migrate.EnsureSchemaMigrations(db); err != nil {
-		t.Fatalf("ensure schema migrations: %v", err)
-	}
-	migrations, err := migrate.Discover(migrationsDir)
-	if err != nil {
-		t.Fatalf("discover migrations: %v", err)
-	}
-	for _, migration := range migrations {
-		b, err := os.ReadFile(filepath.Join(migrationsDir, filepath.Base(migration.UpFile)))
-		if err != nil {
-			t.Fatalf("read %s: %v", migration.UpFile, err)
-		}
-		if err := db.Exec(string(b)).Error; err != nil {
-			t.Fatalf("exec %s: %v", migration.UpFile, err)
-		}
-		if err := db.Exec(`INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`, migration.Version, migration.Name).Error; err != nil {
-			t.Fatalf("record %06d: %v", migration.Version, err)
-		}
+	if _, err := migrate.New(db, migrationsDir, nil).Up(); err != nil {
+		t.Fatalf("migrate up: %v", err)
 	}
 }
 

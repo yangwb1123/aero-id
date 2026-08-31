@@ -139,6 +139,11 @@ func validateBindingTenant(clientID string, binding EventSourceBindingConfig) er
 	if binding.TenantID != strings.TrimSpace(binding.TenantID) {
 		return fmt.Errorf("event_ingest.bindings.%s.tenant_id must be canonical", clientID)
 	}
+	for _, tenant := range binding.AllowedTenants {
+		if tenant == "" || tenant != strings.TrimSpace(tenant) || tenant == "*" || len(tenant) > 256 || strings.IndexByte(tenant, 0) >= 0 {
+			return fmt.Errorf("event_ingest.bindings.%s.allowed_tenants must contain canonical tenant IDs", clientID)
+		}
+	}
 	return nil
 }
 
@@ -146,10 +151,30 @@ func validateBindingSource(clientID string, binding EventSourceBindingConfig) er
 	if binding.Source != "snaplink" && binding.Source != "aero-im" && binding.Source != "aero-vault" && binding.Source != "aero-id" {
 		return fmt.Errorf("event_ingest.bindings.%s has unsupported source", clientID)
 	}
-	if binding.TenantID == "*" && binding.Source != "aero-id" {
-		return fmt.Errorf("event_ingest.bindings.%s wildcard tenant requires aero-id source", clientID)
+	if binding.TenantID == "*" {
+		if binding.Source != "aero-id" {
+			return fmt.Errorf("event_ingest.bindings.%s wildcard tenant requires aero-id source", clientID)
+		}
+		if len(normalizedAllowedTenants(binding.AllowedTenants)) == 0 {
+			return fmt.Errorf("event_ingest.bindings.%s wildcard tenant requires allowed_tenants", clientID)
+		}
+	} else if len(binding.AllowedTenants) > 0 {
+		return fmt.Errorf("event_ingest.bindings.%s allowed_tenants requires wildcard tenant", clientID)
 	}
 	return nil
+}
+
+func normalizedAllowedTenants(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			result = append(result, value)
+			seen[value] = true
+		}
+	}
+	return result
 }
 
 func validateBindingRegion(clientID string, binding EventSourceBindingConfig) error {

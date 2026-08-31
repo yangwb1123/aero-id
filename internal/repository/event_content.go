@@ -1,9 +1,12 @@
 package repository
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -68,9 +71,70 @@ func marshalRedactedEventPayload(envelope *event.Envelope) ([]byte, error) {
 	if envelope == nil {
 		return nil, errors.New("event is nil")
 	}
-	payload, err := json.Marshal(event.RedactPayload(envelope.Payload))
+	encoded, err := json.Marshal(event.RedactPayload(envelope.Payload))
 	if err != nil {
 		return nil, errors.New("event payload is not serializable")
 	}
-	return payload, nil
+	return encoded, nil
+}
+
+func marshalQuarantinedEventPayload(envelope *event.Envelope, details EventQuarantineDetails) ([]byte, error) {
+	if envelope == nil {
+		return nil, errors.New("event is nil")
+	}
+	// Quarantine is metadata-only. Never persist an arbitrary source payload,
+	// even if it happens to pass the deny-list redactor.
+	metadata := map[string]any{"stage": details.Stage, "identity_kind": "canonical"}
+	if details.OriginalWireID != "" {
+		metadata["wire_event_id"] = boundedWireID(details.OriginalWireID)
+	}
+	if details.WireFingerprint != "" {
+		metadata["wire_fingerprint"] = details.WireFingerprint
+	}
+	if details.OriginalWireID != "" && envelope.EventID.String() != details.OriginalWireID {
+		metadata["identity_kind"] = "derived"
+	}
+	encoded, err := json.Marshal(map[string]any{"_quarantine": metadata})
+	if err != nil {
+		return nil, errors.New("quarantine metadata is not serializable")
+	}
+	return encoded, nil
+}
+
+func quarantineContentHash(envelope *event.Envelope, details EventQuarantineDetails) (string, error) {
+	contentHash, err := event.CanonicalContentHash(envelope)
+	if err != nil && details.WireFingerprint != "" {
+		// The fingerprint is over the complete authenticated wire event and is
+		// the safe fallback when malformed payload data cannot be JSON encoded.
+		contentHash = details.WireFingerprint
+		err = nil
+	}
+	if err != nil || details.WireFingerprint == "" {
+		return contentHash, err
+	}
+	// A valid event ID plus malformed optional IDs must not silently merge with
+	// a later, differently malformed wire representation.
+	material := contentHash + "|quarantine-wire-v1|" + details.WireFingerprint
+	sum := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+const maxWireEventID = 256
+
+func boundedWireID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	prefix := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, value)
+	if len(prefix) > maxWireEventID-17 {
+		prefix = prefix[:maxWireEventID-17]
+	}
+	return prefix + "#" + hex.EncodeToString(sum[:])[:16]
 }

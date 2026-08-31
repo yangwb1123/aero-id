@@ -3,6 +3,8 @@ package migrate
 import (
 	"context"
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
 // advisoryLockKey is the single, namespaced advisory-lock key serializing all
@@ -28,9 +30,13 @@ func advisoryLockQuery(key string) (acquire, release string) {
 // dedicated connection, never via m.db.Exec on a pooled connection: a session
 // lock taken on a pooled connection that GORM returns to the pool survives and
 // leaks (documented hazard, internal/app/audit_integration_test.go:110-111).
+// Migration work is also bound to that connection. Besides making the lock and
+// migration transaction unambiguously belong to one session, this avoids a
+// pool self-deadlock when MaxOpenConns is one: holding the lock connection must
+// not require a second pooled connection to run the callback.
 // The dedicated connection is closed on every path — including error paths —
 // and closing it releases the session lock, which makes release-on-error real.
-func (m *Migrator) withSessionLock(ctx context.Context, fn func() error) error {
+func (m *Migrator) withSessionLock(ctx context.Context, fn func(*gorm.DB) error) error {
 	sqlDB, err := m.db.DB()
 	if err != nil {
 		return fmt.Errorf("migrate lock: sql handle: %w", err)
@@ -56,5 +62,10 @@ func (m *Migrator) withSessionLock(ctx context.Context, fn func() error) error {
 		}
 	}()
 
-	return fn()
+	// Supplying Context forces GORM to clone the statement. Without that clone,
+	// assigning ConnPool would mutate m.db's shared statement and leave the
+	// caller's pool pointing at this connection after it is closed.
+	lockedDB := m.db.Session(&gorm.Session{NewDB: true, Context: ctx})
+	lockedDB.Statement.ConnPool = conn
+	return fn(lockedDB)
 }

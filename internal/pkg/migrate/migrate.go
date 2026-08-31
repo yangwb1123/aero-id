@@ -87,8 +87,12 @@ func (m *Migrator) ensureTable() error { return EnsureSchemaMigrations(m.db) }
 
 // appliedVersions returns the set of versions recorded as applied.
 func (m *Migrator) appliedVersions() (map[uint64]bool, error) {
+	return appliedVersions(m.db)
+}
+
+func appliedVersions(db *gorm.DB) (map[uint64]bool, error) {
 	var versions []uint64
-	if err := m.db.Table(migrationsTable).Order("version").Pluck("version", &versions).Error; err != nil {
+	if err := db.Table(migrationsTable).Order("version").Pluck("version", &versions).Error; err != nil {
 		return nil, fmt.Errorf("read applied versions: %w", err)
 	}
 	set := make(map[uint64]bool, len(versions))
@@ -119,11 +123,11 @@ func (m *Migrator) Up() ([]uint64, error) {
 	}
 
 	var done []uint64
-	err = m.withSessionLock(context.Background(), func() error {
-		if err := m.ensureTable(); err != nil {
+	err = m.withSessionLock(context.Background(), func(lockedDB *gorm.DB) error {
+		if err := EnsureSchemaMigrations(lockedDB); err != nil {
 			return err
 		}
-		applied, err := m.appliedVersions()
+		applied, err := appliedVersions(lockedDB)
 		if err != nil {
 			return err
 		}
@@ -140,7 +144,7 @@ func (m *Migrator) Up() ([]uint64, error) {
 				return fmt.Errorf("read %s: %w", mig.UpFile, err)
 			}
 			m.logf("applying %06d_%s", mig.Version, mig.Name)
-			if err := m.applyTx(string(sqlText), mig, true); err != nil {
+			if err := applyTx(lockedDB, string(sqlText), mig, true); err != nil {
 				return fmt.Errorf("apply %06d_%s: %w", mig.Version, mig.Name, err)
 			}
 			done = append(done, mig.Version)
@@ -167,8 +171,8 @@ func (m *Migrator) Down(n int) ([]uint64, error) {
 	}
 
 	var done []uint64
-	err = m.withSessionLock(context.Background(), func() error {
-		done, err = m.downLocked(n, migrations)
+	err = m.withSessionLock(context.Background(), func(lockedDB *gorm.DB) error {
+		done, err = m.downLocked(lockedDB, n, migrations)
 		return err
 	})
 	return done, err
@@ -179,8 +183,8 @@ func (m *Migrator) Down(n int) ([]uint64, error) {
 // stays a pure acquire/run/release.
 //
 //nolint:cyclop // rollback validates and applies each migration in reverse order atomically.
-func (m *Migrator) downLocked(n int, migrations []Migration) ([]uint64, error) {
-	if err := m.ensureTable(); err != nil {
+func (m *Migrator) downLocked(db *gorm.DB, n int, migrations []Migration) ([]uint64, error) {
+	if err := EnsureSchemaMigrations(db); err != nil {
 		return nil, err
 	}
 	byVersion := make(map[uint64]Migration, len(migrations))
@@ -188,7 +192,7 @@ func (m *Migrator) downLocked(n int, migrations []Migration) ([]uint64, error) {
 		byVersion[mig.Version] = mig
 	}
 
-	applied, err := m.appliedVersions()
+	applied, err := appliedVersions(db)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +218,7 @@ func (m *Migrator) downLocked(n int, migrations []Migration) ([]uint64, error) {
 			return done, fmt.Errorf("read %s: %w", mig.DownFile, err)
 		}
 		m.logf("rolling back %06d_%s", mig.Version, mig.Name)
-		if err := m.applyTx(string(sqlText), mig, false); err != nil {
+		if err := applyTx(db, string(sqlText), mig, false); err != nil {
 			return done, fmt.Errorf("rollback %06d_%s: %w", mig.Version, mig.Name, err)
 		}
 		done = append(done, mig.Version)
@@ -224,8 +228,8 @@ func (m *Migrator) downLocked(n int, migrations []Migration) ([]uint64, error) {
 
 // applyTx runs one migration's SQL and updates the bookkeeping table in a single
 // transaction so a partially-applied migration never desyncs the version table.
-func (m *Migrator) applyTx(sqlText string, mig Migration, up bool) error {
-	return m.db.Transaction(func(tx *gorm.DB) error {
+func applyTx(db *gorm.DB, sqlText string, mig Migration, up bool) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		if strings.TrimSpace(sqlText) != "" {
 			if err := tx.Exec(sqlText).Error; err != nil {
 				return err

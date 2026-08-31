@@ -34,13 +34,13 @@ func NewAccountHandlerWithExtensions(accounts service.AccountService,
 }
 
 func (h *AccountHandler) RegisterRoutes(r Routes) {
-	r.Auth.GET("/me", h.GetMe)
-	r.Auth.GET("/me/profile", h.GetProfile)
-	r.Auth.PATCH("/me/profile", h.UpdateProfile)
-	r.Auth.GET("/me/sources", h.ListSources)
-	r.Auth.GET("/me/memberships", h.ListMemberships)
+	r.ControlPlane.GET("/me", h.GetMe)
+	r.ControlPlane.GET("/me/profile", h.GetProfile)
+	r.ControlPlane.PATCH("/me/profile", h.UpdateProfile)
+	r.ControlPlane.GET("/me/sources", h.ListSources)
+	r.ControlPlane.GET("/me/memberships", h.ListMemberships)
 
-	admin := r.Auth.Group("/admin/accounts")
+	admin := r.ControlPlane.Group("/admin/accounts")
 	if h.permission != nil {
 		admin.Use(middleware.RequirePermission(service.AccountReadPermission, h.permission))
 	}
@@ -49,7 +49,7 @@ func (h *AccountHandler) RegisterRoutes(r Routes) {
 
 	// P1-07: one-shot shadow backfill of legacy uids -> account identities.
 	// Write-level admin op, guarded by account.manage (not account.read).
-	backfill := r.Auth.Group("/admin/accounts/backfill")
+	backfill := r.ControlPlane.Group("/admin/accounts/backfill")
 	if h.permission != nil {
 		backfill.Use(middleware.RequirePermission(service.AccountManagePermission, h.permission))
 	}
@@ -57,7 +57,7 @@ func (h *AccountHandler) RegisterRoutes(r Routes) {
 
 	if h.fencing != nil {
 		// P6-02: durable home-region directory administration.
-		regions := r.Auth.Group("/admin/regions")
+		regions := r.ControlPlane.Group("/admin/regions")
 		if h.permission != nil {
 			regions.Use(middleware.RequirePermission(service.AccountManagePermission, h.permission))
 		}
@@ -67,7 +67,7 @@ func (h *AccountHandler) RegisterRoutes(r Routes) {
 
 	if h.migration != nil {
 		// P8-02: shadow migration comparison (read-only; no legacy writes).
-		migration := r.Auth.Group("/admin/migration")
+		migration := r.ControlPlane.Group("/admin/migration")
 		if h.permission != nil {
 			migration.Use(middleware.RequirePermission(service.AccountManagePermission, h.permission))
 		}
@@ -76,7 +76,7 @@ func (h *AccountHandler) RegisterRoutes(r Routes) {
 
 	if h.cutover != nil {
 		// P8-04/05: per-tenant cutover registry + cleanup readiness checklist.
-		cutover := r.Auth.Group("/admin/migration/legacy")
+		cutover := r.ControlPlane.Group("/admin/migration/legacy")
 		if h.permission != nil {
 			cutover.Use(middleware.RequirePermission(service.AccountManagePermission, h.permission))
 		}

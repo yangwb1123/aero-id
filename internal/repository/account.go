@@ -2,11 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -38,6 +40,12 @@ type AccountRepository interface {
 
 type AccountProfileAuditRepository interface {
 	UpdateProfileWithAudit(context.Context, *domain.AccountProfile, *domain.AuditFact) error
+}
+
+// SyncJobLeaseAccountRepository binds local erasure to the worker claim. It is
+// optional on the broad account port so existing read-only fakes remain small.
+type SyncJobLeaseAccountRepository interface {
+	EraseAccountWithSyncJobLease(context.Context, string, domain.ID, domain.ID, string) error
 }
 
 type accountRepo struct {
@@ -104,22 +112,42 @@ func (r *accountRepo) FindByIdentity(ctx context.Context, tenantID, issuer, subj
 
 func (r *accountRepo) EraseAccount(ctx context.Context, tenantID string, id domain.ID) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if result := tx.Model(&accountRow{}).Where("tenant_id = ? AND id = ?", tenantID, id).Updates(map[string]any{
-			"status": string(domain.AccountErased), "canonical_uid": "erased:" + id.String(), "updated_at": time.Now().UTC(),
-		}); result.Error != nil {
-			return result.Error
-		} else if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		if err := tx.Model(&accountProfileRow{}).Where("account_id = ?", id).Updates(map[string]any{
-			"display_name": "", "avatar_url": "", "locale": "", "preferences": datatypes.JSONMap{}, "updated_at": time.Now().UTC(),
-		}).Error; err != nil {
-			return err
-		}
-		return tx.Model(&accountSnapshotRow{}).Where("account_id = ?", id).Updates(map[string]any{
-			"status": string(domain.SnapshotUnavailable), "data": datatypes.JSONMap{}, "error_code": "account.erased", "updated_at": time.Now().UTC(),
-		}).Error
+		return eraseAccountTx(tx, tenantID, id)
 	})
+}
+
+func (r *accountRepo) EraseAccountWithSyncJobLease(ctx context.Context, tenantID string, id, jobID domain.ID, worker string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lease struct{ ID uuid.UUID }
+		locked := tx.Table("sync_jobs").Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
+			Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > clock_timestamp()", jobID,
+				string(domain.SyncJobRunning), worker).First(&lease)
+		if errors.Is(locked.Error, gorm.ErrRecordNotFound) {
+			return ErrSyncJobLeaseLost
+		}
+		if locked.Error != nil {
+			return locked.Error
+		}
+		return eraseAccountTx(tx, tenantID, id)
+	})
+}
+
+func eraseAccountTx(tx *gorm.DB, tenantID string, id domain.ID) error {
+	if result := tx.Model(&accountRow{}).Where("tenant_id = ? AND id = ?", tenantID, id).Updates(map[string]any{
+		"status": string(domain.AccountErased), "canonical_uid": "erased:" + id.String(), "updated_at": time.Now().UTC(),
+	}); result.Error != nil {
+		return result.Error
+	} else if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	if err := tx.Model(&accountProfileRow{}).Where("account_id = ?", id).Updates(map[string]any{
+		"display_name": "", "avatar_url": "", "locale": "", "preferences": datatypes.JSONMap{}, "updated_at": time.Now().UTC(),
+	}).Error; err != nil {
+		return err
+	}
+	return tx.Model(&accountSnapshotRow{}).Where("account_id = ?", id).Updates(map[string]any{
+		"status": string(domain.SnapshotUnavailable), "data": datatypes.JSONMap{}, "error_code": "account.erased", "updated_at": time.Now().UTC(),
+	}).Error
 }
 
 func (r *accountRepo) ListAccounts(ctx context.Context, filter AccountListFilter) ([]*domain.Account, string, error) {

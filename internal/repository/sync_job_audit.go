@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -23,20 +24,26 @@ func (r *syncJobRepo) finish(ctx context.Context, id domain.ID, worker string, s
 	updates := map[string]any{"status": string(status), "error_code": code, "error_message": message,
 		"result": datatypes.JSON(data), "lease_owner": "", "lease_until": nil, "lease_kind": "", "updated_at": now,
 		"completed_at": nil}
-	if status == domain.SyncJobCompleted || status == domain.SyncJobPartiallyComplete || status == domain.SyncJobFailed {
+	if status == domain.SyncJobCompleted || status == domain.SyncJobFailed ||
+		(status == domain.SyncJobPartiallyComplete && code != "erase.local_projection_failed") {
 		updates["completed_at"] = now
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Lease expiry is itself a fencing boundary. Do not let an old worker
-		// finish after its lease elapsed merely because no replacement has
-		// claimed the row yet.
-		updated := tx.Model(&syncJobRow{}).Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > ?", id,
-			string(domain.SyncJobRunning), worker, now).Updates(updates)
-		if updated.Error != nil {
-			return updated.Error
-		}
-		if updated.RowsAffected != 1 {
+		// Lock before checking the lease. clock_timestamp() is required here:
+		// now() is fixed at transaction start and can approve a worker that
+		// waited past expiry for this row lock.
+		var row syncJobRow
+		locked := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
+			Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > clock_timestamp()", id,
+				string(domain.SyncJobRunning), worker).First(&row)
+		if errors.Is(locked.Error, gorm.ErrRecordNotFound) {
 			return ErrSyncJobLeaseLost
+		}
+		if locked.Error != nil {
+			return locked.Error
+		}
+		if err := tx.Model(&row).Updates(updates).Error; err != nil {
+			return err
 		}
 		return r.appendFinishedAudit(tx, ctx, fact)
 	})

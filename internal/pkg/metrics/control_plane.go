@@ -73,25 +73,27 @@ func (m *gaugeMap) snapshot() map[string]float64 {
 // ── control-plane counters/gauges on the shared Registry ──────────────────
 
 type controlPlaneMetrics struct {
-	eventsApplied     counterMap // dataset -> count of applied source events
-	eventsQuarantined counterMap
-	auditIngestFail   counterMap // source -> audit fact write failures
-	auditScopeMissing counterMap // source -> audit publications pended on a scope-missing classification
-	auditStandalone   counterMap // action -> completed out-of-tx Record executions (sweep-and-lock REQ-3)
-	operations        counterMap // status -> terminal operation outcomes
-	callbacks         counterMap // status -> callback delivery outcomes (success/pending/dead_letter)
-	reconcileDrift    counterMap // source -> drift repair count
-	projectionLag     gaugeMap   // source|dataset -> seconds since last_synced_at
-	consumerLag       gaugeMap   // source -> seconds behind (replication cursor)
-	operationAge      gaugeMap   // status -> age seconds of oldest open operation
-	auditFinishFail   counterMap // status -> audit publication finish failures
-	auditPubOutcomes  counterMap // status -> audit publication settlements (completed/pending/dead_letter)
-	auditPubSkipped   counterMap // count -> drain cycles skipped because the publication repo is unwired
-	auditClaimFail    counterMap // count -> drain cycles whose ClaimPublication errored outright
-	auditPurged       counterMap // kind -> dead-letter rows purged by the drain retention scan
-	auditPurgeFail    counterMap // kind -> dead-letter purge scan failures
-	replicationStalls counterMap // controlled reason -> parking transitions
-	replicationFails  counterMap // controlled class -> run failures
+	eventsApplied          counterMap // dataset -> count of applied source events
+	eventsQuarantined      counterMap
+	eventsQuarantinedStage counterMap // dataset|stage -> successful quarantines
+	eventsQuarantineFail   counterMap // stage|code -> failed quarantine receipts
+	auditIngestFail        counterMap // source -> audit fact write failures
+	auditScopeMissing      counterMap // source -> audit publications pended on a scope-missing classification
+	auditStandalone        counterMap // action -> completed out-of-tx Record executions (sweep-and-lock REQ-3)
+	operations             counterMap // status -> terminal operation outcomes
+	callbacks              counterMap // status -> callback delivery outcomes (success/pending/dead_letter)
+	reconcileDrift         counterMap // source -> drift repair count
+	projectionLag          gaugeMap   // source|dataset -> seconds since last_synced_at
+	consumerLag            gaugeMap   // source -> seconds behind (replication cursor)
+	operationAge           gaugeMap   // status -> age seconds of oldest open operation
+	auditFinishFail        counterMap // status -> audit publication finish failures
+	auditPubOutcomes       counterMap // status -> audit publication settlements (completed/pending/dead_letter)
+	auditPubSkipped        counterMap // count -> drain cycles skipped because the publication repo is unwired
+	auditClaimFail         counterMap // count -> drain cycles whose ClaimPublication errored outright
+	auditPurged            counterMap // kind -> dead-letter rows purged by the drain retention scan
+	auditPurgeFail         counterMap // kind -> dead-letter purge scan failures
+	replicationStalls      counterMap // controlled reason -> parking transitions
+	replicationFails       counterMap // controlled class -> run failures
 }
 
 // ObserveEventApplied records one applied source event per dataset.
@@ -102,6 +104,25 @@ func (r *Registry) ObserveEventApplied(dataset string) {
 // ObserveEventQuarantined records one quarantined source event.
 func (r *Registry) ObserveEventQuarantined(dataset string) {
 	r.control.eventsQuarantined.add(dataset, 1)
+}
+
+// ObserveEventQuarantinedAtStage records a quarantine only after its durable
+// receipt and audit fact have both succeeded. Stage values are deliberately
+// bounded so malformed input cannot create unbounded metric cardinality.
+func (r *Registry) ObserveEventQuarantinedAtStage(dataset, stage string) {
+	if !validQuarantineStage(stage) {
+		return
+	}
+	r.control.eventsQuarantined.add(dataset, 1)
+	r.control.eventsQuarantinedStage.add(dataset+"|"+stage, 1)
+}
+
+// ObserveEventQuarantineFailure records a failed durable quarantine receipt.
+func (r *Registry) ObserveEventQuarantineFailure(stage, code string) {
+	if !validQuarantineStage(stage) {
+		stage = "unknown"
+	}
+	r.control.eventsQuarantineFail.add(stage+"|"+code, 1)
 }
 
 // ObserveAuditIngestFailure records a durable audit write failure per source.
@@ -233,9 +254,8 @@ func (r *Registry) writeControlPlaneText(w io.Writer) {
 	for key, value := range r.control.eventsApplied.snapshot() {
 		fmt.Fprintf(w, "aero_control_events_applied_total{dataset=%q} %d\n", key, value)
 	}
-	for key, value := range r.control.eventsQuarantined.snapshot() {
-		fmt.Fprintf(w, "aero_control_events_quarantined_total{dataset=%q} %d\n", key, value)
-	}
+	writeEventQuarantineMetrics(w, r.control.eventsQuarantined.snapshot(),
+		r.control.eventsQuarantinedStage.snapshot(), r.control.eventsQuarantineFail.snapshot())
 	for key, value := range r.control.auditIngestFail.snapshot() {
 		fmt.Fprintf(w, "aero_control_audit_ingest_failures_total{source=%q} %d\n", key, value)
 	}
@@ -305,6 +325,37 @@ func sortedGauges(values map[string]float64) map[string]float64 {
 }
 
 var _ = strings.TrimSpace
+
+func validQuarantineStage(stage string) bool {
+	switch stage {
+	case "canonicalization", "envelope_validation", "residency", "projection":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitMetricKey(key string) (string, string) {
+	parts := strings.SplitN(key, "|", 2)
+	if len(parts) != 2 {
+		return key, "unknown"
+	}
+	return parts[0], parts[1]
+}
+
+func writeEventQuarantineMetrics(w io.Writer, totals, stages, failures map[string]uint64) {
+	for key, value := range totals {
+		fmt.Fprintf(w, "aero_control_events_quarantined_total{dataset=%q} %d\n", key, value)
+	}
+	for key, value := range stages {
+		dataset, stage := splitMetricKey(key)
+		fmt.Fprintf(w, "aero_control_events_quarantined_by_stage_total{dataset=%q,stage=%q} %d\n", dataset, stage, value)
+	}
+	for key, value := range failures {
+		stage, code := splitMetricKey(key)
+		fmt.Fprintf(w, "aero_control_event_quarantine_failures_total{stage=%q,code=%q} %d\n", stage, code, value)
+	}
+}
 
 // writeAuditPurgeMetrics emits the dead-letter purge counters (B2-5 MET-1):
 // rows purged per kind and purge-scan failures per kind. Extracted so

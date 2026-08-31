@@ -61,7 +61,14 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 				zap.Uint64("version", applied[len(applied)-1]))
 		}
 	}
-
+	// The relay references next_attempt_at and its replacement partial index.
+	// Check the migration watermark and catalog shape before constructing any
+	// other dependency or worker. A skipped migration must fail startup rather
+	// than accumulate an opaque drain error or accept incompatible writes.
+	if err := migrate.VerifyOutboxRetryEligibility(gdb); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 	store, downloader, err := buildStorage(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -119,6 +126,12 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	}
 	tokenValidator, err := buildTokenValidator(cfg, ssoClient, log)
 	if err != nil {
+		return nil, err
+	}
+	// The standard composition registers control-plane HTTP routes. Refuse to
+	// construct workers or listeners unless authentication can verify the full
+	// issuer/subject/tenant/client identity.
+	if err := validateControlPlaneAuthentication(cfg, tokenValidator, true); err != nil {
 		return nil, err
 	}
 

@@ -21,8 +21,8 @@ func (r *syncJobRepo) ClaimNextForRegion(ctx context.Context, worker string, lea
 			Order("created_at ASC, id ASC").First(&row)
 		if errors.Is(query.Error, gorm.ErrRecordNotFound) {
 			var stale syncJobRow
-			staleQuery := regionalSyncJobQuery(tx, region, "status = ? AND lease_kind = ? AND lease_until < ?",
-				string(domain.SyncJobRunning), "execute", now).
+			staleQuery := regionalSyncJobQuery(tx, region, "status = ? AND lease_kind = ? AND lease_until < clock_timestamp()",
+				string(domain.SyncJobRunning), "execute").
 				Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 				Order("lease_until ASC, created_at ASC, id ASC").First(&stale)
 			if errors.Is(staleQuery.Error, gorm.ErrRecordNotFound) {
@@ -39,7 +39,7 @@ func (r *syncJobRepo) ClaimNextForRegion(ctx context.Context, worker string, lea
 		if query.Error != nil {
 			return query.Error
 		}
-		return claimSyncJob(tx, &row, worker, lease, now, &result)
+		return claimSyncJob(tx, &row, worker, lease, now, "execute", &result)
 	})
 	return result, err
 }
@@ -49,15 +49,16 @@ func (r *syncJobRepo) ClaimUnknownNextForRegion(ctx context.Context, worker stri
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row syncJobRow
 		now := time.Now().UTC()
-		query := regionalSyncJobQuery(tx, region, "job_type = ? AND ((status = ? AND (lease_until IS NULL OR "+
-			"lease_until < ?)) OR (status = ? AND lease_kind = ? AND lease_until < ?))",
-			string(domain.SyncJobErase), string(domain.SyncJobUnknown), now, string(domain.SyncJobRunning), "reconcile", now).
+		query := regionalSyncJobQuery(tx, region, "status = ? OR (status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
+			"(status = ? AND job_type = ? AND error_code = ?)", string(domain.SyncJobUnknown),
+			string(domain.SyncJobRunning), "reconcile", string(domain.SyncJobPartiallyComplete),
+			string(domain.SyncJobErase), "erase.local_projection_failed").
 			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Order("updated_at ASC, id ASC").First(&row)
 		if query.Error != nil {
 			return query.Error
 		}
-		return claimSyncJob(tx, &row, worker, lease, now, &result)
+		return claimSyncJob(tx, &row, worker, lease, now, "reconcile", &result)
 	})
 	return result, err
 }
@@ -76,14 +77,15 @@ func markSyncJobUnknown(tx *gorm.DB, row *syncJobRow, now time.Time) error {
 		"lease_owner": "", "lease_until": nil, "lease_kind": "", "updated_at": now}).Error
 }
 
-func claimSyncJob(tx *gorm.DB, row *syncJobRow, worker string, lease time.Duration, now time.Time,
+func claimSyncJob(tx *gorm.DB, row *syncJobRow, worker string, lease time.Duration, now time.Time, leaseKind string,
 	result **domain.SyncJob) error {
 	until := now.Add(lease)
+	leaseOwner := newSyncLeaseOwner()
 	if err := tx.Model(row).Updates(map[string]any{"status": string(domain.SyncJobRunning), "attempt": gorm.Expr("attempt + 1"),
-		"lease_owner": worker, "lease_until": until, "lease_kind": "execute", "updated_at": now}).Error; err != nil {
+		"lease_owner": leaseOwner, "lease_until": until, "lease_kind": leaseKind, "completed_at": nil, "updated_at": now}).Error; err != nil {
 		return err
 	}
-	row.Status, row.Attempt, row.LeaseOwner, row.LeaseUntil, row.LeaseKind = string(domain.SyncJobRunning), row.Attempt+1, worker, &until, "execute"
+	row.Status, row.Attempt, row.LeaseOwner, row.LeaseUntil, row.LeaseKind = string(domain.SyncJobRunning), row.Attempt+1, leaseOwner, &until, leaseKind
 	converted, err := syncJobFromRow(row)
 	*result = converted
 	return err

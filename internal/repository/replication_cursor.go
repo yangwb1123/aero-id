@@ -229,7 +229,7 @@ func (r *replicationCursorRepo) saveCursorSequence(ctx context.Context, region, 
 	}
 	result := r.db.WithContext(ctx).Exec(
 		"UPDATE replication_cursors SET last_replication_sequence=?, last_snapshot_id=?, published=?, updated_at=now(), "+
-			"updated_at=now(), lease_until=now() + (? * interval '1 second') "+
+			"lease_until=now() + (? * interval '1 second') "+
 			"WHERE source_region=? AND target=? AND lease_owner=? AND lease_generation=? AND lease_until > now()",
 		sequence, id, published, lease.Seconds(), region, target, owner, generation)
 	if result.Error != nil {

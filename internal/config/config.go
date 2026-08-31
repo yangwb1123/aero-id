@@ -77,9 +77,10 @@ type EventIngestConfig struct {
 }
 
 type EventSourceBindingConfig struct {
-	TenantID     string `mapstructure:"tenant_id"`
-	Source       string `mapstructure:"source"`
-	SourceRegion string `mapstructure:"source_region"`
+	TenantID       string   `mapstructure:"tenant_id"`
+	Source         string   `mapstructure:"source"`
+	SourceRegion   string   `mapstructure:"source_region"`
+	AllowedTenants []string `mapstructure:"allowed_tenants"`
 }
 
 // EventBusConfig configures the canonical-event consumer transport (P3-04).

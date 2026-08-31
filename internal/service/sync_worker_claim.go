@@ -40,3 +40,7 @@ func (s *syncJobService) claimUnknown(ctx context.Context, worker string, lease 
 func (s *syncJobService) claimUnknownNext(ctx context.Context, worker string, lease time.Duration) (*domain.SyncJob, error) {
 	return s.claimUnknown(ctx, worker, lease)
 }
+
+func syncRecoveryContext(ctx context.Context, worker string) context.Context {
+	return repository.WithSyncJobWorker(ctx, worker)
+}

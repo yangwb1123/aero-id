@@ -1,6 +1,7 @@
 package idgen
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -67,6 +68,15 @@ func NewID() ID {
 	return id
 }
 
+var ErrZeroID = errors.New("zero UUID is not a valid identifier")
+
 func Parse(s string) (ID, error) {
-	return uuid.Parse(s)
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return ID{}, err
+	}
+	if id == (ID{}) {
+		return ID{}, ErrZeroID
+	}
+	return id, nil
 }

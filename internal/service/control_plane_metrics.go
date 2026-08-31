@@ -36,11 +36,20 @@ type ControlPlaneMetrics interface {
 	ObserveOperationAge(status string, age time.Duration)
 }
 
+// EventQuarantineMetrics is an optional extension kept separate from the
+// broad metrics interface so existing service fakes remain source-compatible.
+type EventQuarantineMetrics interface {
+	ObserveEventQuarantinedAtStage(dataset, stage string)
+	ObserveEventQuarantineFailure(stage, code string)
+}
+
 // noopControlPlaneMetrics is the default when no registry is wired.
 type noopControlPlaneMetrics struct{}
 
 func (noopControlPlaneMetrics) ObserveEventApplied(string)                         {}
 func (noopControlPlaneMetrics) ObserveEventQuarantined(string)                     {}
+func (noopControlPlaneMetrics) ObserveEventQuarantinedAtStage(string, string)      {}
+func (noopControlPlaneMetrics) ObserveEventQuarantineFailure(string, string)       {}
 func (noopControlPlaneMetrics) ObserveAuditIngestFailure(string)                   {}
 func (noopControlPlaneMetrics) ObserveAuditScopeMissing(string)                    {}
 func (noopControlPlaneMetrics) ObserveAuditStandaloneRecorded(string)              {}
@@ -76,6 +85,12 @@ func (r *RegistryControlPlaneMetrics) ObserveEventApplied(dataset string) {
 }
 func (r *RegistryControlPlaneMetrics) ObserveEventQuarantined(dataset string) {
 	r.registry.ObserveEventQuarantined(dataset)
+}
+func (r *RegistryControlPlaneMetrics) ObserveEventQuarantinedAtStage(dataset, stage string) {
+	r.registry.ObserveEventQuarantinedAtStage(dataset, stage)
+}
+func (r *RegistryControlPlaneMetrics) ObserveEventQuarantineFailure(stage, code string) {
+	r.registry.ObserveEventQuarantineFailure(stage, code)
 }
 func (r *RegistryControlPlaneMetrics) ObserveAuditIngestFailure(source string) {
 	r.registry.ObserveAuditIngestFailure(source)

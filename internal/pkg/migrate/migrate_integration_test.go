@@ -222,24 +222,28 @@ func holdMigrateKey(t *testing.T, sqlDB *sql.DB) func() {
 	}
 }
 
-// waitForBlockedAdvisory polls pg_locks until at least min ungranted advisory
-// waits (excluding the polling backend) are visible, or fails after timeout.
-// Mirrors internal/repository/barrier_helpers_test.go:41-48.
-func waitForBlockedAdvisory(t *testing.T, sqlDB *sql.DB, min int, timeout time.Duration) {
+// waitForBlockedAdvisory polls pg_locks until at least min ungranted waits
+// for THIS migration key (excluding the polling backend) are visible, or fails
+// after timeout. Matching the lock tag prevents an unrelated advisory lock
+// from making contention look deterministic.
+func waitForBlockedAdvisory(t *testing.T, sqlDB *sql.DB, min int, timeout time.Duration) error {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	const query = `SELECT count(*) FROM pg_locks
-		WHERE locktype = 'advisory' AND granted = false AND pid <> pg_backend_pid()`
+		WHERE locktype = 'advisory' AND granted = false AND pid <> pg_backend_pid()
+		  AND classid = ((hashtext($1)::bigint >> 32) & 4294967295)
+		  AND objid = (hashtext($1)::bigint & 4294967295)
+		  AND objsubid = 1`
 	for {
 		var n int
-		if err := sqlDB.QueryRow(query).Scan(&n); err != nil {
-			t.Fatalf("advisory lock probe: %v", err)
+		if err := sqlDB.QueryRow(query, migrateLockKey).Scan(&n); err != nil {
+			return fmt.Errorf("advisory lock probe: %w", err)
 		}
 		if n >= min {
-			return
+			return nil
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d blocked advisory wait(s) not observed within %s (saw %d)", min, timeout, n)
+			return fmt.Errorf("%d blocked migration-lock wait(s) not observed within %s (saw %d)", min, timeout, n)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -285,6 +289,17 @@ func startPair(t *testing.T, fn func() ([]uint64, error)) <-chan runResult {
 	return results
 }
 
+func nextRunResult(t *testing.T, results <-chan runResult, operation string) runResult {
+	t.Helper()
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(10 * time.Second):
+		t.Errorf("%s did not finish", operation)
+		return runResult{}
+	}
+}
+
 // assertUpPair asserts the concurrent-Up contract: no error from either runner;
 // exactly one applied all N migrations and the other applied 0; the database
 // ends fully applied (N rows, top version, every fixture table present).
@@ -292,7 +307,7 @@ func assertUpPair(t *testing.T, sqlDB *sql.DB, m *migrate.Migrator, results <-ch
 	t.Helper()
 	var one, zero *runResult
 	for i := 0; i < 2; i++ {
-		res := <-results
+		res := nextRunResult(t, results, "concurrent up")
 		if res.err != nil {
 			t.Fatalf("concurrent up: %v", res.err)
 		}
@@ -350,7 +365,14 @@ func TestUpBlocksWhileKeyHeld(t *testing.T) {
 		done <- runResult{versions: versions, err: err}
 	}()
 
-	waitForBlockedAdvisory(t, sqlDB, 1, 10*time.Second)
+	if err := waitForBlockedAdvisory(t, sqlDB, 1, 10*time.Second); err != nil {
+		unlock()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal(err)
+	}
 	select {
 	case res := <-done:
 		t.Fatalf("Up completed while key held: %+v", res)
@@ -358,7 +380,12 @@ func TestUpBlocksWhileKeyHeld(t *testing.T) {
 	}
 	unlock()
 
-	res := <-done
+	var res runResult
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Up did not finish after lock release")
+	}
 	if res.err != nil {
 		t.Fatalf("up after release: %v", res.err)
 	}
@@ -392,7 +419,14 @@ func TestDownBlocksWhileKeyHeld(t *testing.T) {
 		done <- runResult{versions: versions, err: err}
 	}()
 
-	waitForBlockedAdvisory(t, sqlDB, 1, 10*time.Second)
+	if err := waitForBlockedAdvisory(t, sqlDB, 1, 10*time.Second); err != nil {
+		unlock()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal(err)
+	}
 	select {
 	case res := <-done:
 		t.Fatalf("Down completed while key held: %+v", res)
@@ -400,7 +434,12 @@ func TestDownBlocksWhileKeyHeld(t *testing.T) {
 	}
 	unlock()
 
-	res := <-done
+	var res runResult
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Down did not finish after lock release")
+	}
 	if res.err != nil {
 		t.Fatalf("down after release: %v", res.err)
 	}
@@ -509,7 +548,17 @@ func TestConcurrentUpAppliesOnce(t *testing.T) {
 		results := startPair(t, m.Up)
 		// Both runners must be blocked on the single package key (pre-fix this
 		// poll times out: neither takes an advisory lock).
-		waitForBlockedAdvisory(t, sqlDB, 2, 10*time.Second)
+		if err := waitForBlockedAdvisory(t, sqlDB, 2, 10*time.Second); err != nil {
+			unlock()
+			for i := 0; i < 2; i++ {
+				select {
+				case <-results:
+				case <-time.After(time.Second):
+					t.Fatal(err)
+				}
+			}
+			t.Fatal(err)
+		}
 		unlock()
 		assertUpPair(t, sqlDB, m, results, top)
 	})
@@ -546,7 +595,7 @@ func TestConcurrentDownRollsBackOnce(t *testing.T) {
 	results := startPair(t, func() ([]uint64, error) { return m.Down(1) })
 	var one, zero *runResult
 	for i := 0; i < 2; i++ {
-		res := <-results
+		res := nextRunResult(t, results, "concurrent down")
 		if res.err != nil {
 			t.Fatalf("concurrent down: %v", res.err)
 		}

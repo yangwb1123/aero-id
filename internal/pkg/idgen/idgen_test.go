@@ -121,6 +121,8 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 			"52d8beb8-b5fb-55ba-ad4b-e3ff011c37e5"},
 		{"G16 projection.replication.quarantine", []string{"projection.replication.quarantine.v1", "local", "fake:test", goldenOP},
 			"55ce71a3-3668-5ff9-8ca6-7cff018444e0"},
+		{"G17 event.quarantine", []string{"event.quarantine.v1", "example-fingerprint"},
+			"68c8ca5a-323b-53c0-ab6b-af5876dad94a"},
 		{"S1 separator pair a", []string{"ab", "c"},
 			"251d9788-4b10-57f0-a935-e4ca289d517e"},
 		{"S2 separator pair b", []string{"a", "bc"},
