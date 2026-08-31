@@ -194,7 +194,7 @@ func TestConcurrentPublishesAfter401CoalesceToOneFetch(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	tokens, err := NewOAuthTokenSource(OAuthConfig{
 		SourcePrefix: "aero-id", AllowInsecureLoopback: true,
 		Bindings: map[string]OAuthBindingConfig{tenantID: auditBinding(server.URL, "client")},
@@ -222,14 +222,16 @@ func TestConcurrentPublishesAfter401CoalesceToOneFetch(t *testing.T) {
 	}
 
 	start := make(chan struct{})
+	waitersReached := make(chan struct{}, workers)
 	errs := make([]error, workers)
 	var wg sync.WaitGroup
 	for i := range workers {
+		workerContext := &waitSelectContext{Context: t.Context(), reached: waitersReached}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			errs[i] = publisher.Publish(t.Context(), fact)
+			errs[i] = publisher.Publish(workerContext, fact)
 		}()
 	}
 	close(start)
@@ -238,11 +240,12 @@ func TestConcurrentPublishesAfter401CoalesceToOneFetch(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no refetch POST arrived — the flight never started")
 	}
-	// Grace window: all N goroutines were barrier-released and the flight is
-	// provably in flight (its POST is gated); give the remaining workers time
-	// to join it before release (documented residual: a straggler that misses
-	// the completed flight starts POST #3 and fails the /token pin below).
-	time.Sleep(250 * time.Millisecond)
+	// Each context signals when AccessToken reaches its result select. Since
+	// the token response is still gated, every signal proves that caller has
+	// joined this epoch's active flight rather than observing a completed cache.
+	for range workers {
+		awaitTokenFlightSignal(t, waitersReached, "coalesced worker wait select")
+	}
 	releaseOnce.Do(func() { close(release) })
 	wg.Wait()
 
@@ -317,7 +320,7 @@ func TestStaleInflightFetchDiscardedByEpoch(t *testing.T) {
 		<-secondBlock
 		tokenHandler(w, "service-token-2", "")
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	tokens, err := NewOAuthTokenSource(OAuthConfig{
 		SourcePrefix: "aero-id", AllowInsecureLoopback: true,
 		Bindings: map[string]OAuthBindingConfig{tenantID: auditBinding(server.URL, "client")},
@@ -444,7 +447,7 @@ func TestSecondConsecutiveDiscardIsTerminal(t *testing.T) {
 		<-secondBlock
 		tokenHandler(w, "service-token-2", "")
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	tokens, err := NewOAuthTokenSource(OAuthConfig{
 		SourcePrefix: "aero-id", AllowInsecureLoopback: true,
 		Bindings: map[string]OAuthBindingConfig{tenantID: auditBinding(server.URL, "client")},

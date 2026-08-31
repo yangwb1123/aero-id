@@ -25,6 +25,8 @@ const (
 	scopeMissingCooldown = 5 * time.Minute
 )
 
+var errTokenFlightExpired = errors.New("audit governance: token flight expired")
+
 type OAuthTokenSource struct {
 	sourcePrefix string
 	bindings     map[string]*tenantTokenSource
@@ -35,6 +37,7 @@ type tenantTokenSource struct {
 	clientID        string
 	clientSecret    string
 	client          *http.Client
+	flightTimeout   time.Duration
 	refreshSkew     time.Duration
 	now             func() time.Time
 	tenantID        string
@@ -86,9 +89,9 @@ func newTenantTokenSource(tenantID string, binding OAuthBindingConfig, config OA
 	}
 	return &tenantTokenSource{
 		endpoint: endpoint, clientID: binding.ClientID, clientSecret: binding.ClientSecret,
-		client: noRedirectClient(client, config.Timeout), refreshSkew: config.RefreshSkew,
-		now: func() time.Time { return time.Now().UTC() }, tenantID: tenantID,
-		onScopeRejected: config.OnScopeRejected,
+		client: noRedirectClient(client, config.Timeout), flightTimeout: config.Timeout,
+		refreshSkew: config.RefreshSkew, now: func() time.Time { return time.Now().UTC() },
+		tenantID: tenantID, onScopeRejected: config.OnScopeRejected,
 	}, nil
 }
 
@@ -181,6 +184,7 @@ func (s *tenantTokenSource) markBindingUnhealthy() {
 func (s *tenantTokenSource) invalidate() {
 	s.mu.Lock()
 	s.token = ""
+	s.refreshAt = time.Time{}
 	s.epoch++
 	s.mu.Unlock()
 }
@@ -209,10 +213,7 @@ func (s *tenantTokenSource) accessToken(ctx context.Context) (string, error) {
 		epoch := s.epoch
 		s.mu.RUnlock()
 		result := s.fetches.DoChan(fmt.Sprintf("client-%d", epoch), func() (any, error) {
-			if token, ok := s.cachedToken(); ok {
-				return token, nil
-			}
-			return s.fetchToken(ctx, epoch)
+			return s.runTokenFlight(epoch)
 		})
 		select {
 		case <-ctx.Done():
@@ -239,45 +240,101 @@ func (s *tenantTokenSource) cachedToken() (string, bool) {
 	return s.token, s.token != "" && s.now().Before(s.refreshAt)
 }
 
+// runTokenFlight owns the lifetime of a shared token request. It is detached
+// from every caller so cancellation of one waiter cannot cancel the HTTP
+// request or strand the other waiters. Background is intentional: caller
+// cancellation and caller-derived values are not inherited by the shared
+// credential flight. DoChan's result channel is buffered, so the flight can
+// finish even after all callers have stopped waiting.
+func (s *tenantTokenSource) runTokenFlight(epoch uint64) (any, error) {
+	flightCtx, cancel := context.WithTimeout(context.Background(), s.flightTimeout)
+	defer cancel()
+	if token, ok := s.cachedToken(); ok {
+		return token, nil
+	}
+	token, err := s.fetchToken(flightCtx, epoch)
+	if errors.Is(err, errTokenFlightExpired) {
+		return nil, fmt.Errorf("%w: transport", ErrTokenUnavailable)
+	}
+	return token, err
+}
+
 // fetchToken runs inside the singleflight flight closure. The 400-gated scope
 // classification (C-2: token-endpoint 401/403 with any body stay
 // ErrTokenUnavailable — sibling FM-4 boundary), the scope-claim validation,
 // and the epoch-fenced cache write all happen here so coalesced waiters share
 // one classification and one fetch.
 func (s *tenantTokenSource) fetchToken(ctx context.Context, epoch uint64) (string, error) {
+	if err := tokenFlightContextError(ctx); err != nil {
+		return "", err
+	}
 	request, err := s.tokenRequest(ctx)
 	if err != nil {
 		return "", ErrTokenUnavailable
 	}
 	response, err := s.client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("%w: transport", ErrTokenUnavailable)
+		return "", tokenTransportError(ctx)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, maxTokenBodyBytes))
-		if response.StatusCode == http.StatusBadRequest && scopeRejectedCode(tokenErrorCode(body)) {
-			s.notifyScopeRejected()
-			// A2: the marker records this classification's token-endpoint origin
-			// (C-C — the composition-root hook already counted it, so the drain
-			// skips its counter); errors.Is(err, ErrTokenScopeMissing) stays true.
-			return "", fmt.Errorf("%w: %w: HTTP %d", ErrTokenEndpointScopeMissing, ErrTokenScopeMissing, response.StatusCode)
-		}
+		return s.classifyTokenResponse(ctx, response)
+	}
+	return s.completeToken(ctx, response, epoch)
+}
+
+func tokenTransportError(ctx context.Context) error {
+	if err := tokenFlightContextError(ctx); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: transport", ErrTokenUnavailable)
+}
+
+func (s *tenantTokenSource) classifyTokenResponse(ctx context.Context, response *http.Response) (string, error) {
+	if err := tokenFlightContextError(ctx); err != nil {
+		return "", err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxTokenBodyBytes+1))
+	if err := tokenFlightContextError(ctx); err != nil {
+		return "", err
+	}
+	if readErr != nil || len(body) > maxTokenBodyBytes {
+		return "", ErrTokenUnavailable
+	}
+	if response.StatusCode != http.StatusBadRequest || !scopeRejectedCode(tokenErrorCode(body)) {
 		return "", fmt.Errorf("%w: HTTP %d", ErrTokenUnavailable, response.StatusCode)
 	}
+	if err := s.notifyScopeRejected(ctx); err != nil {
+		return "", err
+	}
+	// A2: the marker records this classification's token-endpoint origin
+	// (C-C — the composition-root hook already counted it, so the drain
+	// skips its counter); errors.Is(err, ErrTokenScopeMissing) stays true.
+	return "", fmt.Errorf("%w: %w: HTTP %d", ErrTokenEndpointScopeMissing, ErrTokenScopeMissing, response.StatusCode)
+}
+
+func (s *tenantTokenSource) completeToken(ctx context.Context, response *http.Response, epoch uint64) (string, error) {
+	if err := tokenFlightContextError(ctx); err != nil {
+		return "", err
+	}
 	wire, err := decodeTokenResponse(response)
+	if contextErr := tokenFlightContextError(ctx); contextErr != nil {
+		return "", contextErr
+	}
 	if err != nil {
 		return "", err
 	}
 	if !validScopeClaim(wire) {
-		s.notifyScopeRejected()
+		if err := s.notifyScopeRejected(ctx); err != nil {
+			return "", err
+		}
 		// A2: same provenance marker as the 400-gate site (see above).
 		return "", fmt.Errorf("%w: %w", ErrTokenEndpointScopeMissing, ErrTokenScopeMissing)
 	}
-	if !s.cacheToken(wire, epoch) {
+	if err := s.cacheToken(wire, epoch, ctx); err != nil {
 		// A pre-invalidation fetch finishing after Invalidate bumped the
 		// epoch: the result is stale and must never repopulate the cache.
-		return "", errEpochDiscarded
+		return "", err
 	}
 	return wire.AccessToken, nil
 }
@@ -318,40 +375,69 @@ func decodeTokenResponse(response *http.Response) (tokenResponse, error) {
 	return wire, nil
 }
 
-// cacheToken persists a fetched token only when it belongs to the current
-// epoch; a stale result (epoch mismatch) is discarded and reported so the
-// caller can re-enter against the fresh epoch (REQ-2).
-func (s *tenantTokenSource) cacheToken(wire tokenResponse, epoch uint64) bool {
+// cacheToken commits a fetched token only when it belongs to the current
+// epoch and the shared flight is still alive. Both checks, the assignment,
+// and cancellation cleanup are one mutex-protected critical section. Epoch
+// mismatch wins over flight expiry so stale-flight re-entry remains intact.
+func (s *tenantTokenSource) cacheToken(wire tokenResponse, epoch uint64, flightCtx context.Context) error {
 	lifetime := time.Duration(min(wire.ExpiresIn, int64((24*time.Hour)/time.Second))) * time.Second
 	skew := min(s.refreshSkew, lifetime/2)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if epoch != s.epoch {
-		return false
+		return errEpochDiscarded
 	}
+	if err := tokenFlightContextError(flightCtx); err != nil {
+		return err
+	}
+	refreshAt := s.now().Add(lifetime - skew)
 	s.token = wire.AccessToken
-	s.refreshAt = s.now().Add(lifetime - skew)
-	return true
+	s.refreshAt = refreshAt
+	if err := tokenFlightContextError(flightCtx); err != nil {
+		// The lock prevents another flight from writing between the assignment
+		// and this check. Clear only the value committed by this flight.
+		if s.token == wire.AccessToken && s.refreshAt.Equal(refreshAt) {
+			s.token = ""
+			s.refreshAt = time.Time{}
+		}
+		return err
+	}
+	return nil
 }
 
 // notifyScopeRejected invokes the composition-root hook exactly once per
-// classification, contained in-package. The hook runs inside the singleflight
-// flight fn; x/sync v0.20.0 re-raises a flight panic as an unrecoverable
-// process crash (go panic(e); select {}) and never delivers to coalesced
-// waiters, so a panicking hook must never escape: the deferred recover
-// converts it into a classified ErrTokenScopeMissing for every waiter instead.
-// The re-entrancy guard (hookRunning) is armed for the hook's duration so a
-// hook that calls back into this source fails fast instead of self-joining
-// the in-flight flight.
-func (s *tenantTokenSource) notifyScopeRejected() {
+// classification, contained in-package. The hook runs synchronously inside
+// the singleflight flight fn; it must return promptly because a function with
+// no context parameter cannot be forcibly interrupted. The flight checks its
+// detached context before and after the hook, so an expiry during the hook
+// takes timeout precedence over scope classification. A synchronous panic is
+// recovered here and does not escape to x/sync/singleflight. The
+// re-entrancy guard is armed for the hook's duration so a hook that calls back
+// into this source fails fast instead of self-joining the in-flight flight.
+func (s *tenantTokenSource) notifyScopeRejected(ctx context.Context) (err error) {
+	if err := tokenFlightContextError(ctx); err != nil {
+		return err
+	}
 	hook := s.onScopeRejected
 	if hook == nil {
-		return
+		return tokenFlightContextError(ctx)
 	}
 	s.hookRunning.Store(true)
 	defer s.hookRunning.Store(false)
-	defer func() { _ = recover() }()
+	defer func() {
+		if recover() != nil {
+			err = tokenFlightContextError(ctx)
+		}
+	}()
 	hook(s.tenantID)
+	return tokenFlightContextError(ctx)
+}
+
+func tokenFlightContextError(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return errTokenFlightExpired
+	}
+	return nil
 }
 
 // tokenErrorCode is the SINGLE classifier helper for both classification

@@ -61,9 +61,12 @@ type OAuthConfig struct {
 	// once per successful token response whose scope claim omits
 	// audit:event:write or explicitly empties it ("scope":""). It runs on
 	// the singleflight flight goroutine: it is recover-wrapped and
-	// re-entrancy-guarded in-package, so it may panic safely, but it must not
-	// call back into the same tenant's AccessToken (the guard returns
-	// ErrTokenUnavailable instead of self-joining). Keep the hook short.
+	// re-entrancy-guarded in-package, so a synchronous panic is contained, but
+	// it must not call back into the same tenant's AccessToken (the guard
+	// returns ErrTokenUnavailable instead of self-joining). The detached flight
+	// checks its timeout before and after the hook; because this callback has no
+	// context parameter, it must return promptly and cannot be forcibly
+	// interrupted.
 	OnScopeRejected func(tenantID string)
 }
 
