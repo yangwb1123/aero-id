@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -8,6 +9,21 @@ import (
 	"testing"
 	"time"
 )
+
+type billingEpochWaiterContext struct {
+	context.Context
+	ready chan<- struct{}
+	once  sync.Once
+}
+
+func (ctx *billingEpochWaiterContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { ctx.ready <- struct{}{} })
+	return ctx.Context.Done()
+}
+
+func newBillingEpochWaiterContext(parent context.Context, ready chan<- struct{}) context.Context {
+	return &billingEpochWaiterContext{Context: parent, ready: ready}
+}
 
 func TestTokenSourceEpochFencesStaleFetchAndCoalescesConcurrentAccess(t *testing.T) {
 	const scope = ScopeEntitlementRead
@@ -72,7 +88,12 @@ func TestTokenSourceEpochFencesStaleFetchAndCoalescesConcurrentAccess(t *testing
 	}()
 	waitBillingSignal(t, staleArrive, "stale token fetch")
 	source.invalidateIf(initial)
-	staleReleaseOnce.Do(func() { close(releaseStale) })
+
+	replacementResult := make(chan tokenResult, 1)
+	go func() {
+		snapshot, fetchErr := source.accessTokenSnapshot(t.Context(), scope)
+		replacementResult <- tokenResult{snapshot: snapshot, err: fetchErr}
+	}()
 	waitBillingSignal(t, replacementArrive, "replacement token fetch")
 	if _, ok := source.cachedSnapshot(scope); ok {
 		t.Fatal("stale token was cached while replacement fetch was in flight")
@@ -80,6 +101,7 @@ func TestTokenSourceEpochFencesStaleFetchAndCoalescesConcurrentAccess(t *testing
 
 	const workers = 8
 	start := make(chan struct{})
+	waitersReady := make(chan struct{}, workers)
 	results := make(chan tokenResult, workers)
 	var waitGroup sync.WaitGroup
 	for range workers {
@@ -87,17 +109,24 @@ func TestTokenSourceEpochFencesStaleFetchAndCoalescesConcurrentAccess(t *testing
 		go func() {
 			defer waitGroup.Done()
 			<-start
-			snapshot, fetchErr := source.accessTokenSnapshot(t.Context(), scope)
+			ctx := newBillingEpochWaiterContext(t.Context(), waitersReady)
+			snapshot, fetchErr := source.accessTokenSnapshot(ctx, scope)
 			results <- tokenResult{snapshot: snapshot, err: fetchErr}
 		}()
 	}
 	close(start)
-	time.Sleep(50 * time.Millisecond)
+	for range workers {
+		waitBillingSignal(t, waitersReady, "replacement waiter")
+	}
 	replacementReleaseOnce.Do(func() { close(releaseReplacement) })
+	staleReleaseOnce.Do(func() { close(releaseStale) })
 	waitGroup.Wait()
 
 	if result := <-staleResult; result.err != nil || result.snapshot.value != "token-2" {
 		t.Fatalf("stale fetch re-entry = %q, err=%v, want token-2", result.snapshot.value, result.err)
+	}
+	if result := <-replacementResult; result.err != nil || result.snapshot.value != "token-2" {
+		t.Fatalf("replacement fetch = %q, err=%v, want token-2", result.snapshot.value, result.err)
 	}
 	for range workers {
 		result := <-results

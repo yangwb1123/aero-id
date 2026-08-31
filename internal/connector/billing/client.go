@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 )
 
 const (
@@ -52,6 +53,9 @@ type Config struct {
 	MaxBodyBytes          int64
 	AllowInsecureLoopback bool
 	Bindings              map[string]BindingConfig
+	// Metrics receives bounded shared OAuth-flight observations. It never
+	// receives tokens, request IDs, tenant IDs, or trace IDs as labels.
+	Metrics *metrics.Registry
 }
 
 type Client struct {
@@ -78,9 +82,14 @@ type ReserveCommand struct {
 	IdempotencyKey string `json:"-"`
 }
 
+// NewClient constructs the Billing client. The standard net/http transport
+// honors request cancellation during both RoundTrip and response-body reads,
+// which is required for the configured OAuth flight bound. A caller-supplied
+// RoundTripper is a trusted transport seam and must provide the same contract;
+// net/http cannot forcibly stop a RoundTripper or Body that ignores context.
 func NewClient(config Config, client *http.Client) (*Client, error) {
 	if config.Timeout <= 0 {
-		config.Timeout = 5 * time.Second
+		config.Timeout = defaultBillingTimeout
 	}
 	if config.MaxBodyBytes <= 0 {
 		config.MaxBodyBytes = 256 << 10
@@ -98,7 +107,7 @@ func NewClient(config Config, client *http.Client) (*Client, error) {
 		}
 		tokens, tokenErr := newTokenSource(oauthConfig{TokenURL: binding.TokenURL, ClientID: binding.ClientID,
 			ClientSecret: binding.ClientSecret, Scope: binding.Scope, Resources: binding.Resources,
-			Timeout: config.Timeout, AllowHTTP: config.AllowInsecureLoopback}, client)
+			Timeout: config.Timeout, AllowHTTP: config.AllowInsecureLoopback, metrics: billingTokenFlightMetrics(config.Metrics)}, client)
 		if tokenErr != nil {
 			return nil, tokenErr
 		}
@@ -109,6 +118,13 @@ func NewClient(config Config, client *http.Client) (*Client, error) {
 		result.tenantIDs = append(result.tenantIDs, tenantID)
 	}
 	return result, nil
+}
+
+func billingTokenFlightMetrics(registry *metrics.Registry) tokenFlightMetrics {
+	if registry == nil {
+		return nil
+	}
+	return registry
 }
 
 func validTenantID(value string) bool {

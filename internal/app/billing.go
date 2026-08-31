@@ -8,6 +8,7 @@ import (
 
 	"github.com/aero/aero-id/internal/config"
 	billingconnector "github.com/aero/aero-id/internal/connector/billing"
+	"github.com/aero/aero-id/internal/pkg/metrics"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/service"
 )
@@ -17,7 +18,8 @@ type billingRuntime struct {
 	probe func(context.Context) error
 }
 
-func buildBillingRuntime(cfg *config.Config, db *gorm.DB, sagaRepo repository.AccountQuotaSagaRepository) (billingRuntime, error) {
+func buildBillingRuntime(cfg *config.Config, db *gorm.DB, sagaRepo repository.AccountQuotaSagaRepository,
+	metricsReg *metrics.Registry) (billingRuntime, error) {
 	if !cfg.Billing.Enabled {
 		return billingRuntime{}, nil
 	}
@@ -34,7 +36,7 @@ func buildBillingRuntime(cfg *config.Config, db *gorm.DB, sagaRepo repository.Ac
 	}
 	client, err := billingconnector.NewClient(billingconnector.Config{
 		Endpoint: cfg.Billing.Endpoint, Timeout: cfg.Billing.Timeout, MaxBodyBytes: cfg.Billing.MaxBodyBytes,
-		AllowInsecureLoopback: cfg.Billing.AllowInsecureLoopback, Bindings: bindings,
+		AllowInsecureLoopback: cfg.Billing.AllowInsecureLoopback, Bindings: bindings, Metrics: metricsReg,
 	}, nil)
 	if err != nil {
 		return billingRuntime{}, fmt.Errorf("billing client: %w", err)

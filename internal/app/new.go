@@ -163,7 +163,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	if !ok && cfg.Billing.Enabled {
 		return nil, fmt.Errorf("account quota saga repository is unavailable")
 	}
-	billingRuntime, err := buildBillingRuntime(cfg, gdb, quotaSagaRepo)
+	billingRuntime, err := buildBillingRuntime(cfg, gdb, quotaSagaRepo, metricsReg)
 	if err != nil {
 		return nil, err
 	}

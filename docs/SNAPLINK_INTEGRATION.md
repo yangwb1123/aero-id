@@ -68,6 +68,20 @@ configuration stores only `client_secret_env`, and the referenced value must be
 a distinct secret-manager injection of at least 32 bytes. Client IDs and actual
 secret values must not be reused by another tenant or by Audit Governance.
 
+`billing.timeout` defaults to five seconds and bounds a shared OAuth token
+flight from request creation through response-body processing and cache
+publication. A caller's context cancels only that caller's wait; a shared
+flight continues independently and returns sanitized `billing: unavailable`
+errors on its deadline. Only a safe trace link/traceparent may be copied for
+observability; caller credentials, baggage, and other context values are not.
+A positive injected `http.Client.Timeout` may make the effective deadline
+earlier, but cannot extend the OAuth flight bound. These bounds are
+cooperative: production uses the standard context-compliant
+`net/http` transport, and any custom `RoundTripper` or response body supplied
+as a test/trusted seam must stop `RoundTrip` and `Body.Read` when the request
+context is canceled. Go cannot forcibly terminate a non-compliant transport;
+such a transport must not be used where the timeout guarantee is required.
+
 New-account creation uses Snaplink `Reserve`, local durable creation, then
 `Commit`. The stable reservation and fact keys are derived from the verified
 tenant, issuer, and subject. Migration `000051` persists the pending commit next

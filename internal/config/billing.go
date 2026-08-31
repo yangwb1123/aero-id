@@ -6,8 +6,11 @@ import "time"
 // indexed by the verified tenant claim; callers cannot choose credentials by
 // body, query, or forwarding header.
 type BillingConfig struct {
-	Enabled                bool                            `mapstructure:"enabled"`
-	Endpoint               string                          `mapstructure:"endpoint"`
+	Enabled  bool   `mapstructure:"enabled"`
+	Endpoint string `mapstructure:"endpoint"`
+	// Timeout bounds each shared Billing OAuth flight, including response-body
+	// processing and cache publication. A context-compliant transport is
+	// required for the bound to include network and body I/O.
 	Timeout                time.Duration                   `mapstructure:"timeout"`
 	MaxBodyBytes           int64                           `mapstructure:"max_body_bytes"`
 	MaxProjectionStaleness time.Duration                   `mapstructure:"max_projection_staleness"`
