@@ -13,10 +13,32 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-func (c *JSONSummaryConnector) OperationStatus(ctx context.Context, req OperationStatusRequest) (result *CommandResult, resultErr error) {
-	if strings.TrimSpace(c.cfg.OperationStatusPath) == "" {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.operation_status_not_configured"}
+func (c *JSONSummaryConnector) OperationStatus(ctx context.Context, req OperationStatusRequest) (*CommandResult, error) {
+	prepared, err := c.prepareOperationStatusRequest(req)
+	if err != nil {
+		return nil, err
 	}
+	return c.executeOperationStatus(ctx, prepared)
+}
+
+func (c *JSONSummaryConnector) prepareOperationStatusRequest(req OperationStatusRequest) (OperationStatusRequest, error) {
+	if err := c.validateVaultRequestTenant(req.TenantID); err != nil {
+		return OperationStatusRequest{}, err
+	}
+	var err error
+	req.Region, err = c.vaultRequestRegion(req.Region)
+	if err != nil {
+		return OperationStatusRequest{}, err
+	}
+	if strings.TrimSpace(c.cfg.OperationStatusPath) == "" {
+		return OperationStatusRequest{}, &RemoteError{Source: c.source, Kind: ErrorInvalid,
+			Code: "source.operation_status_not_configured"}
+	}
+	return req, nil
+}
+
+func (c *JSONSummaryConnector) executeOperationStatus(ctx context.Context,
+	req OperationStatusRequest) (result *CommandResult, resultErr error) {
 	started := time.Now()
 	release, err := c.begin(ctx, workloadCommand)
 	if err != nil {
@@ -43,16 +65,27 @@ func (c *JSONSummaryConnector) OperationStatus(ctx context.Context, req Operatio
 		return nil, c.remoteRequestError(requestCtx, "source.operation_status_failed", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, remoteHTTPError(c.source, response.StatusCode)
+	if err := c.validateOperationStatusResponse(response); err != nil {
+		return nil, err
 	}
-	return c.decodeCommandResult(response.Body, req)
+	return c.decodeCommandResult(requestCtx, response.Body, req)
+}
+
+func (c *JSONSummaryConnector) validateOperationStatusResponse(response *http.Response) error {
+	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+		return nil
+	}
+	if c.source == SourceAeroVault {
+		// A status lookup failure cannot prove that the original command failed.
+		return vaultStatusHTTPError(response.StatusCode)
+	}
+	return remoteHTTPError(c.source, response.StatusCode)
 }
 
 func (c *JSONSummaryConnector) operationStatusURL(req OperationStatusRequest) (*url.URL, error) {
-	endpoint, err := url.Parse(strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.OperationStatusPath)
-	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint", Cause: err}
+	endpoint, err := c.sourceEndpointURL()
+	if err != nil || !appendSourcePath(endpoint, c.cfg.OperationStatusPath) {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint"}
 	}
 	query := endpoint.Query()
 	query.Set("account_id", req.AccountID.String())
@@ -68,13 +101,13 @@ func (c *JSONSummaryConnector) operationStatusURL(req OperationStatusRequest) (*
 func (c *JSONSummaryConnector) operationStatusRequest(ctx context.Context, endpoint *url.URL, req OperationStatusRequest) (*http.Request, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request", Cause: err}
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request", Cause: redactedRemoteCause(err)}
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("X-Aero-Account-ID", req.AccountID.String())
 	request.Header.Set("X-Aero-Canonical-UID", req.CanonicalUID)
 	request.Header.Set("X-Aero-Actor-UID", req.ActorUID)
-	request.Header.Set("X-Aero-Tenant-ID", req.TenantID)
+	setTenantContextHeaders(request.Header, c.source, req.TenantID)
 	if req.Region != "" {
 		request.Header.Set("X-Aero-Region", req.Region)
 	}
@@ -96,30 +129,57 @@ func operationStatusIDMismatch(response, requested string) bool {
 	return response != "" && response != requested
 }
 
-func (c *JSONSummaryConnector) decodeCommandResult(body io.Reader, req OperationStatusRequest) (*CommandResult, error) {
-	data, err := io.ReadAll(io.LimitReader(body, c.cfg.MaxBodyBytes+1))
+func (c *JSONSummaryConnector) decodeCommandResult(ctx context.Context, body io.Reader, req OperationStatusRequest) (*CommandResult, error) {
+	data, err := c.readCommandResponse(ctx, body)
 	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.response_read_failed", Temporary: true, Cause: err}
-	}
-	if int64(len(data)) > c.cfg.MaxBodyBytes {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large"}
+		return nil, err
 	}
 	var payload commandResultPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_invalid", Cause: err}
+		if c.source == SourceAeroVault {
+			return nil, unknownCommandOutcome(c.source, "source.response_invalid")
+		}
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_invalid", Cause: redactedRemoteCause(err)}
 	}
+	if c.source == SourceAeroVault {
+		return c.decodeVaultCommandResult(payload, req)
+	}
+	return c.decodeStandardCommandResult(payload, req)
+}
+
+func (c *JSONSummaryConnector) readCommandResponse(ctx context.Context, body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, c.cfg.MaxBodyBytes+1))
+	if err != nil {
+		return nil, c.commandResponseReadError(ctx, "source.response_read_failed", err)
+	}
+	if int64(len(data)) > c.cfg.MaxBodyBytes {
+		if c.source == SourceAeroVault {
+			return nil, unknownCommandOutcome(c.source, "source.response_too_large")
+		}
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large"}
+	}
+	return data, nil
+}
+
+func (c *JSONSummaryConnector) decodeStandardCommandResult(payload commandResultPayload,
+	req OperationStatusRequest) (*CommandResult, error) {
 	if c.source == SourceAeroIM && (operationStatusIDMismatch(payload.OperationID, req.OperationID) ||
 		operationStatusIDMismatch(payload.SourceOperationID, req.SourceOperationID)) {
 		return nil, &RemoteError{Source: SourceAeroIM, Kind: ErrorInvalid, Code: "source.operation_id_mismatch"}
 	}
-	if payload.SourceOperationID == "" {
+	if payload.SourceOperationID == "" && c.source != SourceSnaplink {
 		payload.SourceOperationID = payload.OperationID
 	}
 	if strings.TrimSpace(payload.Status) == "" {
+		if c.source == SourceSnaplink {
+			return &CommandResult{OperationID: payload.OperationID, SourceOperationID: payload.SourceOperationID,
+					Result: RedactSummaryData(payload.Result)}, &RemoteError{Source: c.source, Kind: ErrorInvalid,
+					Code: "source.operation_status_missing"}
+		}
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.operation_status_missing"}
 	}
-	return &CommandResult{SourceOperationID: payload.SourceOperationID, Status: strings.ToLower(payload.Status),
-		Result: RedactSummaryData(payload.Result)}, nil
+	return &CommandResult{OperationID: payload.OperationID, SourceOperationID: payload.SourceOperationID,
+		Status: strings.ToLower(payload.Status), Result: RedactSummaryData(payload.Result)}, nil
 }
 
 func (c *JSONSummaryConnector) remoteRequestError(ctx context.Context, code string, err error) *RemoteError {
@@ -127,16 +187,35 @@ func (c *JSONSummaryConnector) remoteRequestError(ctx context.Context, code stri
 		return remote
 	}
 	kind := ErrorUnavailable
-	if ctx.Err() != nil {
+	if requestTimedOut(ctx, err) {
 		kind = ErrorTimeout
 	}
-	return &RemoteError{Source: c.source, Kind: kind, Code: code, Temporary: true, Cause: err}
+	return &RemoteError{Source: c.source, Kind: kind, Code: code, Temporary: true, Cause: redactedRemoteCause(err)}
 }
 
 func (c *JSONSummaryConnector) observeCall(operation string, started time.Time, err error) {
 	if c.cfg.Metrics != nil {
 		c.cfg.Metrics.ObserveSourceCall(string(c.source), operation, time.Since(started), err)
 	}
+}
+
+func (c *JSONSummaryConnector) decodeVaultCommandResult(payload commandResultPayload, req OperationStatusRequest) (*CommandResult, error) {
+	if strings.TrimSpace(payload.OperationID) == "" || strings.TrimSpace(req.OperationID) == "" ||
+		payload.OperationID != req.OperationID || strings.TrimSpace(payload.SourceOperationID) == "" ||
+		strings.TrimSpace(req.SourceOperationID) == "" || payload.SourceOperationID != req.SourceOperationID {
+		return nil, unknownCommandOutcome(c.source, "source.operation_outcome_mismatch")
+	}
+	if strings.TrimSpace(payload.Status) == "" {
+		return nil, unknownCommandOutcome(c.source, "source.operation_status_missing")
+	}
+	return &CommandResult{OperationID: payload.OperationID, SourceOperationID: payload.SourceOperationID,
+		Status: strings.ToLower(payload.Status), Result: RedactSummaryData(payload.Result)}, nil
+}
+
+func vaultStatusHTTPError(status int) *RemoteError {
+	return &RemoteError{Source: SourceAeroVault, Kind: ErrorUnknown,
+		Code: "source.operation_status_unavailable", Temporary: true,
+		Cause: remoteHTTPError(SourceAeroVault, status)}
 }
 
 var _ OperationStatusConnector = (*JSONSummaryConnector)(nil)

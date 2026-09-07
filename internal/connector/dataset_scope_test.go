@@ -22,8 +22,8 @@ func TestAeroIMDatasetScopeRejectsInvalidRequestsBeforeTransport(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL,
-		SummaryPath: accountSummaryCanonicalPath, ErasePath: "/erase", BearerToken: "source-token", MaxAttempts: 1})
+	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: server.URL,
+		SummaryPath: accountSummaryCanonicalPath, ErasePath: "/erase", BearerToken: "source-token", MaxAttempts: 1}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestAeroVaultScopeValidationOrdersOAuthAndHTTPEffects(t *testing.T) {
 		case "/token":
 			tokenCalls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"access_token":"vault-token","token_type":"Bearer","expires_in":300}`)
+			_, _ = io.WriteString(w, `{"access_token":"`+vaultTestAccessToken+`","token_type":"Bearer","expires_in":300}`)
 		case "/summary":
 			sourceCalls.Add(1)
 			summaryDatasets = append([]string(nil), r.URL.Query()["dataset"]...)
@@ -344,7 +344,8 @@ func TestAeroVaultScopeValidationOrdersOAuthAndHTTPEffects(t *testing.T) {
 	defer server.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL,
 		SummaryPath: "/summary", ErasePath: "/erase", AllowInsecureLoopback: true, Environment: "test",
-		Client: server.Client(), OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token",
+		Client: server.Client(), OAuthTenantID: vaultTestTenant, OAuthAllowedHosts: []string{oauthTestOrigin(t, server.URL)},
+		OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token",
 			ClientID: "vault-client", ClientSecret: "vault-secret", Scope: "read", Resource: "aero-vault"}})
 	if err != nil {
 		t.Fatal(err)
@@ -368,7 +369,7 @@ func TestAeroVaultScopeValidationOrdersOAuthAndHTTPEffects(t *testing.T) {
 
 	caller := []domain.AccountDataset{"aero-vault.usage", "aero-vault.tenants"}
 	before := append([]domain.AccountDataset(nil), caller...)
-	if _, err := client.Summary(t.Context(), SummaryRequest{Datasets: nil}); err != nil {
+	if _, err := client.Summary(t.Context(), SummaryRequest{TenantID: vaultTestTenant, Datasets: nil}); err != nil {
 		t.Fatalf("summary: %v (token=%d source=%d)", err, tokenCalls.Load(), sourceCalls.Load())
 	}
 	if !reflect.DeepEqual(caller, before) {
@@ -377,7 +378,7 @@ func TestAeroVaultScopeValidationOrdersOAuthAndHTTPEffects(t *testing.T) {
 	if want := []string{"aero-vault.tenants", "aero-vault.buckets", "aero-vault.usage"}; !reflect.DeepEqual(summaryDatasets, want) {
 		t.Fatalf("empty summary datasets = %v, want registry order %v", summaryDatasets, want)
 	}
-	if _, err := client.Erase(t.Context(), EraseRequest{Datasets: caller, IdempotencyKey: "erase-1"}); err != nil {
+	if _, err := client.Erase(t.Context(), EraseRequest{TenantID: vaultTestTenant, Datasets: caller, IdempotencyKey: "erase-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(caller, before) {

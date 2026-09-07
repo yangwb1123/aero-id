@@ -2,10 +2,9 @@ package connector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,6 +22,7 @@ type HTTPConfig struct {
 	Region                string
 	BearerToken           string
 	OAuth                 OAuthClientCredentialsConfig
+	OAuthAllowedHosts     []string
 	Timeout               time.Duration
 	MaxBodyBytes          int64
 	// MaxConcurrency is the legacy aggregate fallback. It is partitioned into
@@ -38,19 +38,30 @@ type HTTPConfig struct {
 	TLSCertFile           string
 	TLSKeyFile            string
 	TLSServerName         string
+	// OAuth TLS settings are intentionally independent from the source
+	// transport trust profile. The token authority and Vault are different
+	// security boundaries and must not inherit one another's CA, SNI, or
+	// client certificate.
+	OAuthTLSCAFile     string
+	OAuthTLSCertFile   string
+	OAuthTLSKeyFile    string
+	OAuthTLSServerName string
+	OAuthTenantID      string
 	// Account-summary target assertions are used only by the Aero IM
 	// connector. The key is loaded from one of the two secret references;
 	// non-Aero-IM connectors ignore these fields.
-	TargetAssertionKeyFile  string
-	TargetAssertionKeyEnv   string
-	TargetAssertionKeyID    string
-	TargetAssertionIssuer   string
-	TargetAssertionAudience string
-	TargetAssertionSubject  string
-	TargetAssertionClientID string
-	TargetAssertionLifetime time.Duration
-	Client                  *http.Client
-	Metrics                 *metrics.Registry
+	TargetAssertionKeyFile     string
+	TargetAssertionKeyEnv      string
+	TargetAssertionJWKSURL     string
+	TargetAssertionTrustDomain string
+	TargetAssertionKeyID       string
+	TargetAssertionIssuer      string
+	TargetAssertionAudience    string
+	TargetAssertionSubject     string
+	TargetAssertionClientID    string
+	TargetAssertionLifetime    time.Duration
+	Client                     *http.Client
+	Metrics                    *metrics.Registry
 
 	// These are unexported test seams. Production composition always uses
 	// TargetAssertionKeyFile/TargetAssertionKeyEnv above and cannot inject a
@@ -66,6 +77,7 @@ type JSONSummaryConnector struct {
 	source                Source
 	cfg                   HTTPConfig
 	client                *http.Client
+	endpointURL           *url.URL
 	tokens                *oauthClientCredentials
 	queryPolicy           *sourceWorkloadPolicy
 	commandPolicy         *sourceWorkloadPolicy
@@ -83,21 +95,16 @@ const (
 )
 
 func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnector, error) {
+	if !validTrustedSummarySource(source) {
+		return nil, fmt.Errorf("source connector is unsupported")
+	}
 	if strings.TrimSpace(cfg.Endpoint) == "" {
 		return nil, fmt.Errorf("%s connector endpoint is required", source)
 	}
-	cfg = defaultHTTPConfig(cfg)
-	if err := validateHTTPConfigBounds(cfg); err != nil {
-		return nil, err
-	}
-	if err := validateHTTPConfigPaths(cfg); err != nil {
-		return nil, err
-	}
-	decision, err := sourceAuthDecision(source, cfg)
+	cfg, endpoint, decision, err := prepareSourceHTTPConfig(source, cfg)
 	if err != nil {
 		return nil, err
 	}
-	cfg = applySourceAuth(source, cfg, decision)
 	targetAssertionSigner, err := targetAssertionSignerForSource(source, cfg)
 	if err != nil {
 		return nil, err
@@ -110,11 +117,40 @@ func NewJSONSummaryConnector(source Source, cfg HTTPConfig) (*JSONSummaryConnect
 		cfg.Metrics.ObserveSourceAuthCompatibility(source.String(), string(decision.Mode))
 	}
 	limits := workloadLimits(cfg)
-	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, tokens: tokens,
+	return &JSONSummaryConnector{source: source, cfg: cfg, client: client, endpointURL: cloneURL(endpoint), tokens: tokens,
 		queryPolicy: newSourceWorkloadPolicy(limits.query), commandPolicy: newSourceWorkloadPolicy(limits.command),
 		healthPolicy: newSourceWorkloadPolicy(limits.health), targetAssertionSigner: targetAssertionSigner,
 		testTargetRequest: cfg.testTargetRequest,
 	}, nil
+}
+
+func prepareSourceHTTPConfig(source Source, cfg HTTPConfig) (HTTPConfig, *url.URL, sourceauth.Decision, error) {
+	cfg = defaultHTTPConfig(cfg)
+	endpoint, err := sourceauth.ParseEndpoint(cfg.Endpoint)
+	if err != nil {
+		return HTTPConfig{}, nil, sourceauth.Decision{}, fmt.Errorf("%s connector endpoint is invalid", source)
+	}
+	cfg.Endpoint = endpoint.String()
+	cfg.Region = strings.TrimSpace(cfg.Region)
+	if source == SourceAeroVault {
+		cfg.OAuthTenantID = strings.TrimSpace(cfg.OAuthTenantID)
+	}
+	if err := validateHTTPConfigBounds(cfg); err != nil {
+		return HTTPConfig{}, nil, sourceauth.Decision{}, err
+	}
+	if err := validateHTTPConfigPaths(cfg); err != nil {
+		return HTTPConfig{}, nil, sourceauth.Decision{}, err
+	}
+	decision, err := sourceAuthDecision(source, cfg)
+	if err != nil {
+		return HTTPConfig{}, nil, sourceauth.Decision{}, err
+	}
+	if source == SourceAeroVault {
+		if err := validateVaultPrincipalConfig(cfg, decision); err != nil {
+			return HTTPConfig{}, nil, sourceauth.Decision{}, err
+		}
+	}
+	return applySourceAuth(source, cfg, decision), endpoint, decision, nil
 }
 
 func targetAssertionSignerForSource(source Source, cfg HTTPConfig) (*accountSummaryTargetSigner, error) {
@@ -122,22 +158,39 @@ func targetAssertionSignerForSource(source Source, cfg HTTPConfig) (*accountSumm
 		return nil, nil
 	}
 	if cfg.targetAssertionSigner != nil {
+		if err := validateTargetAssertionEndpoint(cfg); err != nil {
+			return nil, err
+		}
 		return cfg.targetAssertionSigner, nil
 	}
 	signer, err := configuredAccountSummaryTargetSigner(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%s target assertion: %w", source, err)
 	}
+	if signer != nil {
+		if err := validateTargetAssertionEndpoint(cfg); err != nil {
+			return nil, err
+		}
+	}
+	if signer == nil && !sourceauth.IsExplicitNonProductionLoopback(cfg.Endpoint, cfg.Environment, cfg.AllowInsecureLoopback) {
+		return nil, fmt.Errorf("sources.aero_im target assertion is required for an enabled non-loopback or production-like endpoint")
+	}
 	return signer, nil
 }
 
 func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, error) {
+	allowedHosts := cfg.OAuthAllowedHosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = cfg.OAuth.AllowedHosts
+	}
 	decision, err := sourceauth.Evaluate(sourceauth.Config{
 		Source: source.String(), Label: sourceLabel(source), Endpoint: cfg.Endpoint, Environment: cfg.Environment,
 		AllowInsecureLoopback: cfg.AllowInsecureLoopback, BearerToken: cfg.BearerToken,
 		OAuth: sourceauth.OAuthConfig{TokenURL: cfg.OAuth.TokenURL, ClientID: cfg.OAuth.ClientID,
-			ClientSecret: cfg.OAuth.ClientSecret, Scope: cfg.OAuth.Scope, Resource: cfg.OAuth.Resource},
+			ClientSecret: cfg.OAuth.ClientSecret, Scope: cfg.OAuth.Scope, Resource: cfg.OAuth.Resource,
+			AllowedHosts: allowedHosts},
 		TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile,
+		OAuthTLSCertFile: cfg.OAuthTLSCertFile, OAuthTLSKeyFile: cfg.OAuthTLSKeyFile,
 	})
 	if err != nil {
 		return sourceauth.Decision{}, fmt.Errorf("%s connector authentication: %w", source, err)
@@ -148,7 +201,14 @@ func sourceAuthDecision(source Source, cfg HTTPConfig) (sourceauth.Decision, err
 func applySourceAuth(source Source, cfg HTTPConfig, decision sourceauth.Decision) HTTPConfig {
 	if source == SourceAeroIM || source == SourceSnaplink {
 		cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
+	}
+	if decision.Mode == sourceauth.ModeStaticBearer {
 		cfg.BearerToken = decision.BearerToken
+	} else {
+		// Do not let whitespace-only or stale bearer configuration survive a
+		// non-bearer decision. In particular, mTLS-only and loopback requests
+		// must not acquire an Authorization header from raw config text.
+		cfg.BearerToken = ""
 	}
 	return cfg
 }
@@ -158,7 +218,26 @@ func sourceClientAndOAuth(source Source, cfg HTTPConfig) (*http.Client, *oauthCl
 	if err != nil {
 		return nil, nil, err
 	}
-	tokens, err := newOAuthClientCredentials(cfg.OAuth, client, cfg.Timeout)
+	oauthConfig := cfg.OAuth
+	oauthConfig.Environment = cfg.Environment
+	oauthConfig.AllowLoopback = cfg.AllowInsecureLoopback
+	oauthConfig.SourceEndpoint = cfg.Endpoint
+	oauthConfig.TLSCAFile = cfg.OAuthTLSCAFile
+	oauthConfig.TLSCertFile = cfg.OAuthTLSCertFile
+	oauthConfig.TLSKeyFile = cfg.OAuthTLSKeyFile
+	oauthConfig.TLSServerName = cfg.OAuthTLSServerName
+	if len(cfg.OAuthAllowedHosts) > 0 {
+		oauthConfig.AllowedHosts = cfg.OAuthAllowedHosts
+	}
+	if source == SourceAeroVault {
+		oauthConfig.RequiredScope = sourceauth.VaultOAuthScope
+		oauthConfig.RequiredAudience = sourceauth.VaultOAuthAudience
+		oauthConfig.RequireJWT = true
+	}
+	// Pass the original injected client only as a test seam. A fresh hardened
+	// client is built for the token authority, so source TLS roots/SNI/client
+	// certificates cannot bleed into OAuth traffic.
+	tokens, err := newOAuthClientCredentials(oauthConfig, cfg.Client, cfg.Timeout)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s connector OAuth: %w", source, err)
 	}
@@ -178,11 +257,31 @@ func sourceLabel(source Source) string {
 func validateHTTPConfigPaths(cfg HTTPConfig) error {
 	paths := []string{cfg.SummaryPath, cfg.ErasePath, cfg.OperationStatusPath}
 	for _, path := range paths {
-		if path != "" && (!strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\x00\r\n")) {
+		if !sourceauth.ValidAbsolutePath(path) {
 			return fmt.Errorf("source connector paths must be absolute and free of control characters")
 		}
 	}
 	return nil
+}
+
+func validateTargetAssertionEndpoint(cfg HTTPConfig) error {
+	endpoint, err := sourceauth.ParseEndpoint(cfg.Endpoint)
+	if err != nil || (endpoint.Path != "" && endpoint.Path != "/") || endpoint.RawPath != "" {
+		return fmt.Errorf("aero-im target assertion requires a root endpoint")
+	}
+	if strings.TrimSpace(cfg.Environment) != "" && sourceauth.ProductionLikeEnvironment(cfg.Environment) &&
+		strings.TrimSpace(cfg.TargetAssertionJWKSURL) == "" {
+		return fmt.Errorf("aero-im target assertion JWKS trust URL is required in production-like environments")
+	}
+	return nil
+}
+
+func cloneURL(value *url.URL) *url.URL {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func defaultHTTPConfig(cfg HTTPConfig) HTTPConfig {
@@ -250,6 +349,10 @@ func (c *JSONSummaryConnector) Summary(ctx context.Context, req SummaryRequest) 
 		return nil, err
 	}
 	req.Datasets = resolved
+	req.Region, err = c.vaultRequestRegion(req.Region)
+	if err != nil {
+		return nil, err
+	}
 	if c.source == SourceAeroIM && c.targetAssertionSigner == nil {
 		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable,
 			Code: "source.target_assertion_not_configured", Temporary: false}
@@ -290,7 +393,7 @@ func (c *JSONSummaryConnector) fetchSummary(ctx context.Context, req SummaryRequ
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, remoteHTTPError(c.source, response.StatusCode)
 	}
-	result, err := c.decodeSummary(response.Body)
+	result, err := c.decodeSummary(ctx, response.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -310,178 +413,8 @@ func (c *JSONSummaryConnector) summaryRequestError(ctx context.Context, err erro
 		return remote
 	}
 	kind := ErrorUnavailable
-	if ctx.Err() != nil {
+	if requestTimedOut(ctx, err) {
 		kind = ErrorTimeout
 	}
-	return &RemoteError{Source: c.source, Kind: kind, Code: "source.request_failed", Temporary: true, Cause: err}
+	return &RemoteError{Source: c.source, Kind: kind, Code: "source.request_failed", Temporary: true, Cause: redactedRemoteCause(err)}
 }
-
-func (c *JSONSummaryConnector) Health(ctx context.Context) (resultErr error) {
-	started := time.Now()
-	release, err := c.begin(ctx, workloadHealth)
-	if err != nil {
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCall(string(c.source), "health", time.Since(started), err)
-		}
-		return err
-	}
-	defer func() {
-		release()
-		c.finish(workloadHealth, resultErr)
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCall(string(c.source), "health", time.Since(started), resultErr)
-		}
-	}()
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
-	defer cancel()
-	urlValue := strings.TrimRight(c.cfg.Endpoint, "/") + "/healthz"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, urlValue, nil)
-	if err != nil {
-		return err
-	}
-	response, err := c.doHTTP(ctx, func() (*http.Request, error) { return request.Clone(ctx), nil })
-	if err != nil {
-		if remote, ok := IsRemote(err); ok {
-			return remote
-		}
-		return &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.health_failed", Temporary: true, Cause: err}
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return remoteHTTPError(c.source, response.StatusCode)
-	}
-	return nil
-}
-
-func (c *JSONSummaryConnector) Erase(ctx context.Context, req EraseRequest) (result *CommandResult, resultErr error) {
-	resolved, err := ResolveDatasetScope(c.source, req.Datasets, DatasetScopeDestructive)
-	if err != nil {
-		return nil, err
-	}
-	req.Datasets = resolved
-	if strings.TrimSpace(req.IdempotencyKey) == "" {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.idempotency_key_missing", Temporary: false}
-	}
-	if strings.TrimSpace(c.cfg.ErasePath) == "" {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.erase_not_configured"}
-	}
-	started := time.Now()
-	release, err := c.beginObserved(ctx, workloadCommand, "erase", started)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		release()
-		c.finish(workloadCommand, resultErr)
-		if c.cfg.Metrics != nil {
-			c.cfg.Metrics.ObserveSourceCall(string(c.source), "erase", time.Since(started), resultErr)
-		}
-	}()
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
-	defer cancel()
-	httpReq, body, err := c.newEraseRequest(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.doHTTP(ctx, func() (*http.Request, error) {
-		return cloneEraseRequest(ctx, httpReq, body)
-	})
-	if err != nil {
-		return nil, c.eraseRequestError(ctx, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, remoteHTTPError(c.source, response.StatusCode)
-	}
-	return c.decodeEraseResult(response.Body)
-}
-
-func (c *JSONSummaryConnector) eraseRequestError(ctx context.Context, err error) *RemoteError {
-	if remote, ok := IsRemote(err); ok {
-		return remote
-	}
-	kind := ErrorUnavailable
-	if ctx.Err() != nil {
-		kind = ErrorTimeout
-	}
-	return &RemoteError{Source: c.source, Kind: kind, Code: "source.erase_failed", Temporary: true, Cause: err}
-}
-
-func cloneEraseRequest(ctx context.Context, template *http.Request, body []byte) (*http.Request, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, template.URL.String(), strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	for key, values := range template.Header {
-		request.Header[key] = append([]string(nil), values...)
-	}
-	return request, nil
-}
-
-func (c *JSONSummaryConnector) decodeSummary(body io.Reader) (*Summary, error) {
-	limited := io.LimitReader(body, c.cfg.MaxBodyBytes+1)
-	var payload summaryPayload
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.response_read_failed", Temporary: true, Cause: err}
-	}
-	if int64(len(data)) > c.cfg.MaxBodyBytes {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large"}
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_invalid", Cause: err}
-	}
-	return c.summaryFromPayload(&payload)
-}
-
-type summaryPayload struct {
-	SourceRegion string                     `json:"source_region"`
-	Version      int64                      `json:"version"`
-	GeneratedAt  time.Time                  `json:"generated_at"`
-	Complete     bool                       `json:"complete"`
-	Coverage     *summaryCoveragePayload    `json:"coverage"`
-	Datasets     map[string]json.RawMessage `json:"datasets"`
-	Sources      []summarySourcePayload     `json:"sources"`
-	Memberships  []summaryMembershipPayload `json:"memberships"`
-}
-
-type summaryCoveragePayload struct {
-	Datasets    []string `json:"datasets"`
-	Sources     bool     `json:"sources"`
-	Memberships bool     `json:"memberships"`
-}
-
-type summarySourcePayload struct {
-	SourceAccountID string         `json:"source_account_id"`
-	ScopeType       string         `json:"scope_type"`
-	ScopeID         string         `json:"scope_id"`
-	Status          string         `json:"status"`
-	Data            map[string]any `json:"data"`
-}
-
-type summaryMembershipPayload struct {
-	ScopeType      string         `json:"scope_type"`
-	ScopeID        string         `json:"scope_id"`
-	SourceMemberID string         `json:"source_member_id"`
-	Role           string         `json:"role"`
-	Status         string         `json:"status"`
-	Data           map[string]any `json:"data"`
-}
-
-func (c Source) String() string { return string(c) }
-
-func remoteHTTPError(source Source, code int) *RemoteError {
-	kind := ErrorUnavailable
-	temporary := code == http.StatusTooManyRequests || code >= 500
-	switch code {
-	case http.StatusUnauthorized:
-		kind = ErrorUnauthorized
-	case http.StatusForbidden:
-		kind = ErrorForbidden
-	case http.StatusBadRequest, http.StatusNotFound:
-		kind = ErrorInvalid
-	}
-	return &RemoteError{Source: source, Kind: kind, Code: fmt.Sprintf("source.http_%d", code), Temporary: temporary}
-}
-
-func timePtr(value time.Time) *time.Time { return &value }

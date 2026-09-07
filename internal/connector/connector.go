@@ -242,6 +242,10 @@ type OperationStatusRequest struct {
 }
 
 type CommandResult struct {
+	// OperationID is the logical operation correlation value returned by a
+	// source command/status endpoint. SourceOperationID is the source-owned
+	// operation identifier and must not be substituted for the logical ID.
+	OperationID       string
 	SourceOperationID string
 	Status            string
 	Result            map[string]any

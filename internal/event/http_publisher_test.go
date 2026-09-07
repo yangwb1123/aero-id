@@ -2,6 +2,9 @@ package event
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
@@ -46,11 +49,37 @@ func TestAuthenticatedHTTPPublisherAddsIdentityAndSignature(t *testing.T) {
 	if got := transport.request.Header.Get("Authorization"); got != "Bearer service-token" {
 		t.Fatalf("authorization = %q, want bearer service token", got)
 	}
-	if !strings.HasPrefix(transport.request.Header.Get("X-Aero-Event-Signature"), "sha256=") {
-		t.Fatal("event signature header is missing")
-	}
-	if transport.request.Header.Get("X-Aero-Event-Timestamp") == "" || len(transport.body) == 0 {
+	timestamp := transport.request.Header.Get("X-Aero-Event-Timestamp")
+	provided := transport.request.Header.Get("X-Aero-Event-Signature")
+	if !strings.HasPrefix(provided, "sha256=") || timestamp == "" || len(transport.body) == 0 {
 		t.Fatal("signed request metadata or body is missing")
+	}
+	mac := hmac.New(sha256.New, []byte("replication-hmac-key-00000000000000000000"))
+	_, _ = mac.Write([]byte(timestamp + "."))
+	_, _ = mac.Write(transport.body)
+	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(provided), []byte(want)) {
+		t.Fatalf("signature does not cover the transmitted body: got %q want %q", provided, want)
+	}
+}
+
+func TestHTTPPublisherRejectsUnserializablePayloadWithoutRequest(t *testing.T) {
+	transport := &publisherTransport{}
+	publisher, err := NewHTTPPublisher("https://region.example/internal/v1/events",
+		"replication-hmac-key-00000000000000000000", &http.Client{Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "http-marshal-failure-value"
+	envelope := serializationTestEnvelope()
+	envelope.Payload["unserializable"] = serializationFailureValue{secret: marker}
+	if err := publisher.Publish(context.Background(), envelope); err == nil {
+		t.Fatal("unserializable payload was accepted")
+	} else if strings.Contains(err.Error(), marker) {
+		t.Fatalf("marshal error leaked source payload: %v", err)
+	}
+	if transport.request != nil {
+		t.Fatal("HTTP publisher sent a request after serialization failed")
 	}
 }
 

@@ -34,14 +34,15 @@ func (p *NATSPublisher) Publish(ctx context.Context, envelope *Envelope) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := envelope.Validate(); err != nil {
-		return fmt.Errorf("invalid canonical envelope: %w", err)
+	body, err := marshalCanonicalEnvelope(envelope)
+	if err != nil {
+		return err
 	}
 	js, err := p.conn.JetStream()
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
-	if _, err := js.Publish(p.subject, mustMarshalEnvelope(envelope), nats.Context(ctx)); err != nil {
+	if _, err := js.Publish(p.subject, body, nats.Context(ctx)); err != nil {
 		return fmt.Errorf("nats publish projection: %w", err)
 	}
 	flushTimeout := 5 * time.Second

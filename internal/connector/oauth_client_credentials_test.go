@@ -32,6 +32,7 @@ func TestOAuthAccessTokenWaiterHonorsCancellation(t *testing.T) {
 	defer server.Close()
 	tokens, err := newOAuthClientCredentials(OAuthClientCredentialsConfig{
 		TokenURL: server.URL, ClientID: "client", ClientSecret: "secret", Scope: "scope", Resource: "aero-im",
+		Environment: "test", AllowLoopback: true,
 	}, server.Client(), time.Second)
 	if err != nil {
 		t.Fatal(err)

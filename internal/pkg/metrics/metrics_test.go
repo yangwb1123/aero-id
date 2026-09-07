@@ -157,6 +157,29 @@ func TestRegistry_UnmatchedRouteLabel(t *testing.T) {
 	}
 }
 
+func TestSourceAuthCompatibilityMetricsAreBounded(t *testing.T) {
+	reg := metrics.NewRegistry()
+	reg.ObserveSourceAuthCompatibility("aero-im", "loopback")
+	reg.ObserveSourceAuthCompatibility("aero-vault", "loopback")
+	reg.ObserveSourceAuthCompatibility("snaplink", "loopback")
+	reg.ObserveSourceAuthCompatibility("aero-vault", "https://secret.example")
+
+	var buf strings.Builder
+	reg.WriteText(&buf)
+	out := buf.String()
+	for _, want := range []string{
+		`aeroid_source_auth_compatibility_total{source="aero-im",mode="loopback"} 1`,
+		`aeroid_source_auth_compatibility_total{source="aero-vault",mode="loopback"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "snaplink") || strings.Contains(out, "secret.example") {
+		t.Fatalf("metrics exposed an unapproved source or mode: %s", out)
+	}
+}
+
 func TestControlPlaneMetrics_TextOutput(t *testing.T) {
 	reg := metrics.NewRegistry()
 	reg.ObserveEventApplied("aero-vault.buckets")

@@ -49,10 +49,11 @@ func (r *syncJobRepo) ClaimUnknownNextForRegion(ctx context.Context, worker stri
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row syncJobRow
 		now := time.Now().UTC()
-		query := regionalSyncJobQuery(tx, region, "status = ? OR (status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
-			"(status = ? AND job_type = ? AND error_code = ?)", string(domain.SyncJobUnknown),
-			string(domain.SyncJobRunning), "reconcile", string(domain.SyncJobPartiallyComplete),
-			string(domain.SyncJobErase), "erase.local_projection_failed").
+		query := regionalSyncJobQuery(tx, region, "(status = ? AND (lease_until IS NULL OR lease_until < clock_timestamp())) OR "+
+			"(status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
+			"(status = ? AND job_type = ? AND error_code = ? AND (lease_until IS NULL OR lease_until < clock_timestamp()))",
+			string(domain.SyncJobUnknown), string(domain.SyncJobRunning), "reconcile",
+			string(domain.SyncJobPartiallyComplete), string(domain.SyncJobErase), "erase.local_projection_failed").
 			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Order("updated_at ASC, id ASC").First(&row)
 		if query.Error != nil {

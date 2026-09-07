@@ -12,9 +12,6 @@ func sourceClient(cfg HTTPConfig) (*http.Client, error) {
 	if cfg.Client == nil {
 		return newSourceHTTPClient(cfg)
 	}
-	if !sourceTLSConfigured(cfg) {
-		return cfg.Client, nil
-	}
 	transport, err := cloneSourceTransport(cfg.Client)
 	if err != nil {
 		return nil, err
@@ -26,11 +23,21 @@ func sourceClient(cfg HTTPConfig) (*http.Client, error) {
 	transport.TLSClientConfig = tlsConfig
 	client := *cfg.Client
 	client.Transport = transport
+	client.Jar = nil
+	client.CheckRedirect = rejectSourceRedirect
+	// Every production request is created with a bounded context by the
+	// connector. Preserve an injected client's timeout instead of adding a
+	// second, racing http.Client timer; the latter can cancel a response body
+	// just before the connector context and obscure a timeout as an
+	// unavailable read error. The nil-client path below installs cfg.Timeout
+	// directly on the hardened client.
 	return &client, nil
 }
 
-func sourceTLSConfigured(cfg HTTPConfig) bool {
-	return cfg.TLSCAFile != "" || cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" || cfg.TLSServerName != ""
+func rejectSourceRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+func unsafeTLSVerification(config *tls.Config) bool {
+	return config.InsecureSkipVerify || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil
 }
 
 func cloneSourceTransport(client *http.Client) (*http.Transport, error) {
@@ -40,15 +47,26 @@ func cloneSourceTransport(client *http.Client) (*http.Transport, error) {
 	}
 	transport, ok := base.(*http.Transport)
 	if !ok {
-		return nil, fmt.Errorf("source TLS configuration requires a standard HTTP transport")
+		return nil, fmt.Errorf("source HTTP client requires a standard HTTP transport")
 	}
-	if transport.DialTLS != nil || transport.DialTLSContext != nil { //nolint:staticcheck // reject custom TLS dialers that bypass the configured certificate
-		return nil, fmt.Errorf("source TLS configuration cannot enforce its settings with a custom TLS dialer")
+	if transport.DialTLS != nil || transport.DialTLSContext != nil { //nolint:staticcheck // reject custom TLS dialers that bypass verification
+		return nil, fmt.Errorf("source HTTP client cannot use a custom TLS dialer")
 	}
-	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify { //nolint:gosec // reject an unsafe injected transport
-		return nil, fmt.Errorf("source TLS configuration requires server certificate verification")
+	if tlsConfig := transport.TLSClientConfig; tlsConfig != nil &&
+		(unsafeTLSVerification(tlsConfig) || tlsConfig.GetClientCertificate != nil) {
+		return nil, fmt.Errorf("source HTTP client requires standard TLS verification")
 	}
-	return transport.Clone(), nil
+	clone := transport.Clone()
+	// There is no configured source proxy policy. Clearing Proxy prevents both
+	// HTTP_PROXY inheritance and a proxy supplied by a custom client. The clone
+	// keeps the standard transport's connection pooling and TLS settings. A
+	// caller-supplied dialer is deliberately discarded so it cannot redirect
+	// either source or token traffic to an unexpected network.
+	clone.Proxy = nil
+	clone.Dial = nil //nolint:staticcheck // remove injected network routing
+	clone.DialContext = nil
+	clone.TLSNextProto = nil
+	return clone, nil
 }
 
 func newSourceHTTPClient(cfg HTTPConfig) (*http.Client, error) {
@@ -56,7 +74,7 @@ func newSourceHTTPClient(cfg HTTPConfig) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{TLSClientConfig: tlsConfig, Proxy: http.ProxyFromEnvironment,
+	transport := &http.Transport{TLSClientConfig: tlsConfig, Proxy: nil,
 		MaxIdleConns: cfg.MaxConcurrency, MaxIdleConnsPerHost: cfg.MaxConcurrency}
 	return &http.Client{Timeout: cfg.Timeout, Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil

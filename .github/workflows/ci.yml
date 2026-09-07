@@ -41,7 +41,9 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --timeout=5m ./internal/...
+          # Keep the CI scope identical to make lint-strict; internal-only
+          # linting misses cmd/scripts and release/preflight packages.
+          args: --timeout=5m ./...
 
   vet:
     runs-on: ubuntu-latest
@@ -132,3 +134,72 @@ jobs:
       # this gate closes (a broken migration set must never ship).
       - name: Migration-set integrity gate
         run: make check-migration-set
+      - name: Composition-root and Vault capability gate
+        run: make check-composition-root
+      - name: Kubernetes manifest and rollout gate
+        run: make check-k8s-manifest
+      - name: File-size gate
+        run: make check-file-sizes
+      - name: Anchored-event-ID gate
+        run: make check-anchored-event-ids
+      - name: Audit manifest gate
+        run: make check-audit-manifest
+      - name: Database startup hardening gate
+        run: make check-db-startup-hardening
+      - name: Integration-test compile gate
+        run: make check-integration-compile
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Every integration test terminates its own fixture. Disabling Ryuk
+      # avoids an unbounded cleanup-sidecar wait on hosted runners while the
+      # explicit test cleanup remains authoritative.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      TESTCONTAINERS_RYUK_CONNECTION_TIMEOUT: 30s
+      TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT: 10s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Verify Docker daemon
+        run: docker info
+      # The Make target applies both a per-test Go timeout and an outer process
+      # timeout, so a Testcontainers wait cannot consume the hosted runner.
+      - name: Integration tests
+        run: make test-integration
+      - name: Collect Docker state on failure
+        if: ${{ failure() }}
+        run: docker ps -a --no-trunc
+
+  # A deployed-contract job is enabled only when the protected repository
+  # variables are configured. It never substitutes a fake HTTP handler for
+  # Vault: the integration test uses the real Vault endpoint and Snaplink
+  # client-credentials authority. Keep the client secret in Actions Secrets.
+  vault-contract:
+    if: ${{ github.event_name == 'push' && vars.AERO_ID_VAULT_CONTRACT_ENDPOINT != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AERO_ID_VAULT_CONTRACT_REQUIRED: "true"
+      AERO_ID_VAULT_CONTRACT_ENDPOINT: ${{ vars.AERO_ID_VAULT_CONTRACT_ENDPOINT }}
+      AERO_ID_VAULT_CONTRACT_TOKEN_URL: ${{ vars.AERO_ID_VAULT_CONTRACT_TOKEN_URL }}
+      AERO_ID_VAULT_CONTRACT_CLIENT_ID: ${{ vars.AERO_ID_VAULT_CONTRACT_CLIENT_ID }}
+      AERO_ID_VAULT_CONTRACT_CLIENT_SECRET: ${{ secrets.AERO_ID_VAULT_CONTRACT_CLIENT_SECRET }}
+      AERO_ID_VAULT_CONTRACT_TENANT_ID: ${{ vars.AERO_ID_VAULT_CONTRACT_TENANT_ID }}
+      AERO_ID_VAULT_CONTRACT_ACCOUNT_ID: ${{ vars.AERO_ID_VAULT_CONTRACT_ACCOUNT_ID }}
+      AERO_ID_VAULT_CONTRACT_CANONICAL_UID: ${{ vars.AERO_ID_VAULT_CONTRACT_CANONICAL_UID }}
+      AERO_ID_VAULT_CONTRACT_OAUTH_ALLOWED_HOSTS: ${{ vars.AERO_ID_VAULT_CONTRACT_OAUTH_ALLOWED_HOSTS }}
+      AERO_ID_VAULT_CONTRACT_REGION: ${{ vars.AERO_ID_VAULT_CONTRACT_REGION }}
+      AERO_ID_VAULT_CONTRACT_ENVIRONMENT: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Real Vault contract tests
+        run: make test-vault-contract

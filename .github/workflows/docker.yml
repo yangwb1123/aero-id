@@ -43,10 +43,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Consumers deploy by digest. Keep only provenance-bearing commit
+          # tags; do not publish a mutable latest tag from CI.
           tags: |
-            type=sha,prefix=,suffix=,format=short
-            type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=,suffix=,format=long
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6

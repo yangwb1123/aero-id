@@ -74,12 +74,9 @@ func (p *HTTPPublisher) Publish(ctx context.Context, envelope *Envelope) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := envelope.Validate(); err != nil {
-		return fmt.Errorf("invalid canonical envelope: %w", err)
-	}
-	body, err := json.Marshal(redactedEnvelope(envelope))
+	body, err := marshalCanonicalEnvelope(envelope)
 	if err != nil {
-		return fmt.Errorf("marshal canonical envelope: %w", err)
+		return err
 	}
 	if len(body) > 1<<20 {
 		return fmt.Errorf("canonical envelope is too large")

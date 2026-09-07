@@ -41,6 +41,7 @@ sources:
     oauth_client_secret: ""
     oauth_scope: ""
     oauth_resource: ""
+    oauth_allowed_hosts: [snaplink.example]
     target_assertion_key_file: ""
     target_assertion_key_env: AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_PRIVATE_KEY
     target_assertion_key_id: target-key-2026-08
@@ -62,6 +63,7 @@ sources:
 }
 
 func TestLoadRejectsInvalidAeroIMTargetAssertion(t *testing.T) {
+	t.Setenv("AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET", "oauth-client-secret")
 	const validConfig = sample + `
 sources:
   aero_im:
@@ -69,8 +71,9 @@ sources:
     summary_path: /internal/account-summary
     region: local
     oauth_token_url: "https://snaplink.example/token"
+    oauth_allowed_hosts: [snaplink.example]
     oauth_client_id: aero-id-im-source
-    oauth_client_secret: oauth-client-secret
+    oauth_client_secret: ""
     oauth_scope: aero.account.summary.read
     oauth_resource: aero-im
     target_assertion_key_file: /run/secrets/aero-id-target-key.pem
@@ -134,6 +137,7 @@ sources:
   snaplink:
     endpoint: "https://snaplink.example"
     region: local
+    capabilities: {summary: true}
 `
 	_, err := Load(writeTemp(t, content))
 	if err == nil || !strings.Contains(err.Error(), "sources.snaplink service authentication is required") {
@@ -148,6 +152,7 @@ sources:
   snaplink:
     endpoint: "http://127.0.0.1:8080"
     region: local
+    capabilities: {summary: true}
 `
 	cfg, err := Load(writeTemp(t, content))
 	if err != nil {
@@ -172,5 +177,48 @@ sources:
 	}
 	if !cfg.Sources.AeroIM.AllowInsecureLoopback {
 		t.Fatal("AeroIM.AllowInsecureLoopback = false, want environment override true")
+	}
+}
+
+func TestLoadRequiresAeroVaultAuthenticationWhenEnabled(t *testing.T) {
+	content := sample + `
+sources:
+  aero_vault:
+    endpoint: "https://vault.example"
+    region: local
+`
+	_, err := Load(writeTemp(t, content))
+	if err == nil || !strings.Contains(err.Error(), "sources.aero-vault service authentication is required") {
+		t.Fatalf("Load error = %v, want fail-closed Aero Vault authentication error", err)
+	}
+}
+
+func TestLoadAeroVaultAuthAndCapabilitiesEnvironmentOverrides(t *testing.T) {
+	t.Setenv("AERO_ID_SOURCES_AERO_VAULT_ALLOW_INSECURE_LOOPBACK", "true")
+	t.Setenv("AERO_ID_SOURCES_AERO_VAULT_OAUTH_CLIENT_SECRET", "vault-oauth-client-secret")
+	t.Setenv("AERO_ID_SOURCES_AERO_VAULT_CAPABILITIES_ERASE", "true")
+	t.Setenv("AERO_ID_SOURCES_AERO_VAULT_CAPABILITIES_OPERATION_STATUS", "true")
+	content := sample + `
+sources:
+  aero_vault:
+    endpoint: "http://127.0.0.1:8080"
+    region: local
+    erase_path: /erase
+    status_path: /status
+    oauth_token_url: "http://127.0.0.1:8080/token"
+    oauth_allowed_hosts: ["http://127.0.0.1:8080"]
+    oauth_client_id: vault-client
+    oauth_client_secret: ""
+    oauth_scope: read
+    oauth_resource: aero-vault
+    oauth_tenant_id: tenant-a
+`
+	cfg, err := Load(writeTemp(t, content))
+	if err != nil {
+		t.Fatalf("Load error = %v, want environment-bound Vault settings to pass", err)
+	}
+	got := cfg.Sources.AeroVault
+	if !got.AllowInsecureLoopback || !got.Capabilities.Erase || !got.Capabilities.OperationStatus {
+		t.Fatalf("Aero Vault environment settings = %#v, want loopback and both capabilities enabled", got)
 	}
 }

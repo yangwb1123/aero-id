@@ -1,0 +1,59 @@
+# One-shot migration Job template. Render and apply this file separately from
+# regional-cell.yaml; keeping it out of the steady-state bundle prevents every
+# ConfigMap rollout from creating a second migration Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aero-id-migrate-RELEASE_PLACEHOLDER
+  namespace: aero-id
+  labels:
+    app: aero-id
+    component: migration
+    aero.io/release: RELEASE_PLACEHOLDER
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: aero-id
+        component: migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: ghcr.io/aero/aero-id@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          command: ["/app/migrate"]
+          # The renderer replaces the complete args sequence with `up`,
+          # `version`, or `down <count>`; no DSN or secret is placed on the
+          # command line.
+          args: MIGRATION_ARGS_PLACEHOLDER
+          env:
+            - name: AERO_ID_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: database_password}
+            - name: AERO_ID_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: signing_key}
+            - name: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: audit_ledger_signing_key}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aero-id
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: aero-id-config
+            defaultMode: 0444

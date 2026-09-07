@@ -3,9 +3,15 @@ account: { issuer: snaplink, region: local, home_region_version: v1, regions: [l
 sources:
   snaplink:
     endpoint: ""               # published summary/control endpoint; empty disables the connector
+    allow_insecure_loopback: false # development/test-only compatibility
     summary_path: /internal/account-summary
     erase_path: ""              # opt-in idempotent source deletion command
     status_path: ""              # optional command outcome endpoint
+    capabilities:
+      summary: false
+      erase: false
+      operation_status: false
+      erase_contract_version: "" # no production Snaplink erase contract is verified yet
     region: local
     bearer_token: ""            # compatibility only; prefer OAuth below
     oauth_token_url: ""
@@ -13,6 +19,12 @@ sources:
     oauth_client_secret: ""     # secret provider/env only
     oauth_scope: ""
     oauth_resource: ""
+    oauth_allowed_hosts: []       # exact OAuth token-authority origins; host-only means HTTPS:443
+    oauth_tls_ca_file: ""
+    oauth_tls_cert_file: ""
+    oauth_tls_key_file: ""
+    oauth_tls_server_name: ""
+    oauth_tenant_id: ""
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
@@ -38,6 +50,12 @@ sources:
     oauth_client_secret: ""     # blank here; env: AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET
     oauth_scope: ""             # env: AERO_ID_SOURCES_AERO_IM_OAUTH_SCOPE
     oauth_resource: ""           # env: AERO_ID_SOURCES_AERO_IM_OAUTH_RESOURCE
+    oauth_allowed_hosts: []       # exact OAuth token-authority origins; host-only means HTTPS:443
+    oauth_tls_ca_file: ""
+    oauth_tls_cert_file: ""
+    oauth_tls_key_file: ""
+    oauth_tls_server_name: ""
+    oauth_tenant_id: ""
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
@@ -56,6 +74,8 @@ sources:
     # docs/contracts/source-account-summary.md.
     target_assertion_key_file: ""
     target_assertion_key_env: ""
+    target_assertion_jwks_url: ""
+    target_assertion_trust_domain: "" # exact HTTPS issuer/trust-domain URL
     target_assertion_key_id: ""
     target_assertion_issuer: ""
     target_assertion_audience: ""
@@ -66,10 +86,14 @@ sources:
     # oauth_scope: aero.account.summary.read
     # oauth_resource: aero-im
   aero_vault:
-    endpoint: ""
+    endpoint: ""                 # secure source auth is required when enabled
+    allow_insecure_loopback: false # development/test-only compatibility
     summary_path: /v1/internal/account-summary
-    erase_path: ""
-    status_path: ""
+    erase_path: ""               # read-only by default; requires capabilities.erase
+    status_path: ""               # requires capabilities.operation_status
+    capabilities:
+      erase: false
+      operation_status: false
     region: local
     bearer_token: ""
     oauth_token_url: ""
@@ -77,6 +101,12 @@ sources:
     oauth_client_secret: ""
     oauth_scope: ""
     oauth_resource: ""
+    oauth_allowed_hosts: []       # exact OAuth token-authority origins; host-only means HTTPS:443
+    oauth_tls_ca_file: ""
+    oauth_tls_cert_file: ""
+    oauth_tls_key_file: ""
+    oauth_tls_server_name: ""
+    oauth_tenant_id: ""          # tenant bound to the Snaplink PrincipalService client
     timeout: 2s
     max_body_bytes: 1048576
     max_concurrency: 32
@@ -239,7 +269,7 @@ audit_governance:                # durable relay from audit_publications; disabl
 billing:                         # Snaplink entitlement + globally atomic quota reservations
   enabled: false
   endpoint: ""                   # Snaplink base URL; API paths are fixed and tenantless
-  timeout: 5s
+  timeout: 5s                  # shared OAuth flight cap, including response-body processing; transport cancellation is cooperative
   max_body_bytes: 262144
   max_projection_staleness: 15m  # cached reads only; quota mutations still fail closed if central is unavailable
   account_feature: account       # Snaplink entitlement feature required for account provisioning

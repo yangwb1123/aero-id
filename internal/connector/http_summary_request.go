@@ -14,10 +14,19 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
 
 func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req SummaryRequest) (*http.Request, error) {
 	req = c.applyTestTargetRequest(req)
+	if err := c.validateVaultRequestTenant(req.TenantID); err != nil {
+		return nil, err
+	}
+	var err error
+	req.Region, err = c.vaultRequestRegion(req.Region)
+	if err != nil {
+		return nil, err
+	}
 	if err := c.validateTargetSummaryRequest(req); err != nil {
 		return nil, err
 	}
@@ -27,13 +36,13 @@ func (c *JSONSummaryConnector) newSummaryRequest(ctx context.Context, req Summar
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request", Cause: err}
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request", Cause: redactedRemoteCause(err)}
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("X-Aero-Account-ID", req.AccountID.String())
 	request.Header.Set("X-Aero-Canonical-UID", req.CanonicalUID)
 	request.Header.Set("X-Aero-Actor-UID", req.ActorUID)
-	request.Header.Set("X-Aero-Tenant-ID", req.TenantID)
+	setTenantContextHeaders(request.Header, c.source, req.TenantID)
 	if req.Region != "" {
 		request.Header.Set("X-Aero-Region", req.Region)
 	}
@@ -76,7 +85,7 @@ func (c *JSONSummaryConnector) addTargetAssertion(request *http.Request, req Sum
 	assertion, err := c.targetAssertionSigner.sign(req.trustedTarget)
 	if err != nil {
 		return &RemoteError{Source: c.source, Kind: ErrorInvalid,
-			Code: "source.target_assertion_failed", Cause: err}
+			Code: "source.target_assertion_failed", Cause: redactedRemoteCause(err)}
 	}
 	request.Header.Set(accountSummaryTargetAssertionHeader, assertion)
 	return nil
@@ -87,19 +96,19 @@ func (c *JSONSummaryConnector) summaryURL(req SummaryRequest) (*url.URL, error) 
 		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid,
 			Code: "source.target_assertion_path"}
 	}
-	endpoint, err := url.Parse(strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.SummaryPath)
-	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint", Cause: err}
+	endpoint, err := c.sourceEndpointURL()
+	if err != nil || !appendSourcePath(endpoint, c.cfg.SummaryPath) {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint"}
 	}
 	query := endpoint.Query()
 	query.Set("account_id", req.AccountID.String())
 	if req.Region != "" {
 		query.Set("region", req.Region)
 	}
-	// Aero IM's bound protocol has no reconciliation query flag. Reconcile is
-	// an aero-id workflow mode, not a source authorization input; omitting it
-	// keeps the signed request inside the strict IM query allow-list.
-	if req.Reconcile && c.source != SourceAeroIM {
+	// Aero IM and the deployed Vault summary protocol do not publish a
+	// reconciliation query flag. Reconcile is an aero-id workflow mode, not a
+	// source authorization input; only the legacy Snaplink seam carries it.
+	if req.Reconcile && c.source == SourceSnaplink {
 		query.Set("reconcile", "true")
 	}
 	for _, dataset := range req.Datasets {
@@ -107,6 +116,36 @@ func (c *JSONSummaryConnector) summaryURL(req SummaryRequest) (*url.URL, error) 
 	}
 	endpoint.RawQuery = query.Encode()
 	return endpoint, nil
+}
+
+func (c *JSONSummaryConnector) sourceEndpointURL() (*url.URL, error) {
+	if c.endpointURL != nil {
+		return cloneURL(c.endpointURL), nil
+	}
+	return sourceauth.ParseEndpoint(c.cfg.Endpoint)
+}
+
+func appendSourcePath(endpoint *url.URL, path string) bool {
+	if endpoint == nil || !sourceauth.ValidAbsolutePath(path) || path == "" {
+		return false
+	}
+	pathURL, err := url.ParseRequestURI(path)
+	if err != nil {
+		return false
+	}
+	baseEscaped := strings.TrimRight(endpoint.EscapedPath(), "/")
+	pathEscaped := strings.TrimLeft(pathURL.EscapedPath(), "/")
+	joinedEscaped := baseEscaped + "/" + pathEscaped
+	decoded, err := url.PathUnescape(joinedEscaped)
+	if err != nil || !strings.HasPrefix(decoded, "/") {
+		return false
+	}
+	endpoint.Path = decoded
+	endpoint.RawPath = ""
+	if (&url.URL{Path: decoded}).EscapedPath() != joinedEscaped {
+		endpoint.RawPath = joinedEscaped
+	}
+	return true
 }
 
 func canonicalTargetDatasetOrder(datasets []domain.AccountDataset) bool {
@@ -128,70 +167,144 @@ func setBearer(request *http.Request, token string) {
 }
 
 func (c *JSONSummaryConnector) newEraseRequest(ctx context.Context, req EraseRequest) (*http.Request, []byte, error) {
+	if err := c.validateVaultRequestTenant(req.TenantID); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	req.Region, err = c.vaultRequestRegion(req.Region)
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(req.Datasets) == 0 && (c.source == SourceSnaplink || c.source == SourceAeroIM || c.source == SourceAeroVault) {
 		return nil, nil, invalidDatasetScope(c.source)
 	}
-	endpoint, err := url.Parse(strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.ErasePath)
+	endpoint, err := c.eraseEndpoint(req.Region)
 	if err != nil {
-		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint", Cause: err}
+		return nil, nil, err
 	}
-	if req.Region != "" {
-		query := endpoint.Query()
-		query.Set("region", req.Region)
-		endpoint.RawQuery = query.Encode()
-	}
-	body, err := json.Marshal(map[string]any{"account_id": req.AccountID.String(), "canonical_uid": req.CanonicalUID,
-		"datasets": req.Datasets, "idempotency_key": req.IdempotencyKey, "operation_id": req.OperationID})
+	body, err := marshalEraseRequest(req)
 	if err != nil {
-		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request", Cause: err}
+		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request",
+			Cause: redactedRemoteCause(err)}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(body)))
 	if err != nil {
-		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request", Cause: err}
+		return nil, nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.request",
+			Cause: redactedRemoteCause(err)}
 	}
+	c.setEraseHeaders(request, req)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
+	return request, body, nil
+}
+
+func (c *JSONSummaryConnector) eraseEndpoint(region string) (*url.URL, error) {
+	endpoint, err := c.sourceEndpointURL()
+	if err != nil || !appendSourcePath(endpoint, c.cfg.ErasePath) {
+		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.endpoint"}
+	}
+	if region != "" {
+		query := endpoint.Query()
+		query.Set("region", region)
+		endpoint.RawQuery = query.Encode()
+	}
+	return endpoint, nil
+}
+
+func marshalEraseRequest(req EraseRequest) ([]byte, error) {
+	return json.Marshal(map[string]any{"account_id": req.AccountID.String(), "canonical_uid": req.CanonicalUID,
+		"datasets": req.Datasets, "idempotency_key": req.IdempotencyKey, "operation_id": req.OperationID})
+}
+
+func (c *JSONSummaryConnector) setEraseHeaders(request *http.Request, req EraseRequest) {
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Aero-Account-ID", req.AccountID.String())
 	request.Header.Set("X-Aero-Canonical-UID", req.CanonicalUID)
 	request.Header.Set("X-Aero-Actor-UID", req.ActorUID)
-	request.Header.Set("X-Aero-Tenant-ID", req.TenantID)
+	setTenantContextHeaders(request.Header, c.source, req.TenantID)
 	if req.Region != "" {
 		request.Header.Set("X-Aero-Region", req.Region)
 	}
 	request.Header.Set("X-Request-ID", req.RequestID)
 	request.Header.Set("X-Aero-Operation-ID", req.OperationID)
 	request.Header.Set("Idempotency-Key", req.IdempotencyKey)
-	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
-	return request, body, nil
 }
 
-func (c *JSONSummaryConnector) decodeEraseResult(body io.Reader) (*CommandResult, error) {
-	data, err := io.ReadAll(io.LimitReader(body, c.cfg.MaxBodyBytes+1))
-	if err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.response_read_failed", Temporary: true, Cause: err}
+func setTenantContextHeaders(headers http.Header, source Source, tenantID string) {
+	headers.Set("X-Aero-Tenant-ID", tenantID)
+	// Aero Vault's HTTP middleware resolves the active tenant from this header;
+	// X-Aero-Tenant-ID remains the asserted account-summary consistency field.
+	if source == SourceAeroVault {
+		headers.Set("X-Aero-Tenant", tenantID)
 	}
-	if int64(len(data)) > c.cfg.MaxBodyBytes {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_too_large"}
+}
+
+func (c *JSONSummaryConnector) decodeEraseResult(ctx context.Context, body io.Reader) (*CommandResult, error) {
+	data, err := c.readCommandResponse(ctx, body)
+	if err != nil {
+		return nil, err
 	}
 	if len(data) == 0 {
-		return &CommandResult{Status: "accepted"}, nil
+		return c.emptyEraseResult()
 	}
-	var payload struct {
-		OperationID       string         `json:"operation_id"`
-		SourceOperationID string         `json:"source_operation_id"`
-		Status            string         `json:"status"`
-		Result            map[string]any `json:"result"`
+	payload, err := c.parseErasePayload(data)
+	if err != nil {
+		return nil, err
 	}
+	return c.finishErasePayload(payload)
+}
+
+func (c *JSONSummaryConnector) emptyEraseResult() (*CommandResult, error) {
+	if c.source == SourceAeroVault {
+		return nil, unknownCommandOutcome(c.source, "source.response_empty")
+	}
+	return &CommandResult{Status: "accepted"}, nil
+}
+
+func (c *JSONSummaryConnector) parseErasePayload(data []byte) (commandResultPayload, error) {
+	var payload commandResultPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.response_invalid", Cause: err}
+		if c.source == SourceAeroVault {
+			return commandResultPayload{}, unknownCommandOutcome(c.source, "source.response_invalid")
+		}
+		return commandResultPayload{}, &RemoteError{Source: c.source, Kind: ErrorInvalid,
+			Code: "source.response_invalid", Cause: redactedRemoteCause(err)}
 	}
-	if payload.SourceOperationID == "" {
+	return payload, nil
+}
+
+func (c *JSONSummaryConnector) finishErasePayload(payload commandResultPayload) (*CommandResult, error) {
+	if payload.SourceOperationID == "" && c.source != SourceSnaplink {
 		payload.SourceOperationID = payload.OperationID
 	}
 	if payload.Status == "" {
+		if c.source == SourceAeroVault {
+			return nil, unknownCommandOutcome(c.source, "source.operation_status_missing")
+		}
+		if c.source == SourceSnaplink {
+			return commandResultFromPayload(payload), &RemoteError{Source: c.source, Kind: ErrorInvalid,
+				Code: "source.operation_status_missing"}
+		}
 		payload.Status = "accepted"
 	}
-	return &CommandResult{SourceOperationID: payload.SourceOperationID, Status: payload.Status, Result: payload.Result}, nil
+	return commandResultFromPayload(payload), nil
+}
+
+func commandResultFromPayload(payload commandResultPayload) *CommandResult {
+	return &CommandResult{OperationID: payload.OperationID, SourceOperationID: payload.SourceOperationID,
+		Status: strings.ToLower(payload.Status), Result: RedactSummaryData(payload.Result)}
+}
+
+func (c *JSONSummaryConnector) commandResponseReadError(ctx context.Context, code string, err error) *RemoteError {
+	kind := ErrorUnavailable
+	if requestTimedOut(ctx, err) {
+		kind = ErrorTimeout
+	}
+	return &RemoteError{Source: c.source, Kind: kind, Code: code, Temporary: true, Cause: redactedRemoteCause(err)}
+}
+
+func unknownCommandOutcome(source Source, code string) *RemoteError {
+	return &RemoteError{Source: source, Kind: ErrorUnknown, Code: code, Temporary: true}
 }
 
 func (c *JSONSummaryConnector) summaryFromPayload(payload *summaryPayload) (*Summary, error) {
@@ -268,7 +381,7 @@ func (c *JSONSummaryConnector) appendDatasetSnapshots(result *Summary, datasets 
 		}
 		var values map[string]any
 		if err := json.Unmarshal(raw, &values); err != nil {
-			return &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.dataset_invalid", Cause: err}
+			return &RemoteError{Source: c.source, Kind: ErrorInvalid, Code: "source.dataset_invalid", Cause: redactedRemoteCause(err)}
 		}
 		result.Snapshots = append(result.Snapshots, &domain.AccountSnapshot{Source: c.source.String(), SourceRegion: region,
 			Dataset: dataset, Status: domain.SnapshotFresh, Version: result.Version, GeneratedAt: generatedAt,

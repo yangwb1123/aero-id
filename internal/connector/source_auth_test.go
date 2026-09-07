@@ -64,6 +64,14 @@ func TestSnaplinkStaticBearerAuthenticatesEverySurface(t *testing.T) {
 	assertStaticBearerSurfaces(t, SourceSnaplink)
 }
 
+func TestAeroVaultRejectsStaticBearerOutsideTheDeployedPrincipalContract(t *testing.T) {
+	_, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: "https://vault.example",
+		BearerToken: "static-source-token"})
+	if err == nil || !strings.Contains(err.Error(), "Snaplink OAuth") {
+		t.Fatalf("Vault static bearer error = %v, want deployed PrincipalService rejection", err)
+	}
+}
+
 func assertStaticBearerSurfaces(t *testing.T, source Source) {
 	t.Helper()
 	var paths []string
@@ -85,14 +93,21 @@ func assertStaticBearerSurfaces(t *testing.T, source Source) {
 		t.Fatalf("static bearer constructor: %v", err)
 	}
 	summaryRequest := SummaryRequest{AccountID: domain.ID{1}}
-	if source == SourceSnaplink {
+	switch source {
+	case SourceSnaplink:
 		summaryRequest.Datasets = []domain.AccountDataset{"snaplink.identity"}
+	case SourceAeroVault:
+		summaryRequest.Datasets = []domain.AccountDataset{"aero-vault.tenants"}
 	}
 	if _, err := client.Summary(t.Context(), summaryRequest); err != nil {
 		t.Fatalf("summary: %v", err)
 	}
+	eraseDatasets := []domain.AccountDataset{"snaplink.identity"}
+	if source == SourceAeroVault {
+		eraseDatasets = []domain.AccountDataset{"aero-vault.tenants"}
+	}
 	if _, err := client.Erase(t.Context(), EraseRequest{AccountID: domain.ID{1}, IdempotencyKey: "erase-1",
-		Datasets: []domain.AccountDataset{"snaplink.identity"}}); err != nil {
+		Datasets: eraseDatasets}); err != nil {
 		t.Fatalf("erase: %v", err)
 	}
 	if _, err := client.OperationStatus(t.Context(), OperationStatusRequest{AccountID: domain.ID{1}, SourceOperationID: "source-op"}); err != nil {
@@ -139,15 +154,16 @@ func TestAeroIMStaticBearerAuthenticatesEverySurface(t *testing.T) {
 
 func TestAeroIMOAuthValidationIsLazy(t *testing.T) {
 	var calls atomic.Int32
-	client := &http.Client{Transport: sourceAuthRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		return nil, io.ErrUnexpectedEOF
-	})}
-	_, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{
-		Endpoint: "https://im.example", Client: client,
-		OAuth: OAuthClientCredentialsConfig{TokenURL: "https://token.example/token", ClientID: "client",
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	_, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{
+		Endpoint: server.URL, Client: server.Client(), AllowInsecureLoopback: true, Environment: "test",
+		OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token", ClientID: "client",
 			ClientSecret: "secret", Scope: "summary:read", Resource: "aero-im"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("valid OAuth configuration rejected: %v", err)
 	}
@@ -158,17 +174,18 @@ func TestAeroIMOAuthValidationIsLazy(t *testing.T) {
 
 func TestAeroIMOAuthFailureDoesNotCallSource(t *testing.T) {
 	var sourceCalls atomic.Int32
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer tokenServer.Close()
-	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		sourceCalls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer sourceServer.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: sourceServer.URL,
-		OAuth: OAuthClientCredentialsConfig{TokenURL: tokenServer.URL, ClientID: "client",
+		AllowInsecureLoopback: true, Environment: "test",
+		OAuth: OAuthClientCredentialsConfig{TokenURL: sourceServer.URL + "/token", ClientID: "client",
 			ClientSecret: "secret", Scope: "summary:read", Resource: "aero-im"}, MaxAttempts: 1}))
 	if err != nil {
 		t.Fatalf("OAuth constructor: %v", err)
@@ -220,20 +237,22 @@ func TestAeroIMLoopbackCompatibilityMatrixAndMetric(t *testing.T) {
 
 func TestEraseBlankKeyIsSharedAcrossSourcesAndSkipsTokenIO(t *testing.T) {
 	var calls atomic.Int32
-	client := &http.Client{Transport: sourceAuthRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		return nil, io.ErrUnexpectedEOF
-	})}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
 	for _, source := range []Source{SourceSnaplink, SourceAeroIM, SourceAeroVault} {
-		cfg := HTTPConfig{Endpoint: "http://127.0.0.1", ErasePath: "/erase", Client: client}
-		if source == SourceSnaplink || source == SourceAeroIM {
-			cfg.AllowInsecureLoopback = true
-			cfg.Environment = "test"
+		cfg := HTTPConfig{Endpoint: server.URL, ErasePath: "/erase", Client: server.Client()}
+		cfg.AllowInsecureLoopback = true
+		cfg.Environment = "test"
+		if source == SourceAeroVault {
+			cfg.OAuthTenantID = vaultTestTenant
+			cfg.OAuthAllowedHosts = []string{oauthTestOrigin(t, server.URL)}
+			cfg.OAuth = OAuthClientCredentialsConfig{TokenURL: server.URL + "/token", ClientID: "vault-client",
+				ClientSecret: "vault-secret", Scope: "read", Resource: "aero-vault"}
 		}
-		if source == SourceAeroIM {
-			cfg.OAuth = OAuthClientCredentialsConfig{TokenURL: "https://token.example/token", ClientID: "client",
-				ClientSecret: "secret", Scope: "summary:read", Resource: "aero-im"}
-		}
+
 		item, err := NewJSONSummaryConnector(source, cfg)
 		if err != nil {
 			t.Fatalf("%s constructor: %v", source, err)
@@ -245,6 +264,7 @@ func TestEraseBlankKeyIsSharedAcrossSourcesAndSkipsTokenIO(t *testing.T) {
 		case SourceSnaplink:
 			eraseRequest.Datasets = []domain.AccountDataset{domain.AccountDataset("snaplink.identity")}
 		case SourceAeroVault:
+			eraseRequest.TenantID = vaultTestTenant
 			eraseRequest.Datasets = []domain.AccountDataset{domain.AccountDataset("aero-vault.tenants")}
 		}
 		_, err = item.Erase(t.Context(), eraseRequest)
@@ -286,17 +306,17 @@ func TestAeroIMMTLSWithInjectedClientPresentsClientCertificate(t *testing.T) {
 }
 
 func TestAeroIMMTLSMissingFilesFailsBeforeConstruction(t *testing.T) {
-	_, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: "https://im.example",
-		TLSCertFile: "/no/such/client.crt", TLSKeyFile: "/no/such/client.key"})
+	_, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: "https://im.example",
+		TLSCertFile: "/no/such/client.crt", TLSKeyFile: "/no/such/client.key"}))
 	if err == nil || strings.Contains(err.Error(), "client.crt") || strings.Contains(err.Error(), "client.key") {
 		t.Fatalf("error = %v, want a redacted local certificate error", err)
 	}
 }
 
 func TestAeroIMMTLSRejectsArbitraryInjectedTransport(t *testing.T) {
-	_, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: "https://im.example",
+	_, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{Endpoint: "https://im.example",
 		TLSCertFile: "/tmp/client.crt", TLSKeyFile: "/tmp/client.key",
-		Client: &http.Client{Transport: sourceAuthRoundTripFunc(func(*http.Request) (*http.Response, error) { return nil, nil })}})
+		Client: &http.Client{Transport: sourceAuthRoundTripFunc(func(*http.Request) (*http.Response, error) { return nil, nil })}}))
 	if err == nil || !strings.Contains(err.Error(), "standard HTTP transport") {
 		t.Fatalf("error = %v, want arbitrary transport rejection", err)
 	}

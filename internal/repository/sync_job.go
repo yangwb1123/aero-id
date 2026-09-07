@@ -52,6 +52,11 @@ type syncJobRepo struct {
 var ErrSyncJobLeaseLost = errors.New("sync job lease lost")
 var ErrSyncJobUnknown = errors.New("sync job outcome is unknown")
 
+// syncUnknownRetryDelay paces automatic reconciliation after an unknown
+// result. Manual ClaimUnknown remains an explicit operator retry and may
+// override this delay.
+const syncUnknownRetryDelay = time.Minute
+
 // newSyncLeaseOwner returns an opaque per-claim token. The worker role passed
 // to Claim is a scheduling hint, not an authorization credential: reusing it
 // after expiry would let a stale worker pass a later lease predicate.
@@ -233,10 +238,11 @@ func (r *syncJobRepo) ClaimUnknownNext(ctx context.Context, worker string, lease
 		var row syncJobRow
 		now := time.Now().UTC()
 		query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-			Where("status = ? OR (status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
-				"(status = ? AND job_type = ? AND error_code = ?)", string(domain.SyncJobUnknown),
-				string(domain.SyncJobRunning), "reconcile", string(domain.SyncJobPartiallyComplete),
-				string(domain.SyncJobErase), "erase.local_projection_failed").
+			Where("(status = ? AND (lease_until IS NULL OR lease_until < clock_timestamp())) OR "+
+				"(status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
+				"(status = ? AND job_type = ? AND error_code = ? AND (lease_until IS NULL OR lease_until < clock_timestamp()))",
+				string(domain.SyncJobUnknown), string(domain.SyncJobRunning), "reconcile",
+				string(domain.SyncJobPartiallyComplete), string(domain.SyncJobErase), "erase.local_projection_failed").
 			Order("updated_at ASC, id ASC").First(&row)
 		if query.Error != nil {
 			return query.Error

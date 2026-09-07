@@ -6,14 +6,21 @@ package sourceauth
 
 import (
 	"errors"
-	"net/url"
 	"strings"
 	"unicode"
 )
 
 const (
-	aeroIMSource   = "aero-im"
-	snaplinkSource = "snaplink"
+	aeroIMSource    = "aero-im"
+	aeroVaultSource = "aero-vault"
+	snaplinkSource  = "snaplink"
+
+	// Vault's account-summary handler resolves a PrincipalService from a
+	// Snaplink client-credentials token. These values are part of that source
+	// contract, not caller-selected permissions.
+	VaultOAuthScope    = "read"
+	VaultOAuthResource = "aero-vault"
+	VaultOAuthAudience = "aero-vault"
 )
 
 // Mode identifies the authentication mode selected for a source connector.
@@ -39,6 +46,7 @@ type OAuthConfig struct {
 	ClientSecret string
 	Scope        string
 	Resource     string
+	AllowedHosts []string
 }
 
 // Config is the minimal input needed by the shared source authentication
@@ -53,9 +61,11 @@ type Config struct {
 	OAuth                 OAuthConfig
 	// OAuthConfigured lets configuration validation reuse this policy after its
 	// existing OAuth validator has run, without copying secret values here.
-	OAuthConfigured bool
-	TLSCertFile     string
-	TLSKeyFile      string
+	OAuthConfigured  bool
+	TLSCertFile      string
+	TLSKeyFile       string
+	OAuthTLSCertFile string
+	OAuthTLSKeyFile  string
 }
 
 // Decision is the selected authentication mode. BearerToken is normalized
@@ -67,12 +77,11 @@ type Decision struct {
 	Compatibility bool
 }
 
-// Evaluate validates and classifies an endpoint. Snaplink and Aero IM are
-// authenticated service-to-service sources; other source connectors retain
-// their existing compatibility behavior until their source-specific contract
-// is migrated.
+// Evaluate validates and classifies an endpoint. Snaplink, Aero IM, and Aero
+// Vault are authenticated service-to-service sources; other source connectors
+// retain their existing compatibility behavior until their contracts migrate.
 func Evaluate(cfg Config) (Decision, error) {
-	if cfg.Source != "" && cfg.Source != aeroIMSource && cfg.Source != snaplinkSource {
+	if !authenticatedSource(cfg.Source) {
 		return Decision{Mode: ModeDisabled, BearerToken: cfg.BearerToken}, nil
 	}
 	if strings.TrimSpace(cfg.Endpoint) == "" {
@@ -82,19 +91,49 @@ func Evaluate(cfg Config) (Decision, error) {
 	if err != nil {
 		return Decision{}, policyError(cfg, "endpoint is invalid")
 	}
-	if err := validateLoopbackOption(cfg, endpoint.Hostname()); err != nil {
-		return Decision{}, err
-	}
-	if err := validateCertificatePair(cfg); err != nil {
+	if err := validateEndpointAuthentication(cfg, endpoint.Scheme, endpoint.Hostname()); err != nil {
 		return Decision{}, err
 	}
 	return classifyDecision(cfg, endpoint.Scheme)
+}
+
+func authenticatedSource(source string) bool {
+	switch source {
+	case "", aeroIMSource, aeroVaultSource, snaplinkSource:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateEndpointAuthentication(cfg Config, scheme, host string) error {
+	if err := validateLoopbackOption(cfg, host); err != nil {
+		return err
+	}
+	if err := validateCertificatePair(cfg.TLSCertFile, cfg.TLSKeyFile, "mTLS"); err != nil {
+		return err
+	}
+	if err := validateCertificatePair(cfg.OAuthTLSCertFile, cfg.OAuthTLSKeyFile, "OAuth mTLS"); err != nil {
+		return err
+	}
+	if completeMTLS(cfg) && scheme != "https" {
+		return policyError(cfg, "mTLS requires an HTTPS endpoint")
+	}
+	if completeOAuthMTLS(cfg) && strings.TrimSpace(cfg.OAuth.TokenURL) == "" {
+		return policyError(cfg, "OAuth mTLS requires OAuth client credentials")
+	}
+	return nil
 }
 
 func classifyDecision(cfg Config, scheme string) (Decision, error) {
 	oauthConfigured, oauthPartial := classifyOAuth(cfg)
 	if oauthPartial {
 		return Decision{}, policyError(cfg, "OAuth token URL, client ID, client secret, scope, and resource are required together")
+	}
+	if oauthConfigured {
+		if err := validateOAuthDecisionEndpoint(cfg); err != nil {
+			return Decision{}, err
+		}
 	}
 	token, err := NormalizeBearerToken(cfg.BearerToken)
 	if err != nil {
@@ -103,6 +142,25 @@ func classifyDecision(cfg Config, scheme string) (Decision, error) {
 	if oauthConfigured && token != "" {
 		return Decision{}, policyError(cfg, "must configure either bearer token or OAuth client credentials")
 	}
+	if cfg.Source == aeroVaultSource {
+		return classifyVaultDecision(cfg, oauthConfigured, token)
+	}
+	return classifyNonVaultDecision(cfg, scheme, oauthConfigured, token)
+}
+
+func validateOAuthDecisionEndpoint(cfg Config) error {
+	tokenEndpoint, err := ParseOAuthTokenEndpoint(cfg.OAuth.TokenURL, cfg.Environment, cfg.AllowInsecureLoopback,
+		cfg.OAuth.AllowedHosts, cfg.Endpoint)
+	if err != nil {
+		return policyError(cfg, "OAuth token URL is not approved")
+	}
+	if completeOAuthMTLS(cfg) && tokenEndpoint.Scheme != "https" {
+		return policyError(cfg, "OAuth mTLS requires an HTTPS token endpoint")
+	}
+	return nil
+}
+
+func classifyNonVaultDecision(cfg Config, scheme string, oauthConfigured bool, token string) (Decision, error) {
 	if oauthConfigured {
 		return Decision{Mode: ModeOAuth}, nil
 	}
@@ -112,11 +170,25 @@ func classifyDecision(cfg Config, scheme string) (Decision, error) {
 	return unauthenticatedDecision(cfg, scheme)
 }
 
+func classifyVaultDecision(cfg Config, oauthConfigured bool, token string) (Decision, error) {
+	if !oauthConfigured {
+		// Static API keys, local JWTs, mTLS-only, and unauthenticated loopback
+		// requests resolve to the wrong PrincipalKind at the deployed Vault
+		// endpoint. Do not advertise them as compatible authentication modes.
+		return Decision{}, policyError(cfg, "service authentication is required: Vault requires Snaplink OAuth client credentials for PrincipalService")
+	}
+	if token != "" {
+		return Decision{}, policyError(cfg, "Aero Vault requires OAuth client credentials, not a bearer token")
+	}
+	if strings.Join(strings.Fields(cfg.OAuth.Scope), " ") != VaultOAuthScope ||
+		strings.TrimSpace(cfg.OAuth.Resource) != VaultOAuthResource {
+		return Decision{}, policyError(cfg, "Aero Vault OAuth scope and resource are not approved")
+	}
+	return Decision{Mode: ModeOAuth}, nil
+}
+
 func unauthenticatedDecision(cfg Config, scheme string) (Decision, error) {
 	if completeMTLS(cfg) {
-		if scheme != "https" {
-			return Decision{}, policyError(cfg, "mTLS requires an HTTPS endpoint")
-		}
 		return Decision{Mode: ModeMTLS}, nil
 	}
 	if cfg.AllowInsecureLoopback {
@@ -125,68 +197,18 @@ func unauthenticatedDecision(cfg Config, scheme string) (Decision, error) {
 	return Decision{}, policyError(cfg, "service authentication is required")
 }
 
-// ParseEndpoint accepts only the source endpoint shape shared by config and
-// runtime construction. Errors intentionally do not include the raw value.
-func ParseEndpoint(raw string) (*url.URL, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, errors.New("endpoint is empty")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || !validEndpointShape(parsed) {
-		return nil, errors.New("endpoint must be an absolute URL without userinfo, query, or fragment")
-	}
-	if !validEndpointScheme(parsed.Scheme) {
-		return nil, errors.New("endpoint must use HTTP or HTTPS")
-	}
-	if parsed.Scheme != "https" && !IsExactLoopbackHost(parsed.Hostname()) {
-		return nil, errors.New("endpoint must use HTTPS outside loopback")
-	}
-	return parsed, nil
-}
-
-func validEndpointShape(parsed *url.URL) bool {
-	return parsed != nil && parsed.Hostname() != "" && parsed.User == nil &&
-		parsed.RawQuery == "" && parsed.Fragment == ""
-}
-
-func validEndpointScheme(scheme string) bool {
-	return scheme == "http" || scheme == "https"
-}
-
 // NormalizeBearerToken trims a static bearer token after rejecting all
 // Unicode control characters. Trimming is allowed for ordinary surrounding
 // whitespace, but a token containing a control character is never usable.
 func NormalizeBearerToken(value string) (string, error) {
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return "", errors.New("bearer token contains control characters")
+	}
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return "", nil
 	}
-	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
-		return "", errors.New("bearer token contains control characters")
-	}
 	return trimmed, nil
-}
-
-// IsExactLoopbackHost is deliberately narrower than private-network checks:
-// only these three spellings receive the unauthenticated compatibility mode.
-func IsExactLoopbackHost(host string) bool {
-	switch strings.ToLower(strings.TrimSpace(host)) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	default:
-		return false
-	}
-}
-
-// ProductionLikeEnvironment is the single environment definition used by the
-// loopback compatibility policy and configuration validation.
-func ProductionLikeEnvironment(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "prod", "production", "staging":
-		return true
-	default:
-		return false
-	}
 }
 
 func validateLoopbackOption(cfg Config, host string) error {
@@ -205,11 +227,11 @@ func validateLoopbackOption(cfg Config, host string) error {
 	return nil
 }
 
-func validateCertificatePair(cfg Config) error {
-	certSet := strings.TrimSpace(cfg.TLSCertFile) != ""
-	keySet := strings.TrimSpace(cfg.TLSKeyFile) != ""
+func validateCertificatePair(certFile, keyFile, label string) error {
+	certSet := strings.TrimSpace(certFile) != ""
+	keySet := strings.TrimSpace(keyFile) != ""
 	if certSet != keySet {
-		return policyError(cfg, "mTLS requires both client certificate and key")
+		return errors.New("source " + label + " requires both client certificate and key")
 	}
 	return nil
 }
@@ -234,13 +256,26 @@ func completeMTLS(cfg Config) bool {
 	return strings.TrimSpace(cfg.TLSCertFile) != "" && strings.TrimSpace(cfg.TLSKeyFile) != ""
 }
 
+func completeOAuthMTLS(cfg Config) bool {
+	return strings.TrimSpace(cfg.OAuthTLSCertFile) != "" && strings.TrimSpace(cfg.OAuthTLSKeyFile) != ""
+}
+
 func policyError(cfg Config, message string) error {
-	label := strings.TrimSpace(cfg.Label)
+	label := safePolicyLabel(cfg.Label)
 	if label == "" {
-		label = strings.TrimSpace(cfg.Source)
+		label = safePolicyLabel(cfg.Source)
 	}
 	if label == "" {
 		label = "source"
 	}
 	return errors.New(label + " " + message)
+}
+
+func safePolicyLabel(value string) string {
+	switch strings.TrimSpace(value) {
+	case "snaplink", "aero-im", "aero-vault", "sources.snaplink", "sources.aero-im", "sources.aero-vault":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
 }

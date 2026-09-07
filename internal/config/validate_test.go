@@ -99,7 +99,7 @@ func sourceURLCases() []sourceURLCase {
 	return []sourceURLCase{
 		{"https", "https://sso.example/token", true},                      // pass-through
 		{"https root path", "https://sso.example/", true},                 // pass-through
-		{"https bare query", "https://sso.example/token?", true},          // ForceQuery parity: RawQuery=="" (validate.go:395)
+		{"https bare query", "https://sso.example/token?", false},         // bare ForceQuery is rejected
 		{"https uppercase scheme", "HTTPS://sso.example/token", true},     // parser lowercases the scheme
 		{"http localhost", "http://localhost/token", true},                // loopback carve-out
 		{"http localhost port", "http://localhost:8080/token", true},      // loopback carve-out
@@ -115,7 +115,7 @@ func sourceURLCases() []sourceURLCase {
 		{"userinfo", "https://u:p@sso.example/token", false},              // parsed.User != nil (validate.go:395)
 		{"fragment", "https://sso.example/token#frag", false},             // parsed.Fragment != "" (validate.go:395)
 		{"raw query", "https://sso.example/token?x=1", false},             // parsed.RawQuery != "" (validate.go:395)
-		{"whitespace padded", "  https://sso.example/token  ", false},     // divergence pin: no trim => parse error (validate.go:395); the audit connector trims and accepts
+		{"whitespace padded", "  https://sso.example/token  ", true},      // source URLs are trimmed before canonical parsing
 		{"empty host", "https://", false},                                 // parsed.Hostname()=="" (validate.go:395)
 		{"empty host http", "http://", false},                             // parsed.Hostname()=="" (validate.go:395)
 	}
@@ -169,6 +169,7 @@ func sourceEndpointCases() []sourceEndpointCase {
 		{"neither", nil, ""},
 		{"complete OAuth client credentials", func(s *SourceEndpointConfig) {
 			s.OAuthTokenURL = "https://sso.example/token"
+			s.OAuthAllowedHosts = []string{"sso.example"}
 			s.OAuthClientID = "aero-id"
 			s.OAuthSecret = "source-secret"
 			s.OAuthScope = "account:summary:read"
@@ -198,8 +199,8 @@ func sourceEndpointCases() []sourceEndpointCase {
 		{"carriage return in erase_path", func(s *SourceEndpointConfig) { s.ErasePath = "/internal/erase\r" }, sourcePathEraseErr},
 		{"relative status_path", func(s *SourceEndpointConfig) { s.StatusPath = "status" }, sourcePathStatusErr},
 		{"all absolute paths", func(s *SourceEndpointConfig) {
-			s.ErasePath = "/internal/erase"
 			s.StatusPath = "/internal/status"
+			s.Capabilities.OperationStatus = true
 		}, ""},
 		{"negative timeout", func(s *SourceEndpointConfig) { s.Timeout = -time.Second }, sourceLimitsErr},
 		{"negative max_body_bytes", func(s *SourceEndpointConfig) { s.MaxBodyBytes = -1 }, sourceLimitsErr},
@@ -211,8 +212,9 @@ func sourceEndpointCases() []sourceEndpointCase {
 		{"negative retry_backoff", func(s *SourceEndpointConfig) { s.RetryBackoff = -time.Second }, sourceLimitsErr},
 		{"disabled connector (empty endpoint)", func(s *SourceEndpointConfig) {
 			s.Endpoint = ""
+			s.Capabilities.Summary = false
 			s.SummaryPath = "internal/account-summary"
-		}, ""}, // early return at validate.go:379-380 short-circuits before paths
+		}, sourcePathSummaryErr},
 		{"http non-loopback endpoint", func(s *SourceEndpointConfig) { s.Endpoint = "http://sso.example/" }, sourceURLHTTPSOnlyErr}, // URL guard runs first
 	}
 }
@@ -223,6 +225,7 @@ func TestValidateSourceMTLSAndPaths(t *testing.T) {
 	for _, tc := range sourceEndpointCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			source := sourceEndpointBase()
+			source.Capabilities.Summary = true
 			if tc.mutate != nil {
 				tc.mutate(&source)
 			}
@@ -241,6 +244,7 @@ func targetAssertionSourceBase() SourceEndpointConfig {
 	source.TargetAssertionSubject = "aero-id-sync"
 	source.TargetAssertionLifetime = time.Minute
 	source.OAuthTokenURL = "https://snaplink.example/token"
+	source.OAuthAllowedHosts = []string{"snaplink.example"}
 	source.OAuthClientID = source.TargetAssertionClientID
 	source.OAuthSecret = "source-secret"
 	source.OAuthScope = "aero.account.summary.read"

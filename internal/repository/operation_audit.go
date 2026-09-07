@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -23,6 +24,10 @@ func (r *operationRepo) finishStep(ctx context.Context, stepID domain.ID, worker
 			return err
 		}
 		now := time.Now().UTC()
+		sourceOperationID, err = durableOperationSourceID(step.SourceOperationID, sourceOperationID)
+		if err != nil {
+			return err
+		}
 		attemptKind := step.LeaseKind
 		if attemptKind != "reconcile" {
 			attemptKind = "forward"
@@ -36,8 +41,11 @@ func (r *operationRepo) finishStep(ctx context.Context, stepID domain.ID, worker
 			until := now.Add(ReconcileUnknownRetryDelay)
 			leaseUntil = &until
 		}
-		updated := tx.Model(&operationStepRow{}).Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > ?", stepID,
-			string(domain.StepRunning), worker, now).Updates(map[string]any{"status": string(status),
+		// Evaluate the lease after any row-lock wait. A late response from an
+		// expired worker must not pass a predicate based on a stale application
+		// timestamp and overwrite a reclaimed attempt.
+		updated := tx.Model(&operationStepRow{}).Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > clock_timestamp()", stepID,
+			string(domain.StepRunning), worker).Updates(map[string]any{"status": string(status),
 			"source_operation_id": sourceOperationID, "error_code": errorCode, "error_message": errorMessage,
 			"result": data, "lease_owner": "", "lease_until": leaseUntil, "lease_kind": "", "updated_at": now})
 		if updated.Error != nil {
@@ -69,12 +77,24 @@ func (r *operationRepo) finishCompensationStep(ctx context.Context, stepID domai
 			return err
 		}
 		now := time.Now().UTC()
+		sourceOperationID, err = durableOperationSourceID(step.CompensationSourceOperationID, sourceOperationID)
+		if err != nil {
+			return err
+		}
+		compensationLeaseUntil := (*time.Time)(nil)
+		if status == domain.StepUnknown {
+			until := now.Add(ReconcileUnknownRetryDelay)
+			compensationLeaseUntil = &until
+		}
+		// As with forward steps, use the database clock in the fenced predicate
+		// so a late compensation response cannot commit after its lease expires.
 		updated := tx.Model(&operationStepRow{}).Where(
-			"id = ? AND compensation_status = ? AND compensation_lease_owner = ? AND compensation_lease_until > ?",
-			stepID, string(domain.StepRunning), worker, now).Updates(map[string]any{"compensation_status": string(status),
+			"id = ? AND compensation_status = ? AND compensation_lease_owner = ? AND compensation_lease_until > clock_timestamp()",
+			stepID, string(domain.StepRunning), worker).Updates(map[string]any{"compensation_status": string(status),
 			"compensation_source_operation_id": sourceOperationID, "compensation_error_code": errorCode,
 			"compensation_error_message": errorMessage, "compensation_result": data,
-			"compensation_lease_owner": "", "compensation_lease_until": nil, "compensation_updated_at": now, "updated_at": now})
+			"compensation_lease_owner": "", "compensation_lease_until": compensationLeaseUntil,
+			"compensation_updated_at": now, "updated_at": now})
 		if updated.Error != nil {
 			return updated.Error
 		}
@@ -94,6 +114,18 @@ func (r *operationRepo) finishCompensationStep(ctx context.Context, stepID domai
 }
 
 //nolint:cyclop // terminal transition CAS distinguishes missing rows from stale terminal writers.
+func durableOperationSourceID(existing, incoming string) (string, error) {
+	existing = strings.TrimSpace(existing)
+	incoming = strings.TrimSpace(incoming)
+	if existing != "" && incoming != "" && existing != incoming {
+		return "", ErrOperationSourceOperationConflict
+	}
+	if incoming == "" {
+		return existing, nil
+	}
+	return incoming, nil
+}
+
 func (r *operationRepo) setStatus(ctx context.Context, id domain.ID, status domain.OperationStatus, code, message string,
 	result map[string]any, fact *domain.AuditFact) error {
 	data, err := jsonMap(result)

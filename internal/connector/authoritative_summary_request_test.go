@@ -151,18 +151,18 @@ func TestAeroVaultSummaryAuthorizationContract(t *testing.T) {
 	var seen atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen.Add(1)
-		if r.URL.Path != "/v1/internal/account-summary" || r.URL.Query().Get("account_id") != account.ID.String() || r.URL.Query().Get("region") != "west-2" || r.URL.Query().Get("reconcile") != "true" {
+		if r.URL.Path != "/v1/internal/account-summary" || r.URL.Query().Get("account_id") != account.ID.String() || r.URL.Query().Get("region") != "west-2" || r.URL.Query().Get("reconcile") != "" {
 			t.Errorf("unexpected Vault request: %s", r.URL.String())
 		}
 		if got := r.URL.Query()["dataset"]; !reflect.DeepEqual(got, []string{"aero-vault.buckets", "aero-vault.tenants", "aero-vault.usage"}) {
 			t.Errorf("datasets = %v", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer vault-contract-token" {
-			t.Errorf("Authorization = %q, want configured Vault bearer", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer "+vaultTestAccessToken {
+			t.Errorf("Authorization = %q, want contract-shaped Vault OAuth token", got)
 		}
 		for name, want := range map[string]string{
 			"X-Aero-Account-ID": account.ID.String(), "X-Aero-Canonical-UID": "uid-a", "X-Aero-Actor-UID": "actor-a",
-			"X-Aero-Tenant-ID": "tenant-a", "X-Aero-Region": "west-2", "X-Request-ID": "request-a", "X-Aero-Operation-ID": "operation-a",
+			"X-Aero-Tenant-ID": "tenant-a", "X-Aero-Tenant": "tenant-a", "X-Aero-Region": "west-2", "X-Request-ID": "request-a", "X-Aero-Operation-ID": "operation-a",
 		} {
 			if got := r.Header.Get(name); got != want {
 				t.Errorf("%s = %q, want %q", name, got, want)
@@ -180,12 +180,8 @@ func TestAeroVaultSummaryAuthorizationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL,
-		SummaryPath: "/v1/internal/account-summary", AllowInsecureLoopback: true, Environment: "test",
-		BearerToken: "vault-contract-token", Client: server.Client(), MaxAttempts: 1, Metrics: registry})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{SummaryPath: "/v1/internal/account-summary",
+		Client: server.Client(), MaxAttempts: 1, Metrics: registry, OAuthTenantID: account.TenantID})
 	if _, err := client.Summary(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +251,8 @@ func TestTrustedSummaryRequestConcurrentIsolation(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"source_region":%q,"version":1,"generated_at":"2026-08-30T00:00:00Z","complete":true,"datasets":{"aero-vault.tenants":{},"aero-vault.buckets":{},"aero-vault.usage":{}}}`, region)
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL,
-		AllowInsecureLoopback: true, Environment: "test", Client: server.Client(), MaxAttempts: 1, Metrics: metrics.NewRegistry()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{Client: server.Client(), MaxAttempts: 1,
+		Metrics: metrics.NewRegistry(), OAuthTenantID: "tenant-concurrent"})
 	const total = 32
 	for i := byte(1); i <= total; i++ {
 		id := domain.ID{i}
@@ -345,11 +338,10 @@ func TestAeroVaultSummaryRemoteRejectionIsObservable(t *testing.T) {
 	registry := metrics.NewRegistry()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "rejected", http.StatusForbidden) }))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, AllowInsecureLoopback: true, Environment: "test", Client: server.Client(), MaxAttempts: 1, Metrics: registry})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{13}, Datasets: []domain.AccountDataset{"aero-vault.tenants"}})
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{Client: server.Client(), MaxAttempts: 1,
+		Metrics: registry, OAuthTenantID: "tenant-a"})
+	_, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{13}, TenantID: "tenant-a",
+		Datasets: []domain.AccountDataset{"aero-vault.tenants"}})
 	if err == nil || !strings.Contains(err.Error(), "source.http_403") {
 		t.Fatalf("error = %v, want source rejection", err)
 	}

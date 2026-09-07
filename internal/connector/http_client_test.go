@@ -26,10 +26,10 @@ func TestSourceClientInstallsMTLSOnCustomTransport(t *testing.T) {
 	baseTransport := &http.Transport{TLSClientConfig: baseTLS}
 	baseClient := &http.Client{Transport: baseTransport, Timeout: 17 * time.Second}
 
-	connector, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{
+	connector, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{
 		Endpoint: "https://source.example", TLSCertFile: certFile, TLSKeyFile: keyFile,
 		Client: baseClient, Timeout: time.Second,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("construct mTLS connector: %v", err)
 	}
@@ -62,9 +62,9 @@ func TestSourceClientRejectsArbitraryTransportForMTLS(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, nil
 	})}
-	_, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{
+	_, err := NewJSONSummaryConnector(SourceAeroIM, addTestTargetAssertion(HTTPConfig{
 		Endpoint: "https://source.example", TLSCertFile: certFile, TLSKeyFile: keyFile, Client: client,
-	})
+	}))
 	if err == nil || !strings.Contains(err.Error(), "standard HTTP transport") {
 		t.Fatalf("error = %v, want arbitrary transport rejection", err)
 	}

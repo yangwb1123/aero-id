@@ -2,10 +2,7 @@ package config
 
 import (
 	"fmt"
-	"strings"
 	"time"
-
-	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -174,42 +171,58 @@ type SourcesConfig struct {
 	AeroVault SourceEndpointConfig `mapstructure:"aero_vault"`
 }
 
+type SourceCapabilitiesConfig struct {
+	Summary              bool   `mapstructure:"summary"`
+	Erase                bool   `mapstructure:"erase"`
+	OperationStatus      bool   `mapstructure:"operation_status"`
+	EraseContractVersion string `mapstructure:"erase_contract_version"`
+}
+
 type SourceEndpointConfig struct {
-	Endpoint              string        `mapstructure:"endpoint"`
-	AllowInsecureLoopback bool          `mapstructure:"allow_insecure_loopback"`
-	SummaryPath           string        `mapstructure:"summary_path"`
-	ErasePath             string        `mapstructure:"erase_path"`
-	StatusPath            string        `mapstructure:"status_path"`
-	Region                string        `mapstructure:"region"`
-	BearerToken           string        `mapstructure:"bearer_token"` // compatibility only; prefer OAuth client credentials
-	OAuthTokenURL         string        `mapstructure:"oauth_token_url"`
-	OAuthClientID         string        `mapstructure:"oauth_client_id"`
-	OAuthSecret           string        `mapstructure:"oauth_client_secret"` // secret provider/env only
-	OAuthScope            string        `mapstructure:"oauth_scope"`
-	OAuthResource         string        `mapstructure:"oauth_resource"`
-	Timeout               time.Duration `mapstructure:"timeout"`
-	MaxBodyBytes          int64         `mapstructure:"max_body_bytes"`
-	MaxConcurrency        int           `mapstructure:"max_concurrency"` // legacy fallback per workload class
-	QueryMaxConcurrency   int           `mapstructure:"query_max_concurrency"`
-	CommandMaxConcurrency int           `mapstructure:"command_max_concurrency"`
-	HealthMaxConcurrency  int           `mapstructure:"health_max_concurrency"`
-	MaxAttempts           int           `mapstructure:"max_attempts"`
-	RetryBackoff          time.Duration `mapstructure:"retry_backoff"`
-	TLSCAFile             string        `mapstructure:"tls_ca_file"`
-	TLSCertFile           string        `mapstructure:"tls_cert_file"`
-	TLSKeyFile            string        `mapstructure:"tls_key_file"`
-	TLSServerName         string        `mapstructure:"tls_server_name"`
+	Endpoint              string                   `mapstructure:"endpoint"`
+	AllowInsecureLoopback bool                     `mapstructure:"allow_insecure_loopback"`
+	SummaryPath           string                   `mapstructure:"summary_path"`
+	ErasePath             string                   `mapstructure:"erase_path"`
+	StatusPath            string                   `mapstructure:"status_path"`
+	Capabilities          SourceCapabilitiesConfig `mapstructure:"capabilities"`
+	Region                string                   `mapstructure:"region"`
+	BearerToken           string                   `mapstructure:"bearer_token"` // compatibility only; prefer OAuth client credentials
+	OAuthTokenURL         string                   `mapstructure:"oauth_token_url"`
+	OAuthClientID         string                   `mapstructure:"oauth_client_id"`
+	OAuthSecret           string                   `mapstructure:"oauth_client_secret"` // secret provider/env only
+	OAuthScope            string                   `mapstructure:"oauth_scope"`
+	OAuthResource         string                   `mapstructure:"oauth_resource"`
+	OAuthAllowedHosts     []string                 `mapstructure:"oauth_allowed_hosts"` // exact token-authority origin/host allow-list
+	OAuthTLSCAFile        string                   `mapstructure:"oauth_tls_ca_file"`
+	OAuthTLSCertFile      string                   `mapstructure:"oauth_tls_cert_file"`
+	OAuthTLSKeyFile       string                   `mapstructure:"oauth_tls_key_file"`
+	OAuthTLSServerName    string                   `mapstructure:"oauth_tls_server_name"`
+	OAuthTenantID         string                   `mapstructure:"oauth_tenant_id"` // single tenant binding for legacy Vault config
+	Timeout               time.Duration            `mapstructure:"timeout"`
+	MaxBodyBytes          int64                    `mapstructure:"max_body_bytes"`
+	MaxConcurrency        int                      `mapstructure:"max_concurrency"` // legacy fallback per workload class
+	QueryMaxConcurrency   int                      `mapstructure:"query_max_concurrency"`
+	CommandMaxConcurrency int                      `mapstructure:"command_max_concurrency"`
+	HealthMaxConcurrency  int                      `mapstructure:"health_max_concurrency"`
+	MaxAttempts           int                      `mapstructure:"max_attempts"`
+	RetryBackoff          time.Duration            `mapstructure:"retry_backoff"`
+	TLSCAFile             string                   `mapstructure:"tls_ca_file"`
+	TLSCertFile           string                   `mapstructure:"tls_cert_file"`
+	TLSKeyFile            string                   `mapstructure:"tls_key_file"`
+	TLSServerName         string                   `mapstructure:"tls_server_name"`
 	// Aero IM account-summary target assertion signer. These are intentionally
 	// references/metadata only; the private key is loaded by the connector from
 	// the selected file or environment variable and is never stored in config.
-	TargetAssertionKeyFile  string        `mapstructure:"target_assertion_key_file"`
-	TargetAssertionKeyEnv   string        `mapstructure:"target_assertion_key_env"`
-	TargetAssertionKeyID    string        `mapstructure:"target_assertion_key_id"`
-	TargetAssertionIssuer   string        `mapstructure:"target_assertion_issuer"`
-	TargetAssertionAudience string        `mapstructure:"target_assertion_audience"`
-	TargetAssertionSubject  string        `mapstructure:"target_assertion_subject"`
-	TargetAssertionClientID string        `mapstructure:"target_assertion_client_id"`
-	TargetAssertionLifetime time.Duration `mapstructure:"target_assertion_lifetime"`
+	TargetAssertionKeyFile     string        `mapstructure:"target_assertion_key_file"`
+	TargetAssertionKeyEnv      string        `mapstructure:"target_assertion_key_env"`
+	TargetAssertionJWKSURL     string        `mapstructure:"target_assertion_jwks_url"`     // preflight-only dedicated trust URL
+	TargetAssertionTrustDomain string        `mapstructure:"target_assertion_trust_domain"` // exact issuer/trust origin
+	TargetAssertionKeyID       string        `mapstructure:"target_assertion_key_id"`
+	TargetAssertionIssuer      string        `mapstructure:"target_assertion_issuer"`
+	TargetAssertionAudience    string        `mapstructure:"target_assertion_audience"`
+	TargetAssertionSubject     string        `mapstructure:"target_assertion_subject"`
+	TargetAssertionClientID    string        `mapstructure:"target_assertion_client_id"`
+	TargetAssertionLifetime    time.Duration `mapstructure:"target_assertion_lifetime"`
 }
 
 type ServerConfig struct {
@@ -422,45 +435,4 @@ type DataRetentionConfig struct {
 	// (outbox_clean_interval > 0 and outbox_dead_letter_retention > 0); see
 	// validateDataRetention. Static per boot (no hot reload).
 	PurgePaused bool `mapstructure:"purge_paused"`
-}
-
-func Load(path string) (*Config, error) {
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetConfigType("yaml")
-	v.SetEnvPrefix("AERO_ID")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
-	keys := []string{
-		"sources.aero_im.allow_insecure_loopback", "sources.snaplink.allow_insecure_loopback",
-		"replication.max_terminal_attempts",
-	}
-	for _, source := range []string{"snaplink", "aero_im", "aero_vault"} {
-		for _, setting := range []string{"query_max_concurrency", "command_max_concurrency", "health_max_concurrency"} {
-			keys = append(keys, "sources."+source+"."+setting)
-		}
-	}
-	for _, key := range keys {
-		if err := v.BindEnv(key); err != nil {
-			return nil, fmt.Errorf("bind source environment: %w", err)
-		}
-	}
-
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-	var cfg Config
-	// Reject unknown file keys at Load rather than silently falling back to a
-	// default. AutomaticEnv remains lazy, so unrelated ambient environment
-	// variables do not become phantom configuration fields.
-	if err := v.UnmarshalExact(&cfg); err != nil {
-		return nil, fmt.Errorf("unmarshal config: %w", err)
-	}
-	if err := cfg.validate(); err != nil {
-		return nil, err
-	}
-	if cfg.Replication.MaxTerminalAttempts == 0 {
-		cfg.Replication.MaxTerminalAttempts = DefaultReplicationMaxTerminalAttempts
-	}
-	return &cfg, nil
 }

@@ -28,6 +28,13 @@ func (r *syncJobRepo) finish(ctx context.Context, id domain.ID, worker string, s
 		(status == domain.SyncJobPartiallyComplete && code != "erase.local_projection_failed") {
 		updates["completed_at"] = now
 	}
+	if status == domain.SyncJobUnknown || (status == domain.SyncJobPartiallyComplete && code == "erase.local_projection_failed") {
+		// Reconciliation is durable work too. Keep a pacing lease after an
+		// unresolved result so the automatic worker cannot hot-loop against a
+		// timed-out source or a failed local projection.
+		updates["lease_kind"] = "reconcile"
+		updates["lease_until"] = gorm.Expr("clock_timestamp() + (? * interval '1 second')", syncUnknownRetryDelay.Seconds())
+	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Lock before checking the lease. clock_timestamp() is required here:
 		// now() is fixed at transaction start and can approve a worker that

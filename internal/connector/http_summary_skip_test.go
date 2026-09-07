@@ -19,12 +19,8 @@ func TestJSONSummaryConnectorSurfacesSkippedDatasets(t *testing.T) {
 			`"datasets":{"aero-vault.new_thing":{"count":1},"aero-im.profile":{"display_name":"Ada"}}}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
-		AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{7},
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{SummaryPath: "/summary", Client: server.Client()})
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{7}, TenantID: vaultTestTenant,
 		Datasets: []domain.AccountDataset{domain.AccountDataset("aero-vault.tenants")}})
 	if err != nil {
 		t.Fatal(err)
@@ -53,12 +49,8 @@ func TestJSONSummaryConnectorNoFalseDowngradeForRegisteredVaultDatasets(t *testi
 			`"aero-vault.tenants":{"count":1},"aero-vault.buckets":{"count":2},"aero-vault.usage":{"bytes":100}}}`))
 	}))
 	defer server.Close()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL, SummaryPath: "/summary",
-		AllowInsecureLoopback: true, Environment: "test", Client: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{8},
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{SummaryPath: "/summary", Client: server.Client()})
+	summary, err := client.Summary(t.Context(), SummaryRequest{AccountID: domain.ID{8}, TenantID: vaultTestTenant,
 		Datasets: []domain.AccountDataset{domain.AccountDataset("aero-vault.tenants"), domain.AccountDataset("aero-vault.buckets"), domain.AccountDataset("aero-vault.usage")}})
 	if err != nil {
 		t.Fatal(err)

@@ -42,11 +42,35 @@ data:
       regions: ["us-east-1", "eu-west-1", "ap-southeast-1"]
     sources:
       snaplink:
-        endpoint: https://snaplink.REGION_PLACEHOLDER.example.com
+        # Sources are disabled in the base cell. A secure, environment-specific
+        # overlay must set the endpoint and one complete source-auth mode.
+        endpoint: ""
+        allow_insecure_loopback: false
         summary_path: /internal/account-summary
         erase_path: ""                     # enable only after the source contract is deployed
         status_path: ""
+        capabilities:
+          summary: false
+          erase: false
+          operation_status: false
+          erase_contract_version: ""
         region: "REGION_PLACEHOLDER"
+        bearer_token: ""
+        oauth_token_url: ""
+        oauth_client_id: ""
+        oauth_client_secret: ""
+        oauth_scope: ""
+        oauth_resource: ""
+        oauth_allowed_hosts: []
+        oauth_tls_ca_file: ""
+        oauth_tls_cert_file: ""
+        oauth_tls_key_file: ""
+        oauth_tls_server_name: ""
+        oauth_tenant_id: ""
+        tls_ca_file: ""
+        tls_cert_file: ""
+        tls_key_file: ""
+        tls_server_name: ""
         timeout: 2s
         max_body_bytes: 1048576
         max_concurrency: 32
@@ -56,7 +80,10 @@ data:
         max_attempts: 3
         retry_backoff: 50ms
       aero_im:
-        endpoint: https://aero-im.REGION_PLACEHOLDER.example.com
+        # Disabled in the base cell until the OAuth + target-assertion trust
+        # contract is supplied by a secure overlay.
+        endpoint: ""
+        allow_insecure_loopback: false
         summary_path: /internal/account-summary
         erase_path: ""
         status_path: ""
@@ -70,6 +97,16 @@ data:
         oauth_client_secret: ""
         oauth_scope: ""
         oauth_resource: ""
+        oauth_allowed_hosts: []             # set to the exact token-authority host in the production overlay
+        oauth_tls_ca_file: ""
+        oauth_tls_cert_file: ""
+        oauth_tls_key_file: ""
+        oauth_tls_server_name: ""
+        oauth_tenant_id: ""
+        tls_ca_file: ""
+        tls_cert_file: ""
+        tls_key_file: ""
+        tls_server_name: ""
         timeout: 2s
         max_body_bytes: 1048576
         max_concurrency: 32
@@ -83,6 +120,8 @@ data:
         # deployed together; see deployments/k8s/README.md.
         target_assertion_key_file: ""
         target_assertion_key_env: ""
+        target_assertion_jwks_url: ""
+        target_assertion_trust_domain: ""
         target_assertion_key_id: ""
         target_assertion_issuer: ""
         target_assertion_audience: ""
@@ -96,11 +135,33 @@ data:
         # aero.account.summary.read with resource aero-im. Keep the key-file
         # field blank in this Kubernetes deployment.
       aero_vault:
-        endpoint: https://aero-vault.REGION_PLACEHOLDER.example.com
+        # Disabled in the base cell. Enable only in a secure overlay with one
+        # authenticated source-credential mode configured below.
+        endpoint: ""
+        allow_insecure_loopback: false
         summary_path: /v1/internal/account-summary
         erase_path: ""
         status_path: ""
+        capabilities:
+          erase: false
+          operation_status: false
         region: "REGION_PLACEHOLDER"
+        bearer_token: ""
+        oauth_token_url: ""
+        oauth_client_id: ""
+        oauth_client_secret: ""
+        oauth_scope: ""
+        oauth_resource: ""
+        oauth_allowed_hosts: []
+        oauth_tls_ca_file: ""
+        oauth_tls_cert_file: ""
+        oauth_tls_key_file: ""
+        oauth_tls_server_name: ""
+        oauth_tenant_id: ""
+        tls_ca_file: ""
+        tls_cert_file: ""
+        tls_key_file: ""
+        tls_server_name: ""
         timeout: 2s
         max_body_bytes: 1048576
         max_concurrency: 32
@@ -119,6 +180,7 @@ data:
       max_open_conns: 50
       max_idle_conns: 10
       conn_max_lifetime: 30m
+      connect_timeout: 3s                 # bound startup dials; migrations remain explicit
       auto_migrate: false                 # production applies migrations via cmd/migrate
     sso:
       endpoint: snaplink-authz:9000       # replace with the regional Snaplink gRPC endpoint
@@ -215,6 +277,8 @@ metadata:
   namespace: aero-id
 spec:
   replicas: 3
+  revisionHistoryLimit: 10                 # retain a known-good template for rollback
+  progressDeadlineSeconds: 900
   strategy:
     rollingUpdate:
       maxUnavailable: 1
@@ -228,26 +292,26 @@ spec:
       labels:
         app: aero-id
         tier: api
+      annotations:
+        # The release renderer replaces this with SHA-256(config.yaml).
+        # A config change must produce a new pod template.
+        checksum/config: "REPLACE_WITH_CONFIG_SHA256"
     spec:
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              app: aero-id
-              tier: api
-      containers:
-        - name: aero-id
-          image: aero-id:latest
-          imagePullPolicy: IfNotPresent
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: preflight
+          image: ghcr.io/aero/aero-id@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: Always
+          command: ["/app/preflight"]
           args: ["-config", "/etc/aero-id/config.yaml"]
-          ports:
-            - name: http
-              containerPort: 8080
-            - name: grpc
-              containerPort: 9090
           env:
+            - name: AERO_ID_CONFIG_SHA256
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['checksum/config']
             - name: AERO_ID_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: database_password}
@@ -272,6 +336,9 @@ spec:
             - name: AERO_ID_SOURCES_SNAPLINK_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: snaplink_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_SNAPLINK_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_oauth_client_secret, optional: true}
             - name: AERO_ID_SOURCES_AERO_IM_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: aero_im_bearer_token, optional: true}
@@ -284,12 +351,92 @@ spec:
             - name: AERO_ID_SOURCES_AERO_VAULT_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: aero_vault_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_oauth_client_secret, optional: true}
             - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
+              readOnly: true
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: aero-id
+              tier: api
+      containers:
+        - name: aero-id
+          image: ghcr.io/aero/aero-id@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          args: ["-config", "/etc/aero-id/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          env:
+            - name: AERO_ID_CONFIG_SHA256
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['checksum/config']
+            - name: AERO_ID_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: database_password}
+            - name: AERO_ID_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: redis_password}
+            - name: AERO_ID_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: signing_key}
+            - name: AERO_ID_CALLBACK_MASTER_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_master_key}
+            - name: AERO_ID_EVENT_INGEST_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: event_ingest_signing_key}
+            - name: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: audit_ledger_signing_key}
+            - name: AERO_ID_EXPORT_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: export_encryption_key}
+            - name: AERO_ID_SOURCES_SNAPLINK_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_SNAPLINK_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_oauth_client_secret, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_oauth_client_secret, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_target_assertion_private_key, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_oauth_client_secret, optional: true}
+            - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aero-id
+              readOnly: true
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 5
@@ -305,6 +452,7 @@ spec:
         - name: config
           configMap:
             name: aero-id-config
+            defaultMode: 0444
 ---
 # P6-10: HPA driven by RPS/CPU. The api deployment is stateless, so scale-out
 # is safe; account-affecting writes still route to the account home region.
@@ -355,6 +503,8 @@ metadata:
   namespace: aero-id
 spec:
   replicas: 2
+  revisionHistoryLimit: 10                 # retain a known-good template for rollback
+  progressDeadlineSeconds: 900
   selector:
     matchLabels:
       app: aero-id
@@ -364,13 +514,88 @@ spec:
       labels:
         app: aero-id
         tier: workers
+      annotations:
+        # The release renderer replaces this with SHA-256(config.yaml).
+        checksum/config: "REPLACE_WITH_CONFIG_SHA256"
     spec:
-      containers:
-        - name: aero-id
-          image: aero-id:latest
-          imagePullPolicy: IfNotPresent
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: preflight
+          image: ghcr.io/aero/aero-id@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: Always
+          command: ["/app/preflight"]
           args: ["-config", "/etc/aero-id/config.yaml"]
           env:
+            - name: AERO_ID_CONFIG_SHA256
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['checksum/config']
+            - name: AERO_ID_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: database_password}
+            - name: AERO_ID_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: redis_password}
+            - name: AERO_ID_CALLBACK_MASTER_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_master_key}
+            - name: AERO_ID_EVENT_INGEST_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: event_ingest_signing_key}
+            - name: AERO_ID_AUDIT_LEDGER_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: audit_ledger_signing_key}
+            - name: AERO_ID_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: signing_key}
+            - name: AERO_ID_EXPORT_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: export_encryption_key}
+            - name: AERO_ID_SOURCES_SNAPLINK_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_SNAPLINK_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_oauth_client_secret, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_oauth_client_secret, optional: true}
+            - name: AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_im_target_assertion_private_key, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_oauth_client_secret, optional: true}
+            - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aero-id
+              readOnly: true
+      containers:
+        - name: aero-id
+          image: ghcr.io/aero/aero-id@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          args: ["-config", "/etc/aero-id/config.yaml"]
+          env:
+            - name: AERO_ID_CONFIG_SHA256
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['checksum/config']
             - name: AERO_ID_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: database_password}
@@ -392,6 +617,9 @@ spec:
             - name: AERO_ID_SOURCES_SNAPLINK_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: snaplink_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_SNAPLINK_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: snaplink_oauth_client_secret, optional: true}
             - name: AERO_ID_SOURCES_AERO_IM_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: aero_im_bearer_token, optional: true}
@@ -404,12 +632,16 @@ spec:
             - name: AERO_ID_SOURCES_AERO_VAULT_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: aero_vault_bearer_token, optional: true}
+            - name: AERO_ID_SOURCES_AERO_VAULT_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: aero_vault_oauth_client_secret, optional: true}
             - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
+              readOnly: true
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: "1", memory: 1Gi}
@@ -417,6 +649,7 @@ spec:
         - name: config
           configMap:
             name: aero-id-config
+            defaultMode: 0444
 ---
 # Regional PostgreSQL (single writer). Multi-writer requires an ADR + conflict
 # model; default is home-region writes + async projection replication (P6-03).
@@ -438,7 +671,8 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: docker.io/library/postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+          imagePullPolicy: Always
           env:
             - name: POSTGRES_DB
               value: aero_id
@@ -496,7 +730,8 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:7-alpine
+          image: docker.io/library/redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+          imagePullPolicy: Always
           args: ["--requirepass", "$(REDIS_PASSWORD)"]
           env:
             - name: REDIS_PASSWORD
@@ -536,7 +771,8 @@ spec:
     spec:
       containers:
         - name: nats
-          image: nats:2.10-alpine
+          image: docker.io/library/nats:2.10-alpine@sha256:b83efabe3e7def1e0a4a31ec6e078999bb17c80363f881acbdc70fcb6bb927
+          imagePullPolicy: Always
           args: ["-js", "-m", "8222"]
           ports:
             - name: client

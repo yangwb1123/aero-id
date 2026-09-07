@@ -122,7 +122,7 @@ func TestMigrateConfigLoadFailure(t *testing.T) {
 	if code := exitErr.ExitCode(); code != 1 {
 		t.Fatalf("binary exit code = %d, want 1; output:\n%s", code, out)
 	}
-	want := "migrate: load config: read config: open " + missing + ": no such file or directory\n"
+	want := "migrate: load config: read config: configuration file is unavailable\n"
 	if got := string(out); got != want {
 		t.Fatalf("stderr = %q, want byte-identical %q (any extra line is a boot side effect)", got, want)
 	}

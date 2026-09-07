@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
@@ -34,6 +35,12 @@ func (s *syncJobService) ensureEraseOutcomeRows(ctx context.Context, job *domain
 
 func (s *syncJobService) checkpointEraseOutcome(ctx context.Context, job *domain.SyncJob, source connector.Source,
 	status, operationID, code string, result map[string]any) error {
+	if source == connector.SourceSnaplink && status == "completed" && strings.TrimSpace(operationID) == "" {
+		// A completed Snaplink erase must carry the source-owned operation ID;
+		// otherwise a legacy or malformed response could be persisted as a
+		// successful deletion without a safe reconciliation target.
+		return remoteUnknownError(string(source), "source.source_operation_id_missing")
+	}
 	recovery, ok := s.repo.(repository.SyncJobRecoveryRepository)
 	if !ok {
 		return nil
@@ -65,7 +72,33 @@ func eraseOutcomeStatus(status string) string {
 	return eraseSourceOutcome(status)
 }
 
+// trustedSyncEraseSourceOperationID retains only a response identifier that
+// belongs to this logical erase. A mismatched identifier must not become the
+// next reconciliation target, even when the source also returned an error.
+//
 //nolint:cyclop,funlen // legacy result import and durable outcome conversion have explicit states.
+func trustedSyncEraseSourceOperationID(source connector.Source, logicalOperationID, existing string,
+	result *connector.CommandResult) (string, bool) {
+	retained := strings.TrimSpace(existing)
+	if result == nil {
+		return retained, true
+	}
+	returned := strings.TrimSpace(result.SourceOperationID)
+	if strings.TrimSpace(result.OperationID) != "" && result.OperationID != logicalOperationID {
+		return retained, false
+	}
+	if source == connector.SourceSnaplink && (strings.TrimSpace(result.OperationID) == "" || returned == "") {
+		return retained, false
+	}
+	if retained != "" && returned != "" && retained != returned {
+		return retained, false
+	}
+	if returned != "" {
+		return returned, true
+	}
+	return retained, true
+}
+
 func (s *syncJobService) durableEraseSources(ctx context.Context, job *domain.SyncJob,
 	required map[connector.Source][]domain.AccountDataset) (map[string]any, error) {
 	recovery, ok := s.repo.(repository.SyncJobRecoveryRepository)

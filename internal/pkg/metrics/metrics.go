@@ -45,7 +45,7 @@ type Registry struct {
 	sourceCircuits          map[string]string
 	sourceWorkloadCircuits  map[string]string
 	sourceBulkheads         map[string]*sourceBulkheadMetric
-	sourceAuthCompatibility uint64
+	sourceAuthCompatibility map[string]uint64
 
 	control controlPlaneMetrics
 	idem    idempotencyMetrics
@@ -84,17 +84,18 @@ type Registry struct {
 
 func NewRegistry() *Registry {
 	return &Registry{
-		buckets:                defaultBuckets,
-		requests:               make(map[string]uint64),
-		latency:                make(map[string]*histogram),
-		sourceCalls:            make(map[string]*sourceMetric),
-		sourceCircuits:         make(map[string]string),
-		sourceWorkloadCircuits: make(map[string]string),
-		sourceBulkheads:        make(map[string]*sourceBulkheadMetric),
-		ssoCacheHits:           make(map[string]uint64),
-		ssoCacheMisses:         make(map[string]uint64),
-		ssoErrors:              make(map[string]uint64),
-		ssoLatency:             make(map[string]*histogram),
+		buckets:                 defaultBuckets,
+		requests:                make(map[string]uint64),
+		latency:                 make(map[string]*histogram),
+		sourceCalls:             make(map[string]*sourceMetric),
+		sourceCircuits:          make(map[string]string),
+		sourceWorkloadCircuits:  make(map[string]string),
+		sourceBulkheads:         make(map[string]*sourceBulkheadMetric),
+		sourceAuthCompatibility: make(map[string]uint64),
+		ssoCacheHits:            make(map[string]uint64),
+		ssoCacheMisses:          make(map[string]uint64),
+		ssoErrors:               make(map[string]uint64),
+		ssoLatency:              make(map[string]*histogram),
 
 		outboxPublished:  make(map[string]uint64),
 		outboxFailed:     make(map[string]uint64),

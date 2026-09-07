@@ -16,13 +16,14 @@ func TestTrustedVaultSummaryWireAndMetrics(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
 		if request.URL.Path != "/internal/account-summary" || query.Get("account_id") != account.ID.String() ||
-			query.Get("region") != account.HomeRegion || query.Get("reconcile") != "true" ||
+			query.Get("region") != account.HomeRegion || query.Get("reconcile") != "" ||
 			!equalStrings(query["dataset"], []string{"aero-vault.buckets", "aero-vault.tenants", "aero-vault.usage"}) {
 			t.Errorf("Vault query = %s", request.URL.String())
 		}
 		for header, want := range map[string]string{
 			"X-Aero-Account-ID": account.ID.String(), "X-Aero-Canonical-UID": account.CanonicalUID,
 			"X-Aero-Actor-UID": "actor-wire", "X-Aero-Tenant-ID": account.TenantID,
+			"X-Aero-Tenant": account.TenantID,
 			"X-Aero-Region": account.HomeRegion, "X-Request-ID": "request-wire",
 			"X-Aero-Operation-ID": "operation-wire",
 		} {
@@ -38,11 +39,8 @@ func TestTrustedVaultSummaryWireAndMetrics(t *testing.T) {
 	defer server.Close()
 
 	registry := metrics.NewRegistry()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL,
-		AllowInsecureLoopback: true, Environment: "test", Client: server.Client(), Metrics: registry, MaxAttempts: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{Client: server.Client(), Metrics: registry, MaxAttempts: 1,
+		OAuthTenantID: account.TenantID})
 	request, err := NewTrustedSummaryRequest(t.Context(), testSummaryAccountLoader{account}, TrustedSummaryRequestInput{
 		Source: SourceAeroVault, TenantID: account.TenantID, AccountID: account.ID, ActorUID: "actor-wire",
 		RequestID: "request-wire", OperationID: "operation-wire", Reconcile: true,
@@ -65,12 +63,9 @@ func TestTrustedVaultRemoteFailureIsMeasuredButBindingFailureIsNot(t *testing.T)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
 	defer server.Close()
 	registry := metrics.NewRegistry()
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{Endpoint: server.URL,
-		AllowInsecureLoopback: true, Environment: "test", Client: server.Client(), Metrics: registry, MaxAttempts: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
 	account := wireAccount(9, "tenant-wire", "vault-user", "region-wire")
+	client := newVaultTestConnector(t, server.URL, HTTPConfig{Client: server.Client(), Metrics: registry, MaxAttempts: 1,
+		OAuthTenantID: account.TenantID})
 	request, err := NewTrustedSummaryRequest(t.Context(), testSummaryAccountLoader{account}, TrustedSummaryRequestInput{
 		Source: SourceAeroVault, TenantID: account.TenantID, AccountID: account.ID,
 		Datasets: []domain.AccountDataset{"aero-vault.tenants"},

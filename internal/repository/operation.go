@@ -50,12 +50,17 @@ type operationRepo struct {
 
 var ErrOperationStepLeaseLost = errors.New("operation step lease lost")
 var ErrOperationStepUnknown = errors.New("operation step outcome is unknown")
+var ErrOperationSourceOperationConflict = errors.New("operation step source operation ID conflicts with the durable ID")
 var ErrOperationStateConflict = errors.New("operation state transition conflicts with terminal state")
 
 // ReconcileUnknownRetryDelay paces re-queries of steps whose outcome the source
 // still cannot confirm: the step keeps a short lease so the reconciler does not
 // hot-loop, while crash recovery (expired forward leases) stays prompt.
 const ReconcileUnknownRetryDelay = time.Minute
+
+func databaseLeaseUntil(lease time.Duration) clause.Expr {
+	return gorm.Expr("clock_timestamp() + make_interval(secs => ?)", lease.Seconds())
+}
 
 func NewOperationRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository) OperationRepository {
 	return &operationRepo{db: db, audit: requireAuditLedger("NewOperationRepository", audit)}
@@ -268,8 +273,8 @@ func (r *operationRepo) ClaimNextStep(ctx context.Context, operationID domain.ID
 		}
 		var stale operationStepRow
 		staleQuery := tx.Where("operation_steps.operation_id = ? AND operation_steps.status = ? AND "+
-			"operation_steps.lease_kind = ? AND operation_steps.lease_until < ?",
-			operationID, string(domain.StepRunning), "forward", now).
+			"operation_steps.lease_kind = ? AND operation_steps.lease_until < clock_timestamp()",
+			operationID, string(domain.StepRunning), "forward").
 			Where(`NOT EXISTS (
 				SELECT 1 FROM operation_steps previous_step
 				WHERE previous_step.operation_id = operation_steps.operation_id
@@ -298,9 +303,9 @@ func (r *operationRepo) ClaimUnknownStep(ctx context.Context, operationID domain
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		var row operationStepRow
-		query := tx.Where("operation_id = ? AND ((status = ? AND (lease_until IS NULL OR lease_until < ?)) OR "+
-			"(status = ? AND lease_kind = ? AND lease_until < ?))",
-			operationID, string(domain.StepUnknown), now, string(domain.StepRunning), "reconcile", now).
+		query := tx.Where("operation_id = ? AND ((status = ? AND (lease_until IS NULL OR lease_until < clock_timestamp())) OR "+
+			"(status = ? AND lease_kind = ? AND lease_until < clock_timestamp()))",
+			operationID, string(domain.StepUnknown), string(domain.StepRunning), "reconcile").
 			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Order("created_at ASC, id ASC").First(&row)
 		if query.Error != nil {
@@ -331,12 +336,12 @@ func (r *operationRepo) claimCompensationStep(ctx context.Context, operationID d
 			condition := "((compensation_status = ? AND (compensation_lease_until IS NULL OR " +
 				"compensation_lease_until < ?)) OR (compensation_status = ? AND compensation_lease_until < ?))"
 			query = query.Where(condition,
-				string(domain.StepUnknown), now, string(domain.StepRunning), now)
+				string(domain.StepUnknown), string(domain.StepRunning))
 		} else {
 			condition := "((compensation_status = ? AND (compensation_lease_until IS NULL OR " +
 				"compensation_lease_until < ?)) OR (compensation_status = ? AND compensation_lease_until < ?))"
 			query = query.Where(condition,
-				string(domain.StepPending), now, string(domain.StepRunning), now)
+				string(domain.StepPending), string(domain.StepRunning))
 		}
 		query = query.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Order("created_at DESC, id DESC")
@@ -347,7 +352,7 @@ func (r *operationRepo) claimCompensationStep(ctx context.Context, operationID d
 		until := now.Add(lease)
 		if err := tx.Model(&row).Updates(map[string]any{"compensation_status": string(domain.StepRunning),
 			"compensation_attempt": gorm.Expr("compensation_attempt + 1"), "compensation_lease_owner": worker,
-			"compensation_lease_until": until, "compensation_updated_at": now, "updated_at": now}).Error; err != nil {
+			"compensation_lease_until": databaseLeaseUntil(lease), "compensation_updated_at": now, "updated_at": now}).Error; err != nil {
 			return err
 		}
 		row.CompensationStatus = string(domain.StepRunning)
@@ -371,7 +376,7 @@ func (r *operationRepo) claimForwardStep(tx *gorm.DB, row *operationStepRow, wor
 	now time.Time, result **domain.OperationStep) error {
 	until := now.Add(lease)
 	if err := tx.Model(row).Updates(map[string]any{"status": string(domain.StepRunning), "attempt": gorm.Expr("attempt + 1"),
-		"lease_owner": worker, "lease_until": until, "lease_kind": "forward", "updated_at": now}).Error; err != nil {
+		"lease_owner": worker, "lease_until": databaseLeaseUntil(lease), "lease_kind": "forward", "updated_at": now}).Error; err != nil {
 		return err
 	}
 	row.Status, row.Attempt, row.LeaseOwner, row.LeaseUntil, row.LeaseKind = string(domain.StepRunning), row.Attempt+1, worker, &until, "forward"
@@ -388,7 +393,7 @@ func (r *operationRepo) claimReconcileStep(tx *gorm.DB, row *operationStepRow, w
 	now time.Time, result **domain.OperationStep) error {
 	until := now.Add(lease)
 	if err := tx.Model(row).Updates(map[string]any{"status": string(domain.StepRunning), "attempt": gorm.Expr("attempt + 1"),
-		"lease_owner": worker, "lease_until": until, "lease_kind": "reconcile", "updated_at": now}).Error; err != nil {
+		"lease_owner": worker, "lease_until": databaseLeaseUntil(lease), "lease_kind": "reconcile", "updated_at": now}).Error; err != nil {
 		return err
 	}
 	row.Status, row.Attempt, row.LeaseOwner, row.LeaseUntil, row.LeaseKind = string(domain.StepRunning), row.Attempt+1, worker, &until, "reconcile"

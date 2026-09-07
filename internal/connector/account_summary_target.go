@@ -3,15 +3,11 @@ package connector
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"io"
-	"os"
-	"path/filepath"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
 
 const (
@@ -42,15 +39,16 @@ const (
 // key itself is never kept in the YAML config or logged. The remaining fields
 // identify the dedicated Aero IM target-assertion trust domain.
 type targetAssertionSignerConfig struct {
-	KeyFile    string
-	KeyEnv     string
-	KeyID      string
-	Issuer     string
-	Audience   string
-	Subject    string
-	ClientID   string
-	Lifetime   time.Duration
-	PrivateKey ed25519.PrivateKey // test-only injection; production uses KeyFile/KeyEnv
+	KeyFile     string
+	KeyEnv      string
+	KeyID       string
+	Issuer      string
+	Audience    string
+	Subject     string
+	ClientID    string
+	TrustDomain string
+	Lifetime    time.Duration
+	PrivateKey  ed25519.PrivateKey // test-only injection; production uses KeyFile/KeyEnv
 }
 
 type accountSummaryTargetSigner struct {
@@ -98,6 +96,17 @@ func configuredAccountSummaryTargetSigner(cfg HTTPConfig) (*accountSummaryTarget
 	if err := validateConfiguredTargetAssertion(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateTargetAssertionTrust(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateTargetAssertionSecretReference(cfg); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.TargetAssertionJWKSURL) != "" {
+		if _, err := parseTargetAssertionJWKSURL(cfg.TargetAssertionJWKSURL); err != nil {
+			return nil, err
+		}
+	}
 	clientID := strings.TrimSpace(cfg.TargetAssertionClientID)
 	if err := validateConfiguredTargetAssertionClient(cfg, clientID); err != nil {
 		return nil, err
@@ -106,15 +115,18 @@ func configuredAccountSummaryTargetSigner(cfg HTTPConfig) (*accountSummaryTarget
 		KeyFile: cfg.TargetAssertionKeyFile, KeyEnv: cfg.TargetAssertionKeyEnv,
 		KeyID: cfg.TargetAssertionKeyID, Issuer: cfg.TargetAssertionIssuer,
 		Audience: cfg.TargetAssertionAudience, Subject: cfg.TargetAssertionSubject,
-		ClientID: clientID, Lifetime: cfg.TargetAssertionLifetime,
+		ClientID: clientID, TrustDomain: strings.TrimSpace(cfg.TargetAssertionTrustDomain),
+		Lifetime: cfg.TargetAssertionLifetime,
 	})
 }
 
 func targetAssertionConfigured(cfg HTTPConfig) bool {
-	return cfg.TargetAssertionKeyFile != "" || cfg.TargetAssertionKeyEnv != "" ||
-		cfg.TargetAssertionKeyID != "" || cfg.TargetAssertionIssuer != "" ||
-		cfg.TargetAssertionAudience != "" || cfg.TargetAssertionSubject != "" ||
-		cfg.TargetAssertionClientID != "" || cfg.TargetAssertionLifetime != 0
+	return strings.TrimSpace(cfg.TargetAssertionKeyFile) != "" || strings.TrimSpace(cfg.TargetAssertionKeyEnv) != "" ||
+		strings.TrimSpace(cfg.TargetAssertionJWKSURL) != "" || strings.TrimSpace(cfg.TargetAssertionTrustDomain) != "" ||
+		strings.TrimSpace(cfg.TargetAssertionKeyID) != "" ||
+		strings.TrimSpace(cfg.TargetAssertionIssuer) != "" || strings.TrimSpace(cfg.TargetAssertionAudience) != "" ||
+		strings.TrimSpace(cfg.TargetAssertionSubject) != "" || strings.TrimSpace(cfg.TargetAssertionClientID) != "" ||
+		cfg.TargetAssertionLifetime != 0
 }
 
 func validateConfiguredTargetAssertion(cfg HTTPConfig) error {
@@ -130,11 +142,75 @@ func validateConfiguredTargetAssertion(cfg HTTPConfig) error {
 	return nil
 }
 
+func validateTargetAssertionTrust(cfg HTTPConfig) error {
+	issuer, err := parseTargetAssertionTrustURL(cfg.TargetAssertionIssuer)
+	if err != nil {
+		return errors.New("account summary target assertion issuer must be an HTTPS trust-domain URL")
+	}
+	trustValue := strings.TrimSpace(cfg.TargetAssertionTrustDomain)
+	if trustValue == "" {
+		if strings.TrimSpace(cfg.Environment) != "" && sourceauth.ProductionLikeEnvironment(cfg.Environment) {
+			return errors.New("account summary target assertion trust domain is required in production-like environments")
+		}
+		return nil
+	}
+	trust, err := parseTargetAssertionTrustURL(trustValue)
+	if err != nil || issuer.String() != trust.String() {
+		return errors.New("account summary target assertion issuer must match the configured trust domain")
+	}
+	if jwks := strings.TrimSpace(cfg.TargetAssertionJWKSURL); jwks != "" {
+		jwksURL, parseErr := parseTargetAssertionTrustURL(jwks)
+		if parseErr != nil || !sameTargetAssertionTrustOrigin(trust, jwksURL) {
+			return errors.New("account summary target assertion JWKS URL must use the configured trust domain")
+		}
+	}
+	return nil
+}
+
+func parseTargetAssertionTrustURL(value string) (*url.URL, error) {
+	parsed, err := sourceauth.ParseEndpoint(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" {
+		return nil, errors.New("invalid target assertion trust URL")
+	}
+	return parsed, nil
+}
+
+func sameTargetAssertionTrustOrigin(left, right *url.URL) bool {
+	if left == nil || right == nil || left.Scheme != right.Scheme ||
+		!strings.EqualFold(left.Hostname(), right.Hostname()) {
+		return false
+	}
+	return targetAssertionTrustPort(left) == targetAssertionTrustPort(right)
+}
+
+func targetAssertionTrustPort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	return "443"
+}
+
 func targetAssertionOAuthConfigValid(cfg HTTPConfig) bool {
 	return strings.TrimSpace(cfg.OAuth.TokenURL) != "" && strings.TrimSpace(cfg.OAuth.ClientID) != "" &&
 		strings.TrimSpace(cfg.OAuth.ClientSecret) != "" &&
 		strings.Join(strings.Fields(cfg.OAuth.Scope), " ") == accountSummaryAssertionScope &&
 		strings.TrimSpace(cfg.OAuth.Resource) == accountSummaryOAuthResource
+}
+
+func validateTargetAssertionSecretReference(cfg HTTPConfig) error {
+	if !sourceauth.ProductionLikeEnvironment(cfg.Environment) {
+		return nil
+	}
+	if value := strings.TrimSpace(cfg.TargetAssertionKeyEnv); value != "" &&
+		(!strings.HasPrefix(value, "AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_") ||
+			len(value) == len("AERO_ID_SOURCES_AERO_IM_TARGET_ASSERTION_")) {
+		return errors.New("account summary target assertion key environment reference must use the dedicated secret namespace")
+	}
+	if value := strings.TrimSpace(cfg.TargetAssertionKeyFile); value != "" &&
+		(!strings.HasPrefix(value, "/run/secrets/") && !strings.HasPrefix(value, "/var/run/secrets/")) {
+		return errors.New("account summary target assertion key file must use a protected secret directory")
+	}
+	return nil
 }
 
 func validateConfiguredTargetAssertionClient(cfg HTTPConfig, clientID string) error {
@@ -188,13 +264,30 @@ func accountSummaryTargetSignerLifetime(cfg targetAssertionSignerConfig) (time.D
 }
 
 func validAccountSummaryTargetSignerConfig(cfg targetAssertionSignerConfig, lifetime time.Duration) bool {
-	if lifetime <= 0 || lifetime > maxTargetAssertionLifetime || lifetime%time.Second != 0 {
+	return validTargetAssertionLifetime(lifetime) && validTargetAssertionIdentity(cfg) && validTargetAssertionClaims(cfg)
+}
+
+func validTargetAssertionLifetime(lifetime time.Duration) bool {
+	return lifetime > 0 && lifetime <= maxTargetAssertionLifetime && lifetime%time.Second == 0
+}
+
+func validTargetAssertionIdentity(cfg targetAssertionSignerConfig) bool {
+	if !validTargetAssertionComponent(cfg.KeyID, 256) || !validTargetAssertionComponent(cfg.Issuer, 512) {
 		return false
 	}
-	return validTargetAssertionComponent(cfg.KeyID, 256) &&
-		validTargetAssertionComponent(cfg.Issuer, 512) &&
-		cfg.Audience == accountSummaryTargetAudience &&
-		cfg.Subject == accountSummaryTargetSubject &&
+	if _, err := parseTargetAssertionTrustURL(cfg.Issuer); err != nil {
+		return false
+	}
+	trust := strings.TrimSpace(cfg.TrustDomain)
+	if trust == "" {
+		return true
+	}
+	parsed, err := parseTargetAssertionTrustURL(trust)
+	return err == nil && parsed.String() == strings.TrimSpace(cfg.Issuer)
+}
+
+func validTargetAssertionClaims(cfg targetAssertionSignerConfig) bool {
+	return cfg.Audience == accountSummaryTargetAudience && cfg.Subject == accountSummaryTargetSubject &&
 		validTargetAssertionComponent(cfg.ClientID, 256)
 }
 
@@ -248,103 +341,6 @@ func (s *accountSummaryTargetSigner) sign(target *trustedSummaryTarget) (string,
 // jsonMarshal is a small indirection so tests can assert that only the
 // allow-listed struct fields are signed without exposing any secret material.
 func jsonMarshal(value any) ([]byte, error) { return json.Marshal(value) }
-
-func loadEd25519PrivateKey(path, envName string) (ed25519.PrivateKey, error) {
-	path = strings.TrimSpace(path)
-	envName = strings.TrimSpace(envName)
-	if path != "" && envName != "" {
-		return nil, errors.New("account summary target assertion key has multiple sources")
-	}
-	data, err := loadEd25519PrivateKeyData(path, envName)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) == 0 || len(data) > maxTargetAssertionKeyBytes {
-		return nil, errors.New("account summary target assertion key is unavailable")
-	}
-	return parseEd25519PrivateKey(data)
-}
-
-func loadEd25519PrivateKeyData(path, envName string) ([]byte, error) {
-	if path != "" {
-		return readEd25519PrivateKeyFile(path)
-	}
-	if envName != "" {
-		return readEd25519PrivateKeyEnvironment(envName)
-	}
-	return nil, errors.New("account summary target assertion private key is not configured")
-}
-
-func readEd25519PrivateKeyFile(path string) ([]byte, error) {
-	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
-		return nil, errors.New("account summary target assertion key file is unavailable")
-	}
-	info, statErr := os.Lstat(path)
-	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !safePrivateKeyFileInfo(info) {
-		return nil, errors.New("account summary target assertion key file is unavailable")
-	}
-	file, openErr := os.Open(path)
-	if openErr != nil {
-		return nil, errors.New("account summary target assertion key file is unavailable")
-	}
-	openedInfo, openedStatErr := file.Stat()
-	if openedStatErr != nil || !safePrivateKeyFileInfo(openedInfo) {
-		_ = file.Close()
-		return nil, errors.New("account summary target assertion key file is unavailable")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxTargetAssertionKeyBytes+1))
-	_ = file.Close()
-	if err != nil {
-		return nil, errors.New("account summary target assertion key is unavailable")
-	}
-	return data, nil
-}
-
-func readEd25519PrivateKeyEnvironment(envName string) ([]byte, error) {
-	if !validEnvironmentName(envName) {
-		return nil, errors.New("account summary target assertion key environment name is invalid")
-	}
-	value, ok := os.LookupEnv(envName)
-	if !ok || strings.TrimSpace(value) == "" {
-		return nil, errors.New("account summary target assertion key environment value is unavailable")
-	}
-	return []byte(strings.ReplaceAll(value, `\n`, "\n")), nil
-}
-
-func parseEd25519PrivateKey(data []byte) (ed25519.PrivateKey, error) {
-	block, rest := pem.Decode(data)
-	if block == nil || block.Type != "PRIVATE KEY" || len(strings.TrimSpace(string(rest))) != 0 {
-		return nil, errors.New("account summary target assertion key is invalid")
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, errors.New("account summary target assertion key is invalid")
-	}
-	key, ok := parsed.(ed25519.PrivateKey)
-	if !ok || len(key) != ed25519.PrivateKeySize {
-		return nil, errors.New("account summary target assertion key is invalid")
-	}
-	return append(ed25519.PrivateKey(nil), key...), nil
-}
-
-func safePrivateKeyFileInfo(info os.FileInfo) bool {
-	return info != nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 == 0 &&
-		info.Size() >= 0 && info.Size() <= maxTargetAssertionKeyBytes
-}
-
-func validEnvironmentName(value string) bool {
-	if value == "" || len(value) > 128 {
-		return false
-	}
-	for index, character := range value {
-		first := index == 0
-		letter := character >= 'A' && character <= 'Z'
-		if !letter && character != '_' && (!(!first && character >= '0' && character <= '9')) {
-			return false
-		}
-	}
-	return true
-}
 
 func validTargetAssertionComponent(value string, maxBytes int) bool {
 	return value != "" && len(value) <= maxBytes && value == strings.TrimSpace(value) &&

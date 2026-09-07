@@ -102,12 +102,7 @@ func TestTrustedVaultSummaryRequestHasNoTargetAssertionAndPreservesActor(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewJSONSummaryConnector(SourceAeroVault, HTTPConfig{
-		Endpoint: "http://127.0.0.1", AllowInsecureLoopback: true, Environment: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newVaultTestConnector(t, "http://127.0.0.1", HTTPConfig{OAuthTenantID: account.TenantID})
 	httpRequest, err := client.newSummaryRequest(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -356,14 +351,24 @@ func TestSummaryUnauthorizedRefreshMintsFreshAssertionJTI(t *testing.T) {
 
 func TestAeroIMSummaryRemainsFailClosedWithoutAssertionConfiguration(t *testing.T) {
 	var sourceCalls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		sourceCalls++
-		w.WriteHeader(http.StatusOK)
+	var tokenCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			tokenCalls++
+			_, _ = io.WriteString(w, `{"access_token":"token","token_type":"Bearer","expires_in":300}`)
+		case accountSummaryCanonicalPath:
+			sourceCalls++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 	client, err := NewJSONSummaryConnector(SourceAeroIM, HTTPConfig{Endpoint: server.URL,
 		SummaryPath: accountSummaryCanonicalPath, AllowInsecureLoopback: true, Environment: "test", Client: server.Client(),
-		BearerToken: "broad-token"})
+		OAuth: OAuthClientCredentialsConfig{TokenURL: server.URL + "/token", ClientID: "aero-id",
+			ClientSecret: "oauth-secret", Scope: accountSummaryAssertionScope, Resource: accountSummaryOAuthResource}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,8 +377,8 @@ func TestAeroIMSummaryRemainsFailClosedWithoutAssertionConfiguration(t *testing.
 	if !errors.As(err, &remote) || remote.Code != "source.target_assertion_not_configured" {
 		t.Fatalf("error = %v, want target assertion configuration failure", err)
 	}
-	if sourceCalls != 0 {
-		t.Fatalf("source calls = %d, want 0", sourceCalls)
+	if sourceCalls != 0 || tokenCalls != 0 {
+		t.Fatalf("source/token calls = %d/%d, want 0/0", sourceCalls, tokenCalls)
 	}
 }
 
@@ -413,7 +418,11 @@ func TestTargetAssertionPrivateKeyLoadingUsesSafeReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := t.TempDir() + "/assertion-key.pem"
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := dir + "/assertion-key.pem"
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +430,7 @@ func TestTargetAssertionPrivateKeyLoadingUsesSafeReferences(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(loaded, key) {
 		t.Fatalf("file key load = %v/%v", loaded, err)
 	}
-	envName := "AERO_TEST_ACCOUNT_ASSERTION_KEY"
+	envName := "AERO_ID_TEST_ACCOUNT_ASSERTION_KEY"
 	t.Setenv(envName, testTargetAssertionPrivateKeyPEM)
 	loaded, err = loadEd25519PrivateKey("", envName)
 	if err != nil || !reflect.DeepEqual(loaded, key) {

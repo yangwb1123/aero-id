@@ -16,10 +16,6 @@ func RedactPayload(value map[string]any) map[string]any {
 	return boundedProjectionData(redactProjectionData(value, 0))
 }
 
-func redactedEnvelope(envelope *Envelope) *Envelope {
-	return BoundedEnvelope(envelope)
-}
-
 // BoundedEnvelope returns a persistence-safe copy. Oversized scalar fields are
 // represented by a complete hash, never a truncated identity key. This is
 // used for quarantine, where the original wire event may intentionally be

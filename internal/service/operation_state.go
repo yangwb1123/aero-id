@@ -71,10 +71,13 @@ func (s *operationService) reconcileForwardSteps(ctx context.Context, operation 
 			return apperr.Internal("operation.reconcile_claim_failed", "failed to claim unknown operation step").Wrap(err)
 		}
 		status, sourceOperationID, result, reconcileErr := reconciledStepResult(ctx, reconciler, operation, step)
+		if sourceOperationID == "" {
+			sourceOperationID = step.SourceOperationID
+		}
 		code, message := outcomeErrorCode(status), outcomeErrorMessage(status)
 		if reconcileErr != nil {
 			status, code, message = operationRunStatus(reconcileErr)
-			if status == domain.StepUnknown {
+			if status == domain.StepUnknown && result == nil {
 				result = map[string]any{"error": "source outcome remains unknown"}
 			}
 		}
@@ -102,8 +105,16 @@ func reconciledStepResult(ctx context.Context, reconciler OperationOutcomeReconc
 	remoteCtx, cancel := operationRemoteContext(ctx)
 	status, sourceOperationID, result, err := reconciler.Reconcile(remoteCtx, operation, step)
 	cancel()
+	var correlated bool
+	sourceOperationID, correlated = retainSourceOperationID(step.SourceOperationID, sourceOperationID)
+	if !correlated {
+		return domain.StepUnknown, sourceOperationID, result, sourceOperationIDConflict(connector.Source(step.Source))
+	}
 	if err != nil {
-		return domain.StepUnknown, step.SourceOperationID, nil, err
+		if sourceOperationID == "" {
+			sourceOperationID = step.SourceOperationID
+		}
+		return domain.StepUnknown, sourceOperationID, result, err
 	}
 	if !validReconciledStepStatus(status) {
 		return domain.StepUnknown, sourceOperationID, result, nil

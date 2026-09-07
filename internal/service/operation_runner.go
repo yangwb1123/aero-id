@@ -38,6 +38,7 @@ func (r *connectorOperationRunner) RunCompensation(ctx context.Context, operatio
 	}
 	compensationStep := *step
 	compensationStep.Action = step.CompensationAction
+	compensationStep.SourceOperationID = step.CompensationSourceOperationID
 	return r.run(ctx, operation, &compensationStep, ":compensation")
 }
 
@@ -110,15 +111,12 @@ func operationDatasetsForStep(step *domain.OperationStep, source connector.Sourc
 	}
 }
 
-//nolint:cyclop // source status normalization is an explicit remote outcome matrix.
 func (r *connectorOperationRunner) reconcile(ctx context.Context, operation *domain.Operation,
 	step *domain.OperationStep, idempotencyKey string) (domain.OperationStepStatus, string, map[string]any, error) {
 	if operation == nil || step == nil || operation.AccountID == (domain.ID{}) {
 		return domain.StepUnknown, "", nil, fmt.Errorf("operation account is required")
 	}
 	// Reconciliation must apply the same local validation as forward execution.
-	// In particular, a malformed Aero IM erase must never turn into a remote
-	// status query merely because the original worker timed out.
 	if _, err := operationDatasetsForStep(step, connector.Source(step.Source)); err != nil {
 		return domain.StepFailed, "", nil, err
 	}
@@ -130,31 +128,56 @@ func (r *connectorOperationRunner) reconcile(ctx context.Context, operation *dom
 	if !ok {
 		return domain.StepUnknown, "", nil, nil
 	}
+	if client.Source() == connector.SourceSnaplink && strings.TrimSpace(step.SourceOperationID) == "" {
+		return domain.StepUnknown, "", nil, &connector.RemoteError{Source: client.Source(), Kind: connector.ErrorUnknown,
+			Code: "source.operation_id_missing", Temporary: true}
+	}
 	account, err := r.accounts.GetByID(ctx, operation.TenantID, operation.AccountID)
 	if err != nil {
 		return domain.StepUnknown, "", nil, fmt.Errorf("load operation account: %w", err)
 	}
+	return reconcileSourceStatus(ctx, operation, step, idempotencyKey, client, statusClient, account)
+}
+
+func reconcileSourceStatus(ctx context.Context, operation *domain.Operation, step *domain.OperationStep,
+	idempotencyKey string, client connector.Connector, statusClient connector.OperationStatusConnector,
+	account *domain.Account) (domain.OperationStepStatus, string, map[string]any, error) {
 	result, err := statusClient.OperationStatus(ctx, connector.OperationStatusRequest{
 		AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: operation.ActorUID,
 		TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, OperationID: operation.ID.String(),
-		SourceOperationID: step.SourceOperationID,
-		IdempotencyKey:    idempotencyKey,
+		SourceOperationID: step.SourceOperationID, IdempotencyKey: idempotencyKey,
 	})
+	if result != nil {
+		result.Result = connector.RedactSummaryData(result.Result)
+	}
 	if err != nil {
-		return domain.StepUnknown, "", nil, err
+		if result == nil {
+			return domain.StepUnknown, "", nil, err
+		}
+		return domain.StepUnknown, trustedSourceOperationID(client.Source(), operation, step, result), result.Result, err
 	}
 	if result == nil {
-		return domain.StepUnknown, "", nil, fmt.Errorf("source operation status is empty")
+		return domain.StepUnknown, "", nil, &connector.RemoteError{Source: client.Source(), Kind: connector.ErrorUnknown,
+			Code: "source.empty_operation_status", Temporary: true}
 	}
-	result.Result = connector.RedactSummaryData(result.Result)
-	status := strings.ToLower(strings.TrimSpace(result.Status))
-	switch status {
+	if client.Source() == connector.SourceSnaplink {
+		if err := validateSnaplinkCommandResult(operation, step, result); err != nil {
+			return domain.StepUnknown, trustedSourceOperationID(client.Source(), operation, step, result), result.Result, err
+		}
+	}
+	return normalizedSourceStatus(client.Source(), operation, step, result)
+}
+
+func normalizedSourceStatus(source connector.Source, operation *domain.Operation, step *domain.OperationStep,
+	result *connector.CommandResult) (domain.OperationStepStatus, string, map[string]any, error) {
+	sourceOperationID := trustedSourceOperationID(source, operation, step, result)
+	switch strings.ToLower(strings.TrimSpace(result.Status)) {
 	case "succeeded", "success", "completed", "complete", "done":
-		return domain.StepSucceeded, result.SourceOperationID, result.Result, nil
+		return domain.StepSucceeded, sourceOperationID, result.Result, nil
 	case "failed", "failure", "rejected", "cancelled", "canceled":
-		return domain.StepFailed, result.SourceOperationID, result.Result, nil
+		return domain.StepFailed, sourceOperationID, result.Result, nil
 	default:
-		return domain.StepUnknown, result.SourceOperationID, result.Result, nil
+		return domain.StepUnknown, sourceOperationID, result.Result, nil
 	}
 }
 
@@ -167,21 +190,35 @@ func (r *connectorOperationRunner) erase(ctx context.Context, operation *domain.
 	result, err := command.Erase(ctx, connector.EraseRequest{AccountID: account.ID, CanonicalUID: account.CanonicalUID,
 		ActorUID: operation.ActorUID, TenantID: operation.TenantID, RequestID: operation.RequestID, Region: account.HomeRegion, Datasets: datasets,
 		IdempotencyKey: operationEraseIdempotencyKey(operation, step, suffix), OperationID: operation.ID.String()})
-	if err != nil {
-		return "", nil, err
-	}
 	if result == nil {
-		return "", nil, fmt.Errorf("source erase result is empty")
+		if err != nil {
+			return "", nil, err
+		}
+		return "", nil, &connector.RemoteError{Source: client.Source(), Kind: connector.ErrorUnknown,
+			Code: "source.empty_command_result", Temporary: true}
 	}
 	result.Result = connector.RedactSummaryData(result.Result)
-	outcome := map[string]any{"status": result.Status}
-	if result.SourceOperationID != "" {
-		outcome["source_operation_id"] = result.SourceOperationID
+	sourceOperationID := trustedSourceOperationID(client.Source(), operation, step, result)
+	outcome := commandResultOutcomePayload(result, sourceOperationID)
+	if err == nil && client.Source() == connector.SourceSnaplink {
+		if correlationErr := validateSnaplinkCommandResult(operation, step, result); correlationErr != nil {
+			outcome["status"] = string(domain.StepUnknown)
+			return sourceOperationID, outcome, correlationErr
+		}
+	}
+	if err != nil {
+		// A source may return a terminal-looking payload together with an error
+		// (for example, a correlation mismatch). The durable outcome must expose
+		// unknown rather than copying that untrusted status into a success-like
+		// result. Preserve only a correlated identifier so a late or foreign
+		// response cannot redirect reconciliation.
+		outcome["status"] = string(domain.StepUnknown)
+		return sourceOperationID, outcome, err
 	}
 	if err := commandResultOutcome(client.Source(), result); err != nil {
-		return result.SourceOperationID, outcome, err
+		return sourceOperationID, outcome, err
 	}
-	return result.SourceOperationID, outcome, nil
+	return sourceOperationID, outcome, nil
 }
 
 func operationEraseIdempotencyKey(operation *domain.Operation, step *domain.OperationStep, suffix string) string {
@@ -197,6 +234,52 @@ func operationReconcileIdempotencyKey(operation *domain.Operation, step *domain.
 
 func operationCompensationReconcileIdempotencyKey(operation *domain.Operation, step *domain.OperationStep) string {
 	return operationEraseIdempotencyKey(operation, step, ":compensation")
+}
+
+func validateSnaplinkCommandResult(operation *domain.Operation, step *domain.OperationStep,
+	result *connector.CommandResult) error {
+	if operation == nil || result == nil || strings.TrimSpace(result.OperationID) == "" ||
+		result.OperationID != operation.ID.String() {
+		return &connector.RemoteError{Source: connector.SourceSnaplink, Kind: connector.ErrorUnknown,
+			Code: "source.operation_id_mismatch", Temporary: true}
+	}
+	if strings.TrimSpace(result.SourceOperationID) == "" {
+		return &connector.RemoteError{Source: connector.SourceSnaplink, Kind: connector.ErrorUnknown,
+			Code: "source.source_operation_id_missing", Temporary: true}
+	}
+	if step != nil && step.SourceOperationID != "" && result.SourceOperationID != step.SourceOperationID {
+		return &connector.RemoteError{Source: connector.SourceSnaplink, Kind: connector.ErrorUnknown,
+			Code: "source.source_operation_id_mismatch", Temporary: true}
+	}
+	return nil
+}
+
+func commandResultOutcomePayload(result *connector.CommandResult, sourceOperationID string) map[string]any {
+	outcome := map[string]any{"status": result.Status}
+	if sourceOperationID != "" {
+		outcome["source_operation_id"] = sourceOperationID
+	}
+	return outcome
+}
+
+func trustedSourceOperationID(source connector.Source, operation *domain.Operation, step *domain.OperationStep,
+	result *connector.CommandResult) string {
+	if result == nil {
+		return ""
+	}
+	if source != connector.SourceSnaplink {
+		return result.SourceOperationID
+	}
+	if operation == nil || result.OperationID != operation.ID.String() {
+		if step != nil {
+			return step.SourceOperationID
+		}
+		return ""
+	}
+	if step != nil && step.SourceOperationID != "" && result.SourceOperationID != step.SourceOperationID {
+		return step.SourceOperationID
+	}
+	return result.SourceOperationID
 }
 
 func commandResultOutcome(source connector.Source, result *connector.CommandResult) error {

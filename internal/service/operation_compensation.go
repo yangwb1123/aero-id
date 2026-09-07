@@ -55,6 +55,11 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 			remoteCtx, remoteCancel := operationRemoteContext(ctx)
 			sourceOperationID, result, err = runner.RunCompensation(remoteCtx, operation, step)
 			remoteCancel()
+			var correlated bool
+			sourceOperationID, correlated = retainSourceOperationID(step.CompensationSourceOperationID, sourceOperationID)
+			if !correlated {
+				err = sourceOperationIDConflict(connector.Source(step.Source))
+			}
 			if err != nil {
 				status, code, message = domain.StepFailed, "operation.compensation_step_failed", "operation compensation step failed"
 				if isUnknownOperationError(err) {
@@ -89,6 +94,11 @@ func (s *operationService) reconcileCompensations(ctx context.Context, operation
 		remoteCtx, remoteCancel := operationRemoteContext(ctx)
 		status, sourceOperationID, result, reconcileErr := reconciler.ReconcileCompensation(remoteCtx, operation, step)
 		remoteCancel()
+		var correlated bool
+		sourceOperationID, correlated = retainSourceOperationID(step.CompensationSourceOperationID, sourceOperationID)
+		if !correlated {
+			reconcileErr = sourceOperationIDConflict(connector.Source(step.Source))
+		}
 		if reconcileErr != nil || !validReconciledStepStatus(status) {
 			status = domain.StepUnknown
 			if sourceOperationID == "" {

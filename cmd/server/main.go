@@ -19,6 +19,13 @@ func main() {
 	cfgPath := flag.String("config", "configs/config.yaml", "path to config file")
 	flag.Parse()
 
+	// Kubernetes supplies this through the Downward API. Checking it in the
+	// application as well as the init container closes the window in which a
+	// mutable ConfigMap could change after preflight succeeds.
+	if err := config.VerifyFileChecksum(*cfgPath, os.Getenv("AERO_ID_CONFIG_SHA256")); err != nil {
+		fmt.Fprintln(os.Stderr, "verify config: "+err.Error())
+		os.Exit(1)
+	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load config: "+err.Error())

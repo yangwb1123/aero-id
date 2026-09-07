@@ -25,6 +25,13 @@ Therefore the deployed Snaplink API's response semantics for omitted or empty da
 confirmed from the available source and deployment artifacts; this document does not claim a Snaplink HTTP
 status or error body for those cases.
 
+Snaplink capabilities are explicit configuration, not path inference. The shipped adapter keeps `summary`,
+`erase`, and `operation_status` disabled and leaves `erase_contract_version` empty. An enabled endpoint must
+set `capabilities.summary: true`; erase additionally requires a source-owner-verified version in the compiled
+adapter registry. The registry currently has no production Snaplink erase version, so no deployment may enable
+erase or status until the owner contract covers authorization, idempotency, source operation IDs, status
+semantics, and ambiguous/late responses.
+
 The current **Aero ID connector contract**, pending deployment and owner confirmation of that Snaplink seam,
 is fail-closed:
 
@@ -43,10 +50,13 @@ status and stable error shape. Until then, callers must send explicit allow-list
 The connector also propagates `X-Request-ID`, `X-Aero-Operation-ID`,
 `X-Aero-Account-ID`, `X-Aero-Canonical-UID`, `X-Aero-Actor-UID`,
 `X-Aero-Tenant-ID`, `X-Aero-Region`, W3C trace headers, and a source-valid
-`Authorization` bearer token when configured. For Aero IM, the connector must
-also send one `X-Aero-Target-Assertion` compact JWS. The account, canonical UID,
-tenant, and region headers are required exact consistency fields for that
-protocol; they are not an authorization bypass on their own.
+`Authorization` bearer token when configured. For Aero Vault it additionally
+sends `X-Aero-Tenant`, the source's active tenant-context header, with exactly
+the same tenant value as `X-Aero-Tenant-ID`; it never lets a request tenant
+select a different credential. For Aero IM, the connector must also send one
+`X-Aero-Target-Assertion` compact JWS. The account, canonical UID, tenant, and
+region headers are required exact consistency fields for that protocol; they
+are not an authorization bypass on their own.
 
 ## Aero IM target binding
 
@@ -85,22 +95,52 @@ any account lookup.
 
 The Aero ID signer is enabled only with one safe private-key reference (an
 absolute `0600`-style file or a named secret environment variable), explicit
-issuer/key ID/client ID, audience `aero-im-account-summary`, subject
-`aero-id-sync`, OAuth scope `aero.account.summary.read`, OAuth resource
-`aero-im`, and the canonical summary path. Its source OAuth client ID must
-match the assertion `client_id`. The shipped configuration leaves this block
-disabled; enabling it without the external JWKS and matching Aero IM
-configuration is not a valid rollout.
+issuer/key ID/client ID, and an exact HTTPS `target_assertion_trust_domain`
+that equals the issuer. The dedicated JWKS URL must use that same trust-domain
+origin. The audience is `aero-im-account-summary`, the subject is
+`aero-id-sync`, the OAuth scope is `aero.account.summary.read`, the OAuth
+resource is `aero-im`, and the summary path is canonical. Deployments use a
+different trust-domain/JWKS bundle for each Aero IM target environment and
+region. Its source OAuth client ID must match the assertion `client_id`. The
+shipped configuration leaves this block disabled; enabling it without the
+external JWKS and matching Aero IM configuration is not a valid rollout.
 
 ## Source authentication
 
-An enabled Aero IM connector must use OAuth client credentials, a transitional static bearer token, or mTLS.
-The static token is trimmed and control-character values are rejected. mTLS requires HTTPS and its configured
-certificate is installed even when a custom HTTP client is injected; mTLS-only mode requires HTTPS. Unauthenticated access is available only
-with `allow_insecure_loopback: true` in a non-production-like environment (`prod`, `production`, or `staging`
-are never allowed) and only for the exact hosts `localhost`, `127.0.0.1`, or `::1`. The corresponding
-configuration override is `AERO_ID_SOURCES_AERO_IM_ALLOW_INSECURE_LOOPBACK`; it is intended only for local/test
-compatibility and emits a bounded construction metric.
+Snaplink and Aero IM may use OAuth client credentials, a transitional static bearer token, or mTLS. The
+static token is trimmed and control-character values are rejected. mTLS requires HTTPS and its configured
+certificate is installed even when a custom HTTP client is injected; mTLS-only mode sends no bearer header,
+while mTLS may accompany an explicitly selected bearer or OAuth mode.
+
+The deployed Aero Vault account-summary handler is different: it requires a Snaplink-validated
+`PrincipalService`. An enabled Vault connector therefore **must** use a Snaplink client-credentials RFC 9068
+access-token JWT (`typ=at+jwt`) with `sub == client_id`, a `jti`, no human-session claims, exact request scope
+`read`, resource/audience `aero-vault`, and an explicit `oauth_tenant_id`. Static API keys, local JWTs,
+mTLS-only mode, and unauthenticated loopback are rejected before any HTTP call. The configured Snaplink client
+must be mapped by Vault's `AUTH_JWKS_CLIENT_TENANTS` to that exact tenant; `*` is not a valid mapping for this
+connector. `X-Aero-Tenant` is sent as Vault's active tenant header, while the legacy `X-Aero-Tenant-ID`
+consistency header is also sent with the same value.
+
+OAuth token authorities use an exact origin allow-list. A host-only entry is the explicit HTTPS:443 shorthand;
+non-default ports and schemes must be listed exactly. The source and token endpoints use separate TLS profiles
+(`tls_*` versus `oauth_tls_*`); CA roots, SNI, and client certificates are never shared implicitly. OAuth
+acquisition is lazy and the client secret is sent only to the token authority, never to the source. The OAuth
+dialer resolves an allow-listed name per new connection, rejects private/loopback/link-local answers outside the
+explicit development tuple, and dials the selected address literally. Production deployments must still enforce
+the same destination policy with DNS/network egress controls; DNS names alone are not an IP authorization
+boundary.
+
+Aero Vault's `region` must equal the aero-id cell's `account.region`, and the Vault deployment must set
+`AERO_VAULT_ACCOUNT_SOURCE_REGION` to that same value. Requests for an account in another home region belong
+in that account's home cell; the connector does not use a local Vault credential to cross a regional boundary.
+
+Unauthenticated access is available only to Snaplink/Aero IM compatibility connectors with
+`allow_insecure_loopback: true` in an explicitly approved non-production environment (`local`, `dev`,
+`development`, `test`, `testing`, or `ci`) and only for the exact hosts `localhost`, `127.0.0.1`, or `::1`.
+Unknown, blank, and production-like environment names are rejected. Vault never emits a loopback compatibility
+metric because its deployed summary contract has no unauthenticated mode. Source credentials are supplied by
+environment/secret provider only; non-empty bearer or OAuth secret values in YAML are rejected. Compatibility
+metrics use only fixed source/mode labels; no endpoint, token, tenant, or request identity is a metric label.
 
 ## Workload isolation
 
@@ -117,11 +157,14 @@ class-scoped, so a source health outage does not make account reads fail fast.
 
 At the aero-id connector boundary, erase requests require a concrete, non-empty dataset array owned by the target source. Snaplink, Aero IM, and Aero Vault reject an empty erase scope locally before idempotency validation, bulkhead acquisition, credentials, or HTTP execution. Invalid, duplicate, mixed-source, malformed, and oversized scopes are local `source.dataset_scope_invalid` failures and never trigger source authorization or network I/O.
 
-The currently deployed Aero Vault adapter publishes the read-only summary seam
-only; its erase and status paths remain unset in the checked-in deployment
-manifest. Do not treat the optional command wire shape below as a shipped Vault
-capability until the source command contract is deployed and the paths are
-explicitly enabled.
+The Aero Vault adapter defaults to the checked-in read-only summary seam at
+`/v1/internal/account-summary`; an explicit `summary_path` is a compatibility
+override and is validated as a path, never interpreted as a URL. Its erase and
+status paths remain unset and its `capabilities.erase` and
+`capabilities.operation_status` flags remain false in shipped configuration.
+A path alone never enables a capability. Do not treat the optional command wire
+shape below as a shipped Vault capability until the source command contract is
+deployed and the matching capability flag and path are explicitly enabled.
 
 ## Summary response
 

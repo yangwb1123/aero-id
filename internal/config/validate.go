@@ -2,11 +2,8 @@ package config
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
-
-	"github.com/aero/aero-id/internal/pkg/sourceauth"
 )
 
 const maxSSOUserBatchSize = 2048
@@ -98,6 +95,9 @@ func (c *Config) validateSourcesAndRegions() error {
 	if err := c.validateConfiguredSources(regions); err != nil {
 		return err
 	}
+	if err := c.validateSourceCredentialSeparation(); err != nil {
+		return err
+	}
 	return validateBindingRegions(c.EventIngest.Bindings, regions)
 }
 
@@ -123,17 +123,39 @@ func (c *Config) validateConfiguredSources(regions map[string]struct{}) error {
 	for name, source := range map[string]SourceEndpointConfig{
 		"snaplink": c.Sources.Snaplink, "aero-im": c.Sources.AeroIM, "aero-vault": c.Sources.AeroVault,
 	} {
-		if err := validateSourceEndpoint(name, source); err != nil {
+		if err := c.validateConfiguredSource(name, source, regions); err != nil {
 			return err
 		}
-		if name == "aero-im" || name == "snaplink" {
-			if err := c.validateAuthenticatedSource(name, source); err != nil {
-				return err
-			}
+	}
+	return nil
+}
+
+func (c *Config) validateConfiguredSource(name string, source SourceEndpointConfig,
+	regions map[string]struct{}) error {
+	if err := validateSourceEndpoint(name, source); err != nil {
+		return err
+	}
+	if err := c.validateAuthenticatedSource(name, source); err != nil {
+		return err
+	}
+	if name == "aero-im" {
+		if err := c.validateAeroIMTargetAssertionRequirement(source); err != nil {
+			return err
 		}
-		if !regionConfigured(source.Region, regions) {
-			return fmt.Errorf("sources.%s.region must be listed in account.regions", name)
-		}
+	}
+	if err := validateVaultSourceRegion(c.Account.Region, name, source); err != nil {
+		return err
+	}
+	if !regionConfigured(source.Region, regions) {
+		return fmt.Errorf("sources.%s.region must be listed in account.regions", name)
+	}
+	return nil
+}
+
+func validateVaultSourceRegion(accountRegion, name string, source SourceEndpointConfig) error {
+	if name == "aero-vault" && strings.TrimSpace(source.Endpoint) != "" &&
+		strings.TrimSpace(source.Region) != strings.TrimSpace(accountRegion) {
+		return fmt.Errorf("sources.aero-vault.region must match account.region for the regional Vault cell")
 	}
 	return nil
 }
@@ -390,103 +412,4 @@ func (c *Config) validateTransport() error {
 		return fmt.Errorf("server.grpc.max_send_msg_size must be >= 1KB when set")
 	}
 	return nil
-}
-
-func validateSourceEndpoint(name string, source SourceEndpointConfig) error {
-	if strings.TrimSpace(source.Endpoint) == "" {
-		return nil
-	}
-	if err := validateSourceURL(name, source.Endpoint); err != nil {
-		return err
-	}
-	if !validSourceLimits(source) {
-		return fmt.Errorf("sources.%s timeout, limits, and retry values must not be negative", name)
-	}
-	if (source.TLSCertFile == "") != (source.TLSKeyFile == "") {
-		return fmt.Errorf("sources.%s mTLS requires both tls_cert_file and tls_key_file", name)
-	}
-	if err := validateSourceOAuth(name, source); err != nil {
-		return err
-	}
-	if err := validateSourcePaths(name, source); err != nil {
-		return err
-	}
-	if name == "aero-im" {
-		if err := validateAeroIMTargetAssertion(source); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c *Config) validateAuthenticatedSource(name string, source SourceEndpointConfig) error {
-	_, err := sourceauth.Evaluate(sourceauth.Config{
-		Source: name, Label: "sources." + name, Endpoint: source.Endpoint, Environment: c.App.Env,
-		AllowInsecureLoopback: source.AllowInsecureLoopback, BearerToken: source.BearerToken,
-		OAuth: sourceauth.OAuthConfig{TokenURL: source.OAuthTokenURL, ClientID: source.OAuthClientID,
-			ClientSecret: source.OAuthSecret, Scope: source.OAuthScope, Resource: source.OAuthResource},
-		TLSCertFile: source.TLSCertFile, TLSKeyFile: source.TLSKeyFile,
-	})
-	return err
-}
-
-func validateSourceOAuth(name string, source SourceEndpointConfig) error {
-	scope := strings.Join(strings.Fields(source.OAuthScope), " ")
-	resource := strings.TrimSpace(source.OAuthResource)
-	values := []string{source.OAuthTokenURL, source.OAuthClientID, source.OAuthSecret, scope, resource}
-	configured := false
-	complete := true
-	for _, value := range values {
-		configured = configured || strings.TrimSpace(value) != ""
-		complete = complete && strings.TrimSpace(value) != ""
-	}
-	if configured && !complete {
-		return fmt.Errorf("sources.%s OAuth token URL, client ID, client secret, scope, and resource are required together", name)
-	}
-	if configured && strings.TrimSpace(source.BearerToken) != "" {
-		return fmt.Errorf("sources.%s must configure either bearer_token or OAuth client credentials", name)
-	}
-	if configured {
-		if err := validateSourceURL(name, source.OAuthTokenURL); err != nil {
-			return fmt.Errorf("sources.%s.oauth_token_url: %w", name, err)
-		}
-	}
-	return nil
-}
-
-func validateSourceURL(name, raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("sources.%s.endpoint must be a valid URL without userinfo", name)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("sources.%s.endpoint must use http or https", name)
-	}
-	if parsed.Scheme != "https" && !isLocalEndpoint(parsed.Hostname()) {
-		return fmt.Errorf("sources.%s.endpoint must use https outside localhost", name)
-	}
-	return nil
-}
-
-func validSourceLimits(source SourceEndpointConfig) bool {
-	return source.Timeout >= 0 && source.MaxBodyBytes >= 0 && source.MaxConcurrency >= 0 &&
-		source.QueryMaxConcurrency >= 0 && source.CommandMaxConcurrency >= 0 &&
-		source.HealthMaxConcurrency >= 0 && source.MaxAttempts >= 0 && source.RetryBackoff >= 0
-}
-
-func validateSourcePaths(name string, source SourceEndpointConfig) error {
-	paths := map[string]string{
-		"summary_path": source.SummaryPath, "erase_path": source.ErasePath, "status_path": source.StatusPath,
-	}
-	for field, value := range paths {
-		if value != "" && (!strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\r\n")) {
-			return fmt.Errorf("sources.%s.%s must be an absolute path without control characters", name, field)
-		}
-	}
-	return nil
-}
-
-func isLocalEndpoint(host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

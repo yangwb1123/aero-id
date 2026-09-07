@@ -49,8 +49,9 @@ dockers:
     use: buildx
     dockerfile: deployments/Dockerfile
     image_templates:
+      # Tags are retained for artifact discovery, but production manifests
+      # must consume the digest emitted by the registry, never a mutable tag.
       - "ghcr.io/aero/aero-id:{{ .Version }}"
-      - "ghcr.io/aero/aero-id:latest"
       - "ghcr.io/aero/aero-id:{{ .ShortCommit }}"
     extra_files:
       - configs/config.yaml

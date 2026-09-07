@@ -103,7 +103,11 @@ func (c *JSONSummaryConnector) begin(ctx context.Context, workload sourceWorkloa
 		if c.cfg.Metrics != nil {
 			c.cfg.Metrics.ObserveSourceBulkhead(string(c.source), string(workload), false)
 		}
-		return nil, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.bulkhead", Temporary: true, Cause: err}
+		kind := ErrorUnavailable
+		if requestTimedOut(ctx, err) {
+			kind = ErrorTimeout
+		}
+		return nil, &RemoteError{Source: c.source, Kind: kind, Code: "source.bulkhead", Temporary: true, Cause: redactedRemoteCause(err)}
 	}
 	if c.cfg.Metrics != nil {
 		c.cfg.Metrics.ObserveSourceBulkhead(string(c.source), string(workload), true)
@@ -194,7 +198,12 @@ func (c *JSONSummaryConnector) authorize(ctx context.Context, request *http.Requ
 	}
 	snapshot, err := c.tokens.accessTokenSnapshot(ctx)
 	if err != nil {
-		return oauthTokenSnapshot{}, &RemoteError{Source: c.source, Kind: ErrorUnavailable, Code: "source.oauth_token_unavailable", Temporary: true, Cause: err}
+		kind := ErrorUnavailable
+		if requestTimedOut(ctx, err) {
+			kind = ErrorTimeout
+		}
+		return oauthTokenSnapshot{}, &RemoteError{Source: c.source, Kind: kind,
+			Code: "source.oauth_token_unavailable", Temporary: true, Cause: redactedRemoteCause(err)}
 	}
 	setBearer(request, snapshot.value)
 	return snapshot, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aero/aero-id/internal/connector"
@@ -108,9 +109,9 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 		if eraseFailureStatus(status) {
 			failures++
 		}
-		if eraseStatusNeedsReconcile(value) {
-			unknown = true
-		}
+		// A source that needs a status lookup is not itself an unresolved
+		// outcome yet; the lookup below may prove success or failure. Only a
+		// missing/unknown lookup result keeps the whole job unknown.
 	}
 	for source := range required {
 		if _, present := sources[string(source)]; !present {
@@ -125,43 +126,63 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobUnknown, "erase.account_load_failed", "failed to load account", job.Result, cause)
 	}
+	type sourceReconcileResult struct {
+		source            string
+		status            string
+		sourceOperationID string
+		sourceResult      map[string]any
+		reconcileErr      error
+		checkpointErr     error
+	}
+	pending := make(chan sourceReconcileResult, len(sources))
+	var wait sync.WaitGroup
 	for source, rawValue := range sources {
 		value := rawValue.(map[string]any)
-		if !eraseStatusNeedsReconcile(value) {
+		if !eraseStatusNeedsReconcile(source, value) {
 			continue
 		}
-		status, sourceOperationID, sourceResult, reconcileErr := s.reconcileEraseSource(ctx, account, job, source, value)
-		if reconcileErr != nil {
-			if isUnknownRemote(reconcileErr) {
-				unknown = true
-				status = "unknown"
-			} else {
-				status = "failed"
+		wait.Add(1)
+		go func(source string, value map[string]any) {
+			defer wait.Done()
+			status, sourceOperationID, sourceResult, reconcileErr := s.reconcileEraseSource(ctx, account, job, source, value)
+			if reconcileErr != nil {
+				if isUnknownRemote(reconcileErr) {
+					status = "unknown"
+				} else {
+					status = "failed"
+				}
+				sourceResult = map[string]any{"error_code": remoteErrorCode(reconcileErr)}
 			}
-			sourceResult = map[string]any{"error_code": remoteErrorCode(reconcileErr)}
+			checkpointCode := ""
+			if reconcileErr != nil {
+				checkpointCode = remoteErrorCode(reconcileErr)
+			}
+			checkpointErr := s.checkpointEraseOutcome(ctx, job, connector.Source(source), status,
+				sourceOperationID, checkpointCode, sourceResult)
+			pending <- sourceReconcileResult{source: source, status: status, sourceOperationID: sourceOperationID,
+				sourceResult: sourceResult, reconcileErr: reconcileErr, checkpointErr: checkpointErr}
+		}(source, value)
+	}
+	wait.Wait()
+	close(pending)
+	for reconciled := range pending {
+		if reconciled.checkpointErr != nil {
+			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "erase.outcome_checkpoint_failed", "source erase outcome could not be recorded", result)
 		}
-		entry := map[string]any{"status": status}
-		if sourceOperationID != "" {
-			entry["source_operation_id"] = sourceOperationID
+		entry := map[string]any{"status": reconciled.status}
+		if reconciled.sourceOperationID != "" {
+			entry["source_operation_id"] = reconciled.sourceOperationID
 		}
-		for key, item := range sourceResult {
+		for key, item := range reconciled.sourceResult {
 			if key != "status" && key != "source_operation_id" && key != "error_code" {
 				entry[key] = item
 			}
 		}
-		sources[source] = entry
-		checkpointCode := ""
-		if reconcileErr != nil {
-			checkpointCode = remoteErrorCode(reconcileErr)
-		}
-		if checkpointErr := s.checkpointEraseOutcome(ctx, job, connector.Source(source), status,
-			sourceOperationID, checkpointCode, sourceResult); checkpointErr != nil {
-			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "erase.outcome_checkpoint_failed", "source erase outcome could not be recorded", result)
-		}
-		if status == "unknown" {
+		sources[reconciled.source] = entry
+		if reconciled.status == "unknown" {
 			unknown = true
 		}
-		if eraseFailureStatus(status) {
+		if eraseFailureStatus(reconciled.status) {
 			failures++
 		}
 	}
@@ -182,33 +203,46 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 //nolint:cyclop,funlen // status reconciliation and explicit not-accepted retry are bounded remote states.
 func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *domain.Account, job *domain.SyncJob,
 	source string, value map[string]any) (string, string, map[string]any, error) {
-	client, ok := s.connectors[connector.Source(source)]
+	sourceType := connector.Source(source)
+	existingOperationID := sourceOperationID(value)
+	client, ok := s.connectors[sourceType]
 	if !ok {
-		return "unknown", sourceOperationID(value), nil, remoteUnknownError(source, "source.not_configured")
+		return "unknown", existingOperationID, nil, remoteUnknownError(source, "source.not_configured")
 	}
 	statusClient, ok := client.(connector.OperationStatusConnector)
 	if !ok {
-		return "unknown", sourceOperationID(value), nil, remoteUnknownError(source, "source.operation_status_not_configured")
+		return "unknown", existingOperationID, nil, remoteUnknownError(source, "source.operation_status_not_configured")
 	}
+	// A status lookup followed by a not-accepted retry shares one bounded
+	// remote budget. Otherwise one source could consume two five-minute calls
+	// while the six-minute job lease is being held.
 	remoteCtx, remoteCancel := syncRemoteContext(ctx)
+	defer remoteCancel()
 	result, err := statusClient.OperationStatus(remoteCtx, connector.OperationStatusRequest{
 		AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: job.ActorUID, TenantID: job.TenantID,
-		RequestID: job.RequestID, Region: account.HomeRegion, OperationID: job.ID.String(), SourceOperationID: sourceOperationID(value),
-		IdempotencyKey: syncEraseIdempotencyKey(job, connector.Source(source)),
+		RequestID: job.RequestID, Region: account.HomeRegion, OperationID: job.ID.String(), SourceOperationID: existingOperationID,
+		IdempotencyKey: syncEraseIdempotencyKey(job, sourceType),
 	})
-	remoteCancel()
 	if err != nil {
-		return "unknown", sourceOperationID(value), nil, err
+		operationID, correlated := trustedSyncEraseSourceOperationID(sourceType, job.ID.String(), existingOperationID, result)
+		if !correlated {
+			return "unknown", existingOperationID, nil, remoteUnknownError(source, "source.source_operation_id_mismatch")
+		}
+		var sourceResult map[string]any
+		if result != nil {
+			sourceResult = connector.RedactSummaryData(result.Result)
+		}
+		return "unknown", operationID, sourceResult, err
 	}
 	if result == nil {
-		return "unknown", sourceOperationID(value), nil, remoteUnknownError(source, "source.empty_command_result")
+		return "unknown", existingOperationID, nil, remoteUnknownError(source, "source.empty_command_result")
 	}
 	result.Result = connector.RedactSummaryData(result.Result)
-	status := normalizedCommandStatus(result.Status)
-	operationID := strings.TrimSpace(result.SourceOperationID)
-	if operationID == "" {
-		operationID = sourceOperationID(value)
+	operationID, correlated := trustedSyncEraseSourceOperationID(sourceType, job.ID.String(), existingOperationID, result)
+	if !correlated {
+		return "unknown", existingOperationID, nil, remoteUnknownError(source, "source.source_operation_id_mismatch")
 	}
+	status := normalizedCommandStatus(result.Status)
 	// An operation-status API without an operation identifier is only safe
 	// when the source explicitly says the command was not accepted. For every
 	// other status, retrying or guessing could erase the wrong command.
@@ -220,20 +254,23 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 		if !ok {
 			return "unknown", operationID, nil, remoteUnknownError(source, "source.command_not_configured")
 		}
-		remoteCtx, remoteCancel = syncRemoteContext(ctx)
-		retried, retryErr := command.Erase(remoteCtx, eraseRequestForJob(account, job, connector.Source(source), requiredDatasetsForOutcome(job, source)))
-		remoteCancel()
+		retried, retryErr := command.Erase(remoteCtx, eraseRequestForJob(account, job, sourceType, requiredDatasetsForOutcome(job, source)))
+		retriedOperationID, retryCorrelated := trustedSyncEraseSourceOperationID(sourceType, job.ID.String(), operationID, retried)
+		if !retryCorrelated {
+			return "unknown", operationID, nil, remoteUnknownError(source, "source.source_operation_id_mismatch")
+		}
 		if retryErr != nil {
-			return "unknown", operationID, nil, retryErr
+			var sourceResult map[string]any
+			if retried != nil {
+				sourceResult = connector.RedactSummaryData(retried.Result)
+			}
+			return "unknown", retriedOperationID, sourceResult, retryErr
 		}
 		if retried == nil {
 			return "unknown", operationID, nil, remoteUnknownError(source, "source.empty_command_result")
 		}
 		status = normalizedCommandStatus(retried.Status)
-		if strings.TrimSpace(retried.SourceOperationID) != "" {
-			operationID = strings.TrimSpace(retried.SourceOperationID)
-		}
-		return eraseSourceOutcome(status), operationID, connector.RedactSummaryData(retried.Result), nil
+		return eraseSourceOutcome(status), retriedOperationID, connector.RedactSummaryData(retried.Result), nil
 	}
 	return eraseSourceOutcome(status), operationID, result.Result, nil
 }
@@ -273,9 +310,12 @@ func syncResultSources(result map[string]any) map[string]any {
 	return sources
 }
 
-func eraseStatusNeedsReconcile(value map[string]any) bool {
+func eraseStatusNeedsReconcile(source string, value map[string]any) bool {
 	status, _ := value["status"].(string)
 	status = normalizedCommandStatus(status)
+	if source == string(connector.SourceSnaplink) && commandSucceeded(status) && sourceOperationID(value) == "" {
+		return true
+	}
 	return !commandSucceeded(status) && !eraseFailureStatus(status)
 }
 

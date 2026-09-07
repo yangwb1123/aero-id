@@ -83,6 +83,11 @@ func (s *operationService) runClaimedStep(ctx context.Context, operation *domain
 	remoteCtx, remoteCancel := operationRemoteContext(ctx)
 	sourceOperationID, result, runErr := s.runner.Run(remoteCtx, operation, step)
 	remoteCancel()
+	var correlated bool
+	sourceOperationID, correlated = retainSourceOperationID(step.SourceOperationID, sourceOperationID)
+	if !correlated {
+		runErr = sourceOperationIDConflict(connector.Source(step.Source))
+	}
 	status, code, message := operationRunStatus(runErr)
 	stateCtx, stateCancel := operationPersistenceContext(ctx)
 	err := s.finishStep(stateCtx, operation, step, worker, status, sourceOperationID, code, result, message)

@@ -39,6 +39,18 @@
 #        semantics as check-file-sizes so both gates agree on the boundary
 #        (400 passes, 401 trips) — proven by the positive/negative size.go
 #        fixtures (401 vs 400 lines, otherwise C-1/C-2/C-3/C-6-satisfying).
+#   C-8  production Vault construction must use internal/connector/aerovault:
+#        no non-test production file outside that package may directly call
+#        NewJSONSummaryConnector with SourceAeroVault, and the app connector
+#        builder must contain exactly one read-only aerovault.New call plus
+#        exactly one capability-aware aerovault.NewWithCapabilities call.
+#        This prevents a future composition-root path from bypassing the
+#        capability wrapper.
+#   C-9  production Snaplink construction must use the capability-aware
+#        internal/connector/snaplink adapter. Direct generic construction is
+#        banned outside that adapter/shared implementation, and the app
+#        builder must call snaplink.NewWithCapabilities exactly once without
+#        calling the legacy snaplink.New seam.
 #
 # The semantic floor (refusal byte-exactness, kill switch, delivery) lives in
 # the integration boot e2e (internal/app/composition_root_integration_test.go);
@@ -127,6 +139,86 @@ scan_migrate_main_go() { # <path> — C-5
   return 0
 }
 
+scan_vault_construction() { # <root> — C-8 direct generic construction ban
+  local root="$1" f violations=""
+  if [ ! -d "$root" ]; then
+    echo "C-8 scan root missing — re-anchor Vault construction check"
+    return 1
+  fi
+  while IFS= read -r f; do
+    case "/$f" in
+      */internal/connector/aerovault/*) continue ;;
+      # http_summary.go is the shared transport implementation delegated to by
+      # aerovault.New; its constructor necessarily mentions both the generic
+      # constructor and SourceAeroVault for source-specific policy. It is not
+      # a composition root or a second Vault construction path.
+      */internal/connector/http_summary.go) continue ;;
+    esac
+    # The two names must be absent from the same production file, not merely
+    # on one line: a multiline call must not evade the composition check.
+    if grep -qF 'NewJSONSummaryConnector' "$f" && grep -qF 'SourceAeroVault' "$f"; then
+      violations="${violations}C-8 $f directly constructs the generic Vault connector; use internal/connector/aerovault
+"
+    fi
+  done < <(find "$root" -name '*.go' ! -name '*_test.go' 2>/dev/null | sort)
+  if [ -n "$violations" ]; then printf '%s' "$violations"; return 1; fi
+  return 0
+}
+
+scan_vault_wiring() { # <root> — C-8 capability-aware composition seam
+  local file="$1/internal/app/connectors.go" violations=""
+  if [ ! -f "$file" ]; then
+    echo "internal/app/connectors.go missing — re-anchor C-8 Vault wiring check"
+    return 1
+  fi
+  local n
+  n="$(grep -cF -- 'aerovault.New(' "$file")"
+  [ "$n" = "1" ] || violations="${violations}C-8 read-only aerovault.New seam: found $n, want exactly 1
+"
+  n="$(grep -cF -- 'aerovault.NewWithCapabilities(' "$file")"
+  [ "$n" = "1" ] || violations="${violations}C-8 capability-aware aerovault.NewWithCapabilities seam: found $n, want exactly 1
+"
+  if [ -n "$violations" ]; then printf '%s' "$violations"; return 1; fi
+  return 0
+}
+
+scan_snaplink_construction() { # <root> — C-9 direct generic construction ban
+  local root="$1" f violations=""
+  if [ ! -d "$root" ]; then
+    echo "C-9 scan root missing — re-anchor Snaplink construction check"
+    return 1
+  fi
+  while IFS= read -r f; do
+    case "/$f" in
+      */internal/connector/snaplink/*) continue ;;
+      */internal/connector/http_summary.go) continue ;;
+    esac
+    if grep -qF 'NewJSONSummaryConnector' "$f" && grep -qF 'SourceSnaplink' "$f"; then
+      violations="${violations}C-9 $f directly constructs the generic Snaplink connector; use internal/connector/snaplink
+"
+    fi
+  done < <(find "$root" -name '*.go' ! -name '*_test.go' 2>/dev/null | sort)
+  if [ -n "$violations" ]; then printf '%s' "$violations"; return 1; fi
+  return 0
+}
+
+scan_snaplink_wiring() { # <root> — C-9 capability-aware composition seam
+  local file="$1/internal/app/connectors.go" violations=""
+  if [ ! -f "$file" ]; then
+    echo "internal/app/connectors.go missing — re-anchor C-9 Snaplink wiring check"
+    return 1
+  fi
+  local n
+  n="$(grep -cF -- 'snaplink.NewWithCapabilities(' "$file")"
+  [ "$n" = "1" ] || violations="${violations}C-9 snaplink.NewWithCapabilities seam: found $n, want exactly 1
+"
+  n="$(grep -cF -- 'snaplink.New(' "$file")"
+  [ "$n" = "0" ] || violations="${violations}C-9 legacy snaplink.New seam: found $n, want 0
+"
+  if [ -n "$violations" ]; then printf '%s' "$violations"; return 1; fi
+  return 0
+}
+
 # ── self-tests: positive fixtures must be flagged; negative must pass ─────
 scan_new_go "$FIXTURES/positive/new.go" >/dev/null 2>&1; r1=$?
 scan_new_go "$FIXTURES/positive/cleaner.go" >/dev/null 2>&1; r6=$?
@@ -154,6 +246,22 @@ scan_new_go "$FIXTURES/positive/size.go" >/dev/null 2>&1; rsize=$?
 [ "$rsize" = "0" ] && { echo "SELF-TEST FAIL: positive/size.go (401 lines) passed — C-7 size pin not reddening"; fail=1; }
 scan_new_go "$FIXTURES/negative/size.go" >/dev/null 2>&1; rnsize=$?
 [ "$rnsize" != "0" ] && { echo "SELF-TEST FAIL: negative/size.go (400 lines) reddened — C-7 boundary off by one"; fail=1; }
+scan_vault_construction "$FIXTURES/positive" >/dev/null 2>&1; rvault=$?
+[ "$rvault" = "0" ] && { echo "SELF-TEST FAIL: positive Vault constructor fixture passed — C-8 direct-construction ban is vacuous"; fail=1; }
+scan_vault_construction "$FIXTURES/negative" >/dev/null 2>&1; rnvault=$?
+[ "$rnvault" != "0" ] && { echo "SELF-TEST FAIL: negative Vault constructor fixture matched"; fail=1; }
+scan_vault_wiring "$FIXTURES/positive" >/dev/null 2>&1; rvaultwire=$?
+[ "$rvaultwire" = "0" ] && { echo "SELF-TEST FAIL: positive Vault wiring fixture passed — C-8 seam count is vacuous"; fail=1; }
+scan_vault_wiring "$FIXTURES/negative" >/dev/null 2>&1; rnvaultwire=$?
+[ "$rnvaultwire" != "0" ] && { echo "SELF-TEST FAIL: negative Vault wiring fixture matched"; fail=1; }
+scan_snaplink_construction "$FIXTURES/positive" >/dev/null 2>&1; rsnap=$?
+[ "$rsnap" = "0" ] && { echo "SELF-TEST FAIL: positive Snaplink constructor fixture passed — C-9 direct-construction ban is vacuous"; fail=1; }
+scan_snaplink_construction "$FIXTURES/negative" >/dev/null 2>&1; rnsnap=$?
+[ "$rnsnap" != "0" ] && { echo "SELF-TEST FAIL: negative Snaplink constructor fixture matched"; fail=1; }
+scan_snaplink_wiring "$FIXTURES/positive" >/dev/null 2>&1; rsnapwire=$?
+[ "$rsnapwire" = "0" ] && { echo "SELF-TEST FAIL: positive Snaplink wiring fixture passed — C-9 seam count is vacuous"; fail=1; }
+scan_snaplink_wiring "$FIXTURES/negative" >/dev/null 2>&1; rnsnapwire=$?
+[ "$rnsnapwire" != "0" ] && { echo "SELF-TEST FAIL: negative Snaplink wiring fixture matched"; fail=1; }
 
 # ── live-tree scan ────────────────────────────────────────────────────────
 ROOT="${1:-$(cd "$SELF_DIR/.." && pwd)}"
@@ -161,10 +269,16 @@ scan_new_go "$ROOT/internal/app/new.go" || fail=1
 scan_audit_go "$ROOT/internal/app/audit.go" || fail=1
 scan_main_go "$ROOT/cmd/server/main.go" || fail=1
 scan_migrate_main_go "$ROOT/cmd/migrate/main.go" || fail=1
+scan_vault_construction "$ROOT/internal" || fail=1
+scan_vault_construction "$ROOT/cmd" || fail=1
+scan_vault_wiring "$ROOT" || fail=1
+scan_snaplink_construction "$ROOT/internal" || fail=1
+scan_snaplink_construction "$ROOT/cmd" || fail=1
+scan_snaplink_wiring "$ROOT" || fail=1
 
 if [ "$fail" -ne 0 ]; then
   echo ""
-  echo "check-composition-root FAILED — audit stack call and drain Start must stay in the server composition root, and cmd/migrate must keep the shared config.Load/migrate.New seams."
+  echo "check-composition-root FAILED — audit stack call and drain Start must stay in the server composition root, cmd/migrate must keep the shared config.Load/migrate.New seams, and source construction must remain capability-isolated."
   exit 1
 fi
-echo "✓ check-composition-root: buildAuditStack + drain Start wired in the server root, hold-aware audit cleaner pinned (C-6), new.go within ${MAX_COMPOSITION_ROOT_LINES:-400} lines (C-7), config.Load/migrate.New seams pinned in cmd/migrate (self-test ok)"
+echo "✓ check-composition-root: buildAuditStack + drain Start wired in the server root, hold-aware audit cleaner pinned (C-6), new.go within ${MAX_COMPOSITION_ROOT_LINES:-400} lines (C-7), config.Load/migrate.New seams pinned in cmd/migrate, Vault and Snaplink construction isolated (C-8/C-9; self-test ok)"

@@ -175,13 +175,3 @@ func (b *NATSBus) Close() error {
 	b.conn.Close()
 	return nil
 }
-
-// mustMarshalEnvelope encodes a canonical envelope; used by publishers where a
-// marshal failure is a programming error (the envelope was validated already).
-func mustMarshalEnvelope(envelope *Envelope) []byte {
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		panic("event: marshal envelope: " + err.Error())
-	}
-	return data
-}

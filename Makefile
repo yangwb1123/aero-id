@@ -5,16 +5,35 @@ PG_DSN ?= postgres://aero:aero@127.0.0.1:5432/aero_id?sslmode=disable
 PNPM  ?= pnpm
 WEB_DIR := web
 
-.PHONY: tidy build build-audit-replay run test test-integration lint clean proto web-install web-dev web-test web-lint web-build web-check load-test-http load-test-grpc load-test-event load-test-callback load-test-db load-test-db-seed check-integration-compile check-load-scenarios
+.PHONY: tidy build build-audit-replay build-preflight run test test-integration test-vault-contract lint clean proto web-install web-dev web-test web-lint web-build web-check load-test-http load-test-grpc load-test-event load-test-callback load-test-db load-test-db-seed check-integration-compile check-load-scenarios check-k8s-manifest render-k8s render-migration-k8s
 tidy:        ; go mod tidy
 build:       ; go build -o $(BIN) ./cmd/server
 	@$(MAKE) --no-print-directory build-audit-replay
+	@$(MAKE) --no-print-directory build-preflight
 # Operator replay tool for dead-lettered audit publications/deliveries (B2-5);
 # built alongside the server so bin/ ships both binaries (no repo-root binaries).
 build-audit-replay: ; go build -o bin/audit-replay ./cmd/audit-replay
+build-preflight: ; go build -o bin/preflight ./cmd/preflight
 run:         ; go run ./cmd/server -config configs/config.yaml
 test:        ; go test ./... -count=1
-test-integration: ; go test -tags=integration -p 1 ./... -count=1
+# Integration tests use Docker-owned fixtures. Keep both the per-test Go
+# timeout and an outer process timeout: a stuck Docker/Testcontainers wait
+# must fail the CI job rather than consume the runner indefinitely.
+INTEGRATION_TEST_TIMEOUT ?= 15m
+INTEGRATION_PROCESS_TIMEOUT ?= 20m
+test-integration:
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: Docker is required for integration tests" >&2; exit 1; }
+	@docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is unavailable for integration tests" >&2; exit 1; }
+	timeout --foreground --kill-after=30s $(INTEGRATION_PROCESS_TIMEOUT) \
+	  go test -tags=integration -p 1 -timeout=$(INTEGRATION_TEST_TIMEOUT) ./... -count=1
+# The real Vault contract suite is external-deployment backed and is kept
+# separate from the PostgreSQL/MinIO integration fixture. It skips when no
+# deployment is configured, or fails closed when *_REQUIRED=true is set.
+VAULT_CONTRACT_TEST_TIMEOUT ?= 10m
+test-vault-contract:
+	go test -tags=integration ./internal/connector/aerovault ./internal/app \
+	  -run '^(TestVaultContract|TestBuildSourceConnectorsAgainstConfiguredVault)' \
+	  -count=1 -timeout=$(VAULT_CONTRACT_TEST_TIMEOUT)
 lint:        ; go vet ./...
 clean:       ; rm -rf bin/ web/dist/
 
@@ -30,7 +49,7 @@ web-check:   ; cd $(WEB_DIR) && $(PNPM) check
 # Requires golangci-lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || printf '%s/bin/golangci-lint' "$$(go env GOPATH)")
 
-.PHONY: lint-strict check-file-sizes check-composition-root check-proto-sync
+.PHONY: lint-strict check-file-sizes check-composition-root check-proto-sync check-k8s-manifest render-k8s render-migration-k8s
 lint-strict:
 	@command -v $(GOLANGCI_LINT) >/dev/null 2>&1 || { echo "ERROR: golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; exit 1; }
 	$(GOLANGCI_LINT) run ./...
@@ -134,8 +153,9 @@ check-db-startup-hardening:
 # Composition-root seam gate (Mutation-A pin): the buildAuditStack call and
 # the drain Start must stay in internal/app/new.go with their exact shapes
 # (C-1/C-2), the drain must not move into buildAuditStack (C-2b), the stack
-# precedes NewFileRepository (C-3), and cmd/server/main.go hands the Loaded
-# config to app.New unmutated (C-4). Docker-free companion to the boot e2e
+# precedes NewFileRepository (C-3), cmd/server/main.go hands the Loaded
+# config to app.New unmutated (C-4), and Vault construction remains behind
+# internal/connector/aerovault (C-8). Docker-free companion to the boot e2e
 # (internal/app/composition_root_integration_test.go).
 .PHONY: check-composition-root
 check-composition-root:
@@ -148,6 +168,27 @@ check-composition-root:
 .PHONY: check-proto-sync
 check-proto-sync:
 	@bash scripts/check-proto-sync.sh
+
+# Kubernetes release-template gate: source-disabled base, optional feature
+# secrets, immutable images, config checksum annotations, and init preflight.
+# The script also renders a deterministic fixture and runs kubectl client-side
+# validation when kubectl is available.
+check-k8s-manifest:
+	@bash scripts/check-k8s-manifest.sh
+
+# Render a release-specific cell manifest. REGION and
+# AERO_ID_IMAGE_DIGEST=sha256:<64 lowercase hex> are required; output may be
+# redirected or selected with OUTPUT=/path/to/rendered.yaml.
+render-k8s:
+	@REGION="$${REGION:?set REGION}" AERO_ID_IMAGE_DIGEST="$${AERO_ID_IMAGE_DIGEST:?set AERO_ID_IMAGE_DIGEST}" \
+	  bash scripts/render-regional-cell.sh deployments/k8s/regional-cell.yaml "$${OUTPUT:--}"
+
+# Render the one-shot migration Job separately so a steady-state apply never
+# creates a second migration. RELEASE must be unique per attempt.
+render-migration-k8s:
+	@RELEASE="$${RELEASE:?set RELEASE}" AERO_ID_IMAGE_DIGEST="$${AERO_ID_IMAGE_DIGEST:?set AERO_ID_IMAGE_DIGEST}" \
+	  MIGRATION_ACTION="$${MIGRATION_ACTION:-up}" MIGRATION_COUNT="$${MIGRATION_COUNT:-1}" \
+	  bash scripts/render-migration-job.sh deployments/k8s/migration-job.yaml "$${OUTPUT:--}"
 
 proto:
 	mkdir -p internal/sso/ssopb internal/handler/grpc/aeropb
