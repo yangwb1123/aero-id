@@ -1,29 +1,48 @@
-import js from '@eslint/js'
-import globals from 'globals'
-import tseslint from 'typescript-eslint'
+import js from "@eslint/js";
+import globals from "globals";
+import tseslint from "typescript-eslint";
+import vue from "eslint-plugin-vue";
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '**/*.d.ts'] },
+  { ignores: ["dist/**", "node_modules/**", "coverage/**", "**/*.d.ts"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  ...vue.configs["flat/essential"],
   {
-    files: ['src/**/*.{ts,tsx}'],
+    files: ["src/**/*.vue"],
     languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'module',
+      parserOptions: {
+        parser: tseslint.parser,
+        ecmaVersion: 2022,
+        sourceType: "module",
+      },
       globals: { ...globals.browser, ...globals.node },
     },
     rules: {
-      '@typescript-eslint/no-unused-vars': [
-        'error',
-        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
-      complexity: ['warn', 15],
-      'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
   },
   {
-    files: ['src/**/*.test.{ts,tsx}'],
-    rules: { '@typescript-eslint/no-explicit-any': 'off' },
+    files: ["src/**/*.ts"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: { ...globals.browser, ...globals.node },
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+      complexity: ["warn", 15],
+      "no-console": ["warn", { allow: ["warn", "error"] }],
+    },
   },
-)
+  {
+    files: ["src/**/*.test.ts"],
+    rules: { "@typescript-eslint/no-explicit-any": "off" },
+  },
+);

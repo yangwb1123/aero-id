@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  parseReplayCommands,
-  type ReplayCommandDraft,
-} from "./ReplayCommandEditor";
+import { parseReplayCommands, type ReplayCommandDraft } from "./replayHelpers";
 
 function draft(payload: string): ReplayCommandDraft {
   return {

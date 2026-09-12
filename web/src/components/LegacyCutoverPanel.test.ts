@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cutoverTransitions } from "./LegacyCutoverPanel";
+import { cutoverTransitions } from "./legacyHelpers";
 
 describe("cutoverTransitions", () => {
   it("exposes only server-valid next hops", () => {

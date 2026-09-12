@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeHoldExpiry } from "./CompliancePage";
+import { normalizeHoldExpiry } from "../components/complianceHelpers";
 
 describe("normalizeHoldExpiry", () => {
   it("normalizes a future RFC3339 timestamp and preserves an indefinite hold", () => {

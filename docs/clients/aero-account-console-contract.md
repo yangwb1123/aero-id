@@ -14,7 +14,7 @@
 | grant | Authorization Code + PKCE（S256，强制） |
 | scopes | `openid profile account:read` 起步；按需加 `account:write account:manage audit:read audit:replay operation:read callback:manage source:sync` |
 
-前端已选用 Iris UI 的 React 适配器，可运行客户端位于本仓库 `web/`。本契约与 OpenAPI
+前端使用 Iris UI 的 Vue 适配器，可运行客户端位于本仓库 `web/`。本契约与 OpenAPI
 （`api/openapi/aero-id-account.yaml`，仓库有守卫测试防漂移）仍保持技术栈无关；
 客户端不复用 `snaplink-console` 的 OAuth client，也不把 aero-id audience 的 token
 转发给 Audit Governance、Aero IM 或 Aero Vault。

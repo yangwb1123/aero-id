@@ -229,6 +229,38 @@ describe("AeroIdClient", () => {
     }
   });
 
+  it("creates a self-erase job with a fresh idempotency key", async () => {
+    let requested: { url: URL; headers: Headers; body: string } | undefined;
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requested = {
+          url: new URL(String(input)),
+          headers: new Headers(init?.headers),
+          body: String(init?.body),
+        };
+        return json(
+          { data: { job_id: "erase-job-1", status: "pending" } },
+          { status: 202 },
+        );
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await expect(client.eraseMyAccount()).resolves.toEqual({
+      job_id: "erase-job-1",
+      status: "pending",
+    });
+    expect(requested?.url.pathname).toBe("/v1/me/erase");
+    expect(requested?.headers.get("Idempotency-Key")).toBeTruthy();
+    expect(JSON.parse(requested?.body ?? "{}").idempotency_key).toBe(
+      requested?.headers.get("Idempotency-Key"),
+    );
+  });
+
   it("loads and reconciles a sync job through its encoded resource path", async () => {
     const requests: Array<{ url: URL; method?: string }> = [];
     const fetcher = vi.fn(

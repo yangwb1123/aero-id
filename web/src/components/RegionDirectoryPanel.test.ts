@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { regionEpoch } from "./RegionDirectoryPanel";
+import { regionEpoch } from "./regionHelpers";
 
 describe("regionEpoch", () => {
   it("accepts only a non-negative safe integer", () => {

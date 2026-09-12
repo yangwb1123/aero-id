@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ReplayCreateInput } from "../api/replay";
-import { replayContinuation, replayTimeWindow } from "./ReplaysPage";
+import {
+  replayContinuation,
+  replayTimeWindow,
+} from "../components/replayHelpers";
 
 describe("replayContinuation", () => {
   it("preserves the bounded dry-run scope and commands while replacing the cursor", () => {

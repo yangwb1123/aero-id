@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "vue-tsc --noEmit",
     "lint": "eslint src",
     "check:iris-imports": "node scripts/verify-iris-imports.mjs",
     "format:check": "prettier --check src scripts README.md index.html package.json",
@@ -18,23 +18,22 @@
   },
   "dependencies": {
     "@iris-ui-kit/plugin-locale-zh": "^0.1.0",
-    "@iris-ui-kit/react": "^0.2.3",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "@iris-ui-kit/vue": "^0.2.40",
+    "vue": "^3.5.13"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "4.3.4",
+    "@vitejs/plugin-vue": "5.2.4",
     "eslint": "10.0.1",
+    "eslint-plugin-vue": "10.11.0",
     "globals": "17.11.0",
     "jsdom": "25.0.1",
     "prettier": "3.9.6",
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
     "vite": "6.4.3",
-    "vitest": "3.2.6"
+    "vitest": "3.2.6",
+    "vue-tsc": "2.2.12"
   },
   "packageManager": "pnpm@10.34.5"
 }

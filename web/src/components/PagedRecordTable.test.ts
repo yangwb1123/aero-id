@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergePage } from "./PagedRecordTable";
+import { mergePage } from "./table";
 
 describe("mergePage", () => {
   it("appends a keyset page and advances its cursor", () => {

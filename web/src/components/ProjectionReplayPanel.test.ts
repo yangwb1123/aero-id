@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectionReplayOutcome } from "./ProjectionReplayPanel";
+import { projectionReplayOutcome } from "./replayHelpers";
 
 describe("projectionReplayOutcome", () => {
   it("never treats partial or drifted windows as a global match", () => {

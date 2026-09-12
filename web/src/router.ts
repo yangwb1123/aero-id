@@ -1,4 +1,4 @@
-import * as React from "react";
+import { onMounted, onUnmounted, ref, type Ref } from "vue";
 
 const prefix = "#/";
 
@@ -11,20 +11,23 @@ export function routeFromHash(fallback: string): string {
   return decodeURIComponent(raw).trim() || fallback;
 }
 
-export function useHashRoute(
-  fallback: string,
-): [string, (route: string) => void] {
-  const [route, setRoute] = React.useState(() => routeFromHash(fallback));
-  React.useEffect(() => {
-    const sync = () => setRoute(routeFromHash(fallback));
+export function useHashRoute(fallback: string): {
+  route: Ref<string>;
+  navigate: (route: string) => void;
+} {
+  const route = ref(routeFromHash(fallback));
+  const sync = () => {
+    route.value = routeFromHash(fallback);
+  };
+  onMounted(() => {
     if (!window.location.hash)
       window.history.replaceState(null, "", `${prefix}${fallback}`);
     window.addEventListener("hashchange", sync);
-    return () => window.removeEventListener("hashchange", sync);
-  }, [fallback]);
-  const navigate = React.useCallback((next: string) => {
+  });
+  onUnmounted(() => window.removeEventListener("hashchange", sync));
+  const navigate = (next: string) => {
     if (routeFromHash("") !== next)
       window.location.hash = `${prefix}${encodeURIComponent(next)}`;
-  }, []);
-  return [route, navigate];
+  };
+  return { route, navigate };
 }

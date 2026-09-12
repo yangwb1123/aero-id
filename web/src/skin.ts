@@ -1,4 +1,4 @@
-import { createSkinEngine, localStorageSkinStorage } from "@iris-ui-kit/react";
+import { createSkinEngine, localStorageSkinStorage } from "@iris-ui-kit/vue";
 
 export const platformSkin = createSkinEngine({
   skins: [],

@@ -1,6 +1,6 @@
 # Aero Platform Console
 
-`aero-id/web` 下基于 Iris UI React 适配器的独立平台控制台。当前端到端切片负责：
+`aero-id/web` 下基于 Iris UI Vue 适配器的独立平台控制台。当前端到端切片负责：
 
 - 通过 Snaplink Authorization Code + PKCE（S256）登录；
 - 在浏览器内存中持有短期 access token，不写入 localStorage/sessionStorage；
@@ -9,7 +9,7 @@
 - 支持任务详情、unknown 结果对账，以及带 Bearer 且确认后销毁制品的一次性导出下载；
 - 展示 Operation/Saga 步骤、来源 operation ID、补偿状态与追加式脱敏审计时间线；
 - 管理员可按关键词、状态和 home region 查询账户，并检查来源与投影的新鲜度；
-- 管理员账户同步、导出和擦除均创建幂等任务；导出与擦除要求二次确认；
+- 普通账户擦除、管理员账户同步/导出/擦除均创建幂等任务；账户擦除要求输入确认短语，导出与管理员擦除要求二次确认；
 - 账户详情展示 durable Region Directory，并通过观察到的 Fenced Epoch、Account ID 二次确认执行 Home Region Writer CAS 提升；
 - Legacy 迁移控制面支持有界 shadow identity backfill、content-free digest 对比、cleanup readiness 和经 Tenant ID 二次确认的状态机 Cutover；
 - 审计台账支持过滤、keyset 分页、脱敏证据详情和来源分区哈希链验证；
@@ -83,7 +83,7 @@ pnpm check
 
 `pnpm dev:iris` 会在当前工作站直接解析 `~/iris-ui/packages/*/src`，适合组件库与产品 UI
 联调；`pnpm build` 使用 lockfile 固定的已发布 Iris 包，因此 CI 和容器不依赖个人目录。
-业务源码的 import 始终保持 npm 包名（例如 `@iris-ui-kit/react`），Vite 只在
+业务源码的 import 始终保持 npm 包名（例如 `@iris-ui-kit/vue`），Vite 只在
 `IRIS_UI_SOURCE=1` 时把这些包名 alias 到本地源码。`pnpm check:iris-imports` 会禁止业务源码
 直接导入本地 Iris 路径以及 `workspace:`、`file:`、`link:` 依赖。
 

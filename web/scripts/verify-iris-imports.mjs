@@ -6,7 +6,7 @@ const installedPackagesRoot = new URL("node_modules/", webRoot).href;
 const packageJson = JSON.parse(
   await readFile(new URL("package.json", webRoot), "utf8"),
 );
-const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx"]);
+const sourceExtensions = new Set([".ts", ".js", ".vue"]);
 const importPatterns = [
   /\bfrom\s*["']([^"']+)["']/g,
   /\bimport\s*\(\s*["']([^"']+)["']/g,

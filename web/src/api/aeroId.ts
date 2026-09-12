@@ -267,6 +267,16 @@ export class AeroIdClient {
     );
   }
 
+  async eraseMyAccount(): Promise<JsonRecord> {
+    const key = crypto.randomUUID();
+    return dataOf(
+      await this.request("POST", "/me/erase", {
+        idempotencyKey: key,
+        body: { idempotency_key: key },
+      }),
+    );
+  }
+
   async listOperations(cursor?: string): Promise<PageData<JsonRecord>> {
     return pageOf(
       dataOf(
