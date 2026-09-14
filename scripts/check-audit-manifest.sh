@@ -34,6 +34,7 @@ ROOT="internal/service"
 MANIFEST=(
   "internal/service/account.go|account.viewed|standalone-fact|-"
   "internal/service/account.go|account.listed|standalone-fact|-"
+  "internal/service/agent_membership.go|agent.membership.checked|standalone-fact|-"
   "internal/service/account_backfill.go|account.legacy_backfill.requested|standalone-fact|-"
   "internal/service/audit_anchor.go|audit.anchor.requested|standalone-fact|-"
   "internal/service/audit_anchor.go|audit.anchor.manifest_viewed|standalone-fact|-"

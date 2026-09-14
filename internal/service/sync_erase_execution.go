@@ -80,7 +80,9 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 				if commandResult != nil {
 					sourceResult = connector.RedactSummaryData(commandResult.Result)
 				}
-				if checkpointErr := s.checkpointEraseOutcome(ctx, job, source, eraseOutcomeStatus(status), sourceOperationID, code, sourceResult); checkpointErr != nil {
+				checkpointErr := s.checkpointEraseOutcome(ctx, job, source, eraseOutcomeStatus(status),
+					sourceOperationID, code, sourceResult)
+				if checkpointErr != nil {
 					status, outcomeUnknown, outcomeFailed, code, sourceOperationID = "unknown", true, false, eraseCheckpointCode(checkpointErr), ""
 				}
 				if outcomeUnknown {

@@ -15,10 +15,12 @@ import type { PlatformConfig } from "./config";
 import { useHashRoute } from "./router";
 import ActivityPage from "./pages/ActivityPage.vue";
 import AdminAccountsPage from "./pages/AdminAccountsPage.vue";
+import AdminGovernancePage from "./pages/AdminGovernancePage.vue";
 import AuditPage from "./pages/AuditPage.vue";
 import CallbacksPage from "./pages/CallbacksPage.vue";
 import CompliancePage from "./pages/CompliancePage.vue";
 import ConnectionsPage from "./pages/ConnectionsPage.vue";
+import DataPage from "./pages/DataPage.vue";
 import JobsPage from "./pages/JobsPage.vue";
 import MigrationPage from "./pages/MigrationPage.vue";
 import OperationsPage from "./pages/OperationsPage.vue";
@@ -38,10 +40,12 @@ const menus: NavNode[] = [
   { key: "profile", title: "个人资料", icon: "user" },
   { key: "connections", title: "来源与成员关系", icon: "link" },
   { key: "resources", title: "资源摘要", icon: "folder" },
+  { key: "data", title: "账户数据浏览", icon: "database" },
   { key: "activity", title: "近期活动", icon: "clock" },
   { key: "jobs", title: "同步与导出", icon: "download" },
   { key: "operations", title: "跨系统操作", icon: "settings" },
   { key: "admin-accounts", title: "账户管理", icon: "user" },
+  { key: "admin-governance", title: "管理员治理", icon: "shield" },
   { key: "migration", title: "Legacy 迁移与切换", icon: "link" },
   { key: "audit", title: "审计台账", icon: "shield" },
   { key: "compliance", title: "审计合规管理", icon: "shield" },
@@ -63,10 +67,12 @@ const pageMap = {
   profile: ProfilePage,
   connections: ConnectionsPage,
   resources: ResourcesPage,
+  data: DataPage,
   activity: ActivityPage,
   jobs: JobsPage,
   operations: OperationsPage,
   "admin-accounts": AdminAccountsPage,
+  "admin-governance": AdminGovernancePage,
   migration: MigrationPage,
   audit: AuditPage,
   compliance: CompliancePage,

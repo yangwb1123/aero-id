@@ -93,6 +93,7 @@ func buildRouter(deps routerDependencies) http.Handler {
 		httpapi.NewSyncJobHandler(deps.svcs.syncJobSvc, deps.svcs.permissionChecker),
 		httpapi.NewReplayHandlerWithProjection(deps.svcs.replaySvc,
 			deps.svcs.projectionReplaySvc, deps.svcs.permissionChecker),
+		httpapi.NewAgentMembershipHandler(deps.svcs.agentMembershipSvc),
 	)
 	return router
 }

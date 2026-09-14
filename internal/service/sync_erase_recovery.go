@@ -105,6 +105,15 @@ func (s *syncJobService) durableEraseSources(ctx context.Context, job *domain.Sy
 	if !ok {
 		return nil, nil
 	}
+	outcomes, err := s.loadDurableEraseOutcomes(ctx, job, required, recovery)
+	if err != nil {
+		return nil, err
+	}
+	return summarizeEraseOutcomes(outcomes), nil
+}
+
+func (s *syncJobService) loadDurableEraseOutcomes(ctx context.Context, job *domain.SyncJob,
+	required map[connector.Source][]domain.AccountDataset, recovery repository.SyncJobRecoveryRepository) ([]repository.EraseOutcome, error) {
 	if err := s.ensureEraseOutcomeRows(ctx, job, required); err != nil {
 		return nil, err
 	}
@@ -112,6 +121,17 @@ func (s *syncJobService) durableEraseSources(ctx context.Context, job *domain.Sy
 	if err != nil {
 		return nil, err
 	}
+	if len(outcomes) == 0 {
+		return outcomes, nil
+	}
+	if err := s.importPendingLegacyEraseOutcomes(ctx, job, outcomes); err != nil {
+		return nil, err
+	}
+	return recovery.ListEraseOutcomes(ctx, job.ID)
+}
+
+func (s *syncJobService) importPendingLegacyEraseOutcomes(ctx context.Context, job *domain.SyncJob,
+	outcomes []repository.EraseOutcome) error {
 	// Import only legacy fields for rows still pending. Existing durable
 	// terminal/unknown outcomes are authoritative and must never be
 	// downgraded by a stale or partial legacy result.
@@ -120,24 +140,38 @@ func (s *syncJobService) durableEraseSources(ctx context.Context, job *domain.Sy
 		if outcome.Status != "pending" {
 			continue
 		}
-		value, _ := legacy[outcome.Source].(map[string]any)
-		status, _ := value["status"].(string)
-		operationID, _ := value["source_operation_id"].(string)
-		code, _ := value["error_code"].(string)
-		if status == "" {
+		checkpoint, ok := legacyEraseOutcomeCheckpoint(legacy, outcome.Source)
+		if !ok {
 			continue
 		}
-		if err := s.checkpointEraseOutcome(ctx, job, connector.Source(outcome.Source), eraseOutcomeStatus(status),
-			operationID, code, connector.RedactSummaryData(value)); err != nil {
-			return nil, err
+		if err := s.checkpointEraseOutcome(ctx, job, connector.Source(outcome.Source), checkpoint.status,
+			checkpoint.operationID, checkpoint.code, connector.RedactSummaryData(checkpoint.result)); err != nil {
+			return err
 		}
 	}
-	if len(outcomes) > 0 {
-		outcomes, err = recovery.ListEraseOutcomes(ctx, job.ID)
-		if err != nil {
-			return nil, err
-		}
+	return nil
+}
+
+type legacyEraseOutcomeCheckpointData struct {
+	status      string
+	operationID string
+	code        string
+	result      map[string]any
+}
+
+func legacyEraseOutcomeCheckpoint(legacy map[string]any, source string) (legacyEraseOutcomeCheckpointData, bool) {
+	value, _ := legacy[source].(map[string]any)
+	status, _ := value["status"].(string)
+	if status == "" {
+		return legacyEraseOutcomeCheckpointData{}, false
 	}
+	operationID, _ := value["source_operation_id"].(string)
+	code, _ := value["error_code"].(string)
+	return legacyEraseOutcomeCheckpointData{status: eraseOutcomeStatus(status), operationID: operationID,
+		code: code, result: value}, true
+}
+
+func summarizeEraseOutcomes(outcomes []repository.EraseOutcome) map[string]any {
 	sources := make(map[string]any, len(outcomes))
 	for _, outcome := range outcomes {
 		entry := map[string]any{"status": outcome.Status}
@@ -157,5 +191,5 @@ func (s *syncJobService) durableEraseSources(ctx context.Context, job *domain.Sy
 		}
 		sources[outcome.Source] = entry
 	}
-	return sources, nil
+	return sources
 }

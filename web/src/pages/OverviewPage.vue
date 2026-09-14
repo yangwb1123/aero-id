@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { IrisAlert, IrisBadge, IrisCard } from "@iris-ui-kit/vue";
+import AccountDataPanel from "../components/AccountDataPanel.vue";
 import type { AeroIdClient } from "../api/aeroId";
 import PageError from "../components/PageError.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -83,5 +84,6 @@ const metrics = computed(() => {
         <IrisBadge tone="danger">{{ message }}</IrisBadge>
       </div>
     </IrisCard>
+    <AccountDataPanel :client="client" :datasets="resource.data.datasets" />
   </section>
 </template>

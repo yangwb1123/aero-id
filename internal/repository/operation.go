@@ -334,12 +334,14 @@ func (r *operationRepo) claimCompensationStep(ctx context.Context, operationID d
 		query := tx.Where("operation_id = ? AND status = ? AND compensation_action <> ''", operationID, string(domain.StepSucceeded))
 		if unknown {
 			condition := "((compensation_status = ? AND (compensation_lease_until IS NULL OR " +
-				"compensation_lease_until < ?)) OR (compensation_status = ? AND compensation_lease_until < ?))"
+				"compensation_lease_until < clock_timestamp())) OR (compensation_status = ? AND " +
+				"compensation_lease_until < clock_timestamp()))"
 			query = query.Where(condition,
 				string(domain.StepUnknown), string(domain.StepRunning))
 		} else {
 			condition := "((compensation_status = ? AND (compensation_lease_until IS NULL OR " +
-				"compensation_lease_until < ?)) OR (compensation_status = ? AND compensation_lease_until < ?))"
+				"compensation_lease_until < clock_timestamp())) OR (compensation_status = ? AND " +
+				"compensation_lease_until < clock_timestamp()))"
 			query = query.Where(condition,
 				string(domain.StepPending), string(domain.StepRunning))
 		}

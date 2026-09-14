@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.uber.org/zap"
@@ -66,6 +67,7 @@ type serviceBundle struct {
 	searchSvc           service.SearchService
 	adminSvc            service.AdminService
 	accountSvc          service.AccountService
+	agentMembershipSvc  service.AgentMembershipCheckService
 	regionFencingSvc    service.RegionFencingService
 	cutoverSvc          service.LegacyCutoverService
 	legacyMigrationSvc  service.LegacyMigrationService
@@ -130,6 +132,19 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithAccountHomeRegionResolver(region.NewResolver(deps.cfg.Account.HomeRegionVersion, deps.cfg.Account.Regions)),
 		service.WithAccountRegionDirectory(repository.NewRegionDirectoryRepository(deps.gdb, deps.auditLedgerRepo), deps.cfg.Account.HomeRegionVersion),
 	)
+	var agentMembershipSvc service.AgentMembershipCheckService
+	if len(deps.cfg.AgentMembership.Bindings) > 0 {
+		reader, ok := deps.accountRepo.(repository.AgentMembershipProjectionRepository)
+		if !ok {
+			return serviceBundle{}, fmt.Errorf("agent membership projection repository is unavailable")
+		}
+		membershipSvc, err := service.NewAgentMembershipCheckService(reader,
+			agentMembershipPolicies(deps.cfg.AgentMembership), deps.auditLedger, nil)
+		if err != nil {
+			return serviceBundle{}, err
+		}
+		agentMembershipSvc = membershipSvc
+	}
 	regionFencingSvc := service.NewRegionFencingService(repository.NewRegionDirectoryRepository(deps.gdb, deps.auditLedgerRepo),
 		service.WithRegionFencingAuditLogger(deps.auditLedger),
 		service.WithRegionFencingAllowedRegions(deps.cfg.Account.Regions))
@@ -227,6 +242,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		fileSvc: fileSvc, msgSvc: msgSvc, commentSvc: commentSvc, notifSvc: notifSvc,
 		blockSvc: blockSvc, prefSvc: prefSvc, searchSvc: searchSvc, adminSvc: adminSvc,
 		accountSvc: accountSvc, regionFencingSvc: regionFencingSvc, cutoverSvc: cutoverSvc,
+		agentMembershipSvc: agentMembershipSvc,
 		legacyMigrationSvc: legacyMigrationSvc,
 		aggregationSvc:     aggregationSvc, eventIngestSvc: eventIngestSvc,
 		operationSvc: operationSvc, replaySvc: replaySvc, projectionReplaySvc: projectionReplaySvc,

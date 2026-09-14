@@ -4,7 +4,13 @@ import {
   IrisAlert,
   IrisButton,
   IrisCard,
+  IrisDialog,
+  IrisDialogContent,
+  IrisDialogDescription,
+  IrisDialogTitle,
   IrisEmptyState,
+  IrisFormField,
+  IrisInput,
   IrisTimeline,
   type IrisTimelineItem,
   type IrisTimelineVariant,
@@ -51,6 +57,9 @@ const auditPage = ref<PageData<JsonRecord>>({ items: [] });
 const auditLoading = ref(false);
 const auditError = ref<Error>();
 const reconciling = ref(false);
+const runningOperation = ref(false);
+const runPending = ref(false);
+const runConfirmation = ref("");
 const actionError = ref<Error>();
 watch(
   () => auditResource.data,
@@ -96,6 +105,46 @@ async function loadMoreAudit(): Promise<void> {
     auditLoading.value = false;
   }
 }
+const runIsDangerous = computed(() => {
+  if (resource.data?.operation_type === "erase") return true;
+  return steps.value.some((step) =>
+    ["erase", "delete", "source.erase"].includes(String(step.action)),
+  );
+});
+const runConfirmationPhrase = computed(() =>
+  resource.data?.operation_type === "erase"
+    ? "CONFIRM ERASE"
+    : "CONFIRM OPERATION RUN",
+);
+async function executeRun(): Promise<void> {
+  runningOperation.value = true;
+  actionError.value = undefined;
+  try {
+    resource.replace(await props.client.runOperation(props.operationId));
+    runPending.value = false;
+    runConfirmation.value = "";
+    emit("changed");
+  } catch (reason) {
+    actionError.value =
+      reason instanceof Error ? reason : new Error("Operation 运行失败");
+  } finally {
+    runningOperation.value = false;
+  }
+}
+function prepareRun(): void {
+  if (runIsDangerous.value) {
+    runConfirmation.value = "";
+    runPending.value = true;
+    return;
+  }
+  void executeRun();
+}
+function cancelRun(): void {
+  if (!runningOperation.value) {
+    runPending.value = false;
+    runConfirmation.value = "";
+  }
+}
 async function reconcile(): Promise<void> {
   reconciling.value = true;
   actionError.value = undefined;
@@ -126,6 +175,17 @@ const steps = computed(() => records(resource.data?.steps));
         ><div class="detail-actions">
           <IrisButton size="sm" variant="ghost" @click="emit('close')"
             >关闭</IrisButton
+          ><IrisButton
+            v-if="
+              ['requested', 'waiting'].includes(String(resource.data.status))
+            "
+            size="sm"
+            :variant="runIsDangerous ? 'danger' : 'solid'"
+            :loading="runningOperation"
+            @click="prepareRun"
+            >{{
+              runIsDangerous ? "准备运行危险 Operation" : "运行 Operation"
+            }}</IrisButton
           ><IrisButton
             v-if="resource.data.status === 'unknown'"
             size="sm"
@@ -226,4 +286,34 @@ const steps = computed(() => records(resource.data?.steps));
       </template>
     </IrisCard>
   </div>
+  <IrisDialog :open="runPending" @update:open="(open) => !open && cancelRun()">
+    <IrisDialogContent>
+      <IrisDialogTitle>确认运行危险 Operation</IrisDialogTitle>
+      <IrisDialogDescription>
+        Operation {{ operationId }} 包含不可逆来源动作。运行会继续已有持久化
+        Saga；不会创建新 Operation，也不会自动重试远端未知结果。
+      </IrisDialogDescription>
+      <IrisFormField label="确认短语" :hint="runConfirmationPhrase">
+        <IrisInput v-model="runConfirmation" autocomplete="off" />
+      </IrisFormField>
+      <IrisAlert v-if="actionError" tone="danger">{{
+        actionError.message
+      }}</IrisAlert>
+      <div class="dialog-actions">
+        <IrisButton
+          variant="ghost"
+          :disabled="runningOperation"
+          @click="cancelRun"
+          >取消</IrisButton
+        >
+        <IrisButton
+          variant="danger"
+          :loading="runningOperation"
+          :disabled="runConfirmation !== runConfirmationPhrase"
+          @click="void executeRun()"
+          >确认运行</IrisButton
+        >
+      </div>
+    </IrisDialogContent>
+  </IrisDialog>
 </template>

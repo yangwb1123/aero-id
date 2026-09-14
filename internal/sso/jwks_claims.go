@@ -18,6 +18,8 @@ const (
 	maxJWTPartBytes       = 32 << 10
 	maxJWTHeaderPartBytes = 8 << 10
 	maxIdentityClaimBytes = 256
+	maxOAuthScopeBytes    = 4 << 10
+	maxOAuthScopeCount    = 128
 	maxUnknownKIDEntries  = 1024
 )
 
@@ -258,6 +260,36 @@ func splitAudience(value string) []string {
 }
 
 func claimAudience(raw any) []string { values, _ := audienceValues(raw); return values }
+
+func parseOAuthScopes(raw any) []string {
+	value, ok := raw.(string)
+	if !ok || len(value) == 0 || len(value) > maxOAuthScopeBytes {
+		return nil
+	}
+	scopes := strings.Split(value, " ")
+	if len(scopes) > maxOAuthScopeCount {
+		return nil
+	}
+	for _, scope := range scopes {
+		if !validOAuthScopeToken(scope) {
+			return nil
+		}
+	}
+	return scopes
+}
+
+func validOAuthScopeToken(value string) bool {
+	if len(value) == 0 || len(value) > maxIdentityClaimBytes {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if char != 0x21 && (char < 0x23 || char > 0x5b) && (char < 0x5d || char > 0x7e) {
+			return false
+		}
+	}
+	return true
+}
 
 func numericClaim(value any) (float64, bool) {
 	var number float64

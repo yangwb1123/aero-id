@@ -6,18 +6,19 @@
 
 在 Snaplink 注册**独立** OAuth/OIDC client（禁止复用 snaplink-console 的 client）：
 
-| 项 | 值（示例） |
-|---|---|
-| client_id | `aero-account-console` |
-| redirect_uri | `https://console.<region>.example.com/` |
-| audience | `aero-id` |
-| grant | Authorization Code + PKCE（S256，强制） |
-| scopes | `openid profile account:read` 起步；按需加 `account:write account:manage audit:read audit:replay operation:read callback:manage source:sync` |
+| 项           | 值（示例）                                                                                                                                   |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| client_id    | `aero-account-console`                                                                                                                       |
+| redirect_uri | `https://console.<region>.example.com/`                                                                                                      |
+| audience     | `aero-id`                                                                                                                                    |
+| grant        | Authorization Code + PKCE（S256，强制）                                                                                                      |
+| scopes       | `openid profile account:read` 起步；按需加 `account:write account:manage audit:read audit:replay operation:read callback:manage source:sync` |
 
 前端使用 Iris UI 的 Vue 适配器，可运行客户端位于本仓库 `web/`。本契约与 OpenAPI
 （`api/openapi/aero-id-account.yaml`，仓库有守卫测试防漂移）仍保持技术栈无关；
 客户端不复用 `snaplink-console` 的 OAuth client，也不把 aero-id audience 的 token
 转发给 Audit Governance、Aero IM 或 Aero Vault。
+
 ## 登录与请求上下文
 
 - 在 Snaplink 注册独立 OAuth/OIDC client，不复用 `snaplink-console` 的 client ID。
@@ -116,6 +117,14 @@ POST /v1/audit/export
 POST /v1/audit/replays
 POST /v1/audit/replays/projection
 GET  /v1/audit/replays/:id
+GET  /v1/admin/audit-log?action=&limit=&cursor=
+GET  /v1/admin/roles
+GET  /v1/admin/roles/:uid
+POST /v1/admin/roles/grant
+POST /v1/admin/roles/revoke
+GET  /v1/admin/bans?limit=&cursor=
+POST /v1/admin/bans
+DELETE /v1/admin/bans/:uid
 GET  /v1/admin/callback-subscriptions
 POST /v1/admin/callback-subscriptions
 DELETE /v1/admin/callback-subscriptions/:id
@@ -139,6 +148,11 @@ WORM Anchor POST 需要 `system.config` 权限，扫描并校验全部当前审�
 `Idempotency-Key`；服务端在写入任何不可变归档对象前先持久化 `audit.anchor.requested`，审计不可用时不产生归档。
 后续单链失败会停止本轮执行，但之前写入的不可变锚点不会回滚；超时也不是远端失败证明，应先查询 Manifest。Manifest GET 只返回
 指定 `(source, partition)` 的最新锚点，并在成功返回敏感证据前持久化 `audit.anchor.manifest_viewed`。
+
+`/admin/audit-log`、`/admin/roles*` 和 `/admin/bans*` 是当前 OpenAPI 与 live handler 已发布的 legacy 管理面，
+每个请求仍由服务端按权限校验；角色/封禁变更还会写管理审计事实。角色授予、撤销和封禁 POST 使用通用持久化
+幂等中间件与 `Idempotency-Key`，控制台仍要求二次确认并在超时后复用同一意图和键；解封当前是 DELETE，未接入
+通用幂等中间件，超时后必须先重新读取状态，不自动重试。
 
 ## 分页、区域和安全约束
 

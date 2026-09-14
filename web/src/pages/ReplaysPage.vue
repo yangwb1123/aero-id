@@ -14,6 +14,7 @@ import PageHeader from "../components/PageHeader.vue";
 import ProjectionReplayPanel from "../components/ProjectionReplayPanel.vue";
 import ReplayCommandEditor from "../components/ReplayCommandEditor.vue";
 import ReplayConfirmationDialog from "../components/ReplayConfirmationDialog.vue";
+import ReplayDetailsPanel from "../components/ReplayDetailsPanel.vue";
 import ReplayResult from "../components/ReplayResult.vue";
 import {
   newReplayCommand,
@@ -220,6 +221,7 @@ function continueWindow(cursor: string): void {
       @continue-window="continueWindow"
     />
     <ProjectionReplayPanel :client="client" />
+    <ReplayDetailsPanel :client="client" />
     <ReplayConfirmationDialog
       :input="pending"
       :confirmation="confirmation"

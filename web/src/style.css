@@ -200,6 +200,16 @@ section > [data-iris-card] {
   align-items: end;
 }
 
+.admin-role-grid,
+.admin-ban-grid,
+.replay-detail-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--iris-space-md, 16px);
+  align-items: end;
+  margin-block: var(--iris-space-md, 16px);
+}
+
 .anchor-query-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr)) auto;
@@ -299,6 +309,37 @@ section > [data-iris-card] {
   display: flex;
   justify-content: center;
   padding-block-start: var(--iris-space-md, 16px);
+}
+
+.data-explorer-grid,
+.operation-create-form,
+.operation-step-list {
+  display: grid;
+  gap: var(--iris-space-md, 16px);
+}
+
+.operation-form-grid,
+.operation-step-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--iris-space-md, 16px);
+  align-items: start;
+}
+
+.operation-step-grid [data-iris-form-field]:last-of-type {
+  grid-column: 1 / -1;
+}
+
+.operation-key-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-block-start: calc(-1 * var(--iris-space-sm, 12px));
+}
+
+.operation-dataset-hint {
+  color: var(--iris-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .detail-actions,
@@ -409,6 +450,9 @@ section > [data-iris-card] {
   }
 
   .callback-create-grid,
+  .admin-role-grid,
+  .admin-ban-grid,
+  .replay-detail-row,
   .callback-replay-row,
   .anchor-query-grid,
   .compliance-create-grid,
@@ -426,6 +470,15 @@ section > [data-iris-card] {
   .replay-key-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .operation-form-grid,
+  .operation-step-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operation-step-grid [data-iris-form-field]:last-of-type {
+    grid-column: auto;
   }
 
   .admin-filter-actions {

@@ -220,6 +220,7 @@ func (v *JWKSValidator) identityFromClaims(claims map[string]any) (*domain.Token
 		identity.Issuer = issuerValue
 	}
 	identity.Audience = claimAudience(claims["aud"])
+	identity.Scopes = parseOAuthScopes(claims["scope"])
 	tenant, err := consistentStringClaim(claims, "tenant_id", "tenant", "ten")
 	if err != nil {
 		return nil, fmt.Errorf("%w: tenant claim", ErrInvalidJWT)

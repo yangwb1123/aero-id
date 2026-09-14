@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
+import AccountDataPanel from "./AccountDataPanel.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import AdminAccountActions from "./AdminAccountActions.vue";
 import { records } from "./adminHelpers";
@@ -12,11 +13,12 @@ import RegionDirectoryPanel from "./RegionDirectoryPanel.vue";
 const props = defineProps<{ client: AeroIdClient; accountId: string }>();
 const emit = defineEmits<{ close: [] }>();
 const resource = useAsyncResource(async () => {
-  const [account, overview] = await Promise.all([
+  const [account, overview, datasets] = await Promise.all([
     props.client.getAdminAccount(props.accountId),
     props.client.getAdminAccountOverview(props.accountId),
+    props.client.listDatasets(),
   ]);
-  return { account, overview };
+  return { account, overview, datasets };
 });
 const promotionMessage = ref<string>();
 </script>
@@ -96,6 +98,11 @@ const promotionMessage = ref<string>();
         empty="该账户没有成员关系"
       />
     </IrisCard>
+    <AccountDataPanel
+      :client="client"
+      :datasets="resource.data.datasets"
+      :admin-account-id="accountId"
+    />
     <IrisAlert v-if="promotionMessage" tone="success">{{
       promotionMessage
     }}</IrisAlert>

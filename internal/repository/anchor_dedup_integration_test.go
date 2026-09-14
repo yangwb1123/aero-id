@@ -227,9 +227,13 @@ func TestCompensationAnchors(t *testing.T) {
 		t.Fatalf("operation.compensating: %v", err)
 	}
 
-	step, err := repository.NewOperationRepository(db, ledger).ClaimCompensationStep(ctx, op.ID, "worker-1", time.Minute)
+	compensationRepo := repository.NewOperationRepository(db, ledger)
+	step, err := compensationRepo.ClaimCompensationStep(ctx, op.ID, "worker-1", time.Minute)
 	if err != nil {
 		t.Fatalf("ClaimCompensationStep: %v", err)
+	}
+	if _, err := compensationRepo.ClaimCompensationStep(ctx, op.ID, "worker-2", time.Minute); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("live running compensation was claimable: %v", err)
 	}
 	finishedUnknown := idgen.Anchor("operation.compensation.finished", "tenant-a", op.ID.String(), step.ID.String(), "unknown")
 	if err := opStateRepo.FinishCompensationStepWithAudit(ctx, step.ID, "worker-1", domain.StepUnknown,
@@ -241,9 +245,19 @@ func TestCompensationAnchors(t *testing.T) {
 	if err := db.Exec(`UPDATE operation_steps SET compensation_lease_until = NULL WHERE id = ?`, step.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	step, err = repository.NewOperationRepository(db, ledger).ClaimUnknownCompensationStep(ctx, op.ID, "reconciler-1", 2*time.Minute)
+	step, err = compensationRepo.ClaimUnknownCompensationStep(ctx, op.ID, "reconciler-1", 2*time.Minute)
 	if err != nil {
 		t.Fatalf("ClaimUnknownCompensationStep: %v", err)
+	}
+	if _, err := compensationRepo.ClaimUnknownCompensationStep(ctx, op.ID, "reconciler-2", time.Minute); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("live unknown compensation was claimable: %v", err)
+	}
+	if err := db.Exec(`UPDATE operation_steps SET compensation_lease_until = clock_timestamp() - interval '1 second' WHERE id = ?`, step.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	step, err = compensationRepo.ClaimUnknownCompensationStep(ctx, op.ID, "reconciler-1", 2*time.Minute)
+	if err != nil {
+		t.Fatalf("expired reconciliation compensation was not reclaimable: %v", err)
 	}
 	if err := opStateRepo.FinishCompensationStepWithAudit(ctx, step.ID, "reconciler-1", domain.StepSucceeded,
 		"src-1", "", nil, "", auditWiringFact(reconciled, "tenant-a", "operation.compensation.reconciled")); err != nil {

@@ -5,18 +5,20 @@
 - 通过 Snaplink Authorization Code + PKCE（S256）登录；
 - 在浏览器内存中持有短期 access token，不写入 localStorage/sessionStorage；
 - 退出时调用 discovery 声明的 `end_session_endpoint`，销毁 Snaplink 会话后回跳；
-- 调用 aero-id `/v1/me`、Profile、来源、成员关系、脱敏资源摘要、活动、同步/导出任务和 Operation API；
+- 调用 aero-id `/v1/me`、Profile、来源、成员关系、allow-list 数据浏览、脱敏资源摘要、活动、同步/导出任务和 Operation API；
 - 支持任务详情、unknown 结果对账，以及带 Bearer 且确认后销毁制品的一次性导出下载；
+- Operation 页面可创建有界 Saga 步骤、使用持久化幂等键、二次确认危险动作，并按 Operation ID 运行或对账；管理员账户支持 `/data` 数据查看；
 - 展示 Operation/Saga 步骤、来源 operation ID、补偿状态与追加式脱敏审计时间线；
 - 管理员可按关键词、状态和 home region 查询账户，并检查来源与投影的新鲜度；
 - 普通账户擦除、管理员账户同步/导出/擦除均创建幂等任务；账户擦除要求输入确认短语，导出与管理员擦除要求二次确认；
 - 账户详情展示 durable Region Directory，并通过观察到的 Fenced Epoch、Account ID 二次确认执行 Home Region Writer CAS 提升；
 - Legacy 迁移控制面支持有界 shadow identity backfill、content-free digest 对比、cleanup readiness 和经 Tenant ID 二次确认的状态机 Cutover；
 - 审计台账支持过滤、keyset 分页、脱敏证据详情和来源分区哈希链验证；
+- 管理员治理覆盖 `/admin/audit-log`、`/admin/roles*`、`/admin/bans*`，角色授予/撤销与封禁使用幂等键并二次确认；解封 DELETE 超时后先刷新状态，不自动重试；
 - 审计合规管理支持 Legal Hold 查询、设置、经 Scope ID 二次确认的解除，以及带一次性下载保护的审计导出；
 - WORM Anchor 操作会使用固定幂等键、全链二次确认和 fail-closed 管理意图审计；单链 Manifest 敏感读取也会留存审计事实；
 - Callback 治理支持 challenge 注册、一次性 Secret、订阅删除和经确认的失败投递重放；
-- Replay 管理严格区分 forensic、dry-run、controlled，并为真实命令强制新幂等键和 Account ID 二次确认；另提供按 Tenant/Account 鉴权、逐窗口审计且绝不自动修复的 Shadow Projection Replay；
+- Replay 管理严格区分 forensic、dry-run、controlled，并为真实命令强制新幂等键和 Account ID 二次确认；支持按 Replay ID 恢复查看持久化详情；另提供按 Tenant/Account 鉴权、逐窗口审计且绝不自动修复的 Shadow Projection Replay；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；
 - 使用独立链接进入 Audit Governance、Aero IM 和 Aero Vault 控制台，不跨 audience 转发 token。
 

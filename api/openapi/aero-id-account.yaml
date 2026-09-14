@@ -620,6 +620,7 @@ paths:
     post:
       operationId: grantRole
       security: [{snaplinkBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         content:
           application/json:
@@ -636,6 +637,7 @@ paths:
     post:
       operationId: revokeRole
       security: [{snaplinkBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         content:
           application/json:
@@ -652,6 +654,7 @@ paths:
     post:
       operationId: banUser
       security: [{snaplinkBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         content:
           application/json:

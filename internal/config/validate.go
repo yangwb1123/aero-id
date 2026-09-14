@@ -181,6 +181,7 @@ func regionConfigured(value string, regions map[string]struct{}) bool {
 func (c *Config) validateRuntimeLimits() error {
 	checks := []error{
 		validateDatabase(c.Database),
+		validateAgentMembershipConfig(c.AgentMembership),
 		validateCORSOrigins(c.Server.HTTP.CORSOrigins),
 		validateStorage(c.Storage), validateRateLimit(c.RateLimit), validateStorageGC(c.Storage.GC),
 		validateExport(c.Export), validateWebhook(c.Outbox.Webhook), validateEventIngest(c.EventIngest),

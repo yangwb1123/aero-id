@@ -138,14 +138,11 @@ func (r *operationRepo) setStatus(ctx context.Context, id domain.ID, status doma
 	if status == domain.OperationCompleted || status == domain.OperationFailed || status == domain.OperationPartiallyCompleted {
 		updates["completed_at"] = now
 	}
+	terminal, terminalOutcome := operationStatusTransitionGuard(status)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Terminal state is a one-way boundary. Concurrent workers may both
 		// compute a result from stale projections, but only the first terminal
 		// transition wins; a later non-terminal write can never regress it.
-		terminal := []string{string(domain.OperationUnknown), string(domain.OperationCompleted),
-			string(domain.OperationFailed), string(domain.OperationPartiallyCompleted)}
-		terminalOutcome := status == domain.OperationUnknown || status == domain.OperationCompleted ||
-			status == domain.OperationFailed || status == domain.OperationPartiallyCompleted
 		updated := tx.Model(&operationRow{}).Where("id = ? AND (status NOT IN ? OR ?)", id,
 			terminal, terminalOutcome).Updates(updates)
 		if updated.Error != nil {
@@ -160,6 +157,17 @@ func (r *operationRepo) setStatus(ctx context.Context, id domain.ID, status doma
 		}
 		return r.appendAudit(tx, ctx, fact)
 	})
+}
+
+func operationStatusTransitionGuard(status domain.OperationStatus) ([]string, bool) {
+	terminal := []string{string(domain.OperationUnknown), string(domain.OperationCompleted),
+		string(domain.OperationFailed), string(domain.OperationPartiallyCompleted)}
+	switch status {
+	case domain.OperationUnknown, domain.OperationCompleted, domain.OperationFailed, domain.OperationPartiallyCompleted:
+		return terminal, true
+	default:
+		return terminal, false
+	}
 }
 
 func (r *operationRepo) appendAudit(tx *gorm.DB, ctx context.Context, fact *domain.AuditFact) error {

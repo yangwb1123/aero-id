@@ -372,6 +372,143 @@ describe("AeroIdClient", () => {
     expect(requests[1].searchParams.get("partition")).toBe("tenant/partition");
   });
 
+  it("reads bounded account data and creates/runs a durable operation", async () => {
+    const requests: Array<{
+      url: URL;
+      method?: string;
+      headers: Headers;
+      body?: string;
+    }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({
+          url: new URL(String(input)),
+          method: init?.method,
+          headers: new Headers(init?.headers),
+          body: init?.body === undefined ? undefined : String(init.body),
+        });
+        return json({
+          data: {
+            operation_id: "operation-1",
+            status: "requested",
+            snapshots: [],
+          },
+        });
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.getMyData({
+      datasets: ["aero-im.profile"],
+      consistency: "bounded",
+      maxAge: "5m",
+    });
+    await client.getAdminAccountData("account/1", { consistency: "strong" });
+    await client.createOperation({
+      accountID: "account-1",
+      operationType: "sync",
+      idempotencyKey: "operation-key-1",
+      steps: [
+        {
+          stepKey: "profile-summary",
+          source: "aero-im",
+          action: "summary",
+          requestPayload: { datasets: ["aero-im.profile"] },
+        },
+      ],
+    });
+    await client.runOperation("operation/1");
+
+    expect(requests[0].url.pathname).toBe("/v1/me/data");
+    expect(requests[0].url.searchParams.getAll("dataset")).toEqual([
+      "aero-im.profile",
+    ]);
+    expect(requests[0].url.searchParams.get("consistency")).toBe("bounded");
+    expect(requests[0].url.searchParams.get("max_age")).toBe("5m");
+    expect(requests[1].url.pathname).toBe(
+      "/v1/admin/accounts/account%2F1/data",
+    );
+    expect(requests[1].url.searchParams.get("consistency")).toBe("strong");
+    expect(requests[2].url.pathname).toBe("/v1/operations");
+    expect(requests[2].headers.get("Idempotency-Key")).toBe("operation-key-1");
+    expect(JSON.parse(requests[2].body ?? "{}").steps[0]).toEqual({
+      step_key: "profile-summary",
+      source: "aero-im",
+      action: "summary",
+      request_payload: { datasets: ["aero-im.profile"] },
+    });
+    expect(requests[3].url.pathname).toBe("/v1/operations/operation%2F1/run");
+    expect(requests[3].method).toBe("POST");
+  });
+
+  it("covers the published admin audit, role and ban routes", async () => {
+    const requests: Array<{
+      url: URL;
+      method?: string;
+      body?: string;
+      headers: Headers;
+    }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({
+          url: new URL(String(input)),
+          method: init?.method,
+          body: init?.body === undefined ? undefined : String(init.body),
+          headers: new Headers(init?.headers),
+        });
+        if (requests.length === 1)
+          return json({ data: { events: [], next_cursor: "audit-1" } });
+        if (requests.length === 2) return json({ data: { roles: [] } });
+        if (requests.length === 3) return json({ data: { roles: [] } });
+        if (requests.length === 6)
+          return json({ data: { bans: [], next_cursor: "ban-1" } });
+        return json({ data: { status: "ok" } });
+      },
+    );
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await client.listAdminAudit("admin.role.grant", "audit-0");
+    await client.listRoles();
+    await client.listUserRoles("uid/1");
+    await client.grantRole("uid/1", "operator");
+    await client.revokeRole("uid/1", "operator");
+    await client.listBanned("ban-0");
+    await client.banUser("uid/1", "manual review", "24h");
+    await client.unbanUser("uid/1");
+
+    expect(requests.map((request) => request.url.pathname)).toEqual([
+      "/v1/admin/audit-log",
+      "/v1/admin/roles",
+      "/v1/admin/roles/uid%2F1",
+      "/v1/admin/roles/grant",
+      "/v1/admin/roles/revoke",
+      "/v1/admin/bans",
+      "/v1/admin/bans",
+      "/v1/admin/bans/uid%2F1",
+    ]);
+    expect(requests[0].url.searchParams.get("action")).toBe("admin.role.grant");
+    expect(requests[3].body).toBe(
+      JSON.stringify({ uid: "uid/1", role_code: "operator" }),
+    );
+    expect(requests[3].headers.get("Idempotency-Key")).toBeTruthy();
+    expect(requests[6].body).toBe(
+      JSON.stringify({
+        uid: "uid/1",
+        reason: "manual review",
+        duration: "24h",
+      }),
+    );
+    expect(requests[6].headers.get("Idempotency-Key")).toBeTruthy();
+  });
+
   it("downloads an export with authorization and one-time semantics", async () => {
     let requested = new URL("https://invalid.test");
     let headers = new Headers();

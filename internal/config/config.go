@@ -8,6 +8,7 @@ import (
 type Config struct {
 	App             AppConfig             `mapstructure:"app"`
 	Account         AccountConfig         `mapstructure:"account"`
+	AgentMembership AgentMembershipConfig `mapstructure:"agent_membership"`
 	Sources         SourcesConfig         `mapstructure:"sources"`
 	Server          ServerConfig          `mapstructure:"server"`
 	Database        DatabaseConfig        `mapstructure:"database"`

@@ -32,6 +32,32 @@ export interface AuditEventFilters {
   requestID?: string;
 }
 
+export type ConsistencyMode = "eventual" | "bounded" | "strong";
+
+export interface AggregateQuery {
+  datasets?: string[];
+  consistency?: ConsistencyMode;
+  maxAge?: string;
+}
+
+export interface OperationStepInput {
+  stepKey: string;
+  source: "snaplink" | "aero-im" | "aero-vault";
+  action:
+    "sync" | "summary" | "source.summary" | "erase" | "delete" | "source.erase";
+  requestPayload: JsonRecord;
+  compensationAction?: string;
+}
+
+export interface OperationCreateInput {
+  accountID: string;
+  operationType: "sync" | "erase" | "source.command" | "replay";
+  homeRegion?: string;
+  requestPayload?: JsonRecord;
+  idempotencyKey: string;
+  steps: OperationStepInput[];
+}
+
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -113,19 +139,25 @@ export class AeroIdClient {
   }
 
   async getOverview(datasets: string[] = []): Promise<AggregateView> {
-    return dataOf(
-      await this.request("GET", "/me/overview", {
-        query: { dataset: datasets, consistency: "eventual" },
-      }),
-    ) as AggregateView;
+    return this.getAggregate("/me/overview", { datasets });
   }
 
   async getResources(datasets: string[] = []): Promise<AggregateView> {
-    return dataOf(
-      await this.request("GET", "/me/resources", {
-        query: { dataset: datasets, consistency: "eventual" },
-      }),
-    ) as AggregateView;
+    return this.getAggregate("/me/resources", { datasets });
+  }
+
+  async getMyData(query: AggregateQuery = {}): Promise<AggregateView> {
+    return this.getAggregate("/me/data", query);
+  }
+
+  async getAdminAccountData(
+    id: string,
+    query: AggregateQuery = {},
+  ): Promise<AggregateView> {
+    return this.getAggregate(
+      `/admin/accounts/${encodeURIComponent(id)}/data`,
+      query,
+    );
   }
 
   async listAdminAccounts(
@@ -303,6 +335,35 @@ export class AeroIdClient {
     );
   }
 
+  async createOperation(input: OperationCreateInput): Promise<JsonRecord> {
+    const key = input.idempotencyKey.trim() || crypto.randomUUID();
+    return dataOf(
+      await this.request("POST", "/operations", {
+        idempotencyKey: key,
+        body: {
+          account_id: input.accountID,
+          home_region: input.homeRegion,
+          operation_type: input.operationType,
+          idempotency_key: key,
+          request_payload: input.requestPayload,
+          steps: input.steps.map((step) => ({
+            step_key: step.stepKey,
+            source: step.source,
+            action: step.action,
+            request_payload: step.requestPayload,
+            compensation_action: step.compensationAction,
+          })),
+        },
+      }),
+    );
+  }
+
+  async runOperation(id: string): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("POST", `/operations/${encodeURIComponent(id)}/run`),
+    );
+  }
+
   async listOperationAudit(
     id: string,
     cursor?: string,
@@ -350,6 +411,104 @@ export class AeroIdClient {
         query: { source, partition },
       }),
     );
+  }
+
+  async listAdminAudit(
+    action?: string,
+    cursor?: string,
+  ): Promise<PageData<JsonRecord>> {
+    return pageOf(
+      dataOf(
+        await this.request("GET", "/admin/audit-log", {
+          query: { action, cursor, limit: 50 },
+        }),
+      ),
+      "events",
+    );
+  }
+
+  async listRoles(): Promise<JsonRecord[]> {
+    return records(dataOf(await this.request("GET", "/admin/roles")).roles);
+  }
+
+  async listUserRoles(uid: string): Promise<JsonRecord[]> {
+    return records(
+      dataOf(
+        await this.request("GET", `/admin/roles/${encodeURIComponent(uid)}`),
+      ).roles,
+    );
+  }
+
+  async grantRole(
+    uid: string,
+    roleCode: string,
+    idempotencyKey: string = crypto.randomUUID(),
+  ): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("POST", "/admin/roles/grant", {
+        idempotencyKey,
+        body: { uid, role_code: roleCode },
+      }),
+    );
+  }
+
+  async revokeRole(
+    uid: string,
+    roleCode: string,
+    idempotencyKey: string = crypto.randomUUID(),
+  ): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("POST", "/admin/roles/revoke", {
+        idempotencyKey,
+        body: { uid, role_code: roleCode },
+      }),
+    );
+  }
+
+  async banUser(
+    uid: string,
+    reason: string,
+    duration?: string,
+    idempotencyKey: string = crypto.randomUUID(),
+  ): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("POST", "/admin/bans", {
+        idempotencyKey,
+        body: { uid, reason, duration },
+      }),
+    );
+  }
+
+  async listBanned(cursor?: string): Promise<PageData<JsonRecord>> {
+    return pageOf(
+      dataOf(
+        await this.request("GET", "/admin/bans", {
+          query: { cursor, limit: 50 },
+        }),
+      ),
+      "bans",
+    );
+  }
+
+  async unbanUser(uid: string): Promise<JsonRecord> {
+    return dataOf(
+      await this.request("DELETE", `/admin/bans/${encodeURIComponent(uid)}`),
+    );
+  }
+
+  private async getAggregate(
+    path: string,
+    query: AggregateQuery,
+  ): Promise<AggregateView> {
+    return dataOf(
+      await this.request("GET", path, {
+        query: {
+          dataset: query.datasets ?? [],
+          consistency: query.consistency ?? "eventual",
+          max_age: query.maxAge,
+        },
+      }),
+    ) as AggregateView;
   }
 
   private async request(

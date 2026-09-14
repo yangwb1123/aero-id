@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -68,6 +69,50 @@ func TestJWKSValidatorBindsTenantAndClientClaims(t *testing.T) {
 	}
 	if identity.TenantID != "tenant-1" || identity.ClientID != "console" {
 		t.Fatalf("identity binding = tenant %q client %q", identity.TenantID, identity.ClientID)
+	}
+}
+
+func TestJWKSValidatorCarriesOptionalSignedOAuthScope(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	server := testJWKSServer(t, public)
+	validator, err := NewJWKSValidator(JWKSConfig{
+		URL: server.URL, Issuer: "snaplink", Audience: "aero-id", RequireTenant: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]any{"iss": "snaplink", "sub": "machine", "aud": "aero-id", "tenant_id": "tenant-a",
+		"client_id": "agent-hub", "exp": time.Now().Add(time.Minute).Unix()}
+	cases := []struct {
+		name  string
+		scope any
+		set   bool
+		want  []string
+	}{
+		{name: "space separated", set: true, scope: "agent.instances:read aero-id.membership:check",
+			want: []string{"agent.instances:read", "aero-id.membership:check"}},
+		{name: "absent is optional"},
+		{name: "wrong claim type grants nothing", set: true, scope: []any{"aero-id.membership:check"}},
+		{name: "malformed spacing grants nothing", set: true, scope: "aero-id.membership:check  agent.instances:read"},
+		{name: "control whitespace grants nothing", set: true, scope: "aero-id.membership:check\tagent.instances:read"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := make(map[string]any, len(base)+1)
+			for key, value := range base {
+				claims[key] = value
+			}
+			if tc.set {
+				claims["scope"] = tc.scope
+			}
+			identity, err := validator.ValidateControlPlaneIdentity(t.Context(), signTestJWT(t, private, claims))
+			if err != nil {
+				t.Fatalf("valid signed identity was rejected: %v", err)
+			}
+			if !reflect.DeepEqual(identity.Scopes, tc.want) {
+				t.Fatalf("signed scopes = %v, want %v", identity.Scopes, tc.want)
+			}
+		})
 	}
 }
 

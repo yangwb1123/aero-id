@@ -2,7 +2,9 @@
 import { computed, ref } from "vue";
 import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
+import type { JsonRecord } from "../types";
 import OperationDetails from "../components/OperationDetails.vue";
+import OperationCreateDialog from "../components/OperationCreateDialog.vue";
 import PagedRecordTable from "../components/PagedRecordTable.vue";
 import PageError from "../components/PageError.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -11,7 +13,18 @@ import { useAsyncResource } from "../hooks/useAsyncResource";
 import { operationID } from "../components/operationHelpers";
 const { client } = defineProps<{ client: AeroIdClient }>();
 const resource = useAsyncResource(() => client.listOperations());
+const datasetsResource = useAsyncResource(() => client.listDatasets());
+const meResource = useAsyncResource(() => client.getMe());
 const selectedOperation = ref<string>();
+const defaultAccountID = computed(() => {
+  const value = meResource.data?.account?.account_id;
+  return typeof value === "string" ? value : undefined;
+});
+function reloadOperations(operation?: JsonRecord): void {
+  const id = operation ? operationID(operation) : undefined;
+  if (id) selectedOperation.value = id;
+  void resource.reload();
+}
 const hasUnknown = computed(
   () => resource.data?.items.some((item) => item.status === "unknown") ?? false,
 );
@@ -31,6 +44,21 @@ const hasUnknown = computed(
     />
     <IrisAlert v-if="hasUnknown" tone="warning" title="存在结果未知的操作">
       远端超时不代表失败；请等待以幂等键或来源 operation ID 完成对账。
+    </IrisAlert>
+    <div class="page-actions">
+      <OperationCreateDialog
+        :client="client"
+        :datasets="datasetsResource.data ?? []"
+        :default-account-id="defaultAccountID"
+        @created="reloadOperations"
+      />
+    </div>
+    <IrisAlert
+      v-if="datasetsResource.error"
+      tone="warning"
+      title="Operation 数据集目录不可用"
+    >
+      无法校验来源 dataset allow-list；请稍后重试后再创建 Operation。
     </IrisAlert>
     <IrisCard variant="outline">
       <PagedRecordTable
