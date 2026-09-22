@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aero/aero-id/internal/domain"
 )
@@ -228,6 +229,12 @@ type governanceEvent struct {
 	DataClassification string             `json:"data_classification"`
 	RetentionClass     string             `json:"retention_class"`
 	IdempotencyKey     string             `json:"idempotency_key"`
+	// ExecutionRunID is an optional control-plane correlation copied from a
+	// source audit fact's allow-listed payload field. Keeping it top-level lets
+	// audit-governance index Forge observer evidence without making the
+	// publisher an execution authority.
+	ExecutionRunID     string `json:"execution_run_id,omitempty"`
+	WorkflowInstanceID string `json:"workflow_instance_id,omitempty"`
 }
 
 type governanceActor struct {
@@ -253,12 +260,29 @@ func (p *Publisher) event(fact *domain.AuditFact, source string) governanceEvent
 		Actor: governanceActor{ID: actor, Type: "principal"}, AggregateType: fact.ResourceType,
 		AggregateID: fact.ResourceID, Action: fact.Action, Outcome: auditOutcome(fact.Payload),
 		Payload: fact.Payload, DataClassification: p.dataClassification, RetentionClass: p.retentionClass,
-		IdempotencyKey: fact.ID.String(),
+		IdempotencyKey:     fact.ID.String(),
+		ExecutionRunID:     payloadString(fact.Payload, "execution_run_id"),
+		WorkflowInstanceID: payloadString(fact.Payload, "workflow_instance_id"),
 	}
 	if fact.ResourceType != "" && fact.ResourceID != "" {
 		event.Targets = []governanceTarget{{Type: fact.ResourceType, ID: fact.ResourceID}}
 	}
 	return event
+}
+
+// payloadString copies only explicit string correlation fields into the
+// governance envelope. Non-string or blank values are omitted so arbitrary
+// payload data cannot silently become a control-plane identifier.
+func payloadString(payload map[string]any, key string) string {
+	value, ok := payload[key].(string)
+	if !ok {
+		return ""
+	}
+	value = strings.TrimSpace(value)
+	if value == "" || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return ""
+	}
+	return value
 }
 
 func optionalID(value domain.ID) string {
