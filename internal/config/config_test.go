@@ -733,6 +733,7 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 
 	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
 	t.Setenv("AERO_ID_BILLING_ENABLED", "false")
+	t.Setenv("AERO_ID_APP_ENV", "dev")
 	// The shipped file intentionally contains no secret material. Supply test
 	// secrets through the same environment override used by deployments.
 	t.Setenv("AERO_ID_SIGNING_KEY", strings.Repeat("s", 32))
@@ -791,83 +792,238 @@ func TestLoadShippedConfigFileAndEnvGate(t *testing.T) {
 	}
 }
 
-// TestLoadRejectsPlaceholderSecrets (REQ-C1/REQ-C4): both shipped signing-key
-// literals and the conventional placeholder families (change-me, changeme,
-// replace-me) are denied at Load() for the root signing_key and
-// audit_ledger.signing_key alike. Each row is applied to both fields; the
-// ≥32-byte prefix rows guarantee the failure is the deny error, never the
-// length error (deny-before-length ordering in validateAuditLedger). The
-// positive leg proves the fixed committed hex audit key and a plain root key
-// still load.
-func TestLoadRejectsPlaceholderSecrets(t *testing.T) {
-	const fixedHexAuditKey = "5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d"
-	const validAuditLine = "audit_ledger: {signing_key: " + fixedHexAuditKey + "}"
-	if _, err := Load(writeTemp(t, sample)); err != nil {
-		t.Fatalf("sample with valid signing keys rejected: %v", err)
-	}
-	const wantErr = "signing_key is a known placeholder"
-	rows := []struct {
-		name string
-		key  string
-	}{
-		{"shipped audit literal", "change-me-please-very-long-audit-key"},
-		{"shipped root literal", "change-me-please-very-long-random"},
-		{"change-me prefix, 32+ bytes", "change-me-" + strings.Repeat("x", 45)},
-		{"changeme prefix, 32+ bytes", "changeme-" + strings.Repeat("x", 45)},
-		{"replace-me prefix, 32+ bytes", "replace-me-" + strings.Repeat("x", 45)},
-	}
-	for _, tc := range rows {
-		t.Run("audit/"+tc.name, func(t *testing.T) {
-			content := strings.Replace(sample, validAuditLine, "audit_ledger: {signing_key: "+strconv.Quote(tc.key)+"}", 1)
-			_, err := Load(writeTemp(t, content))
-			if err == nil || !strings.Contains(err.Error(), wantErr) {
-				t.Fatalf("Load error = %v, want containing %q", err, wantErr)
-			}
-		})
-		t.Run("root/"+tc.name, func(t *testing.T) {
-			content := strings.Replace(sample, "signing_key: testkey", "signing_key: "+strconv.Quote(tc.key), 1)
-			_, err := Load(writeTemp(t, content))
-			if err == nil || !strings.Contains(err.Error(), wantErr) {
-				t.Fatalf("Load error = %v, want containing %q", err, wantErr)
-			}
-		})
-	}
-
-	// Positive leg: the fixed committed hex audit key and a plain root key
-	// load, with the merged audit key intact.
-	cfg, err := Load(writeTemp(t, sample))
+// TestLoadAllowsPlaceholderSecretsOutsideProduction verifies that the
+// production-only gate does not change the existing development/test contract.
+// The values are intentionally public fixtures; production must override them
+// through the environment or an approved secret provider.
+func TestLoadAllowsPlaceholderSecretsOutsideProduction(t *testing.T) {
+	const validAuditLine = "audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}"
+	content := strings.Replace(sample, validAuditLine,
+		"audit_ledger: {signing_key: "+shippedAuditSigningKeyPlaceholder+"}", 1)
+	content = strings.Replace(content, "signing_key: testkey",
+		"signing_key: "+shippedSigningKeyPlaceholder, 1)
+	t.Setenv("AERO_ID_APP_ENV", "dev")
+	t.Setenv("AERO_ID_SIGNING_KEY", shippedSigningKeyPlaceholder)
+	t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", shippedAuditSigningKeyPlaceholder)
+	cfg, err := Load(writeTemp(t, content))
 	if err != nil {
-		t.Fatalf("valid config rejected: %v", err)
+		t.Fatal("non-production placeholder configuration was rejected")
 	}
-	if cfg.AuditLedger.SigningKey != fixedHexAuditKey {
-		t.Fatalf("AuditLedger.SigningKey = %q, want the fixed hex fixture", cfg.AuditLedger.SigningKey)
+	if cfg.SigningKey != shippedSigningKeyPlaceholder || cfg.AuditLedger.SigningKey != shippedAuditSigningKeyPlaceholder {
+		t.Fatal("non-production placeholder configuration did not preserve the merged values")
 	}
 }
 
-// TestLoadRejectsPlaceholderSecretEnvLeg (REQ-C2): Load merges AERO_ID_* env
-// into the struct before validate, so a placeholder supplied via env over a
-// valid file still fails with the pinned deny error — env cannot bypass the
-// deny-list. Mirrors TestLoadAuditGovernanceKnobEnvLegs (env pinned before
-// Load; the package stays sequential, no t.Parallel). The audit ledger key
-// exists in the file (viper lazy env merge: env wins when the key exists), so
-// a green leg proves env plumbing AND the deny check, never a wrong-reason
-// pass.
-func TestLoadRejectsPlaceholderSecretEnvLeg(t *testing.T) {
-	const wantErr = "signing_key is a known placeholder"
+func prodHardeningRootKey() string { return strings.Repeat("r", 64) }
 
-	t.Run("audit ledger env cannot bypass", func(t *testing.T) {
-		t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", "change-me-please-very-long-audit-key")
-		_, err := Load(writeTemp(t, sample))
-		if err == nil || !strings.Contains(err.Error(), wantErr) {
-			t.Fatalf("Load error = %v, want containing %q (env placeholder must not bypass)", err, wantErr)
-		}
-	})
+func prodHardeningAuditKey() string { return strings.Repeat("a", 64) }
 
-	t.Run("root env cannot bypass", func(t *testing.T) {
-		t.Setenv("AERO_ID_SIGNING_KEY", "change-me-please-very-long-random")
-		_, err := Load(writeTemp(t, sample))
-		if err == nil || !strings.Contains(err.Error(), wantErr) {
-			t.Fatalf("Load error = %v, want containing %q (env placeholder must not bypass)", err, wantErr)
+func prodHardeningYAML() string {
+	content := strings.Replace(sample, "env: test", "env: prod", 1)
+	content = strings.Replace(content,
+		"server:\n  http: {host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s}",
+		"server:\n  http: {host: 0.0.0.0, port: 8080, cors_origins: [\"https://console.example\"], read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s}", 1)
+	content = strings.Replace(content, "  sslmode: disable", "  sslmode: require", 1)
+	content = strings.Replace(content, ssoBlockForReplace,
+		`sso: {endpoint: "sso:9000", timeout: 5s, insecure: false, authz_required: true, authz_legacy_fallback: false, token_cache_ttl: 60s, user_cache_ttl: 300s}`, 1)
+	content = strings.Replace(content,
+		"audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}",
+		"audit_ledger: {signing_key: "+prodHardeningAuditKey()+"}", 1)
+	content = strings.Replace(content, "signing_key: testkey", "signing_key: "+prodHardeningRootKey(), 1)
+	return content
+}
+
+func replaceProdHardeningKeys(content, root, audit string) string {
+	content = strings.Replace(content, "signing_key: "+prodHardeningRootKey(), "signing_key: "+root, 1)
+	return strings.Replace(content, "audit_ledger: {signing_key: "+prodHardeningAuditKey()+"}",
+		"audit_ledger: {signing_key: "+audit+"}", 1)
+}
+
+func placeholderConfigYAML() string {
+	content := strings.Replace(sample,
+		"audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}",
+		"audit_ledger: {signing_key: "+shippedAuditSigningKeyPlaceholder+"}", 1)
+	return strings.Replace(content, "signing_key: testkey", "signing_key: "+shippedSigningKeyPlaceholder, 1)
+}
+
+func pinProdHardeningEnv(t *testing.T, env, root, audit string, insecure, authz bool, sslmode string) {
+	t.Helper()
+	t.Setenv("AERO_ID_APP_ENV", env)
+	t.Setenv("AERO_ID_SIGNING_KEY", root)
+	t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", audit)
+	t.Setenv("AERO_ID_SSO_INSECURE", strconv.FormatBool(insecure))
+	t.Setenv("AERO_ID_SSO_AUTHZ_REQUIRED", strconv.FormatBool(authz))
+	t.Setenv("AERO_ID_SSO_AUTHZ_LEGACY_FALLBACK", "false")
+	t.Setenv("AERO_ID_DATABASE_SSLMODE", sslmode)
+	t.Setenv("AERO_ID_SERVER_HTTP_CORS_ORIGINS", "")
+	t.Setenv("AERO_ID_EVENT_INGEST_SIGNING_KEY", "")
+	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
+	t.Setenv("AERO_ID_BILLING_ENABLED", "false")
+}
+
+func assertProdHardeningError(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("Load succeeded; want an error containing %q", want)
+	}
+	message := err.Error()
+	if !strings.Contains(message, want) {
+		t.Fatalf("Load error did not contain the expected validation message %q", want)
+	}
+	for _, secret := range []string{shippedSigningKeyPlaceholder, shippedAuditSigningKeyPlaceholder} {
+		if strings.Contains(message, secret) {
+			t.Fatal("validation error echoed secret material")
 		}
-	})
+	}
+}
+
+// TestLoadProdHardeningGate covers the production-only placeholder and SSO
+// checks, their ordering, environment merging, and the non-production escape
+// hatch. The production fixture also supplies the pre-existing production
+// transport requirements so this test isolates the secrets contract.
+func TestLoadProdHardeningGate(t *testing.T) {
+	root, audit := prodHardeningRootKey(), prodHardeningAuditKey()
+	cases := []struct {
+		name                   string
+		content                string
+		env, envRoot, envAudit string
+		insecure, authz        bool
+		sslmode                string
+		wantErr                string
+		wantSuccess            bool
+	}{
+		{
+			name:    "root placeholder",
+			content: replaceProdHardeningKeys(prodHardeningYAML(), shippedSigningKeyPlaceholder, audit),
+			env:     "prod", envRoot: shippedSigningKeyPlaceholder, envAudit: audit,
+			sslmode: "require",
+			wantErr: "signing_key must not be the shipped placeholder when app.env=prod (override with AERO_ID_SIGNING_KEY)",
+		},
+		{
+			name:    "audit ledger placeholder",
+			content: replaceProdHardeningKeys(prodHardeningYAML(), root, shippedAuditSigningKeyPlaceholder),
+			env:     "prod", envRoot: root, envAudit: shippedAuditSigningKeyPlaceholder,
+			sslmode: "require",
+			wantErr: "audit_ledger.signing_key must not be the shipped placeholder when app.env=prod (override with AERO_ID_AUDIT_LEDGER_SIGNING_KEY)",
+		},
+		{
+			name:    "root placeholder variant from env",
+			content: prodHardeningYAML(),
+			env:     "PRODUCTION", envRoot: "CHANGE_ME_SIGNING_KEY_32_BYTES_MINIMUM", envAudit: audit,
+			sslmode: "require",
+			wantErr: "signing_key must not be the shipped placeholder when app.env=prod (override with AERO_ID_SIGNING_KEY)",
+		},
+		{
+			name:    "audit placeholder variant from env",
+			content: prodHardeningYAML(),
+			env:     "STAGING", envRoot: root, envAudit: "replace-me-audit-ledger-key-000000000000000000000000000000",
+			sslmode: "require",
+			wantErr: "audit_ledger.signing_key must not be the shipped placeholder when app.env=prod (override with AERO_ID_AUDIT_LEDGER_SIGNING_KEY)",
+		},
+		{
+			name:    "secure production",
+			content: prodHardeningYAML(),
+			env:     "prod", envRoot: root, envAudit: audit, authz: true,
+			sslmode: "require", wantSuccess: true,
+		},
+		{
+			name:    "insecure SSO",
+			content: prodHardeningYAML(),
+			env:     "prod", envRoot: root, envAudit: audit, insecure: true, authz: true,
+			sslmode: "require",
+			wantErr: "sso.insecure must be false when app.env=prod",
+		},
+		{
+			name:    "authorization is required",
+			content: prodHardeningYAML(),
+			env:     "prod", envRoot: root, envAudit: audit, authz: false,
+			sslmode: "require",
+			wantErr: "sso.authz_required must be true when app.env=prod",
+		},
+		{
+			name:    "non-production compatibility",
+			content: placeholderConfigYAML(),
+			env:     "dev", envRoot: shippedSigningKeyPlaceholder, envAudit: shippedAuditSigningKeyPlaceholder,
+			insecure: true, sslmode: "disable", wantSuccess: true,
+		},
+		{
+			name:    "environment cannot bypass gate",
+			content: strings.Replace(placeholderConfigYAML(), "env: test", "env: dev", 1),
+			env:     "prod", envRoot: shippedSigningKeyPlaceholder, envAudit: audit, insecure: true,
+			sslmode: "require",
+			wantErr: "signing_key must not be the shipped placeholder when app.env=prod (override with AERO_ID_SIGNING_KEY)",
+		},
+		{
+			name:    "required validation precedes hardening",
+			content: strings.Replace(prodHardeningYAML(), "signing_key: "+root+"\n", "", 1),
+			env:     "prod", envRoot: "", envAudit: audit,
+			sslmode: "require",
+			wantErr: "signing_key is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pinProdHardeningEnv(t, tc.env, tc.envRoot, tc.envAudit, tc.insecure, tc.authz, tc.sslmode)
+			cfg, err := Load(writeTemp(t, tc.content))
+			if tc.wantSuccess {
+				if err != nil {
+					t.Fatal("valid configuration was rejected")
+				}
+				if tc.name == "secure production" &&
+					(cfg.SigningKey != root || cfg.AuditLedger.SigningKey != audit || cfg.SSO.Insecure || !cfg.SSO.AuthZRequired) {
+					t.Fatal("secure production configuration did not preserve the validated values")
+				}
+				return
+			}
+			assertProdHardeningError(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestValidateEnvHardeningProductionLikeAliases(t *testing.T) {
+	for _, env := range []string{"", "dev", "test"} {
+		cfg := Config{
+			App:         AppConfig{Env: env},
+			SigningKey:  shippedSigningKeyPlaceholder,
+			AuditLedger: AuditLedgerConfig{SigningKey: shippedAuditSigningKeyPlaceholder},
+			SSO:         SSOConfig{Insecure: true},
+		}
+		if err := cfg.validateEnvHardening(); err != nil {
+			t.Fatalf("environment %q unexpectedly activated the hardening gate: %v", env, err)
+		}
+	}
+
+	for _, env := range []string{"prod", "production", "staging", "PROD", "PRODUCTION", "STAGING", " prod "} {
+		cfg := Config{
+			App:         AppConfig{Env: env},
+			SigningKey:  shippedSigningKeyPlaceholder,
+			AuditLedger: AuditLedgerConfig{SigningKey: shippedAuditSigningKeyPlaceholder},
+		}
+		if err := cfg.validateEnvHardening(); err == nil || !strings.Contains(err.Error(), "signing_key must not be the shipped placeholder") {
+			t.Fatalf("environment %q did not activate the hardening gate: %v", env, err)
+		}
+	}
+}
+
+func TestValidateEnvHardeningRejectsPlaceholderVariants(t *testing.T) {
+	for _, value := range []string{
+		"CHANGE-ME-please-very-long-random",
+		"change-me-" + strings.Repeat("x", 45),
+		"changeme-" + strings.Repeat("x", 45),
+		"replace-me-" + strings.Repeat("x", 45),
+		"CHANGE_ME_SIGNING_KEY_32_BYTES_MINIMUM",
+	} {
+		cfg := Config{
+			App:         AppConfig{Env: "production"},
+			SigningKey:  value,
+			AuditLedger: AuditLedgerConfig{SigningKey: strings.Repeat("a", 64)},
+		}
+		err := cfg.validateEnvHardening()
+		if err == nil || !strings.Contains(err.Error(), "signing_key must not be the shipped placeholder") {
+			t.Fatalf("placeholder variant %q was accepted: %v", value, err)
+		}
+		if strings.Contains(err.Error(), value) {
+			t.Fatalf("placeholder variant %q was disclosed in the validation error: %v", value, err)
+		}
+	}
 }

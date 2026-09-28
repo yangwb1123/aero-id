@@ -13,6 +13,9 @@ func (c *Config) validate() error {
 	if err := c.validateRequired(); err != nil {
 		return err
 	}
+	if err := c.validateEnvHardening(); err != nil {
+		return err
+	}
 	if err := c.validateEnvironmentSecurity(); err != nil {
 		return err
 	}
@@ -58,9 +61,6 @@ func (c *Config) applyDefaults() {
 func (c *Config) validateRequired() error {
 	if c.SigningKey == "" {
 		return fmt.Errorf("signing_key is required")
-	}
-	if err := rejectPlaceholderSecret(c.SigningKey, "signing_key"); err != nil {
-		return err
 	}
 	if c.Database.DBName == "" {
 		return fmt.Errorf("database.dbname is required")
@@ -265,9 +265,6 @@ func validateAuditLedger(value AuditLedgerConfig) error {
 	key := strings.TrimSpace(value.SigningKey)
 	if key == "" {
 		return fmt.Errorf("audit_ledger.signing_key is required")
-	}
-	if err := rejectPlaceholderSecret(key, "audit_ledger.signing_key"); err != nil {
-		return err
 	}
 	if len(key) < 32 {
 		return fmt.Errorf("audit_ledger.signing_key must be at least 32 bytes")
