@@ -72,8 +72,10 @@ window.__AERO_PLATFORM_CONFIG__ = {
 };
 ```
 
-也可以复制 `.env.example` 用于本地构建。不要把 client secret、service credential 或
-bearer token 写进任何前端配置。
+也可以复制 `.env.example` 用于本地构建。`redirectUri` 必须与前端同源，并与 Snaplink 注册的
+回调地址完全一致；`aeroIdApiBase` 必须指向 HTTPS 的 `/v1` API（仅 localhost 回环开发地址允许
+HTTP），且 URL 不得包含 query、fragment 或 userinfo。`snaplinkScopes` 必须包含 `openid`。
+不要把 client secret、service credential 或 bearer token 写进任何前端配置。
 
 ## 开发与验证
 

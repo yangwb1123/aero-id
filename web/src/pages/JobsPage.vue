@@ -8,7 +8,11 @@ import PageError from "../components/PageError.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageLoading from "../components/PageLoading.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
-import { syncJobID } from "../components/jobHelpers";
+import {
+  nextJobCreateIntent,
+  syncJobID,
+  type JobCreateIntent,
+} from "../components/jobHelpers";
 const { client } = defineProps<{ client: AeroIdClient }>();
 const resource = useAsyncResource(async () => {
   const [jobs, datasets] = await Promise.all([
@@ -20,14 +24,38 @@ const resource = useAsyncResource(async () => {
 const action = ref<"sync" | "export">();
 const actionError = ref<Error>();
 const selectedJob = ref<string>();
+const createIntents = ref<Partial<Record<"sync" | "export", JobCreateIntent>>>(
+  {},
+);
+function keyForCreate(kind: "sync" | "export", datasets: string[]): string {
+  const intent = nextJobCreateIntent(
+    { jobType: kind, datasets },
+    createIntents.value[kind],
+  );
+  createIntents.value[kind] = intent;
+  return intent.idempotencyKey;
+}
 async function create(kind: "sync" | "export"): Promise<void> {
+  if (action.value) return;
   action.value = kind;
   actionError.value = undefined;
   try {
     const datasets =
       resource.data?.datasets.map((dataset) => dataset.name) ?? [];
-    if (kind === "sync") await client.createSyncJob(datasets);
-    else await client.createExportJob(datasets);
+    const idempotencyKey = keyForCreate(kind, datasets);
+    const created =
+      kind === "sync"
+        ? await client.createSyncJob(datasets, idempotencyKey)
+        : await client.createExportJob(datasets, idempotencyKey);
+    const id = syncJobID(created);
+    if (!id) {
+      resource.reload();
+      throw new Error(
+        "任务响应缺少 ID；已刷新列表，请先核实任务状态，不要改用新幂等键重复创建。",
+      );
+    }
+    delete createIntents.value[kind];
+    selectedJob.value = id;
     resource.reload();
   } catch (reason) {
     actionError.value =
@@ -51,12 +79,16 @@ async function create(kind: "sync" | "export"): Promise<void> {
       description="任务使用幂等键创建；unknown 状态需要对账，不能自动视为失败重试。"
     >
       <template #actions>
-        <IrisButton :loading="action === 'sync'" @click="void create('sync')"
+        <IrisButton
+          :loading="action === 'sync'"
+          :disabled="Boolean(action)"
+          @click="void create('sync')"
           >同步全部数据集</IrisButton
         >
         <IrisButton
           variant="outline"
           :loading="action === 'export'"
+          :disabled="Boolean(action)"
           @click="void create('export')"
           >创建加密导出</IrisButton
         >

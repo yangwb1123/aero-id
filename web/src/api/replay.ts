@@ -1,5 +1,5 @@
 import type { JsonRecord } from "../types";
-import { AeroIdTransport } from "./transport";
+import { AeroIdTransport, requireDataEnvelope as dataOf } from "./transport";
 
 export type ReplayMode = "forensic" | "dry-run" | "controlled";
 export type ProjectionReplaySource =
@@ -30,15 +30,6 @@ export interface ProjectionReplayInput {
   source: ProjectionReplaySource;
   cursor?: string;
   limit: number;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function dataOf(value: unknown): JsonRecord {
-  if (!isRecord(value) || !isRecord(value.data)) return {};
-  return value.data;
 }
 
 export class ReplayClient {

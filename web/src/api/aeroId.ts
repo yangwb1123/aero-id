@@ -11,7 +11,11 @@ import { ComplianceClient } from "./compliance";
 import { MigrationClient } from "./migration";
 import { RegionClient } from "./region";
 import { ReplayClient } from "./replay";
-import { AeroIdTransport, type RequestOptions } from "./transport";
+import {
+  AeroIdTransport,
+  requireDataEnvelope as dataOf,
+  type RequestOptions,
+} from "./transport";
 export { AeroIdError } from "./transport";
 
 const maxExportResponseBytes = 64 * 1024 * 1024;
@@ -66,17 +70,18 @@ function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function dataOf(value: unknown): JsonRecord {
-  if (!isRecord(value) || !isRecord(value.data)) return {};
-  return value.data;
-}
-
 function pageOf(data: JsonRecord, field: string): PageData<JsonRecord> {
   return {
     items: records(data[field]),
     nextCursor:
       typeof data.next_cursor === "string" ? data.next_cursor : undefined,
   };
+}
+
+function requiredIdempotencyKey(value: string): string {
+  const key = value.trim();
+  if (!key) throw new Error("写入命令需要 Idempotency-Key");
+  return key;
 }
 
 function activityPage(data: JsonRecord): PageData<JsonRecord> {
@@ -199,8 +204,9 @@ export class AeroIdClient {
   async createAdminAccountJob(
     id: string,
     jobType: AdminAccountJobType,
+    idempotencyKey: string,
   ): Promise<JsonRecord> {
-    const key = crypto.randomUUID();
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request(
         "POST",
@@ -279,8 +285,11 @@ export class AeroIdClient {
     );
   }
 
-  async createSyncJob(datasets: string[]): Promise<JsonRecord> {
-    const key = crypto.randomUUID();
+  async createSyncJob(
+    datasets: string[],
+    idempotencyKey: string,
+  ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request("POST", "/me/sync", {
         idempotencyKey: key,
@@ -289,8 +298,11 @@ export class AeroIdClient {
     );
   }
 
-  async createExportJob(datasets: string[]): Promise<JsonRecord> {
-    const key = crypto.randomUUID();
+  async createExportJob(
+    datasets: string[],
+    idempotencyKey: string,
+  ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request("POST", "/me/export", {
         idempotencyKey: key,

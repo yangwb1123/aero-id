@@ -17,7 +17,9 @@ import ReplayConfirmationDialog from "../components/ReplayConfirmationDialog.vue
 import ReplayDetailsPanel from "../components/ReplayDetailsPanel.vue";
 import ReplayResult from "../components/ReplayResult.vue";
 import {
+  controlledReplaySignature,
   newReplayCommand,
+  nextReplayIdempotencyKey,
   parseReplayCommands,
   replayContinuation,
   replayTimeWindow,
@@ -45,6 +47,7 @@ const running = ref(false);
 const error = ref<Error>();
 const result = ref<JsonRecord>();
 const lastInput = ref<ReplayCreateInput>();
+const issuedControlledIntent = ref<{ key: string; signature: string }>();
 function newID(): string {
   return crypto.randomUUID();
 }
@@ -88,7 +91,7 @@ function buildInput(): ReplayCreateInput {
     mode.value === "controlled"
       ? {}
       : replayTimeWindow(fromTime.value, toTime.value);
-  return {
+  const input: ReplayCreateInput = {
     mode: mode.value,
     accountID: normalizedAccountID || undefined,
     operationID: normalizedOperationID || undefined,
@@ -98,13 +101,38 @@ function buildInput(): ReplayCreateInput {
     confirmed: false,
     commands: mode.value === "forensic" ? [] : parsedCommands,
   };
+  if (
+    input.mode === "controlled" &&
+    issuedControlledIntent.value?.key === normalizedKey &&
+    issuedControlledIntent.value.signature !== controlledReplaySignature(input)
+  ) {
+    throw new Error(
+      "上一次 Controlled Replay 结果尚未确认，不能用旧幂等键提交不同命令；请先用原请求重试或核实状态，再生成新键开始新意图。",
+    );
+  }
+  return input;
+}
+function generateReplayKey(): void {
+  idempotencyKey.value = newID();
+  issuedControlledIntent.value = undefined;
 }
 async function execute(input: ReplayCreateInput): Promise<void> {
+  if (input.mode === "controlled" && input.idempotencyKey) {
+    issuedControlledIntent.value = {
+      key: input.idempotencyKey,
+      signature: controlledReplaySignature(input),
+    };
+  }
   running.value = true;
   error.value = undefined;
   try {
     result.value = await client.replays.create(input);
     lastInput.value = input;
+    issuedControlledIntent.value = undefined;
+    idempotencyKey.value = nextReplayIdempotencyKey(
+      input,
+      idempotencyKey.value,
+    );
     pending.value = undefined;
     confirmation.value = "";
   } catch (reason) {
@@ -186,10 +214,7 @@ function continueWindow(cursor: string): void {
             hint="请求超时后使用同一个键安全重试；新意图必须生成新键"
             ><IrisInput v-model="idempotencyKey" readonly
           /></IrisFormField>
-          <IrisButton
-            type="button"
-            variant="outline"
-            @click="idempotencyKey = newID()"
+          <IrisButton type="button" variant="outline" @click="generateReplayKey"
             >生成新键</IrisButton
           >
         </div>

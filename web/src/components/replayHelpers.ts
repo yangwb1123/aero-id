@@ -55,6 +55,29 @@ export function parseReplayCommands(
   });
 }
 
+export function controlledReplaySignature(input: ReplayCreateInput): string {
+  return JSON.stringify({
+    mode: input.mode,
+    accountID: input.accountID,
+    operationID: input.operationID,
+    from: input.from,
+    to: input.to,
+    cursor: input.cursor,
+    limit: input.limit,
+    commands: input.commands,
+  });
+}
+
+export function nextReplayIdempotencyKey(
+  input: ReplayCreateInput,
+  currentKey: string,
+  makeKey: () => string = () => crypto.randomUUID(),
+): string {
+  return input.mode === "controlled" && input.idempotencyKey === currentKey
+    ? makeKey()
+    : currentKey;
+}
+
 export function replayContinuation(
   input: ReplayCreateInput | undefined,
   cursor: string,

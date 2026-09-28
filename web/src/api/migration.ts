@@ -1,5 +1,5 @@
 import type { JsonRecord } from "../types";
-import { AeroIdTransport } from "./transport";
+import { AeroIdTransport, requireDataEnvelope as dataOf } from "./transport";
 
 export type LegacySource = "aero-vault" | "aero-im";
 export type LegacyCutoverStatus =
@@ -16,15 +16,6 @@ export interface LegacyCutoverInput {
   status: LegacyCutoverStatus;
   note: string;
   idempotencyKey: string;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function dataOf(value: unknown): JsonRecord {
-  if (!isRecord(value) || !isRecord(value.data)) return {};
-  return value.data;
 }
 
 export class MigrationClient {

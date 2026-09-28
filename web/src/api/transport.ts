@@ -1,3 +1,5 @@
+import type { JsonRecord } from "../types";
+
 const requestTimeoutMs = 15_000;
 const maxJsonResponseBytes = 2 * 1024 * 1024;
 
@@ -30,16 +32,48 @@ export class AeroIdError extends Error {
   }
 }
 
+function validateApiBase(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AeroIdError(0, "config.invalid", "aero-id API 地址无效");
+  }
+  const loopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(
+    url.hostname,
+  );
+  if (
+    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new AeroIdError(
+      0,
+      "config.invalid",
+      "aero-id API 地址必须使用 HTTPS，且不能包含凭据、query 或 fragment",
+    );
+  }
+  if (!url.pathname.replace(/\/+$/, "").endsWith("/v1")) {
+    throw new AeroIdError(0, "config.invalid", "aero-id API 地址必须指向 /v1");
+  }
+  return url.href.replace(/\/+$/, "");
+}
+
 export class AeroIdTransport {
+  private readonly baseUrl: string;
   private writeEpoch?: string;
   private requestSequence = 0;
   private writeEpochSequence = 0;
 
   constructor(
-    private readonly baseUrl: string,
+    baseUrl: string,
     private readonly accessToken: () => string,
     private readonly fetcher: typeof fetch,
-  ) {}
+  ) {
+    this.baseUrl = validateApiBase(baseUrl);
+  }
 
   pinWriteEpoch(region: string, epoch: number): void {
     const target = region.trim();
@@ -287,6 +321,17 @@ export class AeroIdTransport {
       return new AeroIdError(0, "network.timeout", "aero-id 请求超时");
     return new AeroIdError(0, "network.unavailable", "无法读取 aero-id 响应");
   }
+}
+
+export function requireDataEnvelope(value: unknown): JsonRecord {
+  if (!isRecord(value) || !isRecord(value.data)) {
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "aero-id 成功响应缺少有效的 data 对象",
+    );
+  }
+  return value.data;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

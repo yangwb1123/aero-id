@@ -1,9 +1,64 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ReplayCreateInput } from "../api/replay";
 import {
+  controlledReplaySignature,
+  nextReplayIdempotencyKey,
   replayContinuation,
   replayTimeWindow,
 } from "../components/replayHelpers";
+
+describe("controlledReplaySignature", () => {
+  it("binds a key to its command while ignoring protocol confirmation fields", () => {
+    const input: ReplayCreateInput = {
+      mode: "controlled",
+      idempotencyKey: "key-1",
+      accountID: "account-1",
+      limit: 10,
+      confirmed: false,
+      commands: [{ source: "aero-im", action: "summary", payload: {} }],
+    };
+
+    expect(
+      controlledReplaySignature({
+        ...input,
+        idempotencyKey: "key-2",
+        confirmed: true,
+      }),
+    ).toBe(controlledReplaySignature(input));
+    expect(
+      controlledReplaySignature({ ...input, accountID: "account-2" }),
+    ).not.toBe(controlledReplaySignature(input));
+  });
+});
+
+describe("nextReplayIdempotencyKey", () => {
+  it("rotates only after successful controlled intents using the current key", () => {
+    const makeKey = vi.fn(() => "next-key");
+    const input: ReplayCreateInput = {
+      mode: "controlled",
+      idempotencyKey: "submitted-key",
+      accountID: "account-1",
+      limit: 10,
+      confirmed: true,
+      commands: [],
+    };
+
+    expect(nextReplayIdempotencyKey(input, "submitted-key", makeKey)).toBe(
+      "next-key",
+    );
+    expect(nextReplayIdempotencyKey(input, "newer-key", makeKey)).toBe(
+      "newer-key",
+    );
+    expect(
+      nextReplayIdempotencyKey(
+        { ...input, mode: "dry-run" },
+        "submitted-key",
+        makeKey,
+      ),
+    ).toBe("submitted-key");
+    expect(makeKey).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("replayContinuation", () => {
   it("preserves the bounded dry-run scope and commands while replacing the cursor", () => {

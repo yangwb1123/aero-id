@@ -1,5 +1,5 @@
 import type { JsonRecord, PageData } from "../types";
-import { AeroIdTransport } from "./transport";
+import { AeroIdTransport, requireDataEnvelope as dataOf } from "./transport";
 
 export interface CallbackCreateInput {
   endpoint: string;
@@ -13,11 +13,6 @@ export interface CallbackRegistration {
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function dataOf(value: unknown): JsonRecord {
-  if (!isRecord(value) || !isRecord(value.data)) return {};
-  return value.data;
 }
 
 function subscriptions(value: unknown): JsonRecord[] {

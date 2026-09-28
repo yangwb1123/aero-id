@@ -85,10 +85,14 @@ function requireSafeEndpoint(value: string, label: string): URL {
     endpoint.hostname,
   );
   if (
-    endpoint.protocol !== "https:" &&
-    !(endpoint.protocol === "http:" && loopback)
+    (endpoint.protocol !== "https:" &&
+      !(endpoint.protocol === "http:" && loopback)) ||
+    endpoint.username ||
+    endpoint.password
   ) {
-    throw new OidcError(`${label} 必须使用 HTTPS（仅回环地址允许 HTTP）`);
+    throw new OidcError(
+      `${label} 必须使用 HTTPS，且不能包含 URL 凭据（仅回环地址允许 HTTP）`,
+    );
   }
   return endpoint;
 }

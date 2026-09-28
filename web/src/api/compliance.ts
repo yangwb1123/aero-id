@@ -1,5 +1,5 @@
 import type { JsonRecord } from "../types";
-import { AeroIdTransport } from "./transport";
+import { AeroIdTransport, requireDataEnvelope as dataOf } from "./transport";
 
 export type AuditHoldScope = "tenant" | "account" | "actor";
 
@@ -12,11 +12,6 @@ export interface AuditHoldInput {
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function dataOf(value: unknown): JsonRecord {
-  if (!isRecord(value) || !isRecord(value.data)) return {};
-  return value.data;
 }
 
 function holds(value: unknown): JsonRecord[] {

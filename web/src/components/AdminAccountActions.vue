@@ -13,24 +13,42 @@ import {
 } from "@iris-ui-kit/vue";
 import type { AdminAccountJobType, AeroIdClient } from "../api/aeroId";
 import JobDetails from "./JobDetails.vue";
-import { syncJobID } from "./jobHelpers";
+import {
+  nextJobCreateIntent,
+  syncJobID,
+  type JobCreateIntent,
+} from "./jobHelpers";
 const props = defineProps<{ client: AeroIdClient; accountID: string }>();
 const action = ref<AdminAccountJobType>();
 const actionError = ref<Error>();
 const confirmAction = ref<Exclude<AdminAccountJobType, "sync">>();
 const eraseConfirmation = ref("");
 const createdJobID = ref<string>();
+const createIntents = ref<
+  Partial<Record<AdminAccountJobType, JobCreateIntent>>
+>({});
 async function createJob(jobType: AdminAccountJobType): Promise<void> {
+  if (action.value) return;
+  const intent = nextJobCreateIntent(
+    { jobType, accountID: props.accountID, datasets: [] },
+    createIntents.value[jobType],
+  );
+  createIntents.value[jobType] = intent;
   action.value = jobType;
   actionError.value = undefined;
   try {
     const created = await props.client.createAdminAccountJob(
       props.accountID,
       jobType,
+      intent.idempotencyKey,
     );
     const id = syncJobID(created);
-    if (!id) throw new Error("服务端未返回任务 ID");
+    if (!id)
+      throw new Error(
+        "任务可能已创建，但服务端未返回任务 ID；请先核实任务状态，同一意图重试会复用当前幂等键。",
+      );
     createdJobID.value = id;
+    delete createIntents.value[jobType];
     confirmAction.value = undefined;
     eraseConfirmation.value = "";
   } catch (reason) {

@@ -17,18 +17,24 @@ import PagedRecordTable from "./PagedRecordTable.vue";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 
 const props = defineProps<{ client: AeroIdClient }>();
 const draftUID = ref("");
 const draftReason = ref("");
 const draftDuration = ref("");
-const pending = ref<{
-  action: "ban" | "unban";
-  uid: string;
-  reason?: string;
-  duration?: string;
-  idempotencyKey?: string;
-}>();
+const pending = ref<
+  | {
+      action: "ban";
+      uid: string;
+      reason: string;
+      duration?: string;
+      signature: string;
+      idempotencyKey: string;
+    }
+  | { action: "unban"; uid: string }
+>();
+const intentKeys = new Map<string, string>();
 const confirmation = ref("");
 const running = ref(false);
 const error = ref<Error>();
@@ -39,6 +45,7 @@ function reload(): void {
   resource.reload();
 }
 function prepareBan(): void {
+  if (running.value) return;
   const uid = draftUID.value.trim();
   const reason = draftReason.value.trim();
   if (!uid || !reason) {
@@ -46,16 +53,23 @@ function prepareBan(): void {
     return;
   }
   error.value = undefined;
+  const duration = draftDuration.value.trim() || undefined;
+  const intent = rememberIdempotencyKey(
+    { action: "ban", uid, reason, duration },
+    intentKeys,
+  );
   pending.value = {
     action: "ban",
     uid,
     reason,
-    duration: draftDuration.value.trim() || undefined,
-    idempotencyKey: crypto.randomUUID(),
+    duration,
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
   };
   confirmation.value = "";
 }
 function prepareUnban(record: JsonRecord): void {
+  if (running.value) return;
   const value = record.uid;
   if (typeof value !== "string" || !value) return;
   error.value = undefined;
@@ -63,19 +77,27 @@ function prepareUnban(record: JsonRecord): void {
   confirmation.value = "";
 }
 async function confirm(): Promise<void> {
-  if (!pending.value || confirmation.value !== confirmationPhrase()) return;
+  const command = pending.value;
+  if (
+    !command ||
+    confirmation.value !== confirmationPhrase() ||
+    running.value
+  ) {
+    return;
+  }
   running.value = true;
   error.value = undefined;
   try {
-    if (pending.value.action === "ban") {
+    if (command.action === "ban") {
       await props.client.banUser(
-        pending.value.uid,
-        pending.value.reason ?? "",
-        pending.value.duration,
-        pending.value.idempotencyKey,
+        command.uid,
+        command.reason,
+        command.duration,
+        command.idempotencyKey,
       );
+      intentKeys.delete(command.signature);
     } else {
-      await props.client.unbanUser(pending.value.uid);
+      await props.client.unbanUser(command.uid);
     }
     pending.value = undefined;
     await reload();
@@ -109,7 +131,12 @@ function cancel(): void {
       <IrisFormField label="持续时间" hint="Go duration，例如 24h；留空为永久"
         ><IrisInput v-model="draftDuration" placeholder="24h"
       /></IrisFormField>
-      <IrisButton variant="danger" @click="prepareBan">准备封禁</IrisButton>
+      <IrisButton
+        variant="danger"
+        :disabled="running"
+        @click="prepareBan"
+        >准备封禁</IrisButton
+      >
     </div>
     <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
     <PageLoading v-if="resource.loading && !resource.data" />
@@ -137,7 +164,11 @@ function cancel(): void {
         empty="当前没有有效封禁"
       >
         <template #actions="{ record }">
-          <IrisButton size="sm" variant="outline" @click="prepareUnban(record)"
+          <IrisButton
+            size="sm"
+            variant="outline"
+            :disabled="running"
+            @click="prepareUnban(record)"
             >准备解封</IrisButton
           >
         </template>

@@ -2,6 +2,33 @@ import { describe, expect, it, vi } from "vitest";
 import { AeroIdTransport } from "./transport";
 
 describe("AeroIdTransport", () => {
+  it("rejects unsafe or unversioned API bases before requests can send a token", () => {
+    const fetcher = vi.fn();
+    for (const baseUrl of [
+      "http://accounts.example.test/v1",
+      "https://user:secret@accounts.example.test/v1",
+      "https://accounts.example.test/v1?token=secret",
+      "https://accounts.example.test/api",
+    ]) {
+      expect(
+        () =>
+          new AeroIdTransport(baseUrl, () => "token", fetcher as typeof fetch),
+      ).toThrow("aero-id API");
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("allows loopback HTTP for local development", () => {
+    expect(
+      () =>
+        new AeroIdTransport(
+          "http://localhost:8080/v1/",
+          () => "token",
+          vi.fn() as typeof fetch,
+        ),
+    ).not.toThrow();
+  });
+
   it("bounds a streamed download when content length is absent", async () => {
     const fetcher = vi.fn(async () => new Response("12345"));
     const transport = new AeroIdTransport(

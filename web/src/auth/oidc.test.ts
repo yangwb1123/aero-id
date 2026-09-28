@@ -53,6 +53,22 @@ describe("OidcClient", () => {
   beforeEach(() => sessionStorage.clear());
   afterEach(() => vi.useRealTimers());
 
+  it("rejects discovered endpoints that embed URL credentials", async () => {
+    const unsafeDiscovery = {
+      ...discovery,
+      token_endpoint: "https://user:secret@identity.example.test/token",
+    };
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify(unsafeDiscovery), { status: 200 }),
+    );
+    const client = new OidcClient(config, { fetch: fetcher as typeof fetch });
+
+    await expect(client.prepareLogin()).rejects.toThrow(
+      "Snaplink token endpoint",
+    );
+  });
+
   it("retries OIDC discovery after a transient failure", async () => {
     const fetcher = vi
       .fn()

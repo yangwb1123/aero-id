@@ -10,6 +10,19 @@ function json(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe("AeroIdClient", () => {
+  it("rejects successful responses that violate the data envelope contract", async () => {
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      vi.fn(async () => json({ status: "ok" })) as typeof fetch,
+    );
+
+    await expect(client.getProfile()).rejects.toMatchObject({
+      code: "response.invalid",
+      status: 0,
+    });
+  });
+
   it("sends bearer, request, idempotency and read-your-writes headers", async () => {
     const requests: Array<{
       url: string;
@@ -44,13 +57,13 @@ describe("AeroIdClient", () => {
       fetcher as typeof fetch,
     );
 
-    await client.createSyncJob(["aero-im.workspaces"]);
+    await client.createSyncJob(["aero-im.workspaces"], "sync-job-key");
     await client.listDatasets();
 
     expect(requests[0].headers.get("Authorization")).toBe(
       "Bearer access-token",
     );
-    expect(requests[0].headers.get("Idempotency-Key")).toBeTruthy();
+    expect(requests[0].headers.get("Idempotency-Key")).toBe("sync-job-key");
     expect(requests[0].headers.get("X-Request-ID")).toBeTruthy();
     expect(requests[1].headers.get("X-Aero-Write-Epoch")).toBe("local:7");
     const body = JSON.parse(String(requests[0].body));
@@ -213,9 +226,9 @@ describe("AeroIdClient", () => {
       fetcher as typeof fetch,
     );
 
-    await client.createAdminAccountJob("account/1", "sync");
-    await client.createAdminAccountJob("account/1", "export");
-    await client.createAdminAccountJob("account/1", "erase");
+    await client.createAdminAccountJob("account/1", "sync", "sync-key");
+    await client.createAdminAccountJob("account/1", "export", "export-key");
+    await client.createAdminAccountJob("account/1", "erase", "erase-key");
 
     expect(requests.map((request) => request.url.pathname)).toEqual([
       "/v1/admin/accounts/account%2F1/sync",
@@ -227,6 +240,23 @@ describe("AeroIdClient", () => {
       expect(body.datasets).toEqual([]);
       expect(body.idempotency_key).toBe(request.headers.get("Idempotency-Key"));
     }
+    expect(
+      requests.map((request) => request.headers.get("Idempotency-Key")),
+    ).toEqual(["sync-key", "export-key", "erase-key"]);
+  });
+
+  it("rejects a missing sync-job key before making a request", async () => {
+    const fetcher = vi.fn(async () => json({ data: {} }));
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await expect(client.createSyncJob([], " ")).rejects.toThrow(
+      "Idempotency-Key",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("creates a self-erase job with a fresh idempotency key", async () => {

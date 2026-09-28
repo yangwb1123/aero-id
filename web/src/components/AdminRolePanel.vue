@@ -16,6 +16,7 @@ import type { AeroIdClient } from "../api/aeroId";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 
 const props = defineProps<{ client: AeroIdClient }>();
 const roles = ref<Record<string, unknown>[]>([]);
@@ -30,8 +31,10 @@ const pending = ref<{
   action: "grant" | "revoke";
   uid: string;
   role: string;
+  signature: string;
   idempotencyKey: string;
 }>();
+const intentKeys = new Map<string, string>();
 const confirmation = ref("");
 const running = ref(false);
 const roleItems = computed(() =>
@@ -65,8 +68,8 @@ async function loadRoles(): Promise<void> {
     loading.value = false;
   }
 }
-async function loadUserRoles(): Promise<void> {
-  const target = uid.value.trim();
+async function loadUserRoles(uidValue = uid.value): Promise<void> {
+  const target = uidValue.trim();
   if (!target) {
     userError.value = new Error("UID 不能为空");
     return;
@@ -86,39 +89,47 @@ async function loadUserRoles(): Promise<void> {
   }
 }
 function prepare(action: "grant" | "revoke"): void {
+  if (running.value) return;
   const target = uid.value.trim();
   const role = roleCode.value.trim();
   if (!target || !role) {
     userError.value = new Error("UID 和角色代码不能为空");
     return;
   }
+  const intent = rememberIdempotencyKey(
+    { action, uid: target, role },
+    intentKeys,
+  );
   pending.value = {
     action,
     uid: target,
     role,
-    idempotencyKey: crypto.randomUUID(),
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
   };
   confirmation.value = "";
 }
 async function confirm(): Promise<void> {
-  if (!pending.value || !confirmed.value) return;
+  const command = pending.value;
+  if (!command || !confirmed.value || running.value) return;
   running.value = true;
   userError.value = undefined;
   try {
-    if (pending.value.action === "grant") {
+    if (command.action === "grant") {
       await props.client.grantRole(
-        pending.value.uid,
-        pending.value.role,
-        pending.value.idempotencyKey,
+        command.uid,
+        command.role,
+        command.idempotencyKey,
       );
     } else {
       await props.client.revokeRole(
-        pending.value.uid,
-        pending.value.role,
-        pending.value.idempotencyKey,
+        command.uid,
+        command.role,
+        command.idempotencyKey,
       );
     }
-    await loadUserRoles();
+    intentKeys.delete(command.signature);
+    await loadUserRoles(command.uid);
     pending.value = undefined;
   } catch (reason) {
     userError.value =
