@@ -1,6 +1,6 @@
 import { reactive, inject, provide, type InjectionKey } from "vue";
 import type { PlatformConfig } from "../config";
-import { OidcClient, type OidcSession } from "./oidc";
+import { OidcClient, OidcError, type OidcSession } from "./oidc";
 
 export type AuthStatus = "loading" | "anonymous" | "authenticated" | "error";
 
@@ -21,8 +21,18 @@ export function createAuthState(config: PlatformConfig): AuthState {
     session: undefined,
     error: undefined,
     login: async () => {
+      if (state.status === "loading") return;
       state.error = undefined;
-      await client.beginLogin(window.location.hash || "#/overview");
+      state.status = "loading";
+      try {
+        await client.beginLogin(window.location.hash || "#/overview");
+      } catch (reason) {
+        state.error =
+          reason instanceof OidcError
+            ? reason.message
+            : "无法连接 Snaplink，请检查网络后重试";
+        state.status = "error";
+      }
     },
     logout: async () => {
       const idToken = state.session?.idToken;

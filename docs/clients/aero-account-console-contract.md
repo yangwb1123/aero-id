@@ -131,6 +131,8 @@ DELETE /v1/admin/callback-subscriptions/:id
 POST /v1/admin/callback-subscriptions/deliveries/:id/replay
 ```
 
+Callback 注册和人工重放 Delivery 都必须为该次意图生成 `Idempotency-Key`；超时或响应丢失时，对同一请求复用原键。注册请求的幂等重放只返回订阅元数据，不会再次返回一次性 Secret；客户端应视为已注册并提示 Secret 不可恢复，不得因缺少 Secret 自动用新键重复创建。只有用户明确开始新的注册或新的重放意图时，才生成新键。
+
 审计查询返回脱敏 payload、链序号、hash/signature 版本、`request_id`、`trace_id`、`operation_id` 和因果 ID。
 Forensic replay 不产生副作用；dry-run 只模拟；controlled replay 必须重新授权、使用新的幂等键并产生新的
 审计事实。Projection replay 只接受 `snaplink | aero-im | aero-vault | aero-id`，服务端再次校验 `audit.replay`

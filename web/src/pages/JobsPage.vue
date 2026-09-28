@@ -91,6 +91,7 @@ async function create(kind: "sync" | "export"): Promise<void> {
     </IrisCard>
     <JobDetails
       v-if="selectedJob"
+      :key="selectedJob"
       :client="client"
       :job-id="selectedJob"
       @close="selectedJob = undefined"

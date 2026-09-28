@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
   IrisAlert,
   IrisButton,
@@ -10,6 +10,7 @@ import {
 } from "@iris-ui-kit/vue";
 import type { AeroIdClient, ConsistencyMode } from "../api/aeroId";
 import type { AggregateView, Dataset } from "../types";
+import { validateDatasetSelection } from "./accountDataHelpers";
 import RecordTable from "./RecordTable.vue";
 
 const props = defineProps<{
@@ -35,6 +36,27 @@ const datasetItems = computed(() =>
   })),
 );
 const snapshots = computed(() => result.value?.snapshots ?? []);
+const querySignature = computed(() =>
+  JSON.stringify({
+    adminAccountId: props.adminAccountId ?? "",
+    datasets: props.datasets
+      .map(({ name, source, pii }) => [name, source, pii])
+      .sort(([left], [right]) => String(left).localeCompare(String(right))),
+    selected: [...selectedDatasets.value].sort(),
+    consistency: consistency.value,
+    maxAge: maxAge.value.trim(),
+  }),
+);
+let generation = 0;
+watch(querySignature, () => {
+  generation += 1;
+  result.value = undefined;
+  error.value = undefined;
+  loading.value = false;
+});
+onBeforeUnmount(() => {
+  generation += 1;
+});
 const sourceErrors = computed(() =>
   Object.entries(result.value?.source_errors ?? {})
     .map(([source, message]) => `${source}: ${message}`)
@@ -68,36 +90,44 @@ function validateMaxAge(value: string): string | undefined {
   return normalized;
 }
 async function load(): Promise<void> {
+  const currentGeneration = ++generation;
+  loading.value = false;
+  result.value = undefined;
+  error.value = undefined;
   if (props.datasets.length === 0) {
     error.value = new Error("服务端没有返回可用的数据集 allow-list");
     return;
   }
   let age: string | undefined;
+  let requestedDatasets: string[];
   try {
     age = validateMaxAge(maxAge.value);
+    requestedDatasets = validateDatasetSelection(
+      selectedDatasets.value,
+      props.datasets,
+    );
   } catch (reason) {
-    error.value = reason instanceof Error ? reason : new Error("Max Age 无效");
+    error.value = reason instanceof Error ? reason : new Error("查询条件无效");
     return;
   }
   loading.value = true;
-  error.value = undefined;
   try {
-    result.value = props.adminAccountId
-      ? await props.client.getAdminAccountData(props.adminAccountId, {
-          datasets: selectedDatasets.value,
-          consistency: consistency.value,
-          maxAge: age,
-        })
-      : await props.client.getMyData({
-          datasets: selectedDatasets.value,
-          consistency: consistency.value,
-          maxAge: age,
-        });
+    const query = {
+      datasets: requestedDatasets,
+      consistency: consistency.value,
+      maxAge: age,
+    };
+    const value = props.adminAccountId
+      ? await props.client.getAdminAccountData(props.adminAccountId, query)
+      : await props.client.getMyData(query);
+    if (currentGeneration === generation) result.value = value;
   } catch (reason) {
-    error.value =
-      reason instanceof Error ? reason : new Error("账户数据读取失败");
+    if (currentGeneration === generation) {
+      error.value =
+        reason instanceof Error ? reason : new Error("账户数据读取失败");
+    }
   } finally {
-    loading.value = false;
+    if (currentGeneration === generation) loading.value = false;
   }
 }
 </script>

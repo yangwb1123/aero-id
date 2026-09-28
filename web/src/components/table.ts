@@ -11,9 +11,13 @@ export function mergePage<T>(
   current: PageData<T>,
   next: PageData<T>,
   requestedCursor: string,
+  consumedCursors: ReadonlySet<string> = new Set(),
 ): PageData<T> {
-  if (next.nextCursor === requestedCursor) {
-    throw new Error("分页游标没有前进，请刷新后重试");
+  if (
+    next.nextCursor === requestedCursor ||
+    (next.nextCursor !== undefined && consumedCursors.has(next.nextCursor))
+  ) {
+    throw new Error("分页游标出现循环，请刷新后重试");
   }
   return {
     items: [...current.items, ...next.items],

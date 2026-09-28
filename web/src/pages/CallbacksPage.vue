@@ -8,6 +8,7 @@ import {
   IrisInput,
   IrisTextarea,
 } from "@iris-ui-kit/vue";
+import type { CallbackCreateInput } from "../api/callback";
 import type { AeroIdClient } from "../api/aeroId";
 import CallbackCommandDialog from "../components/CallbackCommandDialog.vue";
 import CallbackSecretDialog from "../components/CallbackSecretDialog.vue";
@@ -15,6 +16,11 @@ import type {
   CallbackCommand,
   CallbackSecret,
 } from "../components/dialogTypes";
+import {
+  callbackCreateIntent,
+  normalizeCallbackEndpoint,
+  parseCallbackEventTypes,
+} from "../components/callbackHelpers";
 import PagedRecordTable from "../components/PagedRecordTable.vue";
 import PageError from "../components/PageError.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -28,6 +34,7 @@ const endpoint = ref("");
 const eventTypeText = ref("");
 const creating = ref(false);
 const createError = ref<Error>();
+const createIntent = ref<{ signature: string; idempotencyKey: string }>();
 const secret = ref<CallbackSecret>();
 const deliveryID = ref("");
 const command = ref<CallbackCommand>();
@@ -38,28 +45,44 @@ function callbackID(record: JsonRecord): string | undefined {
   const value = record.id ?? record.subscription_id;
   return typeof value === "string" && value ? value : undefined;
 }
-function eventTypes(value: string): string[] {
-  return [...new Set(value.split(/[\n,]/).map((item) => item.trim()))].filter(
-    Boolean,
-  );
+function startReplay(): void {
+  const id = deliveryID.value.trim();
+  if (!id) return;
+  command.value = { kind: "replay", id, idempotencyKey: crypto.randomUUID() };
+}
+function createKey(input: CallbackCreateInput): string {
+  createIntent.value = callbackCreateIntent(input, createIntent.value);
+  return createIntent.value.idempotencyKey;
 }
 async function create(): Promise<void> {
-  const filters = eventTypes(eventTypeText.value);
-  if (filters.length === 0) {
-    createError.value = new Error("至少填写一个允许投递的事件类型");
+  if (creating.value) return;
+  let input: CallbackCreateInput;
+  try {
+    input = {
+      endpoint: normalizeCallbackEndpoint(endpoint.value),
+      eventTypes: parseCallbackEventTypes(eventTypeText.value),
+    };
+  } catch (reason) {
+    createError.value =
+      reason instanceof Error ? reason : new Error("Callback 输入无效");
     return;
   }
+  const idempotencyKey = createKey(input);
   creating.value = true;
   createError.value = undefined;
+  message.value = undefined;
   try {
-    const result = await client.callbacks.create({
-      endpoint: endpoint.value.trim(),
-      eventTypes: filters,
-    });
+    const result = await client.callbacks.create(input, idempotencyKey);
     const id = callbackID(result.subscription);
-    if (!id || !result.secret)
-      throw new Error("订阅已响应，但缺少一次性 Secret 或订阅 ID");
-    secret.value = { subscriptionID: id, value: result.secret };
+    if (!id) throw new Error("注册响应缺少订阅 ID；请刷新列表核实后再继续");
+    secret.value = result.secret
+      ? { subscriptionID: id, value: result.secret }
+      : undefined;
+    if (!result.secret) {
+      message.value =
+        "订阅已创建，但此安全重试响应不含一次性 Secret。若之前未保存 Secret，请先核实投递方配置；不要用新幂等键重复创建。";
+    }
+    createIntent.value = undefined;
     endpoint.value = "";
     eventTypeText.value = "";
     resource.replace({
@@ -90,7 +113,7 @@ async function runCommand(): Promise<void> {
         nextCursor: resource.data?.nextCursor,
       });
     } else {
-      await client.callbacks.replayDelivery(current.id);
+      await client.callbacks.replayDelivery(current.id, current.idempotencyKey);
       message.value = `Delivery ${current.id} 已进入重试队列。`;
       deliveryID.value = "";
     }
@@ -119,9 +142,12 @@ async function runCommand(): Promise<void> {
     <IrisAlert v-if="message" tone="success">{{ message }}</IrisAlert>
     <IrisCard variant="outline">
       <template #header>注册 Callback 端点</template>
-      <IrisAlert v-if="createError" tone="danger">{{
-        createError.message
-      }}</IrisAlert>
+      <IrisAlert v-if="createError" tone="danger">
+        {{ createError.message }}
+        <p v-if="createIntent">
+          若请求结果不确定，使用相同表单重试会复用本次幂等键；不要为同一意图生成新键。
+        </p>
+      </IrisAlert>
       <form class="callback-create-grid" @submit.prevent="void create()">
         <IrisFormField
           label="HTTPS Endpoint"
@@ -130,6 +156,7 @@ async function runCommand(): Promise<void> {
             v-model="endpoint"
             type="url"
             required
+            :disabled="creating"
             placeholder="https://callback.example.com/aero/events"
         /></IrisFormField>
         <IrisFormField
@@ -138,10 +165,13 @@ async function runCommand(): Promise<void> {
           ><IrisTextarea
             v-model="eventTypeText"
             required
+            :disabled="creating"
             placeholder="operation.completed, export.ready"
         /></IrisFormField>
         <div class="admin-filter-actions">
-          <IrisButton type="submit" :loading="creating">验证并注册</IrisButton>
+          <IrisButton type="submit" :loading="creating" :disabled="creating"
+            >验证并注册</IrisButton
+          >
         </div>
       </form>
     </IrisCard>
@@ -190,7 +220,7 @@ async function runCommand(): Promise<void> {
         <IrisButton
           variant="outline"
           :disabled="!deliveryID.trim()"
-          @click="command = { kind: 'replay', id: deliveryID.trim() }"
+          @click="startReplay"
           >重放投递</IrisButton
         >
       </div>

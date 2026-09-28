@@ -22,6 +22,7 @@ import { mergePage } from "./table";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
+import { safeJsonPreview } from "./safeJsonPreview";
 const props = defineProps<{ client: AeroIdClient; operationId: string }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
 function records(value: unknown): JsonRecord[] {
@@ -31,9 +32,6 @@ function records(value: unknown): JsonRecord[] {
           Boolean(item) && typeof item === "object" && !Array.isArray(item),
       )
     : [];
-}
-function jsonPreview(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2);
 }
 function displayDate(value: unknown): string {
   const date = new Date(String(value ?? ""));
@@ -54,6 +52,7 @@ const auditResource = useAsyncResource(() =>
   props.client.listOperationAudit(props.operationId),
 );
 const auditPage = ref<PageData<JsonRecord>>({ items: [] });
+const consumedAuditCursors = new Set<string>();
 const auditLoading = ref(false);
 const auditError = ref<Error>();
 const reconciling = ref(false);
@@ -66,6 +65,7 @@ watch(
   (value) => {
     if (value) {
       auditPage.value = value;
+      consumedAuditCursors.clear();
       auditError.value = undefined;
     }
   },
@@ -93,11 +93,18 @@ async function loadMoreAudit(): Promise<void> {
   auditLoading.value = true;
   auditError.value = undefined;
   try {
-    auditPage.value = mergePage(
-      auditPage.value,
-      await props.client.listOperationAudit(props.operationId, cursor),
+    const next = await props.client.listOperationAudit(
+      props.operationId,
       cursor,
     );
+    const merged = mergePage(
+      auditPage.value,
+      next,
+      cursor,
+      consumedAuditCursors,
+    );
+    consumedAuditCursors.add(cursor);
+    auditPage.value = merged;
   } catch (reason) {
     auditError.value =
       reason instanceof Error ? reason : new Error("审计时间线读取失败");
@@ -240,13 +247,13 @@ const steps = computed(() => records(resource.data?.steps));
         <div>
           <h3>请求</h3>
           <pre class="json-preview">{{
-            jsonPreview(resource.data.request_payload)
+            safeJsonPreview(resource.data.request_payload)
           }}</pre>
         </div>
         <div>
           <h3>结果</h3>
           <pre class="json-preview">{{
-            jsonPreview(resource.data.result)
+            safeJsonPreview(resource.data.result)
           }}</pre>
         </div>
       </div>

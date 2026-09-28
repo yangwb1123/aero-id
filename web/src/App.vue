@@ -33,10 +33,15 @@ if (auth) provide(authKey, auth);
           <IrisAlert tone="danger" title="运行配置无效">
             {{ configError ?? "运行配置无效" }}
           </IrisAlert>
-          <p>请部署 runtime-config.js，或根据 .env.example 设置构建环境变量。</p>
+          <p>
+            请部署 runtime-config.js，或根据 .env.example 设置构建环境变量。
+          </p>
         </IrisCard>
       </main>
-      <AeroShell v-else-if="auth?.status === 'authenticated'" :config="config" />
+      <AeroShell
+        v-else-if="auth?.status === 'authenticated'"
+        :config="config"
+      />
       <LoginPage v-else />
     </SkinProvider>
   </IrisProvider>

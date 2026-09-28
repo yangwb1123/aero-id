@@ -189,6 +189,7 @@ async function runCommand(): Promise<void> {
     <AuditAnchorsPanel :client="client" />
     <JobDetails
       v-if="jobID"
+      :key="jobID"
       :client="client"
       :job-id="jobID"
       @close="jobID = undefined"

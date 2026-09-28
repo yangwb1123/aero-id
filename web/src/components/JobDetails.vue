@@ -14,6 +14,7 @@ import { useAsyncResource } from "../hooks/useAsyncResource";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
+import { safeJsonPreview } from "./safeJsonPreview";
 
 const props = defineProps<{ client: AeroIdClient; jobId: string }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
@@ -21,9 +22,6 @@ const resource = useAsyncResource(() => props.client.getSyncJob(props.jobId));
 const action = ref<"reconcile" | "download">();
 const actionError = ref<Error>();
 const confirmDownload = ref(false);
-function jsonPreview(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2);
-}
 function saveExport(blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -122,13 +120,13 @@ async function download(): Promise<void> {
         <div>
           <h3>请求</h3>
           <pre class="json-preview">{{
-            jsonPreview(resource.data.request)
+            safeJsonPreview(resource.data.request)
           }}</pre>
         </div>
         <div>
           <h3>脱敏结果</h3>
           <pre class="json-preview">{{
-            jsonPreview(resource.data.result)
+            safeJsonPreview(resource.data.result)
           }}</pre>
         </div>
       </div>

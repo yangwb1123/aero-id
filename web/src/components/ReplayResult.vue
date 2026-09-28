@@ -6,6 +6,7 @@ import type { JsonRecord } from "../types";
 import OperationDetails from "./OperationDetails.vue";
 import RecordTable from "./RecordTable.vue";
 import { records } from "./replayHelpers";
+import { safeJsonPreview } from "./safeJsonPreview";
 const props = defineProps<{
   client: AeroIdClient;
   result: JsonRecord;
@@ -15,9 +16,6 @@ const emit = defineEmits<{ clear: []; continueWindow: [cursor: string] }>();
 const controlled = computed(() => props.result.mode === "controlled");
 const showOperation = ref(controlled.value);
 const events = computed(() => records(props.result.events));
-function jsonPreview(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2);
-}
 </script>
 
 <template>
@@ -64,7 +62,7 @@ function jsonPreview(value: unknown): string {
     >
     <template v-if="result.simulation"
       ><h3 class="detail-heading">Dry-run 模拟结果</h3>
-      <pre class="json-preview">{{ jsonPreview(result.simulation) }}</pre>
+      <pre class="json-preview">{{ safeJsonPreview(result.simulation) }}</pre>
     </template>
     <template v-if="events.length"
       ><h3 class="detail-heading">重建的脱敏事实</h3>

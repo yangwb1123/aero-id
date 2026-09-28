@@ -13,6 +13,7 @@ import OperationDetails from "./OperationDetails.vue";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
+import { safeJsonPreview } from "./safeJsonPreview";
 
 const props = defineProps<{ client: AeroIdClient }>();
 const replayID = ref("");
@@ -20,9 +21,6 @@ const result = ref<JsonRecord>();
 const loading = ref(false);
 const error = ref<Error>();
 const showTimeline = ref(false);
-function jsonPreview(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2);
-}
 async function load(): Promise<void> {
   if (!replayID.value.trim()) {
     error.value = new Error("Replay ID 不能为空");
@@ -79,7 +77,7 @@ async function load(): Promise<void> {
       >
         不要因为网络超时重复创建新意图；使用原 Replay/Operation ID 对账。
       </IrisAlert>
-      <pre class="json-preview">{{ jsonPreview(result) }}</pre>
+      <pre class="json-preview">{{ safeJsonPreview(result) }}</pre>
       <div class="detail-actions">
         <IrisButton
           v-if="result.operation_id || result.replay_id"

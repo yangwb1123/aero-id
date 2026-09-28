@@ -18,11 +18,13 @@ const current = ref<PageData<JsonRecord>>(props.page);
 const loadingMore = ref(false);
 const loadError = ref<Error>();
 let generation = 0;
+const consumedCursors = new Set<string>();
 
 watch(
   () => props.page,
   (page) => {
     generation += 1;
+    consumedCursors.clear();
     current.value = page;
     loadingMore.value = false;
     loadError.value = undefined;
@@ -38,7 +40,9 @@ async function loadMore(): Promise<void> {
   try {
     const next = await props.loadPage(cursor);
     if (generation !== activeGeneration) return;
-    current.value = mergePage(current.value, next, cursor);
+    const merged = mergePage(current.value, next, cursor, consumedCursors);
+    consumedCursors.add(cursor);
+    current.value = merged;
   } catch (reason) {
     if (generation !== activeGeneration) return;
     loadError.value =

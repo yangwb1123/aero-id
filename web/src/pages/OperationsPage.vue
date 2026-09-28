@@ -86,6 +86,7 @@ const hasUnknown = computed(
     </IrisCard>
     <OperationDetails
       v-if="selectedOperation"
+      :key="selectedOperation"
       :client="client"
       :operation-id="selectedOperation"
       @close="selectedOperation = undefined"

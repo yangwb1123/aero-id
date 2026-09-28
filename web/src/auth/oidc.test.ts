@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PlatformConfig } from "../config";
 import { OidcClient } from "./oidc";
 
@@ -20,8 +20,52 @@ const discovery = {
   code_challenge_methods_supported: ["S256"],
 };
 
+async function exchangeToken(
+  overrides: Record<string, unknown>,
+): Promise<Awaited<ReturnType<OidcClient["completeLogin"]>>> {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/.well-known/openid-configuration")) {
+      return new Response(JSON.stringify(discovery), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({
+        access_token: "short-lived-token",
+        token_type: "Bearer",
+        expires_in: 300,
+        ...overrides,
+      }),
+      { status: 200 },
+    );
+  });
+  const client = new OidcClient(config, {
+    fetch: fetcher as typeof fetch,
+    replaceUrl: vi.fn(),
+    now: () => 1_000,
+  });
+  const authorization = new URL(await client.prepareLogin());
+  const callback = new URL(config.redirectUri);
+  callback.searchParams.set("code", "authorization-code");
+  callback.searchParams.set("state", authorization.searchParams.get("state")!);
+  return client.completeLogin(callback.toString());
+}
+
 describe("OidcClient", () => {
   beforeEach(() => sessionStorage.clear());
+  afterEach(() => vi.useRealTimers());
+
+  it("retries OIDC discovery after a transient failure", async () => {
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(discovery), { status: 200 }),
+      );
+    const client = new OidcClient(config, { fetch: fetcher as typeof fetch });
+
+    await expect(client.prepareLogin()).rejects.toThrow("network unavailable");
+    await expect(client.prepareLogin()).resolves.toMatch(/^https:\/\//);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 
   it("builds an S256 authorization request without a client secret", async () => {
     const fetcher = vi.fn(
@@ -96,6 +140,168 @@ describe("OidcClient", () => {
     expect(sessionStorage.length).toBe(0);
     expect(replaceUrl).toHaveBeenCalledWith(config.redirectUri);
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors token lifetimes shorter than 30 seconds", async () => {
+    const session = await exchangeToken({ expires_in: 5 });
+
+    expect(session.expiresAt).toBe(6_000);
+  });
+
+  it("bounds the token response by streamed UTF-8 bytes", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/.well-known/openid-configuration")) {
+        return new Response(JSON.stringify(discovery), { status: 200 });
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"access_token":"'));
+          controller.enqueue(new Uint8Array(65 * 1024).fill(0x61));
+          controller.enqueue(
+            new TextEncoder().encode('","token_type":"Bearer"}'),
+          );
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const client = new OidcClient(config, {
+      fetch: fetcher as typeof fetch,
+      replaceUrl: vi.fn(),
+    });
+    const authorization = new URL(await client.prepareLogin());
+    const callback = new URL(config.redirectUri);
+    callback.searchParams.set("code", "authorization-code");
+    callback.searchParams.set(
+      "state",
+      authorization.searchParams.get("state")!,
+    );
+
+    await expect(client.completeLogin(callback.toString())).rejects.toThrow(
+      "token 响应过大",
+    );
+  });
+
+  it("allows a fresh authorization attempt after token exchange failure", async () => {
+    let tokenRequests = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/.well-known/openid-configuration")) {
+        return new Response(JSON.stringify(discovery), { status: 200 });
+      }
+      tokenRequests += 1;
+      if (tokenRequests === 1) throw new TypeError("network unavailable");
+      return new Response(
+        JSON.stringify({ access_token: "new-token", token_type: "Bearer" }),
+        { status: 200 },
+      );
+    });
+    const client = new OidcClient(config, {
+      fetch: fetcher as typeof fetch,
+      replaceUrl: vi.fn(),
+    });
+    const callbackForNewLogin = async (): Promise<string> => {
+      const authorization = new URL(await client.prepareLogin());
+      const callback = new URL(config.redirectUri);
+      callback.searchParams.set("code", `authorization-code-${tokenRequests}`);
+      callback.searchParams.set(
+        "state",
+        authorization.searchParams.get("state")!,
+      );
+      return callback.toString();
+    };
+
+    await expect(
+      client.completeLogin(await callbackForNewLogin()),
+    ).rejects.toThrow("network unavailable");
+    await expect(
+      client.completeLogin(await callbackForNewLogin()),
+    ).resolves.toMatchObject({ accessToken: "new-token" });
+    expect(tokenRequests).toBe(2);
+  });
+
+  it("aborts a hung token exchange and reports a recoverable timeout", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/.well-known/openid-configuration")) {
+          return new Response(JSON.stringify(discovery), { status: 200 });
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    const client = new OidcClient(config, {
+      fetch: fetcher as typeof fetch,
+      replaceUrl: vi.fn(),
+      requestTimeoutMs: 25,
+    });
+    const authorization = new URL(await client.prepareLogin());
+    const callback = new URL(config.redirectUri);
+    callback.searchParams.set("code", "authorization-code");
+    callback.searchParams.set(
+      "state",
+      authorization.searchParams.get("state")!,
+    );
+    const login = client.completeLogin(callback.toString());
+    const timeout = expect(login).rejects.toThrow("Snaplink 请求超时");
+
+    await vi.advanceTimersByTimeAsync(25);
+    await timeout;
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1][1]?.signal?.aborted).toBe(true);
+  });
+
+  it("enforces its deadline if a fetch implementation ignores abort", async () => {
+    vi.useFakeTimers();
+    let resolveToken!: (response: Response) => void;
+    let tokenSignal: AbortSignal | undefined;
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/.well-known/openid-configuration")) {
+          return new Response(JSON.stringify(discovery), { status: 200 });
+        }
+        tokenSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          resolveToken = resolve;
+        });
+      },
+    );
+    const client = new OidcClient(config, {
+      fetch: fetcher as typeof fetch,
+      replaceUrl: vi.fn(),
+      requestTimeoutMs: 25,
+    });
+    const authorization = new URL(await client.prepareLogin());
+    const callback = new URL(config.redirectUri);
+    callback.searchParams.set("code", "authorization-code");
+    callback.searchParams.set(
+      "state",
+      authorization.searchParams.get("state")!,
+    );
+    const login = client.completeLogin(callback.toString());
+    const timeout = expect(login).rejects.toThrow("Snaplink 请求超时");
+
+    await vi.advanceTimersByTimeAsync(25);
+    await timeout;
+    expect(tokenSignal?.aborted).toBe(true);
+    resolveToken(new Response('{"access_token":"late","token_type":"Bearer"}'));
+  });
+
+  it.each([
+    { value: 0, label: "zero" },
+    { value: -1, label: "negative" },
+    { value: "invalid", label: "non-numeric" },
+    { value: "5", label: "string" },
+    { value: null, label: "null" },
+  ])("rejects a $label token lifetime", async ({ value }) => {
+    await expect(exchangeToken({ expires_in: value })).rejects.toThrow(
+      "有效期无效",
+    );
   });
 
   it("rejects a state mismatch before calling the token endpoint", async () => {

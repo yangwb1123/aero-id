@@ -21,7 +21,7 @@ export type MigrationCommand =
 
 export type CallbackCommand =
   | { kind: "delete"; id: string; endpoint: string }
-  | { kind: "replay"; id: string };
+  | { kind: "replay"; id: string; idempotencyKey: string };
 export interface CallbackSecret {
   subscriptionID: string;
   value: string;

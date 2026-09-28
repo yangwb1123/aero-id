@@ -17,7 +17,7 @@ const auth = useAuth();
         {{ auth.error }}
       </IrisAlert>
       <div v-if="auth.status === 'loading'" class="login-progress">
-        <IrisSpinner /> 正在完成授权码交换…
+        <IrisSpinner /> 正在连接 Snaplink…
       </div>
       <IrisButton v-else size="lg" @click="void auth.login()">
         使用 Snaplink 登录

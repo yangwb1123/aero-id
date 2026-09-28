@@ -8,7 +8,7 @@ export interface CallbackCreateInput {
 
 export interface CallbackRegistration {
   subscription: JsonRecord;
-  secret: string;
+  secret?: string;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -40,16 +40,25 @@ export class CallbackClient {
     };
   }
 
-  async create(input: CallbackCreateInput): Promise<CallbackRegistration> {
+  async create(
+    input: CallbackCreateInput,
+    idempotencyKey: string,
+  ): Promise<CallbackRegistration> {
+    const key = idempotencyKey.trim();
+    if (!key) throw new Error("Callback 注册需要幂等键");
     const data = dataOf(
       await this.transport.request("POST", "/admin/callback-subscriptions", {
         body: { endpoint: input.endpoint, event_types: input.eventTypes },
+        idempotencyKey: key,
         timeoutMs: 30_000,
       }),
     );
     return {
       subscription: isRecord(data.subscription) ? data.subscription : {},
-      secret: typeof data.secret === "string" ? data.secret : "",
+      secret:
+        typeof data.secret === "string" && data.secret
+          ? data.secret
+          : undefined,
     };
   }
 
@@ -60,11 +69,17 @@ export class CallbackClient {
     );
   }
 
-  async replayDelivery(id: string): Promise<JsonRecord> {
+  async replayDelivery(
+    id: string,
+    idempotencyKey: string,
+  ): Promise<JsonRecord> {
+    const key = idempotencyKey.trim();
+    if (!key) throw new Error("Callback 重放需要幂等键");
     return dataOf(
       await this.transport.request(
         "POST",
         `/admin/callback-subscriptions/deliveries/${encodeURIComponent(id)}/replay`,
+        { idempotencyKey: key },
       ),
     );
   }

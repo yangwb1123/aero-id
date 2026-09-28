@@ -1,9 +1,9 @@
 import { onBeforeUnmount, onMounted, ref, shallowReactive, watch } from "vue";
 
 export interface AsyncResource<T> {
-  data: T | undefined;
-  error: Error | undefined;
-  loading: boolean;
+  readonly data: T | undefined;
+  readonly error: Error | undefined;
+  readonly loading: boolean;
   reload(): void;
   replace(data: T): void;
 }

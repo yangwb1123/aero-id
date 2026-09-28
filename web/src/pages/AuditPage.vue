@@ -105,6 +105,7 @@ function reset(): void {
     </IrisCard>
     <AuditEventDetails
       v-if="selectedEvent"
+      :key="auditEventID(selectedEvent)"
       :client="client"
       :event="selectedEvent"
       @close="selectedEvent = undefined"

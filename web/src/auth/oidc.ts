@@ -1,6 +1,17 @@
 import type { PlatformConfig } from "../config";
+import {
+  hasBearerAccessToken,
+  OidcError,
+  parseTokenResponse,
+  readBoundedResponseText,
+  tokenResponseError,
+  type TokenResponse,
+} from "./oidcResponse";
+export { OidcError };
 
 const pendingLifetimeMs = 10 * 60 * 1000;
+const oidcRequestTimeoutMs = 10 * 1000;
+const maxDiscoveryResponseBytes = 64 * 1024;
 const maxTokenResponseBytes = 64 * 1024;
 
 interface DiscoveryDocument {
@@ -22,16 +33,6 @@ interface PendingAuthorization {
   createdAt: number;
 }
 
-interface TokenResponse {
-  access_token?: string;
-  token_type?: string;
-  expires_in?: number;
-  id_token?: string;
-  scope?: string;
-  error?: string;
-  error_description?: string;
-}
-
 export interface OidcSession {
   accessToken: string;
   idToken?: string;
@@ -46,13 +47,7 @@ export interface OidcClientOptions {
   navigate?: (url: string) => void;
   replaceUrl?: (url: string) => void;
   now?: () => number;
-}
-
-export class OidcError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "OidcError";
-  }
+  requestTimeoutMs?: number;
 }
 
 function base64Url(bytes: Uint8Array): string {
@@ -108,6 +103,7 @@ export class OidcClient {
   private readonly navigate: (url: string) => void;
   private readonly replaceUrl: (url: string) => void;
   private readonly now: () => number;
+  private readonly requestTimeoutMs: number;
   private discovery?: Promise<DiscoveryDocument>;
   private exchange?: Promise<OidcSession>;
 
@@ -122,6 +118,14 @@ export class OidcClient {
       options.replaceUrl ??
       ((url) => window.history.replaceState(null, "", url));
     this.now = options.now ?? Date.now;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? oidcRequestTimeoutMs;
+    if (
+      !Number.isFinite(this.requestTimeoutMs) ||
+      this.requestTimeoutMs <= 0 ||
+      this.requestTimeoutMs > 2_147_483_647
+    ) {
+      throw new OidcError("Snaplink 请求超时配置无效");
+    }
     requireSafeEndpoint(config.snaplinkIssuer, "Snaplink issuer");
     requireSafeEndpoint(config.redirectUri, "OAuth redirect URI");
   }
@@ -173,8 +177,13 @@ export class OidcClient {
   }
 
   completeLogin(url = window.location.href): Promise<OidcSession> {
-    this.exchange ??= this.exchangeCallback(new URL(url));
-    return this.exchange;
+    if (this.exchange) return this.exchange;
+    const exchange = this.exchangeCallback(new URL(url));
+    this.exchange = exchange;
+    void exchange.catch(() => {
+      if (this.exchange === exchange) this.exchange = undefined;
+    });
+    return exchange;
   }
 
   clear(): void {
@@ -206,35 +215,60 @@ export class OidcClient {
   }
 
   private async getDiscovery(): Promise<DiscoveryDocument> {
-    this.discovery ??= this.fetchDiscovery();
-    return this.discovery;
+    const discovery = (this.discovery ??= this.fetchDiscovery());
+    try {
+      return await discovery;
+    } catch (reason) {
+      if (this.discovery === discovery) this.discovery = undefined;
+      throw reason;
+    }
   }
 
   private async fetchDiscovery(): Promise<DiscoveryDocument> {
     const endpoint = `${normalizeIssuer(this.config.snaplinkIssuer)}/.well-known/openid-configuration`;
-    const response = await this.fetcher(endpoint, {
-      headers: { Accept: "application/json" },
-      credentials: "omit",
+    return this.withRequestTimeout(async (signal) => {
+      const response = await this.fetcher(endpoint, {
+        headers: { Accept: "application/json" },
+        credentials: "omit",
+        signal,
+      });
+      if (!response.ok) throw new OidcError("无法读取 Snaplink OIDC 配置");
+      const text = await readBoundedResponseText(
+        response,
+        maxDiscoveryResponseBytes,
+        "Snaplink OIDC 配置过大",
+      );
+      let value: Partial<DiscoveryDocument>;
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          throw new Error("discovery is not an object");
+        value = parsed as Partial<DiscoveryDocument>;
+      } catch {
+        throw new OidcError("Snaplink OIDC 配置无效");
+      }
+      if (
+        typeof value.issuer !== "string" ||
+        normalizeIssuer(value.issuer) !==
+          normalizeIssuer(this.config.snaplinkIssuer) ||
+        typeof value.authorization_endpoint !== "string" ||
+        typeof value.token_endpoint !== "string"
+      ) {
+        throw new OidcError("Snaplink OIDC 配置与运行配置不匹配");
+      }
+      if (
+        !Array.isArray(value.code_challenge_methods_supported) ||
+        !value.code_challenge_methods_supported.includes("S256")
+      ) {
+        throw new OidcError("Snaplink 未声明支持 PKCE S256");
+      }
+      requireSafeEndpoint(
+        value.authorization_endpoint,
+        "Snaplink authorization endpoint",
+      );
+      requireSafeEndpoint(value.token_endpoint, "Snaplink token endpoint");
+      return value as DiscoveryDocument;
     });
-    if (!response.ok) throw new OidcError("无法读取 Snaplink OIDC 配置");
-    const value = (await response.json()) as Partial<DiscoveryDocument>;
-    if (
-      normalizeIssuer(value.issuer ?? "") !==
-        normalizeIssuer(this.config.snaplinkIssuer) ||
-      !value.authorization_endpoint ||
-      !value.token_endpoint
-    ) {
-      throw new OidcError("Snaplink OIDC 配置与运行配置不匹配");
-    }
-    if (!value.code_challenge_methods_supported?.includes("S256")) {
-      throw new OidcError("Snaplink 未声明支持 PKCE S256");
-    }
-    requireSafeEndpoint(
-      value.authorization_endpoint,
-      "Snaplink authorization endpoint",
-    );
-    requireSafeEndpoint(value.token_endpoint, "Snaplink token endpoint");
-    return value as DiscoveryDocument;
   }
 
   private readPending(): PendingAuthorization {
@@ -263,7 +297,10 @@ export class OidcClient {
     this.storage.removeItem(this.pendingKey());
     const discovery = await this.getDiscovery();
     const token = await this.exchangeCode(discovery, pending, code);
-    const lifetime = Math.max(30, Number(token.expires_in ?? 300));
+    const lifetime = token.expires_in === undefined ? 300 : token.expires_in;
+    if (!Number.isFinite(lifetime) || lifetime <= 0) {
+      throw new OidcError("Snaplink token 响应中的有效期无效");
+    }
     return {
       accessToken: token.access_token!,
       idToken: token.id_token,
@@ -318,36 +355,56 @@ export class OidcClient {
       code_verifier: pending.verifier,
       resource: this.config.snaplinkResource,
     });
-    const response = await this.fetcher(discovery.token_endpoint, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
-      credentials: "omit",
+    return this.withRequestTimeout(async (signal) => {
+      const response = await this.fetcher(discovery.token_endpoint, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+        credentials: "omit",
+        signal,
+      });
+      return this.readTokenResponse(response);
     });
-    return this.readTokenResponse(response);
+  }
+
+  private async withRequestTimeout<T>(
+    request: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: number | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new OidcError("Snaplink 请求超时，请检查网络后重试"));
+      }, this.requestTimeoutMs);
+    });
+    try {
+      return await Promise.race([request(controller.signal), timeout]);
+    } catch (reason) {
+      if (timedOut) {
+        throw new OidcError("Snaplink 请求超时，请检查网络后重试");
+      }
+      throw reason;
+    } finally {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
   }
 
   private async readTokenResponse(response: Response): Promise<TokenResponse> {
-    const text = await response.text();
-    if (text.length > maxTokenResponseBytes)
-      throw new OidcError("Snaplink token 响应过大");
-    let token: TokenResponse;
-    try {
-      token = JSON.parse(text) as TokenResponse;
-    } catch {
-      throw new OidcError("Snaplink token 响应无效");
-    }
-    if (!response.ok || token.error) {
-      throw new OidcError(
-        token.error_description ?? token.error ?? "Snaplink 拒绝了授权码交换",
-      );
-    }
-    if (!token.access_token || token.token_type?.toLowerCase() !== "bearer") {
+    const text = await readBoundedResponseText(
+      response,
+      maxTokenResponseBytes,
+      "Snaplink token 响应过大",
+    );
+    const token = parseTokenResponse(text);
+    if (!response.ok || token.error) throw tokenResponseError(token);
+    if (!hasBearerAccessToken(token))
       throw new OidcError("Snaplink 未返回有效 Bearer access token");
-    }
     return token;
   }
 }

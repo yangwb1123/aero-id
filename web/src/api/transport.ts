@@ -32,6 +32,8 @@ export class AeroIdError extends Error {
 
 export class AeroIdTransport {
   private writeEpoch?: string;
+  private requestSequence = 0;
+  private writeEpochSequence = 0;
 
   constructor(
     private readonly baseUrl: string,
@@ -53,6 +55,7 @@ export class AeroIdTransport {
         "aero-id 返回了无效的 Writer Epoch",
       );
     this.writeEpoch = `${target}:${epoch}`;
+    this.writeEpochSequence = ++this.requestSequence;
   }
 
   async request(
@@ -62,7 +65,10 @@ export class AeroIdTransport {
   ): Promise<unknown> {
     const pending = await this.send(method, path, options);
     try {
-      return await this.readJSON(pending.response);
+      const payload = await this.readJSON(pending.response);
+      if (method.toUpperCase() === "GET")
+        this.rejectStaleRead(pending.response);
+      return payload;
     } catch (reason) {
       throw this.responseReadError(reason, pending.timedOut());
     } finally {
@@ -77,7 +83,9 @@ export class AeroIdTransport {
   ): Promise<Blob> {
     const pending = await this.send("GET", path, options);
     try {
-      return await this.readBlob(pending.response, maxBytes);
+      const blob = await this.readBlob(pending.response, maxBytes);
+      this.rejectStaleRead(pending.response);
+      return blob;
     } catch (reason) {
       throw this.responseReadError(reason, pending.timedOut());
     } finally {
@@ -92,6 +100,7 @@ export class AeroIdTransport {
   ): Promise<PendingResponse> {
     const token = this.accessToken().trim();
     if (!token) throw new AeroIdError(401, "auth.required", "登录状态已失效");
+    const sequence = ++this.requestSequence;
     const pending = await this.perform(
       this.buildURL(path, options.query),
       method,
@@ -99,8 +108,11 @@ export class AeroIdTransport {
       options.body,
       options.timeoutMs,
     );
-    this.writeEpoch =
-      pending.response.headers.get("X-Aero-Write-Epoch") ?? this.writeEpoch;
+    const responseEpoch = pending.response.headers.get("X-Aero-Write-Epoch");
+    if (responseEpoch && sequence > this.writeEpochSequence) {
+      this.writeEpoch = responseEpoch;
+      this.writeEpochSequence = sequence;
+    }
     return pending;
   }
 
@@ -256,6 +268,17 @@ export class AeroIdTransport {
       offset += chunk.byteLength;
     }
     return bytes;
+  }
+
+  private rejectStaleRead(response: Response): void {
+    if (response.headers.get("X-Aero-Stale-Read")?.toLowerCase() !== "true")
+      return;
+    throw new AeroIdError(
+      response.status,
+      "region.stale_read",
+      "当前区域无法确认最近一次写入已同步；请刷新，若仍出现请联系管理员切换到账户主区域",
+      response.headers.get("X-Request-ID") ?? undefined,
+    );
   }
 
   private responseReadError(reason: unknown, timedOut: boolean): Error {

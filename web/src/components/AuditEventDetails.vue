@@ -4,14 +4,12 @@ import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
 import type { JsonRecord } from "../types";
 import RecordTable from "./RecordTable.vue";
+import { safeJsonPreview } from "./safeJsonPreview";
 const props = defineProps<{ client: AeroIdClient; event: JsonRecord }>();
 const emit = defineEmits<{ close: [] }>();
 const verifying = ref(false);
 const verifyError = ref<Error>();
 const verified = ref(false);
-function jsonPreview(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2);
-}
 async function verify(): Promise<void> {
   verifying.value = true;
   verifyError.value = undefined;
@@ -98,6 +96,6 @@ async function verify(): Promise<void> {
       ]"
     />
     <h3 class="detail-heading">脱敏 Payload</h3>
-    <pre class="json-preview">{{ jsonPreview(event.payload) }}</pre>
+    <pre class="json-preview">{{ safeJsonPreview(event.payload) }}</pre>
   </IrisCard>
 </template>

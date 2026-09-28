@@ -2,6 +2,7 @@
 import { IrisBadge, IrisEmptyState } from "@iris-ui-kit/vue";
 import type { JsonRecord } from "../types";
 import { statusTone, valueOf, type RecordColumn } from "./table";
+import { safeJsonPreview } from "./safeJsonPreview";
 
 defineProps<{
   records: JsonRecord[];
@@ -28,7 +29,7 @@ function display(value: unknown, kind: RecordColumn["kind"]): string {
     const date = new Date(String(value));
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
   }
-  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "object") return safeJsonPreview(value, 0);
   return String(value);
 }
 </script>

@@ -97,6 +97,7 @@ function reset(): void {
     </IrisCard>
     <AdminAccountDetails
       v-if="selectedAccount"
+      :key="selectedAccount"
       :client="client"
       :account-id="selectedAccount"
       @close="selectedAccount = undefined"
