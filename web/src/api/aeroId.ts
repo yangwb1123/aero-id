@@ -454,11 +454,12 @@ export class AeroIdClient {
   async grantRole(
     uid: string,
     roleCode: string,
-    idempotencyKey: string = crypto.randomUUID(),
+    idempotencyKey: string,
   ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request("POST", "/admin/roles/grant", {
-        idempotencyKey,
+        idempotencyKey: key,
         body: { uid, role_code: roleCode },
       }),
     );
@@ -467,11 +468,12 @@ export class AeroIdClient {
   async revokeRole(
     uid: string,
     roleCode: string,
-    idempotencyKey: string = crypto.randomUUID(),
+    idempotencyKey: string,
   ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request("POST", "/admin/roles/revoke", {
-        idempotencyKey,
+        idempotencyKey: key,
         body: { uid, role_code: roleCode },
       }),
     );
@@ -480,12 +482,13 @@ export class AeroIdClient {
   async banUser(
     uid: string,
     reason: string,
-    duration?: string,
-    idempotencyKey: string = crypto.randomUUID(),
+    duration: string | undefined,
+    idempotencyKey: string,
   ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request("POST", "/admin/bans", {
-        idempotencyKey,
+        idempotencyKey: key,
         body: { uid, reason, duration },
       }),
     );

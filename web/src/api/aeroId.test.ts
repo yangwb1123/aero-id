@@ -508,10 +508,10 @@ describe("AeroIdClient", () => {
     await client.listAdminAudit("admin.role.grant", "audit-0");
     await client.listRoles();
     await client.listUserRoles("uid/1");
-    await client.grantRole("uid/1", "operator");
-    await client.revokeRole("uid/1", "operator");
+    await client.grantRole("uid/1", "operator", "role-grant-key");
+    await client.revokeRole("uid/1", "operator", "role-revoke-key");
     await client.listBanned("ban-0");
-    await client.banUser("uid/1", "manual review", "24h");
+    await client.banUser("uid/1", "manual review", "24h", "ban-key");
     await client.unbanUser("uid/1");
 
     expect(requests.map((request) => request.url.pathname)).toEqual([
@@ -528,7 +528,8 @@ describe("AeroIdClient", () => {
     expect(requests[3].body).toBe(
       JSON.stringify({ uid: "uid/1", role_code: "operator" }),
     );
-    expect(requests[3].headers.get("Idempotency-Key")).toBeTruthy();
+    expect(requests[3].headers.get("Idempotency-Key")).toBe("role-grant-key");
+    expect(requests[4].headers.get("Idempotency-Key")).toBe("role-revoke-key");
     expect(requests[6].body).toBe(
       JSON.stringify({
         uid: "uid/1",
@@ -536,7 +537,7 @@ describe("AeroIdClient", () => {
         duration: "24h",
       }),
     );
-    expect(requests[6].headers.get("Idempotency-Key")).toBeTruthy();
+    expect(requests[6].headers.get("Idempotency-Key")).toBe("ban-key");
   });
 
   it("downloads an export with authorization and one-time semantics", async () => {

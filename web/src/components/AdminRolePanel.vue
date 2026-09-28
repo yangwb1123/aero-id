@@ -190,10 +190,14 @@ void loadRoles();
           @click="void loadUserRoles()"
           >读取用户角色</IrisButton
         >
-        <IrisButton type="button" @click="prepare('grant')"
+        <IrisButton type="button" :disabled="running" @click="prepare('grant')"
           >授予角色</IrisButton
         >
-        <IrisButton type="button" variant="danger" @click="prepare('revoke')"
+        <IrisButton
+          type="button"
+          variant="danger"
+          :disabled="running"
+          @click="prepare('revoke')"
           >撤销角色</IrisButton
         >
       </div>

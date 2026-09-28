@@ -69,7 +69,7 @@ function prepareBan(): void {
   confirmation.value = "";
 }
 function prepareUnban(record: JsonRecord): void {
-  if (running.value) return;
+  if (running.value || resource.loading || resource.error) return;
   const value = record.uid;
   if (typeof value !== "string" || !value) return;
   error.value = undefined;
@@ -104,6 +104,11 @@ async function confirm(): Promise<void> {
   } catch (reason) {
     error.value =
       reason instanceof Error ? reason : new Error("封禁状态变更失败");
+    if (command.action === "unban") {
+      pending.value = undefined;
+      confirmation.value = "";
+      reload();
+    }
   } finally {
     running.value = false;
   }
@@ -131,10 +136,7 @@ function cancel(): void {
       <IrisFormField label="持续时间" hint="Go duration，例如 24h；留空为永久"
         ><IrisInput v-model="draftDuration" placeholder="24h"
       /></IrisFormField>
-      <IrisButton
-        variant="danger"
-        :disabled="running"
-        @click="prepareBan"
+      <IrisButton variant="danger" :disabled="running" @click="prepareBan"
         >准备封禁</IrisButton
       >
     </div>
@@ -167,7 +169,7 @@ function cancel(): void {
           <IrisButton
             size="sm"
             variant="outline"
-            :disabled="running"
+            :disabled="running || resource.loading || Boolean(resource.error)"
             @click="prepareUnban(record)"
             >准备解封</IrisButton
           >
@@ -185,7 +187,7 @@ function cancel(): void {
       >
       <IrisDialogDescription>
         UID：{{ pending?.uid
-        }}<template v-if="pending?.reason"
+        }}<template v-if="pending?.action === 'ban'"
           >；原因：{{ pending.reason }}</template
         >。请确认这是经过授权的管理员意图。
       </IrisDialogDescription>
