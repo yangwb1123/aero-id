@@ -6,10 +6,11 @@
 #     ADR-012 加固（f7bb878/27d9c68/60fb785：锚定 pin、guard-PASS 计数器、相邻路径守卫、
 #     FM-16 常驻 pin、Option B no-arg 全量默认）；check-architecture 实层对齐（1001002）
 #   - B3-3：check-proto-sync 确定性门禁 + CI（c8acd14）
-# 用法（aero-id 仓库内）：
-#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b3.yaml --dry-run
-#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b3.yaml \
-#     --jobs 4 --max-directions 3 --validate gobuild,gotest,pyquality
+# 用法（引擎与配置在 ai-batch-runner 仓内，cwd 必须是本仓）：
+#   bash ~/ai-batch-runner/projects/aero-id/run-campaign.sh --dry-run
+# 等价的手工调用（campaign 配置必须位于仓内）：
+#   python3 ~/ai-batch-runner/pi-batch.py campaign \
+#     --config .pi-batch/aero-id/campaign.yaml --dry-run
 
 name: aero-id-b3-quarantine-gates-contracts
 

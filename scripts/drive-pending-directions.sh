@@ -5,6 +5,12 @@
 set -u
 cd /home/u1/aero-id || exit 1
 
+# The batch engine is no longer vendored in this repository; it runs from the
+# ai-batch-runner checkout with this repository as the working directory. The
+# per-run pipeline template stays in-repo (docs/auto/runs/<name>/pipeline.yaml),
+# so pipeline mode needs no sync step.
+AI_BATCH_RUNNER="${AI_BATCH_RUNNER:-$HOME/ai-batch-runner}"
+
 # materialized after 2026-08-15 15:20 (epoch 1755264000) with no acceptance
 # artifact = pending
 mapfile -t RUNS < /tmp/pending-final.txt
@@ -23,7 +29,7 @@ for name in "${RUNS[@]}"; do
   ok=0
   for attempt in 1 2 3 4 5; do
     echo "== $(date +%H:%M) RUN $name attempt $attempt"
-    python3 pi-batch.py --pipeline "$pipe" --reuse --reuse-legacy --retries 1 \
+    python3 "$AI_BATCH_RUNNER/pi-batch.py" --pipeline "$pipe" --reuse --reuse-legacy --retries 1 \
       --log-file "docs/campaigns/driver-${name:0:40}.log" >> docs/campaigns/driver.out 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then

@@ -14,10 +14,11 @@
 #      + purge 暂停标志
 #   6. 激活门（F-03）：空 bindings + enabled → boot 失败（已实现）补测试
 # 门禁：G3（B2-1..6：T-5、T-10.1/10.2、T-4 联合、首个事件 e2e）
-# 用法（aero-id 仓库内）：
-#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b2.yaml --dry-run
-#   python3 pi-batch.py campaign --config docs/campaigns/campaign-aero-id-b2.yaml \
-#     --jobs 4 --max-directions 2 --validate gobuild,gotest,pyquality
+# 用法（引擎与配置在 ai-batch-runner 仓内，cwd 必须是本仓）：
+#   bash ~/ai-batch-runner/projects/aero-id/run-campaign.sh --dry-run
+# 等价的手工调用（campaign 配置必须位于仓内）：
+#   python3 ~/ai-batch-runner/pi-batch.py campaign \
+#     --config .pi-batch/aero-id/campaign.yaml --dry-run
 
 name: aero-id-b2-in-tx-audit
 
