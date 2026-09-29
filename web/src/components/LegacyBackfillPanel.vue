@@ -12,6 +12,7 @@ import MigrationCommandDialog from "./MigrationCommandDialog.vue";
 import type { MigrationCommand } from "./dialogTypes";
 import RecordTable from "./RecordTable.vue";
 import type { JsonRecord } from "../types";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 const { client } = defineProps<{ client: AeroIdClient }>();
 const limit = ref("500");
 const command = ref<MigrationCommand>();
@@ -19,7 +20,9 @@ const confirmation = ref("");
 const running = ref(false);
 const error = ref<Error>();
 const result = ref<JsonRecord>();
+const intentKeys = new Map<string, string>();
 function prepare(): void {
+  if (running.value) return;
   error.value = undefined;
   const batchLimit = Number(limit.value);
   if (!Number.isInteger(batchLimit) || batchLimit < 1 || batchLimit > 1000) {
@@ -28,21 +31,28 @@ function prepare(): void {
   }
   confirmation.value = "";
   result.value = undefined;
+  const intent = rememberIdempotencyKey(
+    { kind: "backfill", limit: batchLimit },
+    intentKeys,
+  );
   command.value = {
     kind: "backfill",
     limit: batchLimit,
-    idempotencyKey: crypto.randomUUID(),
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
   };
 }
 async function execute(): Promise<void> {
-  if (command.value?.kind !== "backfill") return;
+  const current = command.value;
+  if (current?.kind !== "backfill" || running.value) return;
   running.value = true;
   error.value = undefined;
   try {
     result.value = await client.migration.backfillLegacyIdentities(
-      command.value.limit,
-      command.value.idempotencyKey,
+      current.limit,
+      current.idempotencyKey,
     );
+    intentKeys.delete(current.signature);
     command.value = undefined;
     confirmation.value = "";
   } catch (reason) {
@@ -69,7 +79,9 @@ async function execute(): Promise<void> {
       >
         <IrisInput v-model="limit" type="number" min="1" max="1000" />
       </IrisFormField>
-      <IrisButton @click="prepare">检查并确认 Backfill</IrisButton>
+      <IrisButton :disabled="running" @click="prepare"
+        >检查并确认 Backfill</IrisButton
+      >
     </div>
     <IrisAlert v-if="error && !command" tone="danger">{{
       error.message

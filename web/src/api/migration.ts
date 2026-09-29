@@ -9,6 +9,7 @@ export interface LegacyCompareInput {
   ownerUID: string;
   source: LegacySource;
   limit: number;
+  idempotencyKey: string;
 }
 
 export interface LegacyCutoverInput {
@@ -22,8 +23,11 @@ export class MigrationClient {
   constructor(private readonly transport: AeroIdTransport) {}
 
   async compare(input: LegacyCompareInput): Promise<JsonRecord> {
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!idempotencyKey) throw new Error("请求需要 Idempotency-Key");
     return dataOf(
       await this.transport.request("POST", "/admin/migration/legacy/compare", {
+        idempotencyKey,
         body: {
           owner_uid: input.ownerUID,
           source: input.source,

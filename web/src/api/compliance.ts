@@ -14,6 +14,12 @@ function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function requiredIdempotencyKey(value: string): string {
+  const key = value.trim();
+  if (!key) throw new Error("写入命令需要 Idempotency-Key");
+  return key;
+}
+
 function holds(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -28,9 +34,14 @@ export class ComplianceClient {
     return holds(data.holds);
   }
 
-  async putHold(input: AuditHoldInput): Promise<JsonRecord> {
+  async putHold(
+    input: AuditHoldInput,
+    idempotencyKey: string,
+  ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.transport.request("POST", "/admin/audit/holds", {
+        idempotencyKey: key,
         body: {
           scope_type: input.scopeType,
           scope_id: input.scopeID,
@@ -48,8 +59,8 @@ export class ComplianceClient {
     );
   }
 
-  async createAuditExport(): Promise<JsonRecord> {
-    const key = crypto.randomUUID();
+  async createAuditExport(idempotencyKey: string): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.transport.request("POST", "/audit/export", {
         idempotencyKey: key,

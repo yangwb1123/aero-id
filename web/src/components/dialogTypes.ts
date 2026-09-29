@@ -5,23 +5,39 @@ export const anchorRunConfirmation = "ANCHOR ALL CHAINS";
 export const backfillConfirmation = "BACKFILL LEGACY IDENTITIES";
 
 export type ComplianceCommand =
-  | { kind: "put"; input: AuditHoldInput }
+  | {
+      kind: "put";
+      input: AuditHoldInput;
+      signature: string;
+      idempotencyKey: string;
+    }
   | { kind: "remove"; scopeType: AuditHoldScope; scopeID: string }
-  | { kind: "export" };
+  | { kind: "export"; signature: string; idempotencyKey: string };
 
 export type MigrationCommand =
-  | { kind: "backfill"; limit: number; idempotencyKey: string }
+  | {
+      kind: "backfill";
+      limit: number;
+      signature: string;
+      idempotencyKey: string;
+    }
   | {
       kind: "cutover";
       tenantID: string;
       status: LegacyCutoverStatus;
       note: string;
+      signature: string;
       idempotencyKey: string;
     };
 
 export type CallbackCommand =
   | { kind: "delete"; id: string; endpoint: string }
-  | { kind: "replay"; id: string; idempotencyKey: string };
+  | {
+      kind: "replay";
+      id: string;
+      signature: string;
+      idempotencyKey: string;
+    };
 export interface CallbackSecret {
   subscriptionID: string;
   value: string;

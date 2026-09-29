@@ -2,6 +2,7 @@ import type { JsonRecord } from "../types";
 export interface PendingRegionPromotion {
   targetRegion: string;
   expectedEpoch: number;
+  signature: string;
   idempotencyKey: string;
 }
 

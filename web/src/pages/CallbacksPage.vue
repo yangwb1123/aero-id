@@ -27,6 +27,7 @@ import PageHeader from "../components/PageHeader.vue";
 import PageLoading from "../components/PageLoading.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import type { JsonRecord } from "../types";
+import { rememberIdempotencyKey } from "../components/idempotencyHelpers";
 
 const { client } = defineProps<{ client: AeroIdClient }>();
 const resource = useAsyncResource(() => client.callbacks.list());
@@ -41,14 +42,22 @@ const command = ref<CallbackCommand>();
 const commandRunning = ref(false);
 const commandError = ref<Error>();
 const message = ref<string>();
+const intentKeys = new Map<string, string>();
 function callbackID(record: JsonRecord): string | undefined {
   const value = record.id ?? record.subscription_id;
   return typeof value === "string" && value ? value : undefined;
 }
 function startReplay(): void {
+  if (commandRunning.value) return;
   const id = deliveryID.value.trim();
   if (!id) return;
-  command.value = { kind: "replay", id, idempotencyKey: crypto.randomUUID() };
+  const intent = rememberIdempotencyKey({ kind: "replay", id }, intentKeys);
+  command.value = {
+    kind: "replay",
+    id,
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
+  };
 }
 function createKey(input: CallbackCreateInput): string {
   createIntent.value = callbackCreateIntent(input, createIntent.value);
@@ -98,7 +107,7 @@ async function create(): Promise<void> {
 }
 async function runCommand(): Promise<void> {
   const current = command.value;
-  if (!current) return;
+  if (!current || commandRunning.value) return;
   commandRunning.value = true;
   commandError.value = undefined;
   message.value = undefined;
@@ -114,6 +123,7 @@ async function runCommand(): Promise<void> {
       });
     } else {
       await client.callbacks.replayDelivery(current.id, current.idempotencyKey);
+      intentKeys.delete(current.signature);
       message.value = `Delivery ${current.id} 已进入重试队列。`;
       deliveryID.value = "";
     }
@@ -121,6 +131,10 @@ async function runCommand(): Promise<void> {
   } catch (reason) {
     commandError.value =
       reason instanceof Error ? reason : new Error("Callback 命令失败");
+    if (current.kind === "delete") {
+      command.value = undefined;
+      resource.reload();
+    }
   } finally {
     commandRunning.value = false;
   }
@@ -194,6 +208,9 @@ async function runCommand(): Promise<void> {
             v-if="callbackID(record)"
             size="sm"
             variant="danger"
+            :disabled="
+              commandRunning || resource.loading || Boolean(resource.error)
+            "
             @click="
               commandError = undefined;
               command = {
@@ -219,7 +236,7 @@ async function runCommand(): Promise<void> {
         /></IrisFormField>
         <IrisButton
           variant="outline"
-          :disabled="!deliveryID.trim()"
+          :disabled="!deliveryID.trim() || commandRunning"
           @click="startReplay"
           >重放投递</IrisButton
         >

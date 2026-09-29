@@ -80,6 +80,9 @@ async function save(): Promise<void> {
         </div>
       </form>
     </IrisCard>
-    <AccountEraseAction :client="client" />
+    <AccountEraseAction
+      :client="client"
+      :account-id="resource.data?.account_id"
+    />
   </section>
 </template>

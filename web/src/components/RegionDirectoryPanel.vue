@@ -20,6 +20,7 @@ import {
   type PendingRegionPromotion,
 } from "./regionHelpers";
 import type { JsonRecord } from "../types";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 const props = defineProps<{ client: AeroIdClient; accountId: string }>();
 const emit = defineEmits<{ promoted: [result: JsonRecord] }>();
 const resource = useAsyncResource(async () =>
@@ -33,7 +34,9 @@ const pending = ref<PendingRegionPromotion>();
 const confirmation = ref("");
 const running = ref(false);
 const error = ref<Error>();
+const intentKeys = new Map<string, string>();
 function prepare(): void {
+  if (running.value || resource.loading || resource.error) return;
   error.value = undefined;
   const target = targetRegion.value.trim();
   if (!target) {
@@ -45,22 +48,30 @@ function prepare(): void {
     return;
   }
   confirmation.value = "";
+  const expectedEpoch = regionEpoch(resource.data!);
+  const intent = rememberIdempotencyKey(
+    { accountID: props.accountId, targetRegion: target, expectedEpoch },
+    intentKeys,
+  );
   pending.value = {
     targetRegion: target,
-    expectedEpoch: regionEpoch(resource.data!),
-    idempotencyKey: crypto.randomUUID(),
+    expectedEpoch,
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
   };
 }
 async function promote(): Promise<void> {
-  if (!pending.value) return;
+  const command = pending.value;
+  if (!command || running.value) return;
   running.value = true;
   error.value = undefined;
   try {
     const result = await props.client.regions.promote({
       accountID: props.accountId,
-      ...pending.value,
+      ...command,
     });
-    verifyPromotion(result, props.accountId, pending.value);
+    verifyPromotion(result, props.accountId, command);
+    intentKeys.delete(command.signature);
     pending.value = undefined;
     confirmation.value = "";
     targetRegion.value = "";
@@ -113,7 +124,9 @@ async function promote(): Promise<void> {
             placeholder="例如 us-east"
           />
         </IrisFormField>
-        <IrisButton type="submit" variant="danger">检查提升</IrisButton>
+        <IrisButton type="submit" variant="danger" :disabled="running"
+          >检查提升</IrisButton
+        >
       </form>
     </IrisCard>
     <RegionPromotionDialog

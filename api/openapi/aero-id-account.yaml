@@ -181,6 +181,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ID'}
         - {$ref: '#/components/parameters/WorkerID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
         '200': {$ref: '#/components/responses/SyncJob'}
         '409': {$ref: '#/components/responses/Error'}
@@ -231,6 +232,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ID'}
         - {$ref: '#/components/parameters/WorkerID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
         '200': {$ref: '#/components/responses/Operation'}
         '409': {$ref: '#/components/responses/Error'}
@@ -240,6 +242,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ID'}
         - {$ref: '#/components/parameters/WorkerID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
         '200': {$ref: '#/components/responses/Operation'}
         '409': {$ref: '#/components/responses/Error'}
@@ -299,6 +302,8 @@ paths:
   /audit/replays/projection:
     post:
       operationId: replayProjection
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         content:
           application/json:
@@ -522,6 +527,8 @@ paths:
     post:
       operationId: compareLegacyMigration
       security: [{snaplinkBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         content:
           application/json:

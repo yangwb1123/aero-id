@@ -15,6 +15,16 @@ export const operationSources = [
   { value: "aero-im", label: "Aero IM" },
   { value: "aero-vault", label: "Aero Vault" },
 ];
+export function operationIntentSignature(input: OperationCreateInput): string {
+  return JSON.stringify({
+    accountID: input.accountID,
+    homeRegion: input.homeRegion,
+    operationType: input.operationType,
+    requestPayload: input.requestPayload,
+    steps: input.steps,
+  });
+}
+
 export const operationActions = [
   "sync",
   "summary",

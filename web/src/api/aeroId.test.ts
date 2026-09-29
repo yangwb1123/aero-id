@@ -259,7 +259,7 @@ describe("AeroIdClient", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("creates a self-erase job with a fresh idempotency key", async () => {
+  it("creates a self-erase job with the caller's idempotency key", async () => {
     let requested: { url: URL; headers: Headers; body: string } | undefined;
     const fetcher = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -280,22 +280,26 @@ describe("AeroIdClient", () => {
       fetcher as typeof fetch,
     );
 
-    await expect(client.eraseMyAccount()).resolves.toEqual({
+    await expect(client.eraseMyAccount("self-erase-key")).resolves.toEqual({
       job_id: "erase-job-1",
       status: "pending",
     });
     expect(requested?.url.pathname).toBe("/v1/me/erase");
-    expect(requested?.headers.get("Idempotency-Key")).toBeTruthy();
+    expect(requested?.headers.get("Idempotency-Key")).toBe("self-erase-key");
     expect(JSON.parse(requested?.body ?? "{}").idempotency_key).toBe(
       requested?.headers.get("Idempotency-Key"),
     );
   });
 
   it("loads and reconciles a sync job through its encoded resource path", async () => {
-    const requests: Array<{ url: URL; method?: string }> = [];
+    const requests: Array<{ url: URL; method?: string; headers: Headers }> = [];
     const fetcher = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
-        requests.push({ url: new URL(String(input)), method: init?.method });
+        requests.push({
+          url: new URL(String(input)),
+          method: init?.method,
+          headers: new Headers(init?.headers),
+        });
         return json({ data: { job_id: "job/1", status: "unknown" } });
       },
     );
@@ -306,19 +310,26 @@ describe("AeroIdClient", () => {
     );
 
     await client.getSyncJob("job/1");
-    await client.reconcileSyncJob("job/1");
+    await client.reconcileSyncJob("job/1", "job-reconcile-key");
 
     expect(requests[0].url.pathname).toBe("/v1/sync/jobs/job%2F1");
     expect(requests[0].method).toBe("GET");
     expect(requests[1].url.pathname).toBe("/v1/sync/jobs/job%2F1/reconcile");
     expect(requests[1].method).toBe("POST");
+    expect(requests[1].headers.get("Idempotency-Key")).toBe(
+      "job-reconcile-key",
+    );
   });
 
   it("loads an operation, reconciles unknown state and pages its audit timeline", async () => {
-    const requests: Array<{ url: URL; method?: string }> = [];
+    const requests: Array<{ url: URL; method?: string; headers: Headers }> = [];
     const fetcher = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
-        requests.push({ url: new URL(String(input)), method: init?.method });
+        requests.push({
+          url: new URL(String(input)),
+          method: init?.method,
+          headers: new Headers(init?.headers),
+        });
         if (requests.length === 3) {
           return json({
             data: {
@@ -339,7 +350,7 @@ describe("AeroIdClient", () => {
     );
 
     await client.getOperation("operation/1");
-    await client.reconcileOperation("operation/1");
+    await client.reconcileOperation("operation/1", "reconcile-key");
     await expect(
       client.listOperationAudit("operation/1", "audit:cursor"),
     ).resolves.toEqual({
@@ -353,6 +364,7 @@ describe("AeroIdClient", () => {
       "/v1/operations/operation%2F1/reconcile",
     );
     expect(requests[1].method).toBe("POST");
+    expect(requests[1].headers.get("Idempotency-Key")).toBe("reconcile-key");
     expect(requests[2].url.pathname).toBe("/v1/audit/operations/operation%2F1");
     expect(requests[2].url.searchParams.get("cursor")).toBe("audit:cursor");
     expect(requests[2].url.searchParams.get("limit")).toBe("50");
@@ -451,7 +463,7 @@ describe("AeroIdClient", () => {
         },
       ],
     });
-    await client.runOperation("operation/1");
+    await client.runOperation("operation/1", "operation.run:operation/1");
 
     expect(requests[0].url.pathname).toBe("/v1/me/data");
     expect(requests[0].url.searchParams.getAll("dataset")).toEqual([
@@ -473,6 +485,37 @@ describe("AeroIdClient", () => {
     });
     expect(requests[3].url.pathname).toBe("/v1/operations/operation%2F1/run");
     expect(requests[3].method).toBe("POST");
+    expect(requests[3].headers.get("Idempotency-Key")).toBe(
+      "operation.run:operation/1",
+    );
+  });
+
+  it("requires explicit idempotency keys before issuing job and Operation commands", async () => {
+    const fetcher = vi.fn(async () => json({ data: {} }));
+    const client = new AeroIdClient(
+      "https://accounts.example.test/v1",
+      () => "token",
+      fetcher as typeof fetch,
+    );
+
+    await expect(
+      client.createOperation({
+        accountID: "account-1",
+        operationType: "sync",
+        idempotencyKey: " ",
+        steps: [],
+      }),
+    ).rejects.toThrow("Idempotency-Key");
+    await expect(client.reconcileSyncJob("job-1", " ")).rejects.toThrow(
+      "Idempotency-Key",
+    );
+    await expect(client.runOperation("operation-1", " ")).rejects.toThrow(
+      "Idempotency-Key",
+    );
+    await expect(client.reconcileOperation("operation-1", " ")).rejects.toThrow(
+      "Idempotency-Key",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("covers the published admin audit, role and ban routes", async () => {

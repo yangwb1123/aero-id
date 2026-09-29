@@ -115,10 +115,12 @@ describe("ReplayClient", () => {
 
   it("continues projection replay with the opaque server cursor", async () => {
     let requestURL = new URL("https://invalid.test");
+    let requestHeaders = new Headers();
     let requestBody: unknown;
     const fetcher = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         requestURL = new URL(String(input));
+        requestHeaders = new Headers(init?.headers);
         requestBody = JSON.parse(String(init?.body));
         return json({ data: { completed: true, replayed_events: 12 } });
       },
@@ -136,9 +138,11 @@ describe("ReplayClient", () => {
       source: "aero-id",
       cursor: "01991c87-8dc8-7b45-b868-8b741fc98400",
       limit: 250,
+      idempotencyKey: "projection-window-key",
     });
 
     expect(requestURL.pathname).toBe("/v1/audit/replays/projection");
+    expect(requestHeaders.get("Idempotency-Key")).toBe("projection-window-key");
     expect(requestBody).toEqual({
       account_id: "01991c87-8dc8-7b45-b868-8b741fc984ef",
       source: "aero-id",

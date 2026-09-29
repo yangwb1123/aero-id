@@ -29,11 +29,15 @@ describe("MigrationClient", () => {
       ownerUID: "user-1",
       source: "aero-vault",
       limit: 500,
+      idempotencyKey: "compare-key",
     });
     await client.getCutover("tenant:a");
     await client.getCleanupReadiness("tenant:a");
 
     expect(requests[0].url.pathname).toBe("/v1/admin/migration/legacy/compare");
+    expect(new Headers(requests[0].init?.headers).get("Idempotency-Key")).toBe(
+      "compare-key",
+    );
     expect(JSON.parse(String(requests[0].init?.body))).toEqual({
       owner_uid: "user-1",
       source: "aero-vault",
@@ -45,6 +49,27 @@ describe("MigrationClient", () => {
     expect(requests[2].url.pathname).toBe(
       "/v1/admin/migration/legacy/cleanup-readiness/tenant%3Aa",
     );
+  });
+
+  it("rejects a compare request without an idempotency key before fetching", async () => {
+    const fetcher = vi.fn(async () => json({}));
+    const client = new MigrationClient(
+      new AeroIdTransport(
+        "https://accounts.example.test/v1",
+        () => "token",
+        fetcher as typeof fetch,
+      ),
+    );
+
+    await expect(
+      client.compare({
+        ownerUID: "user-1",
+        source: "aero-vault",
+        limit: 500,
+        idempotencyKey: " ",
+      }),
+    ).rejects.toThrow("Idempotency-Key");
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("keeps fixed idempotency keys on cutover and backfill commands", async () => {

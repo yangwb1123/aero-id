@@ -30,6 +30,7 @@ export interface ProjectionReplayInput {
   source: ProjectionReplaySource;
   cursor?: string;
   limit: number;
+  idempotencyKey: string;
 }
 
 export class ReplayClient {
@@ -67,8 +68,11 @@ export class ReplayClient {
   }
 
   async replayProjection(input: ProjectionReplayInput): Promise<JsonRecord> {
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!idempotencyKey) throw new Error("请求需要 Idempotency-Key");
     return dataOf(
       await this.transport.request("POST", "/audit/replays/projection", {
+        idempotencyKey,
         body: {
           account_id: input.accountID,
           source: input.source,

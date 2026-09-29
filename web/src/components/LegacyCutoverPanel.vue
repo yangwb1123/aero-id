@@ -23,6 +23,7 @@ import {
   statusLabels,
   statusTone,
 } from "./legacyHelpers";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 interface TenantInspection {
   tenantID: string;
   status: LegacyCutoverStatus;
@@ -39,6 +40,7 @@ const confirmation = ref("");
 const running = ref(false);
 const error = ref<Error>();
 const message = ref<string>();
+const intentKeys = new Map<string, string>();
 async function inspect(requestedTenant = tenantID.value.trim()): Promise<void> {
   if (!requestedTenant) {
     error.value = new Error("Tenant ID 不能为空");
@@ -65,6 +67,7 @@ async function inspect(requestedTenant = tenantID.value.trim()): Promise<void> {
   }
 }
 function prepare(): void {
+  if (running.value) return;
   error.value = undefined;
   message.value = undefined;
   const trimmedNote = note.value.trim();
@@ -85,22 +88,34 @@ function prepare(): void {
     return;
   }
   confirmation.value = "";
+  const intent = rememberIdempotencyKey(
+    {
+      kind: "cutover",
+      tenantID: inspection.value.tenantID,
+      status: nextStatus.value,
+      note: trimmedNote,
+    },
+    intentKeys,
+  );
   command.value = {
     kind: "cutover",
     tenantID: inspection.value.tenantID,
     status: nextStatus.value,
     note: trimmedNote,
-    idempotencyKey: crypto.randomUUID(),
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
   };
 }
 async function execute(): Promise<void> {
-  if (command.value?.kind !== "cutover") return;
+  const current = command.value;
+  if (current?.kind !== "cutover" || running.value) return;
   running.value = true;
   error.value = undefined;
   try {
-    await client.migration.setCutover(command.value);
-    const changedTenant = command.value.tenantID;
-    message.value = `${changedTenant} 已切换为 ${command.value.status}，决策与审计事实已原子提交。`;
+    await client.migration.setCutover(current);
+    intentKeys.delete(current.signature);
+    const changedTenant = current.tenantID;
+    message.value = `${changedTenant} 已切换为 ${current.status}，决策与审计事实已原子提交。`;
     command.value = undefined;
     confirmation.value = "";
     note.value = "";
@@ -183,7 +198,7 @@ const transitionItems = computed(() =>
         <IrisFormField label="变更说明" required
           ><IrisTextarea v-model="note" required maxlength="1000"
         /></IrisFormField>
-        <IrisButton variant="danger" @click="prepare"
+        <IrisButton variant="danger" :disabled="running" @click="prepare"
           >检查并确认状态切换</IrisButton
         >
       </div>

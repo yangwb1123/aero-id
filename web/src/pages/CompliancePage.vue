@@ -22,6 +22,7 @@ import PageLoading from "../components/PageLoading.vue";
 import RecordTable from "../components/RecordTable.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { normalizeHoldExpiry } from "../components/complianceHelpers";
+import { rememberIdempotencyKey } from "../components/idempotencyHelpers";
 import type { JsonRecord } from "../types";
 
 const scopeItems = [
@@ -41,6 +42,7 @@ const running = ref(false);
 const commandError = ref<Error>();
 const message = ref<string>();
 const jobID = ref<string>();
+const intentKeys = new Map<string, string>();
 function holdScope(record: JsonRecord): AuditHoldScope | undefined {
   const value = record.scope_type;
   return value === "tenant" || value === "account" || value === "actor"
@@ -48,6 +50,7 @@ function holdScope(record: JsonRecord): AuditHoldScope | undefined {
     : undefined;
 }
 function prepareHold(): void {
+  if (running.value) return;
   commandError.value = undefined;
   try {
     const id = scopeID.value.trim();
@@ -60,7 +63,16 @@ function prepareHold(): void {
       reason: holdReason,
       expiresAt: normalizeHoldExpiry(expiresAt.value),
     };
-    command.value = { kind: "put", input };
+    const intent = rememberIdempotencyKey(
+      { kind: "put", ...input },
+      intentKeys,
+    );
+    command.value = {
+      kind: "put",
+      input,
+      signature: intent.signature,
+      idempotencyKey: intent.idempotencyKey,
+    };
     confirmation.value = "";
   } catch (reasonValue) {
     commandError.value =
@@ -70,19 +82,30 @@ function prepareHold(): void {
   }
 }
 function openCommand(next: ComplianceCommand): void {
+  if (running.value) return;
   confirmation.value = "";
   commandError.value = undefined;
   command.value = next;
 }
+function prepareAuditExport(): void {
+  if (running.value) return;
+  const intent = rememberIdempotencyKey({ kind: "audit-export" }, intentKeys);
+  openCommand({
+    kind: "export",
+    signature: intent.signature,
+    idempotencyKey: intent.idempotencyKey,
+  });
+}
 async function runCommand(): Promise<void> {
   const current = command.value;
-  if (!current) return;
+  if (!current || running.value) return;
   running.value = true;
   commandError.value = undefined;
   message.value = undefined;
   try {
     if (current.kind === "put") {
-      await client.compliance.putHold(current.input);
+      await client.compliance.putHold(current.input, current.idempotencyKey);
+      intentKeys.delete(current.signature);
       message.value = "Legal Hold 已持久化，并已原子写入审计事实。";
       scopeID.value = "";
       reason.value = "";
@@ -93,8 +116,14 @@ async function runCommand(): Promise<void> {
       message.value = "Legal Hold 已解除，并已写入新的审计事实。";
       resource.reload();
     } else {
-      const id = syncJobID(await client.compliance.createAuditExport());
-      if (!id) throw new Error("服务端未返回审计导出任务 ID");
+      const id = syncJobID(
+        await client.compliance.createAuditExport(current.idempotencyKey),
+      );
+      if (!id)
+        throw new Error(
+          "任务可能已创建，但响应缺少任务 ID；重试将复用当前幂等键。",
+        );
+      intentKeys.delete(current.signature);
       jobID.value = id;
       message.value = `审计导出任务 ${id} 已持久化。`;
     }
@@ -105,6 +134,11 @@ async function runCommand(): Promise<void> {
       reasonValue instanceof Error
         ? reasonValue
         : new Error("合规命令执行失败");
+    if (current.kind === "remove") {
+      command.value = undefined;
+      confirmation.value = "";
+      resource.reload();
+    }
   } finally {
     running.value = false;
   }
@@ -124,7 +158,7 @@ async function runCommand(): Promise<void> {
       description="Legal Hold 阻止适用证据进入常规清理；审计导出由异步任务生成，并通过受保护的一次性下载交付。"
     >
       <template #actions
-        ><IrisButton variant="outline" @click="openCommand({ kind: 'export' })"
+        ><IrisButton variant="outline" @click="prepareAuditExport"
           >创建审计导出</IrisButton
         ></template
       >
@@ -174,6 +208,7 @@ async function runCommand(): Promise<void> {
             v-if="holdScope(record) && record.scope_id"
             size="sm"
             variant="danger"
+            :disabled="running || resource.loading || Boolean(resource.error)"
             @click="
               openCommand({
                 kind: 'remove',

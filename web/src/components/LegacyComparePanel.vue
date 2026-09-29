@@ -11,6 +11,7 @@ import {
 import type { AeroIdClient } from "../api/aeroId";
 import type { LegacySource } from "../api/migration";
 import type { JsonRecord } from "../types";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 import RecordTable from "./RecordTable.vue";
 const { client } = defineProps<{ client: AeroIdClient }>();
 const sourceItems = [
@@ -23,6 +24,7 @@ const limit = ref("1000");
 const running = ref(false);
 const error = ref<Error>();
 const result = ref<JsonRecord>();
+const intentKeys = new Map<string, string>();
 function record(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -45,6 +47,7 @@ const counters = computed(() =>
   ),
 );
 async function compare(): Promise<void> {
+  if (running.value) return;
   const uid = ownerUID.value.trim();
   error.value = undefined;
   result.value = undefined;
@@ -61,13 +64,19 @@ async function compare(): Promise<void> {
     error.value = new Error("Compare limit 必须是 1–5000 的整数");
     return;
   }
+  const input = {
+    ownerUID: uid,
+    source: source.value,
+    limit: compareLimit,
+  };
+  const intent = rememberIdempotencyKey(input, intentKeys);
   running.value = true;
   try {
     result.value = await client.migration.compare({
-      ownerUID: uid,
-      source: source.value,
-      limit: compareLimit,
+      ...input,
+      idempotencyKey: intent.idempotencyKey,
     });
+    intentKeys.delete(intent.signature);
   } catch (reason) {
     error.value =
       reason instanceof Error ? reason : new Error("Shadow compare 失败");
@@ -82,15 +91,22 @@ async function compare(): Promise<void> {
     <template #header>Shadow Migration Compare</template>
     <form class="migration-compare-grid" @submit.prevent="void compare()">
       <IrisFormField label="Legacy Owner UID" required
-        ><IrisInput v-model="ownerUID" required
+        ><IrisInput v-model="ownerUID" required :disabled="running"
       /></IrisFormField>
       <IrisFormField label="目标权威来源"
-        ><IrisSelect v-model="source" :items="sourceItems"
+        ><IrisSelect v-model="source" :items="sourceItems" :disabled="running"
       /></IrisFormField>
       <IrisFormField label="单次 Digest 上限" hint="默认 1000，硬上限 5000"
-        ><IrisInput v-model="limit" type="number" min="1" max="5000"
+        ><IrisInput
+          v-model="limit"
+          type="number"
+          min="1"
+          max="5000"
+          :disabled="running"
       /></IrisFormField>
-      <IrisButton type="submit" :loading="running">运行只读 Compare</IrisButton>
+      <IrisButton type="submit" :loading="running" :disabled="running"
+        >运行只读 Compare</IrisButton
+      >
     </form>
     <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
     <IrisAlert

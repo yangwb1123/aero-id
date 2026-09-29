@@ -10,6 +10,7 @@ import {
 } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
 import type { JsonRecord } from "../types";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 import RecordTable from "./RecordTable.vue";
 import {
   projectionReplayOutcome,
@@ -25,12 +26,14 @@ const running = ref(false);
 const error = ref<Error>();
 const result = ref<JsonRecord>();
 const inputCursor = ref<string>();
+const intentKeys = new Map<string, string>();
 function resetWindow(): void {
   result.value = undefined;
   inputCursor.value = undefined;
   error.value = undefined;
 }
 async function run(cursor?: string): Promise<void> {
+  if (running.value) return;
   const id = accountID.value.trim();
   error.value = undefined;
   if (!id) {
@@ -46,14 +49,20 @@ async function run(cursor?: string): Promise<void> {
     error.value = new Error("Projection Replay limit 必须是 1–10000 的整数");
     return;
   }
+  const input = {
+    accountID: id,
+    source: source.value,
+    cursor,
+    limit: replayLimit,
+  };
+  const intent = rememberIdempotencyKey(input, intentKeys);
   running.value = true;
   try {
     result.value = await client.replays.replayProjection({
-      accountID: id,
-      source: source.value,
-      cursor,
-      limit: replayLimit,
+      ...input,
+      idempotencyKey: intent.idempotencyKey,
     });
+    intentKeys.delete(intent.signature);
     inputCursor.value = cursor;
   } catch (reason) {
     error.value =
@@ -103,12 +112,14 @@ const sections = computed(() => [
         ><IrisInput
           v-model="accountID"
           required
+          :disabled="running"
           @update:model-value="resetWindow"
       /></IrisFormField>
       <IrisFormField label="Event Source"
         ><IrisSelect
           v-model="source"
           :items="projectionSources"
+          :disabled="running"
           @update:model-value="resetWindow"
       /></IrisFormField>
       <IrisFormField label="单窗口事件上限" hint="默认 1000，硬上限 10000"
@@ -117,9 +128,12 @@ const sections = computed(() => [
           type="number"
           min="1"
           max="10000"
+          :disabled="running"
           @update:model-value="resetWindow"
       /></IrisFormField>
-      <IrisButton type="submit" :loading="running">重放首个有界窗口</IrisButton>
+      <IrisButton type="submit" :loading="running" :disabled="running"
+        >重放首个有界窗口</IrisButton
+      >
     </form>
     <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
     <template v-if="result">
@@ -179,6 +193,7 @@ const sections = computed(() => [
           v-if="nextCursor"
           variant="outline"
           :loading="running"
+          :disabled="running"
           @click="void run(nextCursor)"
           >手动读取下一窗口</IrisButton
         >

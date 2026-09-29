@@ -23,7 +23,26 @@ import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
 import { safeJsonPreview } from "./safeJsonPreview";
+import {
+  loadOperationReconcileKey,
+  operationRunIdempotencyKey,
+  saveOperationReconcileKey,
+} from "./operationRequestKeys";
 const props = defineProps<{ client: AeroIdClient; operationId: string }>();
+function readReconcileKey(): string | undefined {
+  try {
+    return loadOperationReconcileKey(window.sessionStorage, props.operationId);
+  } catch {
+    return undefined;
+  }
+}
+function persistReconcileKey(key: string | undefined): void {
+  try {
+    saveOperationReconcileKey(window.sessionStorage, props.operationId, key);
+  } catch {
+    // Keep the retry key in memory if session storage is blocked.
+  }
+}
 const emit = defineEmits<{ close: []; changed: [] }>();
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value)
@@ -56,6 +75,7 @@ const consumedAuditCursors = new Set<string>();
 const auditLoading = ref(false);
 const auditError = ref<Error>();
 const reconciling = ref(false);
+const reconcileKey = ref(readReconcileKey());
 const runningOperation = ref(false);
 const runPending = ref(false);
 const runConfirmation = ref("");
@@ -124,10 +144,16 @@ const runConfirmationPhrase = computed(() =>
     : "CONFIRM OPERATION RUN",
 );
 async function executeRun(): Promise<void> {
+  if (runningOperation.value || reconciling.value) return;
   runningOperation.value = true;
   actionError.value = undefined;
   try {
-    resource.replace(await props.client.runOperation(props.operationId));
+    resource.replace(
+      await props.client.runOperation(
+        props.operationId,
+        operationRunIdempotencyKey(props.operationId),
+      ),
+    );
     runPending.value = false;
     runConfirmation.value = "";
     emit("changed");
@@ -139,6 +165,7 @@ async function executeRun(): Promise<void> {
   }
 }
 function prepareRun(): void {
+  if (runningOperation.value || reconciling.value) return;
   if (runIsDangerous.value) {
     runConfirmation.value = "";
     runPending.value = true;
@@ -153,10 +180,18 @@ function cancelRun(): void {
   }
 }
 async function reconcile(): Promise<void> {
+  if (reconciling.value || runningOperation.value) return;
+  const key = reconcileKey.value ?? crypto.randomUUID();
+  reconcileKey.value = key;
+  persistReconcileKey(key);
   reconciling.value = true;
   actionError.value = undefined;
   try {
-    resource.replace(await props.client.reconcileOperation(props.operationId));
+    resource.replace(
+      await props.client.reconcileOperation(props.operationId, key),
+    );
+    reconcileKey.value = undefined;
+    persistReconcileKey(undefined);
     emit("changed");
   } catch (reason) {
     actionError.value =
@@ -189,6 +224,7 @@ const steps = computed(() => records(resource.data?.steps));
             size="sm"
             :variant="runIsDangerous ? 'danger' : 'solid'"
             :loading="runningOperation"
+            :disabled="reconciling"
             @click="prepareRun"
             >{{
               runIsDangerous ? "准备运行危险 Operation" : "运行 Operation"
@@ -198,6 +234,7 @@ const steps = computed(() => records(resource.data?.steps));
             size="sm"
             variant="outline"
             :loading="reconciling"
+            :disabled="runningOperation"
             @click="void reconcile()"
             >对账未知结果</IrisButton
           >

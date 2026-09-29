@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   newOperationStep,
+  operationIntentSignature,
   operationNeedsDatasets,
   parseOperationSteps,
 } from "./operationFormHelpers";
@@ -9,6 +10,35 @@ const datasets = [
   { name: "aero-im.profile", source: "aero-im", pii: true },
   { name: "aero-vault.usage", source: "aero-vault", pii: false },
 ];
+
+describe("operation intent signature", () => {
+  it("binds retries to the same operation but excludes its idempotency key", () => {
+    const input = {
+      accountID: "account-1",
+      operationType: "sync" as const,
+      idempotencyKey: "key-1",
+      requestPayload: { source: "aero-im" },
+      steps: [
+        {
+          stepKey: "summary-1",
+          source: "aero-im" as const,
+          action: "summary" as const,
+          requestPayload: { datasets: ["aero-im.workspaces"] },
+        },
+      ],
+    };
+
+    expect(
+      operationIntentSignature({ ...input, idempotencyKey: "key-2" }),
+    ).toBe(operationIntentSignature(input));
+    expect(
+      operationIntentSignature({
+        ...input,
+        requestPayload: { source: "aero-vault" },
+      }),
+    ).not.toBe(operationIntentSignature(input));
+  });
+});
 
 describe("operation form validation", () => {
   it("starts an IM summary with a registry dataset when available", () => {

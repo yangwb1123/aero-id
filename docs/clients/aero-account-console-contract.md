@@ -84,7 +84,8 @@ GET  /v1/audit/operations/:id
 
 同步、导出、删除和跨源命令均为异步任务或 Operation。客户端按 `job_id`/`operation_id` 轮询，展示
 `completed`、`partially_completed`、`failed`、`unknown` 等终态；`unknown` 不能自动当作失败重试，必须等待
-对账或人工确认。导出文件是短时、加密、受权限保护的临时工件，不能缓存到公共 URL。
+对账或人工确认。Sync Job 与 Operation 的 `reconcile` POST 都使用 `Idempotency-Key`；结果不确定时保留原键，收到明确响应后下一次人工对账才创建新键。Operation `run` 复用稳定键。
+导出文件是短时、加密、受权限保护的临时工件，不能缓存到公共 URL。
 
 ## 管理端
 
@@ -136,13 +137,13 @@ Callback 注册和人工重放 Delivery 都必须为该次意图生成 `Idempote
 审计查询返回脱敏 payload、链序号、hash/signature 版本、`request_id`、`trace_id`、`operation_id` 和因果 ID。
 Forensic replay 不产生副作用；dry-run 只模拟；controlled replay 必须重新授权、使用新的幂等键并产生新的
 审计事实。Projection replay 只接受 `snaplink | aero-im | aero-vault | aero-id`，服务端再次校验 `audit.replay`
-权限和当前认证 Tenant 下的 Account；每个窗口限制为 1–10000 条脱敏事件并独立审计。`completed=false` 时客户端只能
+权限和当前认证 Tenant 下的 Account；每个窗口限制为 1–10000 条脱敏事件并独立审计；同一窗口请求超时重试复用 `Idempotency-Key`，确认成功后下次显式读取（包括下一 cursor）使用新键。`completed=false` 时客户端只能
 用服务端返回的 opaque `next_cursor` 手动读取下一窗口，不能自动全量扫描，也不能把单窗口 matched 当作全局一致；
 该工具永远不写入或修复 live projection。
 
 Legacy backfill 每批限制为 1–1000 个 UID，使用固定 `Idempotency-Key`，并在任何账户创建前记录独立的管理意图；
 shadow compare 只接受 `aero-vault | aero-im`，最多读取 5000 条 content-free digest 输入，来源失败只返回稳定错误，
-成功结果在离开服务前写入敏感读取审计。Cutover 只允许服务端状态机定义的下一跳，写命令使用固定幂等键和 Tenant ID
+成功结果在离开服务前写入敏感读取审计；同一 compare 意图的超时重试复用 `Idempotency-Key`，明确成功后新的人工 compare 使用新键。Cutover 只允许服务端状态机定义的下一跳，写命令使用固定幂等键和 Tenant ID
 二次确认；服务端以读取到的旧状态做事务内 CAS，并与审计事实原子提交，`409 cutover.concurrent_transition` 后必须重新读取，
 不能拿旧决策自动重试。cleanup readiness 只报告删除前置条件，不执行 legacy 数据清理。
 

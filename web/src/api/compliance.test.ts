@@ -10,11 +10,34 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("ComplianceClient", () => {
+  it("rejects empty idempotency keys before state-changing requests", async () => {
+    const fetcher = vi.fn(async () => json({ data: {} }));
+    const client = new ComplianceClient(
+      new AeroIdTransport(
+        "https://accounts.example.test/v1",
+        () => "token",
+        fetcher as typeof fetch,
+      ),
+    );
+
+    await expect(
+      client.putHold(
+        { scopeType: "account", scopeID: "account-1", reason: "case" },
+        " ",
+      ),
+    ).rejects.toThrow("Idempotency-Key");
+    await expect(client.createAuditExport("")).rejects.toThrow(
+      "Idempotency-Key",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("uses legal-hold routes and preserves their published field names", async () => {
     const requests: Array<{
       url: URL;
       method?: string;
       body?: BodyInit | null;
+      headers: Headers;
     }> = [];
     const fetcher = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -22,6 +45,7 @@ describe("ComplianceClient", () => {
           url: new URL(String(input)),
           method: init?.method,
           body: init?.body,
+          headers: new Headers(init?.headers),
         });
         if (requests.length === 1)
           return json({ data: { holds: [{ scope_id: "account/1" }] } });
@@ -44,12 +68,15 @@ describe("ComplianceClient", () => {
     await expect(client.listHolds()).resolves.toEqual([
       { scope_id: "account/1" },
     ]);
-    await client.putHold({
-      scopeType: "account",
-      scopeID: "account/1",
-      reason: "case-42",
-      expiresAt: "2027-01-02T03:04:05.000Z",
-    });
+    await client.putHold(
+      {
+        scopeType: "account",
+        scopeID: "account/1",
+        reason: "case-42",
+        expiresAt: "2027-01-02T03:04:05.000Z",
+      },
+      "hold-key",
+    );
     await client.removeHold("account", "account/1");
 
     expect(requests[0].url.pathname).toBe("/v1/admin/audit/holds");
@@ -59,6 +86,7 @@ describe("ComplianceClient", () => {
       reason: "case-42",
       expires_at: "2027-01-02T03:04:05.000Z",
     });
+    expect(requests[1].headers.get("Idempotency-Key")).toBe("hold-key");
     expect(requests[2].method).toBe("DELETE");
     expect(requests[2].url.pathname).toBe(
       "/v1/admin/audit/holds/account/account%2F1",
@@ -81,13 +109,15 @@ describe("ComplianceClient", () => {
       ),
     );
 
-    await expect(client.createAuditExport()).resolves.toEqual({
-      job_id: "job-1",
-      status: "pending",
-    });
+    await expect(client.createAuditExport("audit-export-key")).resolves.toEqual(
+      {
+        job_id: "job-1",
+        status: "pending",
+      },
+    );
 
     const headerKey = new Headers(request?.headers).get("Idempotency-Key");
-    expect(headerKey).toBeTruthy();
+    expect(headerKey).toBe("audit-export-key");
     expect(JSON.parse(String(request?.body))).toEqual({
       idempotency_key: headerKey,
     });

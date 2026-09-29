@@ -268,11 +268,16 @@ export class AeroIdClient {
     );
   }
 
-  async reconcileSyncJob(id: string): Promise<JsonRecord> {
+  async reconcileSyncJob(
+    id: string,
+    idempotencyKey: string,
+  ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request(
         "POST",
         `/sync/jobs/${encodeURIComponent(id)}/reconcile`,
+        { idempotencyKey: key },
       ),
     );
   }
@@ -311,8 +316,8 @@ export class AeroIdClient {
     );
   }
 
-  async eraseMyAccount(): Promise<JsonRecord> {
-    const key = crypto.randomUUID();
+  async eraseMyAccount(idempotencyKey: string): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request("POST", "/me/erase", {
         idempotencyKey: key,
@@ -338,17 +343,22 @@ export class AeroIdClient {
     );
   }
 
-  async reconcileOperation(id: string): Promise<JsonRecord> {
+  async reconcileOperation(
+    id: string,
+    idempotencyKey: string,
+  ): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
       await this.request(
         "POST",
         `/operations/${encodeURIComponent(id)}/reconcile`,
+        { idempotencyKey: key },
       ),
     );
   }
 
   async createOperation(input: OperationCreateInput): Promise<JsonRecord> {
-    const key = input.idempotencyKey.trim() || crypto.randomUUID();
+    const key = requiredIdempotencyKey(input.idempotencyKey);
     return dataOf(
       await this.request("POST", "/operations", {
         idempotencyKey: key,
@@ -370,9 +380,12 @@ export class AeroIdClient {
     );
   }
 
-  async runOperation(id: string): Promise<JsonRecord> {
+  async runOperation(id: string, idempotencyKey: string): Promise<JsonRecord> {
+    const key = requiredIdempotencyKey(idempotencyKey);
     return dataOf(
-      await this.request("POST", `/operations/${encodeURIComponent(id)}/run`),
+      await this.request("POST", `/operations/${encodeURIComponent(id)}/run`, {
+        idempotencyKey: key,
+      }),
     );
   }
 

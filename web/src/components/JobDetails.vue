@@ -15,11 +15,30 @@ import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
 import { safeJsonPreview } from "./safeJsonPreview";
+import {
+  loadSyncJobReconcileKey,
+  saveSyncJobReconcileKey,
+} from "./operationRequestKeys";
 
 const props = defineProps<{ client: AeroIdClient; jobId: string }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
+function readReconcileKey(): string | undefined {
+  try {
+    return loadSyncJobReconcileKey(window.sessionStorage, props.jobId);
+  } catch {
+    return undefined;
+  }
+}
+function persistReconcileKey(key: string | undefined): void {
+  try {
+    saveSyncJobReconcileKey(window.sessionStorage, props.jobId, key);
+  } catch {
+    // Keep the retry key in memory if session storage is blocked.
+  }
+}
 const resource = useAsyncResource(() => props.client.getSyncJob(props.jobId));
 const action = ref<"reconcile" | "download">();
+const reconcileKey = ref(readReconcileKey());
 const actionError = ref<Error>();
 const confirmDownload = ref(false);
 function saveExport(blob: Blob): void {
@@ -33,10 +52,16 @@ function saveExport(blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function reconcile(): Promise<void> {
+  if (action.value) return;
+  const key = reconcileKey.value ?? crypto.randomUUID();
+  reconcileKey.value = key;
+  persistReconcileKey(key);
   action.value = "reconcile";
   actionError.value = undefined;
   try {
-    resource.replace(await props.client.reconcileSyncJob(props.jobId));
+    resource.replace(await props.client.reconcileSyncJob(props.jobId, key));
+    reconcileKey.value = undefined;
+    persistReconcileKey(undefined);
     emit("changed");
   } catch (reason) {
     actionError.value =
@@ -80,6 +105,7 @@ async function download(): Promise<void> {
             size="sm"
             variant="outline"
             :loading="action === 'reconcile'"
+            :disabled="Boolean(action)"
             @click="void reconcile()"
             >对账未知结果</IrisButton
           >

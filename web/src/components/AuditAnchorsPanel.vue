@@ -11,6 +11,7 @@ import type { AeroIdClient } from "../api/aeroId";
 import AnchorRunDialog from "./AnchorRunDialog.vue";
 import RecordTable from "./RecordTable.vue";
 import type { JsonRecord } from "../types";
+import { rememberIdempotencyKey } from "./idempotencyHelpers";
 const { client } = defineProps<{ client: AeroIdClient }>();
 const source = ref("");
 const partition = ref("");
@@ -18,6 +19,8 @@ const manifest = ref<JsonRecord>();
 const querying = ref(false);
 const queryError = ref<Error>();
 const runKey = ref<string>();
+const runSignature = ref<string>();
+const intentKeys = new Map<string, string>();
 const confirmation = ref("");
 const running = ref(false);
 const runError = ref<Error>();
@@ -54,18 +57,29 @@ async function queryManifest(): Promise<void> {
   }
 }
 function openRun(): void {
+  const intent = rememberIdempotencyKey({ action: "anchor-all" }, intentKeys);
   confirmation.value = "";
   runError.value = undefined;
   runResult.value = undefined;
-  runKey.value = crypto.randomUUID();
+  runKey.value = intent.idempotencyKey;
+  runSignature.value = intent.signature;
+}
+function cancelRun(): void {
+  if (running.value) return;
+  runKey.value = undefined;
+  runSignature.value = undefined;
 }
 async function runAnchors(): Promise<void> {
-  if (!runKey.value) return;
+  const key = runKey.value;
+  const signature = runSignature.value;
+  if (!key || !signature || running.value) return;
   running.value = true;
   runError.value = undefined;
   try {
-    runResult.value = await client.compliance.runAuditAnchors(runKey.value);
+    runResult.value = await client.compliance.runAuditAnchors(key);
+    intentKeys.delete(signature);
     runKey.value = undefined;
+    runSignature.value = undefined;
     confirmation.value = "";
   } catch (reason) {
     runError.value =
@@ -144,7 +158,7 @@ const chains = computed(() => records(runResult.value?.chains));
     :running="running"
     :error="runError"
     @update:confirmation="confirmation = $event"
-    @cancel="runKey = undefined"
+    @cancel="cancelRun"
     @confirm="void runAnchors()"
   />
 </template>

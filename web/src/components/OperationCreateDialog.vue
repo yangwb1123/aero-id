@@ -17,6 +17,7 @@ import type { Dataset, JsonRecord } from "../types";
 import OperationStepEditor from "./OperationStepEditor.vue";
 import {
   newOperationStep,
+  operationIntentSignature,
   parseOperationSteps,
   type OperationStepDraft,
 } from "./operationFormHelpers";
@@ -39,6 +40,7 @@ const steps = ref<OperationStepDraft[]>([]);
 const confirming = ref(false);
 const confirmation = ref("");
 const pending = ref<OperationCreateInput>();
+const issuedIntent = ref<{ key: string; signature: string }>();
 const operationTypes = [
   { value: "sync", label: "sync · 来源同步/摘要" },
   { value: "erase", label: "erase · 账户擦除" },
@@ -72,11 +74,12 @@ function reset(): void {
   confirming.value = false;
   confirmation.value = "";
   pending.value = undefined;
+  issuedIntent.value = undefined;
   error.value = undefined;
 }
 function opened(value: boolean): void {
   if (value) {
-    reset();
+    if (!issuedIntent.value) reset();
     open.value = true;
     return;
   }
@@ -98,6 +101,7 @@ function parseObject(value: string, label: string): JsonRecord {
   return parsed as JsonRecord;
 }
 function prepare(): void {
+  if (running.value) return;
   error.value = undefined;
   try {
     if (!accountID.value.trim()) throw new Error("Account ID 不能为空");
@@ -114,6 +118,15 @@ function prepare(): void {
         props.datasets,
       ),
     };
+    const signature = operationIntentSignature(input);
+    if (
+      issuedIntent.value?.key === input.idempotencyKey &&
+      issuedIntent.value.signature !== signature
+    ) {
+      throw new Error(
+        "上一次 Operation 结果尚未确认，不能用旧幂等键提交不同内容；请先重试原请求或核实状态，再生成新键开始新意图。",
+      );
+    }
     pending.value = input;
     if (dangerous.value) {
       confirming.value = true;
@@ -126,11 +139,24 @@ function prepare(): void {
       reason instanceof Error ? reason : new Error("Operation 参数无效");
   }
 }
+function generateNewIdempotencyKey(): void {
+  if (running.value) return;
+  idempotencyKey.value = newID();
+  issuedIntent.value = undefined;
+  pending.value = undefined;
+  error.value = undefined;
+}
 async function execute(input: OperationCreateInput): Promise<void> {
+  if (running.value) return;
+  issuedIntent.value = {
+    key: input.idempotencyKey,
+    signature: operationIntentSignature(input),
+  };
   running.value = true;
   error.value = undefined;
   try {
     const operation = await props.client.createOperation(input);
+    issuedIntent.value = undefined;
     emit("created", operation);
     open.value = false;
     confirming.value = false;
@@ -142,7 +168,7 @@ async function execute(input: OperationCreateInput): Promise<void> {
   }
 }
 function confirm(): void {
-  if (!pending.value || !canConfirm.value) return;
+  if (running.value || !pending.value || !canConfirm.value) return;
   void execute(pending.value);
 }
 function cancelConfirmation(): void {
@@ -212,10 +238,14 @@ function changeType(value: unknown): void {
             <IrisButton
               type="button"
               variant="outline"
-              @click="idempotencyKey = newID()"
+              :disabled="running"
+              @click="generateNewIdempotencyKey"
               >生成新幂等键</IrisButton
             >
           </div>
+          <IrisAlert v-if="issuedIntent" tone="warning">
+            上次请求结果尚未确认。重试请保持原参数和幂等键；更改内容前先核实状态，再显式生成新键。
+          </IrisAlert>
           <IrisFormField label="Operation Request Payload JSON">
             <IrisTextarea v-model="requestPayload" autosize :max-rows="6" />
           </IrisFormField>
@@ -238,6 +268,9 @@ function changeType(value: unknown): void {
         <IrisAlert tone="danger" title="不可逆/高风险动作">
           即将提交 {{ operationType }}。请输入
           <strong>{{ confirmationPhrase }}</strong> 完成二次确认。
+        </IrisAlert>
+        <IrisAlert v-if="issuedIntent" tone="warning">
+          上次请求结果尚未确认；重试请保持相同参数和幂等键，返回修改后不要直接换键重复提交。
         </IrisAlert>
         <IrisFormField label="确认短语" :hint="confirmationPhrase">
           <IrisInput v-model="confirmation" autocomplete="off" />
