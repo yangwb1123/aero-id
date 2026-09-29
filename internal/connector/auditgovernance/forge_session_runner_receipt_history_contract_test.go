@@ -247,7 +247,11 @@ func validateForgeSessionRunnerReceiptHistory(history forgeSessionRunnerReceiptH
 	if uncertain {
 		followUp = "reconciliation_manual"
 	}
-	if history.AttemptCount != uint32(len(history.Receipts)) ||
+	receiptCount := uint32(0)
+	for range history.Receipts {
+		receiptCount++
+	}
+	if history.AttemptCount != receiptCount ||
 		history.LatestAttemptID != latest.AttemptID ||
 		history.LatestCommandID != latest.CommandID ||
 		history.LatestTargetID != latest.TargetID ||

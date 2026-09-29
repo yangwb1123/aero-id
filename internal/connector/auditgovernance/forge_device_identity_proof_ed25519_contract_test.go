@@ -106,9 +106,6 @@ func decodeForgeSignedIdentity(raw []byte) (forgeSignedFixture, error) {
 	}
 	return fixture, nil
 }
-func validForgeSignedToken(value string) bool {
-	return value != "" && len(value) <= 512 && value == string(bytes.TrimSpace([]byte(value)))
-}
 func validForgeSignedDigest(value string) bool {
 	if len(value) != 64 {
 		return false

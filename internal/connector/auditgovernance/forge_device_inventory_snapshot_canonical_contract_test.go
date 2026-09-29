@@ -143,8 +143,11 @@ func validateForgeDeviceInventorySnapshotCanonicalCase(testCase forgeDeviceInven
 	}
 	canonical, err := canonicalizeForgeDeviceInventorySnapshot(testCase.Input)
 	if testCase.Expected.Error != "" {
-		if err == nil || err.Error() != testCase.Expected.Error {
-			return fmt.Errorf("case %q returned %v, want %q", testCase.Name, err, testCase.Expected.Error)
+		if err == nil {
+			return fmt.Errorf("case %q returned <nil>, want %q", testCase.Name, testCase.Expected.Error)
+		}
+		if err.Error() != testCase.Expected.Error {
+			return fmt.Errorf("case %q returned %w, want %q", testCase.Name, err, testCase.Expected.Error)
 		}
 		if testCase.Expected.OrderedKeys != nil || testCase.Expected.CanonicalSHA256 != "" {
 			return fmt.Errorf("rejected case %q carries accepted fields", testCase.Name)

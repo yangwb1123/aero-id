@@ -168,10 +168,12 @@ func validateForgeSharedSession(value forgeSharedSessionEnvelope) error {
 			return fmt.Errorf("prompt page row %d drift", index)
 		}
 	}
+	expectedChangeVersion := uint64(0)
 	for index, change := range value.ChangePage.Changes {
-		if change.Cursor != uint64(index+1) || change.SchemaVersion != 1 ||
+		expectedChangeVersion++
+		if change.Cursor != expectedChangeVersion || change.SchemaVersion != 1 ||
 			change.ConversationID != "conversation-001" ||
-			change.AggregateVersion != uint64(index+1) || change.CreatedAt != 100 ||
+			change.AggregateVersion != expectedChangeVersion || change.CreatedAt != 100 ||
 			(index > 0 && value.ChangePage.Changes[index-1].Cursor >= change.Cursor) {
 			return fmt.Errorf("change page row %d drift", index)
 		}

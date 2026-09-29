@@ -20,9 +20,10 @@ import (
 var forgeDeviceInventoryPlacementInputFixture []byte
 
 const (
-	forgeDeviceInventoryPlacementInputSchema = "forge.device-inventory-placement-input/v1"
-	forgeDeviceInventoryPlacementInputMode   = "pure_persisted_inventory_to_placement_input"
-	forgeDeviceInventoryPlacementInputSafe   = uint64(9007199254740991)
+	forgeDeviceInventoryPlacementInputSchema   = "forge.device-inventory-placement-input/v1"
+	forgeDeviceInventoryPlacementInputMode     = "pure_persisted_inventory_to_placement_input"
+	forgeDeviceInventoryPlacementInputSafe     = uint64(9007199254740991)
+	forgeDeviceInventoryPlacementInputMaxInt64 = uint64(1<<63 - 1)
 )
 
 type forgeDeviceInventoryPlacementInputOwner struct {
@@ -228,12 +229,20 @@ func validateForgeDeviceInventoryPlacementInputAcceptedCase(item forgeDeviceInve
 	if !want.Accepted || want.Error != "" || want.Revision != base.Revision || want.DeviceID != base.Device.DeviceID ||
 		want.InstanceID != base.Runner.InstanceID || want.Generation != base.Runner.Generation || want.HeartbeatSequence != base.Runner.HeartbeatSequence ||
 		want.ApprovalState != approval || want.CordonState != cordon || want.ReservationState != base.Device.ReservationState || want.Liveness != liveness ||
-		want.SnapshotObservedAtMS != int64(observed) || want.LeaseExpiresAtMS != int64(lease) || !want.OwnerDeclarationUnverified ||
+		!forgeDeviceInventoryPlacementInputTimestampMatches(observed, want.SnapshotObservedAtMS) ||
+		!forgeDeviceInventoryPlacementInputTimestampMatches(lease, want.LeaseExpiresAtMS) || !want.OwnerDeclarationUnverified ||
 		!want.PolicyAttributesUnverified || len(want.DataResidencyZones) != 0 || want.TrustZone != "unknown" || len(want.SandboxLevels) != 0 ||
 		want.ConcurrencyLimit != 0 || want.ActiveConcurrency != 0 || want.PolicyRequirementsMet {
 		return fmt.Errorf("invalid accepted placement input case %q", item.Name)
 	}
 	return nil
+}
+
+func forgeDeviceInventoryPlacementInputTimestampMatches(value uint64, expected int64) bool {
+	if value > forgeDeviceInventoryPlacementInputMaxInt64 {
+		return false
+	}
+	return int64(value) == expected
 }
 
 func validForgeDeviceInventoryPlacementInputToken(value string) bool {
