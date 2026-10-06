@@ -125,8 +125,20 @@ type commandResultPayload struct {
 	Result            map[string]any `json:"result"`
 }
 
+// operationStatusIDMismatch compares the source-owned source_operation_id. It
+// is an opaque string minted by the source, so it stays exact-string compared:
+// an empty response means the source omitted it, not that it contradicted the
+// request.
 func operationStatusIDMismatch(response, requested string) bool {
 	return response != "" && response != requested
+}
+
+// operationCorrelationIDMismatch applies the same "empty means omitted" rule to
+// the aero-id-owned correlation id, but compares by identity: an alternate
+// rendering of the requested UUID (upper case, urn:uuid:, 32-hex, braced) is the
+// same identity, not a contradiction. See SameCorrelationID.
+func operationCorrelationIDMismatch(response, requested string) bool {
+	return response != "" && !SameCorrelationID(requested, response)
 }
 
 func (c *JSONSummaryConnector) decodeCommandResult(ctx context.Context, body io.Reader, req OperationStatusRequest) (*CommandResult, error) {
@@ -163,7 +175,7 @@ func (c *JSONSummaryConnector) readCommandResponse(ctx context.Context, body io.
 
 func (c *JSONSummaryConnector) decodeStandardCommandResult(payload commandResultPayload,
 	req OperationStatusRequest) (*CommandResult, error) {
-	if c.source == SourceAeroIM && (operationStatusIDMismatch(payload.OperationID, req.OperationID) ||
+	if c.source == SourceAeroIM && (operationCorrelationIDMismatch(payload.OperationID, req.OperationID) ||
 		operationStatusIDMismatch(payload.SourceOperationID, req.SourceOperationID)) {
 		return nil, &RemoteError{Source: SourceAeroIM, Kind: ErrorInvalid, Code: "source.operation_id_mismatch"}
 	}

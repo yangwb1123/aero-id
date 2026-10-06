@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 )
 
@@ -236,10 +237,15 @@ func operationCompensationReconcileIdempotencyKey(operation *domain.Operation, s
 	return operationEraseIdempotencyKey(operation, step, ":compensation")
 }
 
+// validateSnaplinkCommandResult compares the aero-id-owned correlation id by
+// identity: a source may re-render the UUID aero-id sent in any form
+// idgen.Parse accepts (upper case, urn:uuid:, 32-hex, braced) and that is the
+// same operation, not a contradiction. The source-owned source_operation_id
+// below stays exact-string compared.
 func validateSnaplinkCommandResult(operation *domain.Operation, step *domain.OperationStep,
 	result *connector.CommandResult) error {
 	if operation == nil || result == nil || strings.TrimSpace(result.OperationID) == "" ||
-		result.OperationID != operation.ID.String() {
+		!idgen.CanonicalEqual(operation.ID, result.OperationID) {
 		return &connector.RemoteError{Source: connector.SourceSnaplink, Kind: connector.ErrorUnknown,
 			Code: "source.operation_id_mismatch", Temporary: true}
 	}
@@ -270,7 +276,7 @@ func trustedSourceOperationID(source connector.Source, operation *domain.Operati
 	if source != connector.SourceSnaplink {
 		return result.SourceOperationID
 	}
-	if operation == nil || result.OperationID != operation.ID.String() {
+	if operation == nil || !idgen.CanonicalEqual(operation.ID, result.OperationID) {
 		if step != nil {
 			return step.SourceOperationID
 		}

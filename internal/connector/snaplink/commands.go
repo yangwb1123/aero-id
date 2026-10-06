@@ -54,9 +54,12 @@ func (c *snaplinkStatusConnector) OperationStatus(ctx context.Context,
 	return result, nil
 }
 
+// validateEraseResult compares the aero-id-owned correlation id by identity
+// (SameCorrelationID) and the source-owned source_operation_id exactly.
 func validateEraseResult(request connector.EraseRequest, result *connector.CommandResult) error {
 	if result == nil || !validCorrelationID(request.OperationID) ||
-		!validCorrelationID(result.OperationID) || result.OperationID != request.OperationID {
+		!validCorrelationID(result.OperationID) ||
+		!connector.SameCorrelationID(request.OperationID, result.OperationID) {
 		return unknownResultError("source.operation_id_mismatch")
 	}
 	if !validCorrelationID(result.SourceOperationID) {
@@ -71,9 +74,12 @@ func validateEraseResult(request connector.EraseRequest, result *connector.Comma
 	return nil
 }
 
+// validateStatusResult compares the aero-id-owned correlation id by identity
+// (SameCorrelationID) and the source-owned source_operation_id exactly.
 func validateStatusResult(request connector.OperationStatusRequest, result *connector.CommandResult) error {
 	if result == nil || !validCorrelationID(request.OperationID) || !validCorrelationID(request.SourceOperationID) ||
-		!validCorrelationID(result.OperationID) || result.OperationID != request.OperationID {
+		!validCorrelationID(result.OperationID) ||
+		!connector.SameCorrelationID(request.OperationID, result.OperationID) {
 		return unknownResultError("source.operation_id_mismatch")
 	}
 	if !validCorrelationID(result.SourceOperationID) {
