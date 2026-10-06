@@ -1,6 +1,8 @@
 package idgen
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -357,6 +359,66 @@ func TestRenderAnchorTime(t *testing.T) {
 	}
 }
 
+func TestCanonicalEqual_AcceptedWireForms(t *testing.T) {
+	// The provenance defect: 0195B2C6-9F40-7C01-8000-000000000001 is the same
+	// 128-bit identity as the canonical lowercase rendering, so a source that
+	// declares it must never be recorded as having a derived identity.
+	const idText = "0195b2c6-9f40-7c01-8000-000000000001"
+	id := uuid.MustParse(idText)
+	truncated := safeWireIDTruncation(strings.Repeat("a", 512))
+
+	cases := []struct {
+		name string
+		id   ID
+		text string
+		want bool
+	}{
+		{"canonical hyphenated", id, idText, true},
+		{"upper-case hyphenated", id, "0195B2C6-9F40-7C01-8000-000000000001", true},
+		{"mixed-case hyphenated", id, "0195b2C6-9F40-7c01-8000-000000000001", true},
+		{"urn prefix upper-case", id, "urn:uuid:0195B2C6-9F40-7C01-8000-000000000001", true},
+		{"urn prefix lower-case", id, "URN:UUID:0195b2c6-9f40-7c01-8000-000000000001", true},
+		{"32 hex lower-case", id, "0195b2c69f407c018000000000000001", true},
+		{"32 hex upper-case", id, "0195B2C69F407C018000000000000001", true},
+		{"braced", id, "{0195b2c6-9f40-7c01-8000-000000000001}", true},
+		{"leading and trailing whitespace", id, "  " + idText + "\n", true},
+		{"surrounding tabs", id, "\t" + idText + "\t", true},
+
+		{"different valid UUID", id, "0195b2c6-9f40-7c01-8000-000000000002", false},
+		{"different value in another rendering", id, "urn:uuid:0195b2c6-9f40-7c01-8000-000000000002", false},
+		{"different value in mixed case", id, "0195b2C6-9F40-7c01-8000-00000000000a", false},
+		{"zero UUID text against parsed id", id, "00000000-0000-0000-0000-000000000000", false},
+		{"zero id argument", ID{}, idText, false},
+		{"empty", id, "", false},
+		{"whitespace only", id, "   \t\n", false},
+		{"unparseable", id, "not-a-uuid", false},
+		{"control characters", id, idText[:1] + "\x00\x1f" + idText[1:], false},
+		{"512 byte non-uuid", id, strings.Repeat("a", 512), false},
+		{"safeWireID truncated rendering", id, truncated, false},
+		{"truncated 29 hex form", id, "0195b2c69f407c018000000000001", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanonicalEqual(tc.id, tc.text); got != tc.want {
+				t.Fatalf("CanonicalEqual(%s, %q) = %v, want %v", tc.id, tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCanonicalEqual_ZeroIDNeverMatchesAnyText pins the ErrZeroID half of the
+// contract: because CanonicalEqual delegates to Parse, no text at all — not
+// even the zero UUID's own rendering — can equal a zero id argument.
+func TestCanonicalEqual_ZeroIDNeverMatchesAnyText(t *testing.T) {
+	for _, text := range []string{"", "00000000-0000-0000-0000-000000000000",
+		"{00000000-0000-0000-0000-000000000000}", "urn:uuid:00000000-0000-0000-0000-000000000000"} {
+		if CanonicalEqual(ID{}, text) {
+			t.Fatalf("CanonicalEqual(zero, %q) = true, want false", text)
+		}
+	}
+}
+
 func panics(f func()) (did bool) {
 	defer func() {
 		if recover() != nil {
@@ -365,4 +427,15 @@ func panics(f func()) (did bool) {
 	}()
 	f()
 	return false
+}
+
+// safeWireIDTruncation reproduces the ingest boundary's over-long wire-id
+// bounding (grpc/event_ingest.go safeWireID) so the test can pin that a
+// truncated wire id — which is not a UUID at all — never compares equal.
+func safeWireIDTruncation(value string) string {
+	if len(value) <= 256 {
+		return value
+	}
+	sum := sha256.Sum256([]byte(value))
+	return value[:239] + "#" + hex.EncodeToString(sum[:])[:16]
 }

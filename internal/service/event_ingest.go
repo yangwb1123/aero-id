@@ -345,10 +345,7 @@ func addQuarantineAuditMetadata(payload map[string]any, envelope *event.Envelope
 	if details.Stage == "" && details.OriginalWireID == "" && details.WireFingerprint == "" {
 		return
 	}
-	identityKind := "canonical"
-	if details.OriginalWireID != "" && envelope.EventID.String() != details.OriginalWireID {
-		identityKind = "derived"
-	}
+	identityKind := repository.QuarantineIdentityKind(envelope, details)
 	quarantine := map[string]any{"identity_kind": identityKind, "stage": quarantineStage(stage)}
 	if details.OriginalWireID != "" {
 		quarantine["wire_event_id"] = boundedWireID(details.OriginalWireID)

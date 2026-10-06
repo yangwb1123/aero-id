@@ -25,16 +25,101 @@ func (f *fakeGRPCEventIngestService) Ingest(_ context.Context, value *event.Enve
 
 type itemGRPCEventIngestService struct {
 	fakeGRPCEventIngestService
-	items int
+	items    int
+	captured []service.EventIngestItem
 }
 
 func (f *itemGRPCEventIngestService) IngestItem(_ context.Context, item service.EventIngestItem) *service.EventIngestResult {
 	f.items++
+	f.captured = append(f.captured, item)
 	if item.CanonicalizationCode != "" {
 		return &service.EventIngestResult{EventID: item.Envelope.EventID.String(), Status: "quarantined",
 			ErrorCode: item.CanonicalizationCode}
 	}
 	return &service.EventIngestResult{EventID: item.Envelope.EventID.String(), Status: "applied"}
+}
+
+// TestEventIngestServer_PreservesVerbatimWireEventID pins this module's upstream
+// contract: a legal RFC-4122 alternative rendering (urn:uuid:, upper-case,
+// 32-hex, braced) reaches the service verbatim as OriginalWireEventID, while
+// Envelope.EventID carries the parsed value. The downstream provenance record
+// must describe what the source actually sent — pre-normalizing it here would
+// make the identity comparison trivially pass and destroy that evidence.
+func TestEventIngestServer_PreservesVerbatimWireEventID(t *testing.T) {
+	const parsedText = "0195b2c6-9f40-7c01-8000-000000000001"
+	parsed, err := idgen.Parse(parsedText)
+	if err != nil {
+		t.Fatalf("fixture %q does not parse: %v", parsedText, err)
+	}
+	wireTexts := []string{
+		"urn:uuid:0195B2C6-9F40-7C01-8000-000000000001",
+		"0195B2C6-9F40-7C01-8000-000000000001",
+		"0195b2c69f407c018000000000000001",
+		"{0195b2c6-9f40-7c01-8000-000000000001}",
+	}
+
+	for _, wireText := range wireTexts {
+		t.Run(wireText, func(t *testing.T) {
+			fake := &itemGRPCEventIngestService{}
+			server := NewEventIngestServer(fake, WithEventSourceBindings(event.SourceBindings{
+				"source-client": {TenantID: "tenant-1", Source: "aero-im", SourceRegion: "west"},
+			}))
+			ctx := service.WithIdentity(context.Background(),
+				&domain.TokenIdentity{UID: "source-client", TenantID: "tenant-1", ClientID: "source-client"})
+			// The invalid optional operation_id forces canonicalization so the
+			// wire-identity provenance fields are populated at all.
+			if _, err := server.IngestEvents(ctx, &aeropb.IngestEventsRequest{Events: []*aeropb.CanonicalEvent{{
+				EventId: wireText, OperationId: "not-a-uuid", Source: "aero-im", SourceRegion: "west",
+				EventType: "account.updated", SchemaVersion: 1, AggregateType: "account", AggregateId: "source-account",
+				AggregateVersion: 1, TenantId: "tenant-1", OccurredAt: timestamppb.Now(),
+			}}}); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.captured) != 1 {
+				t.Fatalf("captured items = %d, want 1", len(fake.captured))
+			}
+			item := fake.captured[0]
+			if item.CanonicalizationCode != "event.invalid_id" {
+				t.Fatalf("canonicalization code = %q, want event.invalid_id", item.CanonicalizationCode)
+			}
+			if item.OriginalWireEventID != wireText {
+				t.Fatalf("OriginalWireEventID = %q, want the verbatim wire text %q", item.OriginalWireEventID, wireText)
+			}
+			if item.Envelope == nil || item.Envelope.EventID != parsed {
+				t.Fatalf("envelope event id = %v, want the parsed %s", item.Envelope, parsed)
+			}
+			if item.WireFingerprint == "" {
+				t.Fatal("wire fingerprint must be set on the canonicalization path")
+			}
+		})
+	}
+}
+
+// TestEventIngestServer_OmitsWireIdentityWithoutCanonicalization pins the other
+// half of the contract: the wire-identity provenance fields are populated only
+// for a canonicalized item, so a valid item never carries provenance text.
+func TestEventIngestServer_OmitsWireIdentityWithoutCanonicalization(t *testing.T) {
+	fake := &itemGRPCEventIngestService{}
+	server := NewEventIngestServer(fake, WithEventSourceBindings(event.SourceBindings{
+		"source-client": {TenantID: "tenant-1", Source: "aero-im", SourceRegion: "west"},
+	}))
+	ctx := service.WithIdentity(context.Background(),
+		&domain.TokenIdentity{UID: "source-client", TenantID: "tenant-1", ClientID: "source-client"})
+	if _, err := server.IngestEvents(ctx, &aeropb.IngestEventsRequest{Events: []*aeropb.CanonicalEvent{{
+		EventId: idgen.NewID().String(), Source: "aero-im", SourceRegion: "west", EventType: "account.updated",
+		SchemaVersion: 1, AggregateType: "account", AggregateId: "source-account", AggregateVersion: 1,
+		TenantId: "tenant-1", OccurredAt: timestamppb.Now(),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.captured) != 1 {
+		t.Fatalf("captured items = %d, want 1", len(fake.captured))
+	}
+	item := fake.captured[0]
+	if item.CanonicalizationCode != "" || item.OriginalWireEventID != "" || item.WireFingerprint != "" {
+		t.Fatalf("valid item must carry no wire provenance: code=%q wire=%q fingerprint=%q",
+			item.CanonicalizationCode, item.OriginalWireEventID, item.WireFingerprint)
+	}
 }
 
 func TestEventIngestServer_AppliesVerifiedSourceBinding(t *testing.T) {

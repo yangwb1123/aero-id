@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aero/aero-id/internal/event"
+	"github.com/aero/aero-id/internal/pkg/idgen"
 )
 
 // ErrEventIntegrityConflict means an event ID was previously bound to
@@ -84,21 +85,61 @@ func marshalQuarantinedEventPayload(envelope *event.Envelope, details EventQuara
 	}
 	// Quarantine is metadata-only. Never persist an arbitrary source payload,
 	// even if it happens to pass the deny-list redactor.
-	metadata := map[string]any{"stage": details.Stage, "identity_kind": "canonical"}
+	metadata := map[string]any{"stage": details.Stage, "identity_kind": QuarantineIdentityKind(envelope, details)}
 	if details.OriginalWireID != "" {
 		metadata["wire_event_id"] = boundedWireID(details.OriginalWireID)
 	}
 	if details.WireFingerprint != "" {
 		metadata["wire_fingerprint"] = details.WireFingerprint
 	}
-	if details.OriginalWireID != "" && envelope.EventID.String() != details.OriginalWireID {
-		metadata["identity_kind"] = "derived"
-	}
 	encoded, err := json.Marshal(map[string]any{"_quarantine": metadata})
 	if err != nil {
 		return nil, errors.New("quarantine metadata is not serializable")
 	}
 	return encoded, nil
+}
+
+// QuarantineIdentityKind is the single oracle for the identity_kind label of a
+// quarantined event. The persisted receipt metadata (marshalQuarantinedEventPayload)
+// and the durable audit fact payload (service.addQuarantineAuditMetadata) must
+// agree, so both classify through this function.
+//
+//   - "canonical": the stored event identity is the identity the source supplied.
+//   - "derived": the stored identity was minted locally (an Anchor surrogate) or
+//     differs from the supplied one.
+//
+// Rules (both details fields are optional):
+//   - Wire text present: canonical iff idgen.CanonicalEqual(envelope.EventID,
+//     wireText). Rendering is never compared, so every text form idgen.Parse
+//     accepts — urn:uuid:, upper-case, 32-hex, braced — is canonical.
+//   - Wire text absent but a wire fingerprint present: derived. A fingerprint is
+//     written only on the gRPC canonicalization path
+//     (grpc.finalizeWireIdentity), where an absent/blank wire event_id is
+//     exactly the condition under which that path anchors
+//     idgen.Anchor("event.quarantine.v1", fingerprint); the stored identity is
+//     then derived by construction.
+//   - Wire text absent and no fingerprint: canonical. This is the HTTP/NATS
+//     service-API quarantine path (service.Ingest passes empty details and only
+//     the stage is filled in), where the identity came from the submitted
+//     envelope and nothing was derived.
+//
+// A nil envelope yields canonical: there is no stored identity to contradict.
+// The label is metadata only — not a dedup key, not a hash input, and no
+// consumer reads it.
+func QuarantineIdentityKind(envelope *event.Envelope, details EventQuarantineDetails) string {
+	if envelope == nil {
+		return "canonical"
+	}
+	if details.OriginalWireID == "" {
+		if details.WireFingerprint == "" {
+			return "canonical"
+		}
+		return "derived"
+	}
+	if idgen.CanonicalEqual(envelope.EventID, details.OriginalWireID) {
+		return "canonical"
+	}
+	return "derived"
 }
 
 func quarantineContentHash(envelope *event.Envelope, details EventQuarantineDetails) (string, error) {

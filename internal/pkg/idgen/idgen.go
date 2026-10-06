@@ -95,3 +95,30 @@ func Parse(s string) (ID, error) {
 	}
 	return id, nil
 }
+
+// CanonicalEqual reports whether wireText denotes exactly the same 128-bit
+// identity as id, using the accepted wire grammar of Parse (hyphenated in any
+// hex case, "urn:uuid:" prefix in any case, 32-hex, "{...}") with leading and
+// trailing whitespace trimmed the way the ingest boundary trims it, so the
+// result does not depend on which of those ran first.
+//
+// It exists to protect one invariant: every text form Parse accepts is the same
+// identity. Comparing a rendered event id (id.String()) against raw wire text
+// misclassifies provenance — it records a source-supplied identity as derived
+// for a legal alternative rendering, and it can never detect a locally anchored
+// surrogate, whose text matches no wire rendering.
+//
+// It never panics and never errors: empty, whitespace-only, unparseable,
+// length-capped, control-character and arbitrarily long inputs are simply not
+// the same identity. Over-long input fails to parse; no length cap is imposed
+// here because idgen must not depend on the event package's MaxIDBytes.
+func CanonicalEqual(id ID, wireText string) bool {
+	text := strings.TrimSpace(wireText)
+	if text == "" {
+		return false
+	}
+	// Parse, not uuid.Parse: the accepted wire grammar must stay identical to
+	// the ingest grammar, and the zero UUID must never compare equal.
+	parsed, err := Parse(text)
+	return err == nil && parsed == id
+}
