@@ -10,13 +10,28 @@ import (
 
 type ID = uuid.UUID
 
-// AnchorNamespace is the fixed UUIDv5 namespace for derived deterministic IDs
-// (derivation contract: derive-stable-deterministic-event-id-from-an-anc). It
-// is a domain separator, not a secret, and it is constant forever: changing it
-// silently invalidates every historical derived event_id and stops ledger dedup
-// from firing across a rollout. Never rotate it and never reuse it for a
+// anchorNamespace is the authoritative UUIDv5 namespace for derived
+// deterministic IDs (derivation contract: derive-stable-deterministic-event-id-from-an-anc).
+// It is a domain separator, not a secret, and it is constant forever: changing
+// it silently invalidates every historical derived event_id and stops ledger
+// dedup from firing across a rollout. Never rotate it and never reuse it for a
 // derivation site with a different part contract.
-var AnchorNamespace = uuid.MustParse("38248e3a-32f0-4929-9b56-b2dbd75aa849")
+//
+// It is deliberately unexported: Anchor derives from this package-level value,
+// so no code outside this package can name it, assign it, or redirect
+// derivation. The never-rotate contract is enforced where IDs are minted, not
+// only by review or by grep. AnchorNamespace below is a print-only mirror.
+var anchorNamespace = uuid.MustParse("38248e3a-32f0-4929-9b56-b2dbd75aa849")
+
+// AnchorNamespace is a non-authoritative, read-only mirror of the unexported
+// anchorNamespace, kept only so parity tests and documentation can print the
+// namespace the scheme contract names.
+//
+// Anchor never reads this identifier, so assigning it — from a test, an init,
+// or a config-derived value — cannot change any derived ID: the derivation
+// source is unassignable outside this package. Reads are the only supported
+// use; treat a write here as inert and as a drift signal.
+var AnchorNamespace = anchorNamespace
 
 // Anchor derives a deterministic UUIDv5 from NUL-separated parts (precedent:
 // projection_replication.go:134). Identical parts produce identical IDs; any
@@ -42,7 +57,7 @@ func Anchor(parts ...string) ID {
 			panic("idgen.Anchor: part contains a NUL byte (U+0000), ambiguous under NUL separation")
 		}
 	}
-	return uuid.NewSHA1(AnchorNamespace, []byte(strings.Join(parts, "\x00")))
+	return uuid.NewSHA1(anchorNamespace, []byte(strings.Join(parts, "\x00")))
 }
 
 // RenderAnchorTime renders a time part for anchoring (contract R7): always
