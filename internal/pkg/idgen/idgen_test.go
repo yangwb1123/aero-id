@@ -123,6 +123,31 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 			"55ce71a3-3668-5ff9-8ca6-7cff018444e0"},
 		{"G17 event.quarantine", []string{"event.quarantine.v1", "example-fingerprint"},
 			"68c8ca5a-323b-53c0-ab6b-af5876dad94a"},
+		// G18-G23 operation step/compensation facts: 6 parts — the first five
+		// slots are byte-identical to the operation family above, plus the
+		// step's durable claim counter as a decimal string (strconv.Itoa), the
+		// same per-attempt discriminator shape as the G14 fencing epoch. A
+		// retry at the same attempt re-derives the same ID (ledger dedup);
+		// each successive attempt of a step whose remote outcome stays
+		// unknown derives a distinct ID, so no reconcile pass folds into an
+		// earlier pass's row. The step-less G1/G3/G4/G7 shapes above keep
+		// arity 5 and must never be re-derived with this sixth slot.
+		{"G18 operation.step.finished unknown attempt 1", []string{"operation.step.finished", goldenTenant, goldenOP, goldenST, "unknown", "1"},
+			"4674e436-85bf-59a2-af06-b75d564c6cd4"},
+		{"G19 operation.step.finished unknown attempt 2", []string{"operation.step.finished", goldenTenant, goldenOP, goldenST, "unknown", "2"},
+			"41d7c885-6a29-5b19-a25b-a99b2ff9d31f"},
+		{"G20 operation.step.finished succeeded attempt 1", []string{"operation.step.finished", goldenTenant, goldenOP, goldenST, "succeeded", "1"},
+			"c3f2623b-0201-5c84-890c-19559a50b061"},
+		{"G21 operation.step.finished succeeded attempt 2", []string{"operation.step.finished", goldenTenant, goldenOP, goldenST, "succeeded", "2"},
+			"62337cbc-021e-5d1b-a4a2-9552d613463c"},
+		{"G22 operation.compensation.finished succeeded attempt 1", []string{"operation.compensation.finished", goldenTenant, goldenOP, goldenST, "succeeded", "1"},
+			"6aa41161-2b25-59e7-8b8e-2cc821f36894"},
+		{"G23 operation.compensation.finished succeeded attempt 2", []string{"operation.compensation.finished", goldenTenant, goldenOP, goldenST, "succeeded", "2"},
+			"919d2391-ff57-5090-a30d-f995dc3e1888"},
+		{"G24 operation.compensation.reconciled unknown attempt 1", []string{"operation.compensation.reconciled", goldenTenant, goldenOP, goldenST, "unknown", "1"},
+			"1d924a85-7d33-5947-b30a-9c12d3abf2bb"},
+		{"G25 operation.compensation.reconciled unknown attempt 2", []string{"operation.compensation.reconciled", goldenTenant, goldenOP, goldenST, "unknown", "2"},
+			"5ac8e8e3-f8cd-5624-8243-7f87cb10f65a"},
 		{"S1 separator pair a", []string{"ab", "c"},
 			"251d9788-4b10-57f0-a935-e4ca289d517e"},
 		{"S2 separator pair b", []string{"a", "bc"},
@@ -158,6 +183,26 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 	if Anchor("audit", "region.promote", goldenTenant, goldenOP, "us-east", "1") ==
 		Anchor("audit", "region.promote", goldenTenant, goldenOP, "us-east", "2") {
 		t.Fatal("successive fencing epochs must derive distinct EventIDs (G14b != G14c)")
+	}
+	// Attempt-scoped step facts: the durable claim counter occupies the sixth
+	// slot, so successive reconcile attempts of the same step never collapse
+	// onto one ledger row (G18 != G19, G20 != G21, G22 != G23, G24 != G25).
+	for _, parts := range [][]string{
+		{"operation.step.finished", goldenTenant, goldenOP, goldenST, "unknown"},
+		{"operation.step.finished", goldenTenant, goldenOP, goldenST, "succeeded"},
+		{"operation.compensation.finished", goldenTenant, goldenOP, goldenST, "succeeded"},
+		{"operation.compensation.reconciled", goldenTenant, goldenOP, goldenST, "unknown"},
+	} {
+		one := append(append([]string(nil), parts...), "1")
+		two := append(append([]string(nil), parts...), "2")
+		if Anchor(one...) == Anchor(two...) {
+			t.Fatalf("successive attempt slots must derive distinct EventIDs for %q", parts[0])
+		}
+		// Arity change alone changes the ID, so appending the slot can never
+		// silently re-derive the pre-attempt 5-tuple fact for the same pass.
+		if Anchor(parts...) == Anchor(one...) {
+			t.Fatalf("the attempt slot must participate in the encoding for %q", parts[0])
+		}
 	}
 }
 

@@ -316,9 +316,10 @@ func isAuditPrimitive(value any) bool {
 
 var auditPayloadAllowList = map[string]struct{}{
 	"_quarantine": {}, "account_id": {}, "action": {}, "action_filter": {}, "actor_uid": {}, "actor_filter_present": {},
-	"aggregate_version": {}, "anchored_at": {}, "application_outcome": {}, "audit": {}, "bytes": {}, "canceled": {},
+	"aggregate_version": {}, "anchored_at": {}, "application_outcome": {}, "attempt": {}, "audit": {}, "bytes": {}, "canceled": {},
 	"chain_sequence": {}, "challenge": {}, "client_id": {}, "comment_count": {}, "comment_id": {}, "command_count": {}, "commands": {},
-	"complete": {}, "completed": {}, "conflict": {}, "continuation_job_id": {}, "created_at": {}, "current_state": {},
+	"complete": {}, "completed": {}, "compensation_attempt": {}, "conflict": {}, "continuation_job_id": {},
+	"created_at": {}, "current_state": {},
 	"cursor": {}, "cursor_present": {}, "data": {}, "dataset": {}, "datasets": {}, "delivery": {}, "dimension": {},
 	"drift_count": {}, "effective_at": {}, "eligible": {}, "envelope_event_id": {}, "erase": {}, "error_code": {}, "event_count": {},
 	"event_id": {}, "event_type": {}, "event_types": {}, "expected_epoch": {}, "expired": {}, "expires_at": {},

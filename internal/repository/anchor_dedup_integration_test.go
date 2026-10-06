@@ -143,6 +143,13 @@ func TestStepReconcileStatusChangingAndConfirming(t *testing.T) {
 	}
 	// Reconcile re-claim; status-CONFIRMING unknown->unknown re-applies the
 	// same anchor: swallowed in-tx, pacing lease set, no error, one fact.
+	// NOTE: this case pins the REPOSITORY swallow, not the service derivation —
+	// it supplies its own 5-tuple anchor deliberately, so it still exercises
+	// the dedup path. The service no longer derives a 5-tuple for step-scoped
+	// facts: operation.step.finished is now attempt-scoped
+	// ([action, tenant, op, step, status, attempt]), so a still-unknown step
+	// records one fact per attempt — see TestOperationUnknownReconcileAuditFacts
+	// in operation_reconcile_audit_integration_test.go.
 	step, err = repository.NewOperationRepository(db, ledger).ClaimUnknownStep(ctx, op.ID, "reconciler-1", 2*time.Minute)
 	if err != nil {
 		t.Fatalf("ClaimUnknownStep 1: %v", err)

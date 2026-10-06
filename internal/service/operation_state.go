@@ -38,7 +38,7 @@ func (s *operationService) reconcileClaimed(ctx context.Context, operation *doma
 	if s.audit != nil {
 		// audit-site: standalone-fact — A1-class standalone fact with no domain
 		// write of its own (documented above); anchored event_id dedups retries.
-		fact := operationAuditFact(ctx, operation, domain.ID{}, string(operation.Status), "operation.reconciled", map[string]any{"worker": worker})
+		fact := operationAuditFact(ctx, operation, operationStepAnchor{}, string(operation.Status), "operation.reconciled", map[string]any{"worker": worker})
 		persistCtx, persistCancel := operationPersistenceContext(ctx)
 		defer persistCancel()
 		if err := s.audit.Record(persistCtx, AuditFactInput{Source: fact.Source, SourceRegion: fact.SourceRegion, EventID: fact.EventID,

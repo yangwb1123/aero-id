@@ -132,10 +132,13 @@ func TestStandaloneSiteOperationReconciled(t *testing.T) {
 	if n := standaloneCount(t, h, "operation.reconciled"); n != 2 {
 		t.Fatalf("standalone counter = %d, want 2", n)
 	}
-	// The anchored fact derives from (action, tenant, op, step, status); both
-	// executions derived the same event_id, so exactly ONE operation.reconciled
-	// row exists (other facts from the harness — account provision, terminal
-	// operation writes — are not counted).
+	// The anchored fact derives from (action, tenant, op, step, status) with
+	// NO attempt slot (operation.reconciled is step-less, so the slot is
+	// omitted rather than emitted empty); both executions derived the same
+	// event_id, so exactly ONE operation.reconciled row exists (other facts
+	// from the harness — account provision, terminal operation writes — are not
+	// counted). This is the live regression check that step-less anchors keep
+	// their historical derivation after step-scoped facts gained a sixth slot.
 	var n int64
 	if err := h.db.Raw(`SELECT count(*) FROM audit_ledger WHERE action = 'operation.reconciled'`).Scan(&n).Error; err != nil {
 		t.Fatal(err)
