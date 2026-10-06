@@ -172,3 +172,56 @@ dry-run 模拟 / controlled 重新授权+新幂等键+新审计事实），contr
 - 移除旧写路径的唯一前置条件：引用/导出/审计/回滚窗口/删除证明全部完成。
 
 **影响:** legacy 路由增加兼容头中间件；领域代码不新增文件/消息/评论 authority。
+
+---
+
+## ADR-013
+
+**日期:** 2026-08-30
+
+**决策:** Redis 幂等键改为带版本前缀的长度分帧（length-framed）多段编码
+`aero-id:idem:v1:{len(uid)}:{uid}{len(endpoint)}:{endpoint}{len(key)}:{key}`（长度按字节），
+并保留一个只读的老格式回读探针（`legacyRedisKey` = `idempot:{uid}:{endpoint}:{key}`）。
+
+**原因:** 旧的冒号拼接编码是多对一映射，而 `endpoint` 含客户端可控的 `RawQuery`
+（`internal/middleware/idempotency.go:59-61`），因此 `endpoint|key` 分隔符可被客户端移动：
+`("u1","POST /v1/me/sync?x=a:b","c")` 与 `("u1","POST /v1/me/sync?x=a","b:c")` 曾编码为同一个
+`idempot:u1:POST /v1/me/sync?x=a:b:c`，导致一个请求重放另一个请求的状态码与响应体，或收到并不存在的
+`409 idempotency.in_progress`，违反中间件自述的契约（`:55-58`）。长度分帧对任意字节串都是单射，
+无需拒绝任何输入（与 `idgen.Anchor` 必须 panic 拒绝 NUL 不同），并使 Redis 与
+`idempotency_keys UNIQUE (uid, endpoint, idem_key)`（三列分别比较）及 `idgen.Anchor`
+的“顺序与 arity 属于编码”规则一致。前缀 `aero-id:idem:v1:` 与 `aero-id:rate:` 同命名空间，
+版本标记在键内，格式变更只能是刻意的 grep 可见的 bump；分帧区自定界，任何 part 都不能合成前缀，
+新旧键空间天然不相交。
+
+**内容:**
+- 编码为纯函数，不转义、不规范化（`RawQuery` 已是百分号编码，二次编码会让一个请求产生两个身份）；
+  `uid`/`endpoint`/`key` 固定顺序、固定 arity 3；分帧长度按字节而非 rune。
+- 回读探针：仅 `ReserveLease` 在 `SET NX` 之前读一次老键；命中则返回 `reserved=false`，
+  中间件不会执行 handler，因此 `Complete`/`Release` 永远不会学到老键；探针错误沿用中间件既有的
+  fail-open 路径（与今天 `SET NX` 失败完全一致），不新增 metric 或 observer 回调。
+- 退役标准：最后一个运行老格式的实例消失后满 `recordTTL + redisReservationTTL`（24h2m），
+  删除 `legacyRedisKey`、探针及其测试（另开一个受跟踪的变更）。永久保留会让每个带键 POST
+  多一次 GET。
+- 上线方式：单次切换（drain / swap / resume）。混版窗口内，旧实例仍可能为新实例已按 v1 预留的命令
+  抢占老键，在部署窗口内重复执行 handler（残余风险，双写老键是升级手段但不得在没有配套移除门禁时加入）。
+  回滚同理：回滚后 v1 预留不可见，`recordTTL` 内的重试可能重放。
+- 部署运维：`SCAN`/监控的 `idempot:*` 前缀改为 `aero-id:idem:v1:*`；无部署清单或配置引用旧前缀。
+- 未来工作：若新增 gRPC 幂等拦截器，必须复用同一条 tuple 编码器、带自己的版本标记，并补一条
+  跨传输一致性测试（HTTP 与 gRPC 指向同一三元组不得共用预留）。本次不改任何 gRPC 生产代码。
+
+**影响:** Redis 键变长（每段 1–3 字节长度头），换取消除歧义；带键 POST 多一次 GET（仅在回读探针存在期间）。
+已写入的老格式记录不会被追溯消歧——探针按部署前语义读取它，随 TTL 衰减。
+
+**替代方案:**
+1. 拒绝 `Idempotency-Key` 中的 `:`（2026-07-10 安全评审 Finding 6 的建议，已拒绝：
+   把单个字节当作魔法分隔符，其他字节仍有歧义，且破坏合法客户端键）。
+2. `sha256(uid|endpoint|key)`（同 `pkg/ratelimit`）：同样单射但不可运维——无法按 actor/route
+   `SCAN`，版本标记还要带在带外。
+3. 直接照搬 `idgen.Anchor` 的 NUL 分隔：需要对纯客户端输入引入 panic 拒绝契约，或产生在
+   `redis-cli`/`MONITOR` 里难用的二进制键。
+4. 省略回读探针（要求 ADR 显式接受部署窗口内 keyed 重试可能在 24h 内重放，削弱
+   `internal/middleware/idempotency.go:37-43` 记录的保证）——非默认选项。
+5. Security review Finding 6 的处置：接受并被本 ADR 取代——其前提“endpoint 由服务端构造”因
+   `RawQuery` 被拼接而不成立；其引用的 `store_redis.go:57` 行号已过期。
+   Finding 5（`Idempotency-Key` 无长度/字符集校验与配额）仍然开放，不在本次范围。

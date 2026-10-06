@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,7 +32,13 @@ type redisRecord struct {
 
 // RedisStore implements Store backed by Redis. Key format:
 //
-//	idempot:{uid}:{endpoint}:{key}
+//	aero-id:idem:v1:{len(uid)}:{uid}{len(endpoint)}:{endpoint}{len(key)}:{key}
+//
+// Parts are length-framed (see redisKey), so the identity triple
+// (uid, endpoint, key) is unambiguous even though endpoint embeds the
+// client-supplied RawQuery. Pre-v1 keys used the flat form
+// idempot:{uid}:{endpoint}:{key}; that keyspace is read-only transition state
+// (see legacyRedisKey) and is disjoint from the v1 keyspace.
 //
 // The first Reserve creates the key with a short TTL (redisReservationTTL).
 // Complete persists the full response and extends the TTL to the caller-provided
@@ -48,8 +55,65 @@ func NewRedisStore(client rueidis.Client) *RedisStore {
 	return &RedisStore{client: client}
 }
 
-// redisKey builds the Redis key for an idempotency entry.
+// redisKeyPrefix namespaces and versions the idempotency keyspace: the
+// application prefix matches aero-id:rate: (pkg/ratelimit) and the version
+// marker is inside the key, so a format change is a deliberate, greppable bump
+// instead of an in-place edit that orphans live reservations. Bump it together
+// with retiring legacyRedisKey (see that function's doc for the criterion).
+const redisKeyPrefix = "aero-id:idem:v1:"
+
+// redisKey builds the Redis key for an idempotency entry as
+// prefix + len(uid) + ":" + uid + len(endpoint) + ":" + endpoint +
+// len(key) + ":" + key, where each len counts bytes.
+//
+// Colon joining ("idempot:"+uid+":"+endpoint+":"+key) is FORBIDDEN here.
+// endpoint is `method + " " + EscapedPath [+ "?" + RawQuery]`
+// (internal/middleware/idempotency.go:59-61), so RawQuery is client-controlled
+// and the endpoint|key delimiter is client-movable: ("u1",
+// "POST /v1/me/sync?x=a:b", "c") and ("u1", "POST /v1/me/sync?x=a", "b:c") both
+// encoded to idempot:u1:POST /v1/me/sync?x=a:b:c, so one request replayed the
+// other's status and body, or got a spurious 409 idempotency.in_progress.
+// idgen.Anchor forbids the same class of ambiguity for anchored event_ids and
+// idempotency_keys enforces UNIQUE (uid, endpoint, idem_key) over three columns;
+// length framing makes the Redis encoding agree with both, and is injective for
+// every byte string with nothing rejected, because no byte acts as a delimiter
+// (contrast idgen.Anchor, which must panic on NUL). Order and arity are part of
+// the encoding. Parts are written raw, without escaping: RawQuery is already
+// percent-encoded and re-encoding would fork one request into two identities.
+//
+// Changing the framing or the prefix MUST bump redisKeyPrefix and retire
+// legacyRedisKey, not edit the format in place; the TestRedisKey_* suite pins
+// the format so any change has to be deliberate.
 func redisKey(uid, endpoint, key string) string {
+	var b strings.Builder
+	b.Grow(len(redisKeyPrefix) + len(uid) + len(endpoint) + len(key) + 8)
+	b.WriteString(redisKeyPrefix)
+	for _, part := range []string{uid, endpoint, key} { // fixed order, fixed arity 3
+		b.WriteString(strconv.Itoa(len(part))) // byte length, never rune count
+		b.WriteByte(':')
+		b.WriteString(part)
+	}
+	return b.String()
+}
+
+// legacyRedisKey builds the pre-v1 flat key idempot:{uid}:{endpoint}:{key},
+// whose colon-joining ambiguity is what redisKey exists to remove. It is
+// READ-ONLY transition scaffolding: ReserveLease probes it before claiming a
+// command, so a reservation or completed receipt written by an instance that
+// still runs the legacy format is honored instead of being re-executed. It is
+// never written, and a probe hit returns reserved=false, so Complete and
+// Release never learn a legacy key.
+//
+// Retire it — delete this function, the probe in ReserveLease and their tests —
+// once recordTTL + redisReservationTTL (24h2m) has elapsed after the last
+// legacy-format instance is gone; keeping it forever costs an extra GET on
+// every keyed POST. Rolling deploys should swap in one shot (drain, swap,
+// resume): a legacy-format instance can still claim a flat key for a command a
+// v1 instance already reserved, re-executing the handler within the deploy
+// window. An already-written ambiguous record is not retroactively
+// disambiguated; the probe reproduces the pre-v1 reading of it, which decays
+// with recordTTL + redisReservationTTL.
+func legacyRedisKey(uid, endpoint, key string) string {
 	return "idempot:" + uid + ":" + endpoint + ":" + key
 }
 
@@ -70,6 +134,13 @@ func (s *RedisStore) Reserve(ctx context.Context, uid, endpoint, key string) (*R
 // ReserveLease stores a random owner token inside the reservation payload. The
 // token is compared atomically by the lease completion/release scripts.
 func (s *RedisStore) ReserveLease(ctx context.Context, uid, endpoint, key string) (*Record, bool, string, error) {
+	// Honor a reservation or receipt an instance running the legacy key format
+	// already wrote for this command, before the SET NX can claim it. A probe
+	// error propagates to the middleware's existing fail-open path, exactly as
+	// today's SET NX failure does; no new metric or observer hook.
+	if rec, reserved, err := s.getExisting(ctx, legacyRedisKey(uid, endpoint, key)); rec != nil || err != nil {
+		return rec, reserved, "", err
+	}
 	k := redisKey(uid, endpoint, key)
 	now := time.Now().UTC()
 	owner := uuid.NewString()
