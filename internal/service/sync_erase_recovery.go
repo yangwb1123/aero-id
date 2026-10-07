@@ -76,6 +76,20 @@ func eraseOutcomeStatus(status string) string {
 // belongs to this logical erase. A mismatched identifier must not become the
 // next reconciliation target, even when the source also returned an error.
 //
+// The aero-id-owned correlation echo is compared by identity through
+// connector.SameCorrelationID. aero-id mints that value as a UUID
+// (job.ID.String()), and a source may parse one and re-render it in any text
+// form idgen.Parse accepts: upper- or mixed-case hex, a "urn:uuid:" prefix,
+// 32 unhyphenated hex, braces, or surrounding whitespace. Comparing rendered
+// strings would reject an erase the source actually correlated and pin the job
+// in erase.unknown_outcome forever, discarding the source-owned operation id
+// that would let reconciliation converge. A logicalOperationID that is not a
+// UUID falls back to exact string equality, the only identity it has.
+//
+// The source-owned source_operation_id comparisons below stay exact-string:
+// that value is opaque, minted by the source, and is the reconciliation target,
+// so an alternate rendering of the same identity is still a mismatch.
+//
 //nolint:cyclop,funlen // legacy result import and durable outcome conversion have explicit states.
 func trustedSyncEraseSourceOperationID(source connector.Source, logicalOperationID, existing string,
 	result *connector.CommandResult) (string, bool) {
@@ -84,7 +98,7 @@ func trustedSyncEraseSourceOperationID(source connector.Source, logicalOperation
 		return retained, true
 	}
 	returned := strings.TrimSpace(result.SourceOperationID)
-	if strings.TrimSpace(result.OperationID) != "" && result.OperationID != logicalOperationID {
+	if strings.TrimSpace(result.OperationID) != "" && !connector.SameCorrelationID(logicalOperationID, result.OperationID) {
 		return retained, false
 	}
 	if source == connector.SourceSnaplink && (strings.TrimSpace(result.OperationID) == "" || returned == "") {
