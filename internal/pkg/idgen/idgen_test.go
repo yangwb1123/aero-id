@@ -3,6 +3,7 @@ package idgen
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -214,7 +215,9 @@ func TestAnchor_WellFormedUUIDv5(t *testing.T) {
 	for _, parts := range [][]string{
 		{"a", "b"},
 		{"operation.reconciled", goldenTenant, goldenOP, "", "unknown"},
-		{""},
+		// Empty parts stay legal (G1/G3/G4/G7 carry an empty status/step slot);
+		// only arity is floored, so this case is written at the floor arity.
+		{"", ""},
 	} {
 		id := Anchor(parts...)
 		if id.Version() != 5 {
@@ -249,15 +252,19 @@ func TestAnchor_NULSeparatedParts(t *testing.T) {
 	for _, parts := range [][]string{
 		{"a\x00b", "c"},
 		{"a", "b\x00c"},
-		{"\x00"},
+		{"a", "\x00"},
 		{"a", "\x00", "b"},
 	} {
-		if !panics(func() { Anchor(parts...) }) {
+		msg, ok := panicText(func() { Anchor(parts...) })
+		if !ok {
 			t.Fatalf("Anchor(%q) must panic (NUL byte in part)", parts)
 		}
+		if !strings.Contains(msg, "NUL byte") {
+			t.Fatalf("Anchor(%q) panicked with %q, want the NUL-byte guard; an arity panic here means the fixture no longer tests what it claims", parts, msg)
+		}
 	}
-	if !panics(func() { Anchor("ok\x00") }) {
-		t.Fatal("trailing NUL in part must panic")
+	if msg, ok := panicText(func() { Anchor("ok\x00", "tail") }); !ok || !strings.Contains(msg, "NUL byte") {
+		t.Fatalf(`Anchor("ok\x00","tail") = (%q, panicked=%v), want the NUL-byte panic`, msg, ok)
 	}
 
 	// Sensitivity matrix: changing any single part changes the ID; arity is
@@ -271,16 +278,51 @@ func TestAnchor_NULSeparatedParts(t *testing.T) {
 			t.Fatalf("changing part %d (%q) did not change the ID", i, base[i])
 		}
 	}
-	if Anchor("x") == Anchor("x", "") {
-		t.Fatal("arity must be part of the encoding: Anchor(\"x\") == Anchor(\"x\",\"\")")
+	if Anchor("x", "y") == Anchor("x", "y", "") {
+		t.Fatal("arity must be part of the encoding: Anchor(\"x\",\"y\") == Anchor(\"x\",\"y\",\"\")")
 	}
 }
 
-// TestAnchor_ZeroPartsPanics (D-1 delta): every anchor site has fixed arity
-// >= 4, so a zero-part anchor is a programming error and must be rejected.
-func TestAnchor_ZeroPartsPanics(t *testing.T) {
-	if !panics(func() { Anchor() }) {
-		t.Fatal("Anchor() with zero parts must panic")
+// TestAnchor_MinimumArity (D-1 delta): a site whose parts were dropped must
+// fail fast rather than derive. Arity is part of the encoding, so a short
+// anchor yields a valid, perfectly stable UUIDv5 that the audit ledger then
+// dedups on (tenant_id, source, event_id) — folding a later execution of that
+// truncated shape onto the first row with no error and no log line. The
+// enforced floor is minAnchorArity (2), occupied live by the
+// event.quarantine.v1 + wire-fingerprint surrogate.
+func TestAnchor_MinimumArity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		parts []string
+	}{
+		{"zero_parts", nil},
+		{"one_part", []string{"x"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, ok := panicText(func() { Anchor(tc.parts...) })
+			if !ok {
+				t.Fatalf("Anchor(%q): %d parts is below the enforced floor and must panic", tc.parts, len(tc.parts))
+			}
+			if !strings.Contains(msg, "minAnchorArity") {
+				t.Fatalf("panic %q must name the enforced floor minAnchorArity", msg)
+			}
+		})
+	}
+
+	// The arity guard runs before the NUL guard: an under-arity call whose part
+	// also carries U+0000 must report the arity error, not the NUL error.
+	if msg, ok := panicText(func() { Anchor("x\x00") }); !ok || !strings.Contains(msg, "minAnchorArity") {
+		t.Fatalf(`Anchor("x\x00") = (%q, panicked=%v), want the minAnchorArity panic`, msg, ok)
+	}
+
+	// The floor itself derives: arity 2 is a legal anchor, not a degenerate
+	// one, and must stay byte-identical for existing callers.
+	id := Anchor("a", "b")
+	if id.Version() != 5 || id.Variant() != uuid.RFC4122 {
+		t.Fatalf("arity-2 anchor %s is not a well-formed RFC4122 v5", id)
+	}
+	if id != Anchor("a", "b") {
+		t.Fatalf("arity-2 anchor is not deterministic: %s != %s", id, Anchor("a", "b"))
 	}
 }
 
@@ -419,14 +461,19 @@ func TestCanonicalEqual_ZeroIDNeverMatchesAnyText(t *testing.T) {
 	}
 }
 
-func panics(f func()) (did bool) {
+// panicText runs f and reports the recovered panic value as text so a test can
+// assert *which* guard fired. Since Anchor has two independent panic guards
+// (minimum arity, NUL byte), "it panicked" alone can no longer distinguish an
+// under-arity rejection from a NUL rejection — without the message, a fixture
+// that accidentally trips the arity guard would pass vacuously.
+func panicText(f func()) (msg string, ok bool) {
 	defer func() {
-		if recover() != nil {
-			did = true
+		if r := recover(); r != nil {
+			msg, ok = fmt.Sprint(r), true
 		}
 	}()
 	f()
-	return false
+	return "", false
 }
 
 // safeWireIDTruncation reproduces the ingest boundary's over-long wire-id

@@ -91,7 +91,7 @@ type operationStepAnchor struct {
 //     carry different statuses across passes, and omitting it would swallow
 //     the second outcome. The sixth attempt slot is OMITTED rather than
 //     emitted empty, because arity is part of the encoding
-//     (Anchor("x") != Anchor("x","")): appending "" would silently re-derive
+//     (Anchor("a","b") != Anchor("a","b","")): appending "" would silently re-derive
 //     every operation-level fact and break dedup against the facts already in
 //     the ledger.
 //   - step-scoped (operation.step.finished | operation.compensation.finished |

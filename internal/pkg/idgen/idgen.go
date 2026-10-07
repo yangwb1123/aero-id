@@ -2,6 +2,7 @@ package idgen
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,36 @@ type ID = uuid.UUID
 // derivation. The never-rotate contract is enforced where IDs are minted, not
 // only by review or by grep. AnchorNamespace below is a print-only mirror.
 var anchorNamespace = uuid.MustParse("38248e3a-32f0-4929-9b56-b2dbd75aa849")
+
+// minAnchorArity is the enforced floor on Anchor's part count and the single
+// source of truth for it: the guard, the panic message and Anchor's doc below
+// all read this constant, so the number cannot drift between them.
+//
+// Two is the largest floor every live anchor site honors. The poison/
+// quarantine surrogate mints Anchor("event.quarantine.v1", <wire fingerprint>)
+// at internal/handler/grpc/event_ingest.go and internal/service/event_ingest.go
+// — a discriminator plus one identity part; every other site passes 4-6 parts.
+// A floor above two would panic a shipped path, so it cannot be raised without
+// first changing those sites.
+//
+// A site below the floor is almost always broken rather than legitimately
+// small — a dropped tenant, subject, step, attempt or fencing-epoch slot — and
+// arity is part of the encoding, so the dropped slot would never surface as an
+// error: it would derive a different but valid, perfectly stable UUIDv5, the
+// fact would commit, and the ledger's (tenant_id, source, event_id) dedup guard
+// would then fold every later execution of that truncated shape onto the first
+// row, silently losing a multi-occurrence fact with no error and no log line.
+// Panic instead of deriving.
+const minAnchorArity = 2
+
+// anchorArityPanic carries the enforced floor in the panic value so a reader
+// can tell a broken site from a floor that was raised later. It is computed
+// once from minAnchorArity (never at call time) and is used only by the guard
+// below; the message text is not a stable contract, so tests assert only on
+// the minAnchorArity substring.
+var anchorArityPanic = "idgen.Anchor: arity below minAnchorArity=" + strconv.Itoa(minAnchorArity) +
+	" (the live floor shape is Anchor(\"event.quarantine.v1\", <wire fingerprint>)); " +
+	"a dropped identity part is a programming error, not a smaller anchor"
 
 // AnchorNamespace is a non-authoritative, read-only mirror of the unexported
 // anchorNamespace, kept only so parity tests and documentation can print the
@@ -45,12 +76,21 @@ var AnchorNamespace = anchorNamespace
 // Anchor("a","b\x00c")), so it is a programming error, not a valid anchor.
 // The rejection is deterministic and mirrors the NewID() clock-failure panic
 // precedent; PostgreSQL rejects U+0000 in text columns anyway, so the panic is
-// never reachable from persisted values at the call sites. Zero parts is also
-// a programming error: every anchor site has fixed arity >= 4, and arity is
-// part of the encoding (Anchor("x") != Anchor("x","")).
+// never reachable from persisted values at the call sites.
+//
+// Arity below minAnchorArity is likewise a programming error and is rejected
+// with a panic before hashing, for the same fail-fast reason as the NUL rule
+// above: arity is part of the encoding (Anchor("a","b") != Anchor("a","b","")),
+// so a site that dropped an identity slot would otherwise derive a
+// valid-looking, ledger-dedupable ID instead of failing loudly. The enforced
+// minimum is minAnchorArity (2), occupied live by the event.quarantine.v1 +
+// wire-fingerprint surrogate; every other site anchors a discriminator plus its
+// identity parts (4-6). Meeting the floor must never be done by padding parts
+// — padding changes the join and therefore the derived ID, silently re-keying
+// ledger rows that are already stored.
 func Anchor(parts ...string) ID {
-	if len(parts) == 0 {
-		panic("idgen.Anchor: zero parts — every anchor site has fixed arity >= 4; zero parts is a programming error")
+	if len(parts) < minAnchorArity {
+		panic(anchorArityPanic)
 	}
 	for _, p := range parts {
 		if strings.IndexByte(p, 0) >= 0 {
