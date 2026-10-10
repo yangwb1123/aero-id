@@ -10,8 +10,9 @@ import (
 // buildLegacyAuditFact reproduces the Log-adapter mapping
 // (internal/service/audit_ledger.go: ActorUID, Action, SubjectType→
 // ResourceType, SubjectID→ResourceID, Meta→Payload) plus TargetUID→
-// Payload["target_uid"] — the adapter drops TargetUID today; the in-tx
-// conversion is the moment to stop losing it (B2-1 REQ-3.2).
+// Payload["target_uid"]. Both arms now preserve the counterparty: this helper
+// sets the key after buildAuditFact, and the Log adapter (audit_ledger.go Log)
+// does the same so the two arms emit byte-identical payloads (B2-1 REQ-3.2).
 //
 // EventID policy (B2-1 REQ-3.3): message delete and comment resolve keep
 // their existing anchored EventIDs byte-identical (message ID / report ID —

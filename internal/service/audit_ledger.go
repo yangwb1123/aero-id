@@ -68,7 +68,16 @@ func (s *auditLedgerService) SetControlPlaneMetrics(metrics ControlPlaneMetrics)
 }
 
 func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) error {
-	fact := buildAuditFact(ctx, input)
+	return s.appendFact(ctx, buildAuditFact(ctx, input))
+}
+
+// appendFact is the single durable-append tail shared by Record and the Log
+// adapter, so the two arms cannot drift on the duplicate/error contract. It
+// labels both counters from the persisted fact: normalizeAuditInput only fills
+// an empty Source ("aero-id") and never touches Action, so the labels equal the
+// pre-normalization input except when Source was empty — where the label now
+// matches the row that was actually written.
+func (s *auditLedgerService) appendFact(ctx context.Context, fact *domain.AuditFact) error {
 	if err := s.repo.Append(ctx, fact); err != nil {
 		if errors.Is(err, repository.ErrAuditDuplicate) {
 			// The standalone path completed: the append folded on the dedup key,
@@ -76,17 +85,17 @@ func (s *auditLedgerService) Record(ctx context.Context, input AuditFactInput) e
 			// retry re-derived the identical fact). Count it like a success —
 			// failures keep observing ObserveAuditIngestFailure instead.
 			if s.metrics != nil {
-				s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(input.Action))
+				s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(fact.Action))
 			}
 			return nil
 		}
 		if s.metrics != nil {
-			s.metrics.ObserveAuditIngestFailure(strings.TrimSpace(input.Source))
+			s.metrics.ObserveAuditIngestFailure(strings.TrimSpace(fact.Source))
 		}
 		return apperr.Unavailable("audit.ingest_failed", "audit ledger append failed").Wrap(err)
 	}
 	if s.metrics != nil {
-		s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(input.Action))
+		s.metrics.ObserveAuditStandaloneRecorded(strings.TrimSpace(fact.Action))
 	}
 	return nil
 }
@@ -149,8 +158,21 @@ func (s *auditLedgerService) Log(ctx context.Context, legacy *domain.AuditEvent)
 	if legacy == nil {
 		return nil
 	}
-	return s.Record(ctx, AuditFactInput{ActorUID: legacy.ActorUID, Action: legacy.Action,
+	fact := buildAuditFact(ctx, AuditFactInput{ActorUID: legacy.ActorUID, Action: legacy.Action,
 		ResourceType: legacy.SubjectType, ResourceID: legacy.SubjectID, EventID: legacy.ID, Payload: legacy.Meta, OccurredAt: legacy.CreatedAt})
+	// TargetUID is the fact's counterparty (recipient/peer). The in-tx converter
+	// already preserves it as Payload["target_uid"] (audit_fact.go), and the
+	// message send/edit/react/unreact facts need the same sealed evidence: the
+	// ledger row is the artifact that leaves this process, and a soft-deleted
+	// message row cannot be joined by a downstream auditor. Set it AFTER
+	// buildAuditFact so redaction has run: the value is stored verbatim, the
+	// caller-owned Meta is never mutated (redactAuditPayload always returns a
+	// fresh map), and a >64KiB payload still yields the same {truncated,sha256}
+	// + target_uid shape as the in-tx arm.
+	if legacy.TargetUID != "" {
+		fact.Payload["target_uid"] = legacy.TargetUID
+	}
+	return s.appendFact(ctx, fact)
 }
 
 func (s *auditLedgerService) List(ctx context.Context, filter domain.AuditFactFilter) ([]*domain.AuditFact, string, error) {
