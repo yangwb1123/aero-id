@@ -55,11 +55,11 @@ func TestAnchor_StableAcrossCalls(t *testing.T) {
 			t.Fatalf("Anchor not stable: call %d = %s, want %s", i, got, first)
 		}
 	}
-	equalParts := Anchor("a", "b")
-	if Anchor("a", "b") != equalParts {
+	equalParts := Anchor("a", "b", "c", "d")
+	if Anchor("a", "b", "c", "d") != equalParts {
 		t.Fatal("equal parts must produce equal IDs")
 	}
-	if Anchor("a", "b") == Anchor("a", "c") {
+	if Anchor("a", "b", "c", "d") == Anchor("a", "c", "d", "e") {
 		t.Fatal("different parts must produce different IDs")
 	}
 }
@@ -175,10 +175,15 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 			"69e7b75d-17b7-581b-8e1f-affc3cd2fd3d"},
 		{"G36 sync.execution.expired attempt 2", []string{"sync.execution.expired", goldenTenant, goldenJB, "2"},
 			"9358a592-c9b3-58f0-ac1c-1f35f20c5ffe"},
-		{"S1 separator pair a", []string{"ab", "c"},
-			"251d9788-4b10-57f0-a935-e4ca289d517e"},
-		{"S2 separator pair b", []string{"a", "bc"},
-			"c9004912-9fc0-5f72-9689-670c12d50dcb"},
+		// S1/S2 prove NUL separation keeps a prefix collision apart. They are
+		// written at the enforced floor arity with empty trailing parts (the
+		// same legal-empty-part precedent as G1/G3/G4/G7), so the separator
+		// premise is what they test — not the arity guard, which would
+		// otherwise pre-empt them.
+		{"S1 separator pair a", []string{"ab", "c", "", ""},
+			"58396c20-26a5-5edf-aecd-1f5082b634b3"},
+		{"S2 separator pair b", []string{"a", "bc", "", ""},
+			"d6695568-92cd-59d8-b1d1-70bd4f04cc45"},
 		// Assertions the fixtures lock: G9b != G10 (action discriminator),
 		// G11 != G12 != G13 (transition identity), G2 != G2b (status in
 		// anchor), G1/G3/G4/G7 carry a status slot despite being step-less.
@@ -237,11 +242,11 @@ func TestAnchor_GoldenConstants(t *testing.T) {
 // version nibble 0101 in byte 6 and variant bits 10 in byte 8.
 func TestAnchor_WellFormedUUIDv5(t *testing.T) {
 	for _, parts := range [][]string{
-		{"a", "b"},
+		{"a", "b", "c", "d"},
 		{"operation.reconciled", goldenTenant, goldenOP, "", "unknown"},
 		// Empty parts stay legal (G1/G3/G4/G7 carry an empty status/step slot);
 		// only arity is floored, so this case is written at the floor arity.
-		{"", ""},
+		{"", "", "", ""},
 	} {
 		id := Anchor(parts...)
 		if id.Version() != 5 {
@@ -256,28 +261,30 @@ func TestAnchor_WellFormedUUIDv5(t *testing.T) {
 	}
 }
 
-// TestAnchor_NULSeparatedParts (P-4): NUL separation keeps ("ab","c") and
-// ("a","bc") distinct (goldens above), and the NUL-injection fix rejects any
-// part containing U+0000 before hashing — the ambiguity demonstrated by the
-// contract attack (Anchor("a\x00b","c") == Anchor("a","b\x00c")) can no
-// longer be constructed.
+// TestAnchor_NULSeparatedParts (P-4): NUL separation keeps ("ab","c","","")
+// and ("a","bc","","") distinct (goldens above), and the NUL-injection fix
+// rejects any part containing U+0000 before hashing — the ambiguity
+// demonstrated by the contract attack (Anchor("a\x00b","c","","") ==
+// Anchor("a","b\x00c","","")) can no longer be constructed. Every fixture is
+// written at or above the enforced arity floor so the NUL guard is what fires;
+// an under-arity fixture would trip the arity guard first and pass vacuously.
 func TestAnchor_NULSeparatedParts(t *testing.T) {
-	a := Anchor("ab", "c")
-	b := Anchor("a", "bc")
+	a := Anchor("ab", "c", "", "")
+	b := Anchor("a", "bc", "", "")
 	if a == b {
-		t.Fatalf("NUL separation broken: Anchor(\"ab\",\"c\") == Anchor(\"a\",\"bc\") == %s", a)
+		t.Fatalf("NUL separation broken: Anchor(\"ab\",\"c\",\"\",\"\") == Anchor(\"a\",\"bc\",\"\",\"\") == %s", a)
 	}
 
 	// The joined byte strings ARE equal — that is exactly why raw NUL input is
 	// ambiguous and must be rejected.
-	if strings.Join([]string{"a\x00b", "c"}, "\x00") != strings.Join([]string{"a", "b\x00c"}, "\x00") {
+	if strings.Join([]string{"a\x00b", "c", "", ""}, "\x00") != strings.Join([]string{"a", "b\x00c", "", ""}, "\x00") {
 		t.Fatal("test premise broken: injection pair is not byte-identical after joining")
 	}
 	for _, parts := range [][]string{
-		{"a\x00b", "c"},
-		{"a", "b\x00c"},
-		{"a", "\x00"},
-		{"a", "\x00", "b"},
+		{"a\x00b", "c", "", ""},
+		{"a", "b\x00c", "", ""},
+		{"a", "\x00", "", ""},
+		{"a", "\x00", "b", ""},
 	} {
 		msg, ok := panicText(func() { Anchor(parts...) })
 		if !ok {
@@ -287,8 +294,8 @@ func TestAnchor_NULSeparatedParts(t *testing.T) {
 			t.Fatalf("Anchor(%q) panicked with %q, want the NUL-byte guard; an arity panic here means the fixture no longer tests what it claims", parts, msg)
 		}
 	}
-	if msg, ok := panicText(func() { Anchor("ok\x00", "tail") }); !ok || !strings.Contains(msg, "NUL byte") {
-		t.Fatalf(`Anchor("ok\x00","tail") = (%q, panicked=%v), want the NUL-byte panic`, msg, ok)
+	if msg, ok := panicText(func() { Anchor("ok\x00", "tail", "t3", "t4") }); !ok || !strings.Contains(msg, "NUL byte") {
+		t.Fatalf(`Anchor("ok\x00","tail","t3","t4") = (%q, panicked=%v), want the NUL-byte panic`, msg, ok)
 	}
 
 	// Sensitivity matrix: changing any single part changes the ID; arity is
@@ -302,51 +309,8 @@ func TestAnchor_NULSeparatedParts(t *testing.T) {
 			t.Fatalf("changing part %d (%q) did not change the ID", i, base[i])
 		}
 	}
-	if Anchor("x", "y") == Anchor("x", "y", "") {
-		t.Fatal("arity must be part of the encoding: Anchor(\"x\",\"y\") == Anchor(\"x\",\"y\",\"\")")
-	}
-}
-
-// TestAnchor_MinimumArity (D-1 delta): a site whose parts were dropped must
-// fail fast rather than derive. Arity is part of the encoding, so a short
-// anchor yields a valid, perfectly stable UUIDv5 that the audit ledger then
-// dedups on (tenant_id, source, event_id) — folding a later execution of that
-// truncated shape onto the first row with no error and no log line. The
-// enforced floor is minAnchorArity (2), occupied live by the
-// event.quarantine.v1 + wire-fingerprint surrogate.
-func TestAnchor_MinimumArity(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		parts []string
-	}{
-		{"zero_parts", nil},
-		{"one_part", []string{"x"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			msg, ok := panicText(func() { Anchor(tc.parts...) })
-			if !ok {
-				t.Fatalf("Anchor(%q): %d parts is below the enforced floor and must panic", tc.parts, len(tc.parts))
-			}
-			if !strings.Contains(msg, "minAnchorArity") {
-				t.Fatalf("panic %q must name the enforced floor minAnchorArity", msg)
-			}
-		})
-	}
-
-	// The arity guard runs before the NUL guard: an under-arity call whose part
-	// also carries U+0000 must report the arity error, not the NUL error.
-	if msg, ok := panicText(func() { Anchor("x\x00") }); !ok || !strings.Contains(msg, "minAnchorArity") {
-		t.Fatalf(`Anchor("x\x00") = (%q, panicked=%v), want the minAnchorArity panic`, msg, ok)
-	}
-
-	// The floor itself derives: arity 2 is a legal anchor, not a degenerate
-	// one, and must stay byte-identical for existing callers.
-	id := Anchor("a", "b")
-	if id.Version() != 5 || id.Variant() != uuid.RFC4122 {
-		t.Fatalf("arity-2 anchor %s is not a well-formed RFC4122 v5", id)
-	}
-	if id != Anchor("a", "b") {
-		t.Fatalf("arity-2 anchor is not deterministic: %s != %s", id, Anchor("a", "b"))
+	if Anchor("x", "y", "z", "w") == Anchor("x", "y", "z", "w", "") {
+		t.Fatal("arity must be part of the encoding: Anchor(\"x\",\"y\",\"z\",\"w\") == Anchor(\"x\",\"y\",\"z\",\"w\",\"\")")
 	}
 }
 

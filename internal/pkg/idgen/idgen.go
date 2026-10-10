@@ -24,34 +24,65 @@ type ID = uuid.UUID
 // only by review or by grep. AnchorNamespace below is a print-only mirror.
 var anchorNamespace = uuid.MustParse("38248e3a-32f0-4929-9b56-b2dbd75aa849")
 
-// minAnchorArity is the enforced floor on Anchor's part count and the single
-// source of truth for it: the guard, the panic message and Anchor's doc below
+// minAnchorArity is the enforced floor on Anchor's part count for every
+// discriminator EXCEPT the one named shape below, and it is the single source
+// of truth for that floor: the guard, the panic message and Anchor's doc below
 // all read this constant, so the number cannot drift between them.
 //
-// Two is the largest floor every live anchor site honors. The poison/
-// quarantine surrogate mints Anchor("event.quarantine.v1", <wire fingerprint>)
-// at internal/handler/grpc/event_ingest.go and internal/service/event_ingest.go
-// — a discriminator plus one identity part; every other site passes 4-6 parts.
-// A floor above two would panic a shipped path, so it cannot be raised without
-// first changing those sites.
+// Four is the documented house shape and the smallest floor every non-surrogate
+// live site honors: audit_hold.set (6), audit_hold.removed (4),
+// legacy.cutover.set (4), sync.job.finished (4), sync.execution.expired (4),
+// projection.replication.quarantine.v1 (4), audit.preference.set (5),
+// audit.region.promote (6), operation.* (5-6).
 //
 // A site below the floor is almost always broken rather than legitimately
-// small — a dropped tenant, subject, step, attempt or fencing-epoch slot — and
-// arity is part of the encoding, so the dropped slot would never surface as an
-// error: it would derive a different but valid, perfectly stable UUIDv5, the
-// fact would commit, and the ledger's (tenant_id, source, event_id) dedup guard
-// would then fold every later execution of that truncated shape onto the first
-// row, silently losing a multi-occurrence fact with no error and no log line.
-// Panic instead of deriving.
-const minAnchorArity = 2
+// small — a dropped tenant, subject, scope_type, step, attempt or fencing-epoch
+// slot — and arity is part of the encoding, so the dropped slot would never
+// surface as an error: it would derive a different but valid, perfectly stable
+// UUIDv5, the fact would commit, and the ledger's (tenant_id, source, event_id)
+// dedup guard would then fold every later execution of that truncated shape
+// onto the first row, silently losing a multi-occurrence fact with no error and
+// no log line. Panic instead of deriving.
+const minAnchorArity = 4
 
-// anchorArityPanic carries the enforced floor in the panic value so a reader
-// can tell a broken site from a floor that was raised later. It is computed
-// once from minAnchorArity (never at call time) and is used only by the guard
-// below; the message text is not a stable contract, so tests assert only on
-// the minAnchorArity substring.
+// The quarantine surrogate is the single grandfathered shape: deliberately
+// smaller than minAnchorArity, and grandfathered by discriminator literal AND
+// by exact arity — never by a general "two parts is acceptable" rule, which is
+// precisely the hole this policy closes.
+//
+// Anchor("event.quarantine.v1", <wire fingerprint>) is minted at
+// internal/handler/grpc/event_ingest.go and re-derived at
+// internal/service/event_ingest.go when the envelope carries no source id. It
+// carries no tenant/operation slot of its own because the fingerprint embeds a
+// sha256 over the authenticated (tenant, source, canonical bytes) triple, so a
+// two-part shape there still binds tenant and source. Any other arity for the
+// same discriminator is a dropped slot and panics.
+//
+// The fingerprint's content is deliberately not constrained here: the live
+// non-empty precondition is enforced by the callers (service/event_ingest.go
+// rejects an empty WireFingerprint before anchoring, and the gRPC handler
+// always assigns a 64-hex sha256).
+const (
+	quarantineSurrogateDiscriminator = "event.quarantine.v1"
+	quarantineSurrogateArity         = 2
+)
+
+// isGrandfatheredSurrogate reports whether parts is the one sanctioned
+// sub-floor shape. The length is compared first so parts[0] is never indexed on
+// an empty slice; it is its own function so the exemption is named in one place
+// instead of being spread through the guard.
+func isGrandfatheredSurrogate(parts []string) bool {
+	return len(parts) == quarantineSurrogateArity && parts[0] == quarantineSurrogateDiscriminator
+}
+
+// anchorArityPanic carries the enforced floor and the named exception in the
+// panic value so a reader can tell a broken site from a floor that was raised
+// later. It is computed once from the constants (never at call time) and is
+// used only by the guard below; the message text is not a stable contract, so
+// tests assert only on the minAnchorArity substring.
 var anchorArityPanic = "idgen.Anchor: arity below minAnchorArity=" + strconv.Itoa(minAnchorArity) +
-	" (the live floor shape is Anchor(\"event.quarantine.v1\", <wire fingerprint>)); " +
+	" (the only grandfathered shape is Anchor(\"" + quarantineSurrogateDiscriminator +
+	"\", <wire fingerprint>), exactly " + strconv.Itoa(quarantineSurrogateArity) + " parts); " +
 	"a dropped identity part is a programming error, not a smaller anchor"
 
 // AnchorNamespace is a non-authoritative, read-only mirror of the unexported
@@ -67,29 +98,33 @@ var AnchorNamespace = anchorNamespace
 // Anchor derives a deterministic UUIDv5 from NUL-separated parts (precedent:
 // projection_replication.go:134). Identical parts produce identical IDs; any
 // part change produces a different ID; NUL separation prevents prefix
-// collisions between ("ab","c") and ("a","bc"). The returned ID is an
-// identifier, never a capability: ledger dedup depends on it being derivable
-// from public identity fields.
+// collisions between ("ab","c","","") and ("a","bc","",""). The returned ID is
+// an identifier, never a capability: ledger dedup depends on it being
+// derivable from public identity fields.
 //
 // A part containing U+0000 is rejected with a panic before hashing: under NUL
-// separation such input is ambiguous (Anchor("a\x00b","c") would equal
-// Anchor("a","b\x00c")), so it is a programming error, not a valid anchor.
+// separation such input is ambiguous (Anchor("a\x00b","c","","") would equal
+// Anchor("a","b\x00c","","")), so it is a programming error, not a valid
+// anchor.
 // The rejection is deterministic and mirrors the NewID() clock-failure panic
 // precedent; PostgreSQL rejects U+0000 in text columns anyway, so the panic is
 // never reachable from persisted values at the call sites.
 //
 // Arity below minAnchorArity is likewise a programming error and is rejected
 // with a panic before hashing, for the same fail-fast reason as the NUL rule
-// above: arity is part of the encoding (Anchor("a","b") != Anchor("a","b","")),
-// so a site that dropped an identity slot would otherwise derive a
-// valid-looking, ledger-dedupable ID instead of failing loudly. The enforced
-// minimum is minAnchorArity (2), occupied live by the event.quarantine.v1 +
-// wire-fingerprint surrogate; every other site anchors a discriminator plus its
-// identity parts (4-6). Meeting the floor must never be done by padding parts
-// — padding changes the join and therefore the derived ID, silently re-keying
-// ledger rows that are already stored.
+// above: arity is part of the encoding
+// (Anchor("x","y","z","w") != Anchor("x","y","z","w","")), so a site that
+// dropped an identity slot would otherwise derive a valid-looking,
+// ledger-dedupable ID instead of failing loudly. The enforced minimum is
+// minAnchorArity (4) for every discriminator: a site anchors a discriminator
+// plus its tenant/scope/step/attempt/identity parts (4-6). The one exception is
+// named rather than counted — the event.quarantine.v1 + wire-fingerprint
+// surrogate, which is grandfathered at exactly its shipped arity of 2 and at no
+// other. Meeting the floor must never be done by padding parts — padding
+// changes the join and therefore the derived ID, silently re-keying ledger rows
+// that are already stored.
 func Anchor(parts ...string) ID {
-	if len(parts) < minAnchorArity {
+	if len(parts) < minAnchorArity && !isGrandfatheredSurrogate(parts) {
 		panic(anchorArityPanic)
 	}
 	for _, p := range parts {

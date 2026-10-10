@@ -13,10 +13,12 @@ import (
 const documentedAnchorNamespace = "38248e3a-32f0-4929-9b56-b2dbd75aa849"
 
 // goldenSeparatorA is the golden S1 row from TestAnchor_GoldenConstants:
-// Anchor("ab", "c"). Duplicated as a constant here so the inertness test fails
-// with a single, unambiguous message; the golden table remains the authority
-// and is never edited.
-const goldenSeparatorA = "251d9788-4b10-57f0-a935-e4ca289d517e"
+// Anchor("ab", "c", "", ""). Duplicated as a constant here so the inertness
+// test fails with a single, unambiguous message; the golden table remains the
+// authority and is never edited. The duplicate must be re-pinned in the same
+// change as the table row itself — a half-applied edit turns this test red in
+// exactly the way it was designed to.
+const goldenSeparatorA = "58396c20-26a5-5edf-aecd-1f5082b634b3"
 
 // hostileNamespace is a well-formed v5-shaped UUID that is deliberately not the
 // documented namespace. Any derived ID that moves when this value is installed
@@ -44,8 +46,8 @@ func TestAnchorNamespace_ReassignmentIsInert(t *testing.T) {
 	orig := AnchorNamespace
 	t.Cleanup(func() { AnchorNamespace = orig })
 
-	if got := Anchor("ab", "c").String(); got != goldenSeparatorA {
-		t.Fatalf("pre-mutation Anchor(ab, c) = %s, want golden S1 %s", got, goldenSeparatorA)
+	if got := Anchor("ab", "c", "", "").String(); got != goldenSeparatorA {
+		t.Fatalf("pre-mutation Anchor(ab, c, \"\", \"\") = %s, want golden S1 %s", got, goldenSeparatorA)
 	}
 
 	AnchorNamespace = hostileNamespace
@@ -53,12 +55,14 @@ func TestAnchorNamespace_ReassignmentIsInert(t *testing.T) {
 		t.Fatalf("fixture invalid: assigning idgen.AnchorNamespace did not take effect, so every assertion below would pass vacuously")
 	}
 
-	if got := Anchor("ab", "c").String(); got != goldenSeparatorA {
-		t.Errorf("Anchor(ab, c) = %s after idgen.AnchorNamespace was set to %s, want golden S1 %s — Anchor must derive from the unexported namespace, not the exported mirror", got, hostileNamespace, goldenSeparatorA)
+	if got := Anchor("ab", "c", "", "").String(); got != goldenSeparatorA {
+		t.Errorf("Anchor(ab, c, \"\", \"\") = %s after idgen.AnchorNamespace was set to %s, want golden S1 %s — Anchor must derive from the unexported namespace, not the exported mirror", got, hostileNamespace, goldenSeparatorA)
 	}
 	// The handler's poison-event quarantine shape (internal/handler/grpc
 	// event_ingest.go) is the named beneficiary of this contract; assert it
-	// stays a pure function of its parts after the mutation.
+	// stays a pure function of its parts after the mutation. It is also the
+	// single shape grandfathered below the enforced arity floor, so this call
+	// doubles as a live regression pin that the exemption still derives.
 	quarantine := Anchor("event.quarantine.v1", "wire-fingerprint")
 	if again := Anchor("event.quarantine.v1", "wire-fingerprint"); again != quarantine {
 		t.Errorf("Anchor is not stable across identical calls after the mirror was reassigned: %s vs %s", quarantine, again)
