@@ -38,6 +38,20 @@ func validateControlPlaneAuthentication(cfg *config.Config, validator grpcsrv.To
 	return nil
 }
 
+// PreflightControlPlaneAuthentication uses the standard startup validator and
+// claims-capability guard without opening a database, contacting JWKS or
+// constructing workers. It validates configuration, not live identity/AuthZ.
+func PreflightControlPlaneAuthentication(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("%s", controlPlaneAuthenticationError)
+	}
+	validator, err := buildTokenValidator(cfg, nil, zap.NewNop())
+	if err != nil {
+		return err
+	}
+	return validateControlPlaneAuthentication(cfg, validator, true)
+}
+
 func isNilAuthenticationCapability(value any) bool {
 	if value == nil {
 		return true

@@ -108,7 +108,8 @@ func TestStandaloneSiteOperationReconciled(t *testing.T) {
 	ctx := context.Background()
 	h := startStandaloneHarness(t)
 	opRepo := repository.NewOperationRepository(h.db, h.repo)
-	svc := &operationService{repo: opRepo, audit: h.ledger, region: "local", metrics: h.metrics}
+	svc := &operationService{repo: opRepo, audit: h.ledger, region: "local", metrics: h.metrics,
+		accounts: repository.NewAccountRepository(h.db, h.repo), executionPermission: allowAllPermissions{}}
 	identityCtx := WithIdentity(ctx, &domain.TokenIdentity{UID: "u-1", Issuer: "snaplink", Subject: "u-1", TenantID: "tenant-a"})
 	accountSvc := &accountService{repo: repository.NewAccountRepository(h.db, h.repo), audit: h.ledger,
 		issuer: "snaplink", region: "local", permission: allowAllPermission{}}
@@ -117,8 +118,8 @@ func TestStandaloneSiteOperationReconciled(t *testing.T) {
 		t.Fatalf("seed account: %v", err)
 	}
 	operation := &domain.Operation{ID: idgen.NewID(), TenantID: "tenant-a", AccountID: account.ID,
-		ActorUID: "u-1", Status: domain.OperationRunning, OperationType: "test.op",
-		Steps: []*domain.OperationStep{{ID: idgen.NewID(), StepKey: "s", Status: domain.StepRunning}}}
+		ActorUID: "u-1", HomeRegion: "local", Status: domain.OperationRunning, OperationType: "sync",
+		Steps: []*domain.OperationStep{{ID: idgen.NewID(), StepKey: "s", Source: "snaplink", Action: "summary", Status: domain.StepRunning}}}
 	if err := opRepo.Create(ctx, operation); err != nil {
 		t.Fatalf("seed operation: %v", err)
 	}

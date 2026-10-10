@@ -39,4 +39,44 @@ describe("useAsyncResource", () => {
       app.unmount();
     }
   });
+
+  it("aborts superseded reads and preserves a replacement against stale completions", async () => {
+    const signals: AbortSignal[] = [];
+    const resolves: Array<(value: string) => void> = [];
+    let resource!: AsyncResource<string>;
+    const app = createApp({
+      setup() {
+        resource = useAsyncResource((signal) => {
+          signals.push(signal);
+          return new Promise<string>((resolve) => resolves.push(resolve));
+        });
+        return () => null;
+      },
+    });
+    app.mount(document.createElement("div"));
+    let unmounted = false;
+    try {
+      resource.reload();
+      await nextTick();
+      expect(signals).toHaveLength(2);
+      expect(signals[0].aborted).toBe(true);
+      resource.replace("saved");
+      expect(signals[1].aborted).toBe(true);
+      resolves[0]("old-query");
+      resolves[1]("later-query");
+      await Promise.resolve();
+      expect(resource.data).toBe("saved");
+      const refresh = resource.refresh();
+      expect(resource.loading).toBe(false);
+      expect(resource.data).toBe("saved");
+      app.unmount();
+      unmounted = true;
+      expect(signals[2].aborted).toBe(true);
+      resolves[2]("after-unmount");
+      await refresh;
+      expect(resource.data).toBe("saved");
+    } finally {
+      if (!unmounted) app.unmount();
+    }
+  });
 });

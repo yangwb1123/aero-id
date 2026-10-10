@@ -11,10 +11,12 @@ import {
 } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
 import { useAsyncResource } from "../hooks/useAsyncResource";
+import { useTaskPolling } from "../hooks/useTaskPolling";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
 import { safeJsonPreview } from "./safeJsonPreview";
+import { taskHref } from "../router";
 import {
   loadSyncJobReconcileKey,
   saveSyncJobReconcileKey,
@@ -36,11 +38,16 @@ function persistReconcileKey(key: string | undefined): void {
     // Keep the retry key in memory if session storage is blocked.
   }
 }
-const resource = useAsyncResource(() => props.client.getSyncJob(props.jobId));
+const resource = useAsyncResource((signal) =>
+  props.client.getSyncJob(props.jobId, signal),
+);
 const action = ref<"reconcile" | "download">();
 const reconcileKey = ref(readReconcileKey());
 const actionError = ref<Error>();
 const confirmDownload = ref(false);
+const polling = useTaskPolling(() => resource.data?.status, resource.refresh, {
+  blocked: () => Boolean(resource.error) || Boolean(action.value),
+});
 function saveExport(blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -100,6 +107,16 @@ async function download(): Promise<void> {
           <IrisButton size="sm" variant="ghost" @click="emit('close')"
             >关闭</IrisButton
           >
+          <a v-if="taskHref('jobs', jobId)" :href="taskHref('jobs', jobId)"
+            >详情永久链接</a
+          >
+          <IrisButton
+            size="sm"
+            variant="ghost"
+            :disabled="Boolean(action)"
+            @click="resource.reload"
+            >刷新状态</IrisButton
+          >
           <IrisButton
             v-if="resource.data.status === 'unknown'"
             size="sm"
@@ -122,6 +139,14 @@ async function download(): Promise<void> {
           >
         </div>
       </template>
+      <IrisAlert
+        v-if="polling.exhausted || resource.data.status === 'unknown'"
+        tone="warning"
+        title="自动刷新已暂停"
+      >
+        自动状态查询有时间与次数上限，后台标签页暂停查询。unknown
+        不是失败，必须对账后才能决定是否重试；自动刷新从不重新提交命令。
+      </IrisAlert>
       <IrisAlert v-if="actionError && !confirmDownload" tone="danger">{{
         actionError.message
       }}</IrisAlert>
@@ -150,7 +175,7 @@ async function download(): Promise<void> {
           }}</pre>
         </div>
         <div>
-          <h3>脱敏结果</h3>
+          <h3>结果元数据</h3>
           <pre class="json-preview">{{
             safeJsonPreview(resource.data.result)
           }}</pre>

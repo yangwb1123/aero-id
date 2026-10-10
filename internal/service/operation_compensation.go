@@ -7,6 +7,7 @@ import (
 
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -26,23 +27,25 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 	if !hasCompensation(operation.Steps) {
 		return nil
 	}
-	stateCtx, stateCancel := operationPersistenceContext(ctx)
-	if err := s.setOperationStatus(stateCtx, operation, domain.OperationCompensating, "", "", nil, "operation.compensating",
-		map[string]any{"worker_role": worker}); err != nil {
-		stateCancel()
+	if err := s.startCompensation(ctx, operation, worker); err != nil {
 		return err
 	}
-	stateCancel()
 	runner, configured := s.runner.(OperationCompensationRunner)
 	for {
+		if err := s.checkOperationExecution(ctx, operation, nil, true, false, ""); err != nil {
+			return err
+		}
 		owner := operationLeaseOwner(worker)
 		claimCtx, claimCancel := operationPersistenceContext(ctx)
 		step, err := s.repo.ClaimCompensationStep(claimCtx, operation.ID, owner, operationLeaseDuration)
 		claimCancel()
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, repository.ErrOperationStepUnknown) {
 			return nil
 		}
 		if err != nil {
+			return err
+		}
+		if err := s.checkOperationExecution(ctx, operation, step, true, false, owner); err != nil {
 			return err
 		}
 		status := domain.StepSucceeded
@@ -81,6 +84,9 @@ func (s *operationService) compensate(ctx context.Context, operation *domain.Ope
 func (s *operationService) reconcileCompensations(ctx context.Context, operation *domain.Operation, worker string,
 	reconciler OperationCompensationOutcomeReconciler) error {
 	for {
+		if err := s.checkOperationExecution(ctx, operation, nil, true, true, ""); err != nil {
+			return err
+		}
 		owner := operationLeaseOwner(worker)
 		claimCtx, claimCancel := operationPersistenceContext(ctx)
 		step, err := s.repo.ClaimUnknownCompensationStep(claimCtx, operation.ID, owner, operationLeaseDuration)
@@ -89,6 +95,9 @@ func (s *operationService) reconcileCompensations(ctx context.Context, operation
 			return nil
 		}
 		if err != nil {
+			return err
+		}
+		if err := s.checkOperationExecution(ctx, operation, step, true, true, owner); err != nil {
 			return err
 		}
 		remoteCtx, remoteCancel := operationRemoteContext(ctx)
@@ -131,6 +140,21 @@ func hasCompensation(steps []*domain.OperationStep) bool {
 		}
 	}
 	return false
+}
+
+// An uncertain forward outcome is not permission to start rollback. Resume
+// compensation only after known failure or an already-entered compensation phase.
+func shouldResumeCompensation(operation *domain.Operation) bool {
+	knownFailure := false
+	for _, step := range operation.Steps {
+		if step.Status == domain.StepRunning || step.Status == domain.StepUnknown {
+			return false
+		}
+		if step.Status == domain.StepFailed {
+			knownFailure = true
+		}
+	}
+	return (knownFailure || operation.Status == domain.OperationCompensating) && hasPendingCompensation(operation.Steps)
 }
 
 func hasPendingCompensation(steps []*domain.OperationStep) bool {

@@ -9,7 +9,6 @@ import (
 	"github.com/aero/aero-id/internal/connector"
 	"github.com/aero/aero-id/internal/domain"
 	apperr "github.com/aero/aero-id/internal/pkg/errors"
-	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository"
 	"github.com/aero/aero-id/internal/storage"
 	"gorm.io/gorm"
@@ -34,27 +33,34 @@ type SyncJobInput struct {
 }
 
 type syncJobService struct {
-	repo        repository.SyncJobRepository
-	accounts    AccountService
-	accountRepo repository.AccountRepository
-	snapshots   repository.SnapshotRepository
-	application repository.SummaryApplication
-	store       storage.FileStorage
-	connectors  map[connector.Source]connector.Connector
-	permission  PermissionChecker
-	audit       AuditLedgerService
-	auditLedger repository.AuditLedgerRepository // optional; enables audit_export jobs (P4-08)
-	exportKey   []byte
-	exportTTL   time.Duration
-	maxExport   int64
-	region      string
-	metrics     ControlPlaneMetrics
+	repo                repository.SyncJobRepository
+	accounts            AccountService
+	accountRepo         repository.AccountRepository
+	snapshots           repository.SnapshotRepository
+	application         repository.SummaryApplication
+	store               storage.FileStorage
+	connectors          map[connector.Source]connector.Connector
+	permission          PermissionChecker
+	executionPermission PermissionChecker
+	audit               AuditLedgerService
+	auditLedger         repository.AuditLedgerRepository // optional; enables audit_export jobs (P4-08)
+	exportKey           []byte
+	exportTTL           time.Duration
+	maxExport           int64
+	region              string
+	metrics             ControlPlaneMetrics
 }
 
 type SyncJobOption func(*syncJobService)
 
 func WithSyncJobPermission(checker PermissionChecker) SyncJobOption {
 	return func(s *syncJobService) { s.permission = checker }
+}
+
+// Only an authoritative checker is suitable here; enqueue's legacy checker
+// must not become a renewable execution grant.
+func WithSyncJobExecutionPermission(checker PermissionChecker) SyncJobOption {
+	return func(s *syncJobService) { s.executionPermission = checker }
 }
 
 func WithSyncJobAudit(audit AuditLedgerService) SyncJobOption {
@@ -124,7 +130,8 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 		return nil, apperr.BadRequest("sync.invalid_type", "sync job type is not supported")
 	}
 	continuationRequested := input.AuditExportContinuationID != (domain.ID{})
-	if len(input.IdempotencyKey) > 200 || (!continuationRequested && strings.TrimSpace(input.IdempotencyKey) == "") {
+	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
+	if len(input.IdempotencyKey) > 200 || (!continuationRequested && input.IdempotencyKey == "") {
 		return nil, apperr.BadRequest("sync.invalid_idempotency_key", "idempotency key is required")
 	}
 	tenantID, err := mustTenant(ctx)
@@ -159,41 +166,31 @@ func (s *syncJobService) Create(ctx context.Context, input SyncJobInput) (*domai
 		// job instead of re-reading the same cursor into a second window.
 		input.IdempotencyKey = auditExportContinuationKey(continuation.ID)
 	}
+	fingerprint, err := syncJobFingerprint(ctx, input, datasets)
+	if err != nil {
+		return nil, err
+	}
 	existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
 	if findErr == nil {
 		if continuation != nil && !auditExportJobReferences(existing, continuation.ID) {
 			return nil, apperr.Conflict("sync.continuation_conflict", "audit export continuation has already been used")
 		}
-		return existing, nil
+		return s.reuseSyncJob(ctx, existing, fingerprint)
 	}
 	if !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
 		return nil, apperr.Internal("sync.idempotency_lookup_failed", "failed to check sync idempotency").Wrap(findErr)
 	}
-	if input.AccountID == (domain.ID{}) {
-		view, err := s.accounts.GetMe(ctx)
-		if err != nil {
-			return nil, err
-		}
-		input.AccountID = view.Account.ID
-	}
-	if err := authorizeAccountTarget(ctx, s.accountRepo, s.permission, input.AccountID, actor, syncPermission(input.JobType)); err != nil {
+	job, err := s.prepareNewSyncJob(ctx, input, datasets, fingerprint, actor, tenantID)
+	if err != nil {
 		return nil, err
 	}
-	if err := requireHomeRegion(ctx, s.accountRepo, input.AccountID, s.region); err != nil {
-		return nil, err
-	}
-	request := map[string]any{"datasets": datasets}
 	if continuation != nil {
-		request["audit_export_continuation_job_id"] = continuation.ID.String()
+		job.Request["audit_export_continuation_job_id"] = continuation.ID.String()
 	}
-	job := &domain.SyncJob{AccountID: input.AccountID, ActorUID: actor, TenantID: tenantID,
-		RequestID: RequestIDFrom(ctx), JobType: input.JobType, Status: domain.SyncJobPending,
-		IdempotencyKey: input.IdempotencyKey, Request: request, Result: map[string]any{}}
-	job.ID = idgen.NewID()
 	if err := s.createWithAudit(ctx, job); err != nil {
 		existing, findErr := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
 		if findErr == nil {
-			return existing, nil
+			return s.reuseSyncJob(ctx, existing, fingerprint)
 		}
 		if !errors.Is(findErr, repository.ErrNotFound) && !errors.Is(findErr, gorm.ErrRecordNotFound) {
 			return nil, apperr.Internal("sync.idempotency_lookup_failed", "failed to check sync idempotency").Wrap(findErr)
@@ -231,7 +228,7 @@ func (s *syncJobService) Get(ctx context.Context, id domain.ID) (*domain.SyncJob
 			return nil, apperr.Forbidden("sync.forbidden", "actor cannot access this sync job")
 		}
 	}
-	return job, nil
+	return sanitizeAccountExportJob(job), nil
 }
 
 func (s *syncJobService) List(ctx context.Context, page domain.Page) ([]*domain.SyncJob, string, error) {
@@ -246,6 +243,9 @@ func (s *syncJobService) List(ctx context.Context, page domain.Page) ([]*domain.
 	items, next, err := s.repo.List(ctx, actor, tenantID, page)
 	if err != nil {
 		return nil, "", apperr.Internal("sync.list_failed", "failed to list sync jobs").Wrap(err)
+	}
+	for i, job := range items {
+		items[i] = sanitizeAccountExportJob(job)
 	}
 	return items, next, nil
 }
@@ -313,7 +313,7 @@ func (s *syncJobService) Start(ctx context.Context, interval time.Duration) func
 						}
 						break
 					}
-					if _, err := s.execute(workerCtx, job); err != nil {
+					if _, err := s.execute(workerCtx, job); err != nil && !isSyncExecutionBlocked(err) {
 						break
 					}
 				}
@@ -325,7 +325,7 @@ func (s *syncJobService) Start(ctx context.Context, interval time.Duration) func
 					if err != nil {
 						break
 					}
-					if _, err := s.reconcileClaimed(workerCtx, job); err != nil {
+					if _, err := s.reconcileClaimed(workerCtx, job); err != nil && !isSyncExecutionBlocked(err) {
 						break
 					}
 				}
@@ -351,6 +351,9 @@ func (s *syncJobService) execute(ctx context.Context, job *domain.SyncJob) (*dom
 }
 
 func (s *syncJobService) finishJob(ctx context.Context, job *domain.SyncJob, status domain.SyncJobStatus, code, message string, result map[string]any) error {
+	if job.JobType == domain.SyncJobExport || job.JobType == domain.SyncJobAuditExport {
+		result = artifactResultMetadata(job.JobType, result)
+	}
 	if s.audit != nil {
 		// Single minting point (contract §2.3 / D-7): the fact is appended
 		// in-tx via FinishWithAudit; a repo without the WithAudit surface fails

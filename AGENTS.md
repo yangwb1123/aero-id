@@ -1,384 +1,177 @@
 # AGENTS.md — aero-id
 
-## Product contract and transition status
+## Product boundary and current state
 
-`aero-id` is evolving into a **distributed account aggregation, account-management, operation-orchestration,
-and audit control plane** spanning multiple applications and data centers.
+`aero-id` is a distributed account aggregation, management, operation-orchestration, and audit control plane.
+It is not a second identity provider, messaging authority, or object store.
 
-The authority boundaries are load-bearing:
+| System | Authority / aero-id boundary |
+|---|---|
+| **Snaplink** | Human identity, authentication, OAuth/OIDC, global authorization, tenants, sessions, MFA, consent, lifecycle. Never duplicate credentials or issue user tokens. |
+| **Aero IM** | Messaging, notifications, chat/live, participants/workspaces. Use public connectors/events, never its database. |
+| **Aero Vault** | Objects, buckets, metadata, ACLs, shares, usage. Use public connectors, never copy blobs or bypass resource authorization. |
+| **aero-id** | Canonical account links, explicitly owned profile/preferences, source references, approved projections, operations, local audit ledger, callbacks, sync/export state. |
 
-| System | Authority | aero-id relationship |
-|---|---|---|
-| **Snaplink** | Authentication, OAuth/OIDC tokens, authorization, users, tenants, sessions, MFA, consent, identity lifecycle | Authenticate callers and answer global authorization questions; never duplicate credentials or sign user tokens |
-| **snaplink-console** | Snaplink's own client/admin UI | Reference only; the aero-id product gets an independent client and OAuth client registration |
-| **Aero IM** | Application messaging, notifications, chat, live streaming, IM participants/workspaces | Query/command through a connector; consume source events; never read its database directly |
-| **Aero Vault** | File/object storage, buckets, metadata, ACLs, shares, usage | Query/command through a connector; never copy blobs or bypass its authorization layer |
-| **aero-id** | Canonical account links, explicitly owned profile/preferences, source references, aggregate read models, cross-app operations, audit ledger, callbacks, sync/export jobs | Own only these control-plane facts and projections |
+Migration is not complete: namespace/migrate source-local human password/JWT/PAT flows; bot/service/API/S3 keys
+and capabilities are separate principal kinds. Legacy aero-id roles/bans are compatibility controls, not global RBAC.
 
-This table is the target authority contract, not a claim that every source has completed the migration. The
-current Aero IM tree still contains local password/JWT/PAT/OIDC identity flows, while Aero Vault also supports
-source-scoped API keys, local JWT, SigV4, shares, and capabilities. Migrate or namespace those surfaces; they
-must not become a second global human-account authority. Source-local bot, service, object, and capability
-credentials may remain when they are not modeled as human identities.
+**Wired:** `internal/app/new.go` + sibling builders assemble accounts/profile/links/memberships, aggregation,
+event ingestion, durable audit/compliance, Sagas, sync/export/erase, callbacks, replay, fencing and legacy cutover
+alongside files/messages/comments. `web/` is the independent Vue + Iris UI console with Snaplink Authorization Code + PKCE.
+**Conditional:** connectors, JetStream, replication, audit-governance publication and billing/quota need configuration
+and external contracts. Wired ≠ enabled ≠ production-accepted; unavailable capabilities must fail closed.
 
-Target implementation plan: `docs/plans/2026-08-04-distributed-account-aggregation.md`.
-The 2026-05-22 design under `docs/superpowers/specs/` is historical input, not the target architecture.
-README API tables are stale; live handlers, protobuf contracts, and `internal/app/new.go` remain the source of
-truth for behavior that is already shipped.
+Verify `internal/app/{services,handlers,grpc,workers}.go`, handlers, Protobuf/OpenAPI and config before changes.
+README tables, plans and generated `docs/agent-context/platform-contract.md` may lag or misstate ownership.
+Architecture baseline: `docs/plans/2026-08-04-distributed-account-aggregation.md`; the 2026-05-22 spec is historical.
 
-**Current-state warning:** the running application is still the layered files/messages/comments service wired
-from `internal/app/new.go`. The account model, source connectors, regional read model, durable audit ledger, and
-workflow services described below are migration targets until their code, migrations, wiring, and tests land.
-Do not document target behavior as shipped behavior. Preserve current APIs until an explicit compatibility or
-data-migration task removes them.
+## Live architecture
 
-## Commands and done gate
+```text
+HTTP/gRPC handler -> service -> repository -> regional PostgreSQL
+                            -> connector/storage/outbox ports
+web/ -> HTTP JSON; source APIs/events -> connector/event adapters
+```
+
+- **Handlers:** decode/validate/render only. No policy, orchestration, repositories or source-specific calls.
+- **Services:** authorization intent, consistency/partial-result rules, workflows and audit; shared by HTTP/gRPC.
+- **Repositories:** aero-id persistence only; services translate raw errors to `*errors.AppError`
+  (`internal/pkg/errors`). gRPC uses the shared mapper, never a handler-local `grpcError`.
+- **Domain:** stdlib + `internal/pkg/*` only; no GORM/transport/broker/source types. Connectors translate public APIs,
+  not policy; `connector/event/outbox/region/sso` cannot import service/repository.
+- Extend live layered sibling packages; new packages/binaries require a real boundary and composition-root wiring.
+  Never restore `internal/{file,message,notification,audit,block,comment,search}`; unwired code is not shipped.
+  `scripts/check-architecture.sh` defines rules/exceptions; `check-audit-swallow` pins quarantine.
+
+## Identity, tenancy and source calls
+
+- `account_id` is UUIDv7; external identities are unique by `(issuer, subject)`. Compatibility `canonical_uid`
+  may equal the Snaplink subject; source IDs stay opaque. Tenant-scoped lookups never trust a supplied account ID alone.
+- Prefer Snaplink JWKS; validate issuer/audience/expiry and non-empty subject/tenant/client claims. Standard startup
+  rejects UID-only/fallback auth (`internal/app/auth.go`). Global AuthZ belongs to Snaplink; disable legacy local
+  fallback when authoritative. Never grant on cache miss/uncertainty; sources recheck resource authorization.
+- Memberships retain source + scope type + scope ID; tenants/workspaces/buckets are not interchangeable.
+  Profile writes own only display name/avatar/locale/timezone/allow-listed preferences, never verified identity/status.
+- Propagate actor/tenant/request/trace/operation attribution with audience-bound service identity. User tokens require
+  a valid target audience; otherwise exchange/use scoped service credentials. Never persist source credentials or let request
+  tenants select another credential. Browser HTTP JSON/OpenAPI; internal gRPC/Protobuf; no invented source RPCs or N+1.
+- Verify `docs/contracts/source-account-summary.md` before source enablement: Snaplink summary defaults off and no
+  production erase version is verified; IM requires service identity + dedicated target-assertion/JWKS; Vault requires
+  tenant/region-bound Snaplink service OAuth and defaults read-only. Paths alone never enable erase/status.
+- Console: independent tenant-bound public OAuth client, not `snaplink-console`; tokens in memory, no frontend secrets
+  or cross-console token forwarding.
+
+## Data and distributed correctness
+
+- Resolve creation/linking home region from `(issuer, subject)` before persistence; regional uniqueness is a final
+  guard, not global routing. Writes require durable directory/fencing; promotion is CAS + audit. Unfenced failover
+  must pause writes, not create split-brain; eligible stale reads may continue. No 2PC or casual regional multi-writer.
+- Default aggregate/list/search/dashboard reads use local projections. `eventual/bounded/strong` are freshness modes,
+  not global transactions. Expose source `status/version/generated_at/last_synced_at`, partial/stale/unavailable;
+  writer epoch headers are not causal projection watermarks.
+- Sagas persist steps/attempts/source operation IDs/results/compensation with `completed/partially_completed/failed/unknown`
+  outcomes and one active leased/fenced attempt. Timeouts stay `unknown` until reconciled by key/source operation ID;
+  restart resumes durable state, cancellation is not rollback. Redis/memory loss must not lose authoritative state/receipts.
+- Datasets: `internal/domain/aggregation.go`. Use indexed normalized columns and redacted versioned JSONB extensions;
+  never proxy arbitrary paths/SQL/filters/response bodies. Prefer batch source enrichment.
+- Project approved references/summaries, never unrestricted IM history/raw live subjects, Vault bytes or mutable ACL
+  copies. Replication obeys residency. Each field needs ownership/freshness/retention/erase rules; encrypted exports
+  use access-controlled, TTL-bound object storage. Erase changes must cover late events, sync/export races, stale
+  replicas and Legal Hold without claiming these gaps are already closed.
+- Success stays `{"data": ...}` with sanitized source errors. High-cardinality lists use descending keyset
+  (`id < cursor`, `limit + 1`), never offset.
+
+## Events and projections
+
+- At-least-once delivery: mutation + required event/outbox commit atomically at their authority. Consumers persist
+  `(source, event_id)` receipts and compare versions. Canonical contract: `internal/event/envelope.go`.
+- Keep request/trace/operation/event/correlation/causation IDs distinct; order by source/aggregate/version, not globally.
+  Poison/unsupported/wrong-source events go to durable quarantine/DLQ, not successful acknowledgement.
+- Transport stays behind ports; bounded reconciliation repairs gaps. Projections are replayable/disposable;
+  account links, operations, audit, receipts and deliveries are not. Test duplicates, ordering and concurrent summaries.
+- Summary application preserves tenant/home-region fences, monotonic versions and coverage/complete semantics;
+  omission outside declared coverage is not deletion authority. Replication cursors/tombstones are commit-ordered
+  (`internal/repository/replication_changes.go`); a sequence alone cannot replace the clock lock.
+
+## Audit, replay and callbacks
+
+- New mutations/admin/security/export/replay/callback management/sensitive reads need durable redacted facts;
+  local mutations append in-tx. Never regress `WithAudit` to post-commit logging; routine read audit/retention is explicit.
+- Live `Record`/`Log` errors propagate: standalone ingest is fail-closed `audit.ingest_failed`/503; in-tx failures abort.
+  Legacy middleware fail-open never excuses audit failure. Deleted dead-tree `AuditLogger` was diagnostics,
+  not the live `service.AuditLogger` adapter. Never store tokens/cookies/passwords/MFA/bytes/unrestricted bodies/secrets.
+- `scripts/check-audit-manifest.sh` enumerates standalone/fallback sites; new bare sites need markers/manifest/integration
+  proof. Coverage is not legacy transactional atomicity; file/message/preference/promotion/replication/replay are audited.
+- Preserve create/send/delete resource anchors, preference/promote `idgen.Anchor`, replication envelope IDs;
+  update/edit/react/unreact/replay use fresh execution IDs, never resource-wide dedup. Keep anchor goldens byte-compatible.
+  Exceptions only: `SendSystem` (no tenant/actor/production callers) and `persistSyncSummary` (job lifecycle audited).
+- Ledger facts are immutable; retention purges are hold-aware. Tamper evidence is versioned partition hash/signature
+  chains + WORM archives, not global order or automatic production compliance.
+- Forensic replay has no effects; dry-run simulates; controlled replay reauthorizes, uses new replay/idempotency IDs,
+  confirmation and bounded steps, never historical credentials. Confirmation is not multi-party approval; projection replay is shadow.
+- Callbacks follow durable facts asynchronously: signed/versioned/idempotent, rate-limited, bounded retries/backoff/jitter,
+  DLQ/manual replay. Failure never removes facts. Enforce HTTPS/challenge, redirect/DNS/private-network/egress policy and
+  bounded reads; tenant endpoints must not become SSRF. Do not cache one-time callback secrets in replay responses.
+
+## Compatibility APIs
+
+Preserve until explicit migration/cutover; add no new canonical file/chat authority.
+
+- Files: owner-only mutation/search; owner/public/shared reads. `signing_key` signs local download URLs, not tokens.
+  Messages: participant-only, no forged `system`, sender-owned attachments. Comments: two levels, target-readable.
+  Notifications come from outbox dispatch; SSE is best-effort, durable state/replay provides correctness.
+  Outbox drain uses `FOR UPDATE SKIP LOCKED`.
+- Global order: RequestID → Tracing → Recovery → Metrics → Sample → AccessLog → CORS → Degradation → Timeout.
+  Auth → Ban → RateLimit → Idempotency; control-plane uses verified claims. Legacy deprecation/epoch/cutover guards
+  stay on compatibility routes (`internal/handler/http/router.go`). Ban fail-open is not a new security-policy default.
+- Generic keyed POST idempotency caches responses via Redis or GORM; store failure/overflow can re-execute.
+  It is not durable/body-bound business intent. No generic gRPC equivalent: command retries need explicit durable keys.
+
+## Resource, error and configuration budgets
+
+- Bound deadlines/bodies/streams/batches/queues/concurrency; remote calls need breakers/metrics and budgeted idempotent
+  retries. Isolate query/command/health/background pools. Version caches, expose stale, never claim local limits are global.
+- Liveness is process health; readiness checks required dependencies, source health/lag is separate. Track source
+  latency/errors/circuits, lag/drift, operation age/unknown, audit failures, callback retries/DLQ.
+- Dotted AppErrors match HTTP/gRPC semantics; distinguish outage/stale/partial/unknown/retry exhaustion.
+  Never leak SQL/topology/source URLs/secrets/stacks/auth internals.
+- `configs/config.yaml` + `AERO_ID_*`: validate regions/endpoints/TLS/audiences/deadlines/caps at startup;
+  secrets from env/approved providers only. `0` means code default unless documented as disabled.
+
+## Engineering and verification
+
+Go 1.26; module `github.com/aero/aero-id`. One concern per file: non-test/non-generated Go ≤500 lines,
+functions ≤50 lines, cyclomatic ≤10, package average ≤5.0. Plan splits at 400 lines; `internal/app/new.go` has
+its own ≤400-line gate. Prefer sibling files; do not add lint exceptions to avoid a proper split.
+
+Backend done-gate (script headers define mechanical contracts):
 
 ```bash
-make test              # unit tests (go test ./... -count=1) — no Docker
-make test-integration  # integration tag; Postgres + MinIO via testcontainers (needs Docker)
-make lint              # go vet ./...
-make lint-strict       # golangci-lint (funlen 50, cyclop 10)
-make check-file-sizes  # non-test/non-generated Go files must be <= 500 lines
-make check-migration-set  # migration-set integrity gate: up/down pairs, no duplicate versions, no malformed migration filenames (bash+grep, CI-safe)
-make check-db-startup-hardening # pins bounded DB DSN wiring and removal of dead db.Ping (bash+grep, CI-safe)
-make check-integration-compile  # compiles every integration-tagged _test.go file without running tests (go test -tags integration -run '^$' + go vet -tags integration) — no Docker; catches interface breaks that plain `go build -tags integration` misses
-make build             # -> bin/aero-id
-make run               # go run ./cmd/server -config configs/config.yaml
-make migrate-up        # explicit migration runner; migrations are not auto-applied by default
-make proto             # regenerate stubs only after editing api/proto/**/*.proto
+make test && make lint && make lint-strict && \
+make check-architecture && make check-file-sizes && make check-audit-swallow && \
+make check-anchored-event-ids && make check-audit-manifest && make check-load-scenarios && \
+make check-migration-set && make check-db-startup-hardening && make check-composition-root && \
+make check-proto-sync && make check-k8s-manifest && make check-integration-compile && make build
 ```
 
-Done-gate:
+- Colocate deterministic unit tests; no Docker/real source/WAN dependencies. Integration compile tests tagged `_test.go`
+  (`go test -tags integration -run '^$'` + vet), unlike ordinary build.
+- Run `make test-integration` (Docker PostgreSQL/MinIO) after SQL/migration/storage/connector/event/callback/transaction
+  changes. Cover duplicates/order/gaps/poison/replay, crash around remote success, unknown outcomes, Redis loss,
+  DB/region failover, callback retry/rotation/replay. Real source/WAN/load acceptance remains a separate release gate.
+- Web: `make web-install && make web-check`. Vault releases: configured `make test-vault-contract`, never a skipped
+  suite as verification. Load single source: `scripts/load/ghz/scenarios.yaml`, guarded by `check-load-scenarios`.
+- Migrations: unique `NNNNNN_name.up.sql`/`.down.sql` pairs; never edit applied files. Production uses `cmd/migrate`,
+  auto-apply opt-in. `make migrate-validate` checks integrity/applied drift without mutation; `make migrate-up` executes.
+- Proto: edit `.proto` → `make proto` → commit stubs; never hand-edit `*.pb.go`. Add files to both Makefile generation
+  and `scripts/check-proto-sync.sh`, using its pinned toolchain. `make run` uses the configured server;
+  `make build` writes server/audit-replay/preflight to `bin/`, never repo root. Report tests/skips and measured vs static findings.
 
-```bash
-make test && make lint && make lint-strict && make check-file-sizes && make check-audit-swallow && make check-anchored-event-ids && make check-audit-manifest && make check-load-scenarios && make check-migration-set && make check-db-startup-hardening && make check-composition-root && make check-proto-sync && make check-integration-compile && make build
-```
+## Read when relevant
 
-`make check-load-scenarios` guards the load-test tooling single-source contract (ghz
-scenarios resolve in the proto, the runner consumes the canonical `scenarios.yaml` with
-no inline arrays, bench SQL relations exist in migrations, Makefile-referenced load
-assets are live). It is pure bash + grep with self-testing fixtures — CI-safe (no Go,
-Docker, network, or new binaries), which is why it runs in the `check-gates` CI job.
-
-Run `make test-integration` after changing repository SQL, migrations, storage, source connectors, event
-ingestion, callback delivery, or multi-service transaction boundaries. Cross-data-center and load tests are
-additional release gates once the corresponding infrastructure exists; they do not replace the local gate.
-
-## Architecture boundaries
-
-### Current live dependency flow
-
-```text
-handler/{http,grpc} -> service -> repository -> PostgreSQL (GORM)
-                            |-> storage (local | s3)
-                            |-> sso     (gRPC client, caches, breaker)
-                            |-> outbox  (transactional relay)
-                            `-> hub     (best-effort SSE)
-```
-
-### Target dependency flow
-
-```text
-external HTTP / internal gRPC
-              |
-              v
-handler -> account | aggregation | audit | operation service
-              |          |           |
-              |          |           `-> workflow/outbox/callback ports
-              |          `-> projection repositories
-              `-> source connector interfaces
-                            |-> Snaplink adapter
-                            |-> Aero IM adapter
-                            `-> Aero Vault adapter
-```
-
-- **Handlers** decode/validate transport input, call a service, and render output. No orchestration,
-  authorization policy, repository access, connector calls, or source-specific branching in handlers.
-- **Services** own business rules, authorization intent, consistency mode, partial-result semantics, Saga
-  transitions, and audit requirements. HTTP and gRPC must share service behavior.
-- **Repositories** own only aero-id data. They return raw persistence errors; services translate them into
-  `*pkg/errors.AppError`.
-- **Connectors** are anti-corruption adapters over public source APIs. They translate canonical requests into
-  source contracts but do not own business policy. A connector must never access a source database.
-- **Domain** types remain pure and import nothing from `internal/`. Snaplink, IM, Vault, GORM, HTTP, gRPC, and
-  event-bus types must not leak into domain entities.
-- **Composition roots** wire every live dependency. A type or worker not reachable from a `cmd/*` composition
-  root is not a shipped feature.
-
-Preferred target layout extends the live layered tree rather than the dead feature tree:
-
-```text
-internal/domain/{account,audit,operation,source}.go
-internal/service/{account,aggregation,audit,operation,sync,callback}_*.go
-internal/repository/{account,audit,operation,snapshot,callback,sync}_*.go
-internal/connector/{snaplink,aeroim,aerovault}/
-internal/handler/{http,grpc}/
-internal/outbox/ and internal/hub/
-```
-
-Split deployment does not require split repositories. Start with cohesive packages and multiple `cmd/*`
-binaries only when a service needs independent scaling, security, or failure isolation.
-
-## Multi-region and distributed-systems contract
-
-- Deploy stateless API/query instances in each supported region. Route account-affecting writes to the
-  account's **home region**; local regions may serve versioned projections.
-- Resolve the initial home region from `(issuer, subject)` before account creation and route every create/link
-  attempt there. The regional unique constraint is a final guard, not a substitute for global routing.
-- Do not put a synchronous fan-out to Snaplink, Aero IM, and Aero Vault on the default read path. Aggregate
-  lists, search, statistics, and dashboards read local projections. Point reads and commands may call a source
-  when freshness requires it.
-- Do not implement distributed transactions or two-phase commit across services/data centers. Cross-app writes
-  are durable Sagas with explicit steps, retries, compensation where meaningful, and terminal
-  `completed | partially_completed | failed | unknown` outcomes.
-- A timeout is not proof of remote failure. Persist an `unknown` step and reconcile by idempotency key or source
-  operation identifier before retrying.
-- Strong consistency is local to an authority. Cross-source views are eventual or bounded-stale and must expose
-  per-source `status`, `version`, `generated_at`, and `last_synced_at`.
-- No global total event order is assumed. Order by `(source, aggregate_id, aggregate_version)` and reconstruct
-  cross-app causality with `operation_id` and `causation_id`.
-- Cross-region replication transports only approved projections, references, and redacted audit data. Source
-  content and residency-restricted PII remain in their authority region.
-- Redis and process memory are caches/coordination aids, never the only correctness store. Losing either must
-  not lose accounts, operations, audit facts, idempotency receipts, or callback deliveries.
-- Regional database multi-writer is not introduced casually. The default migration path is regional PostgreSQL
-  plus home-region writes and asynchronous projection replication; distributed SQL requires a separate ADR and
-  conflict model.
-- If the home region is unavailable, continue eligible stale reads. Accept writes in another region only after
-  a durable promotion and fencing epoch proves the old writer cannot commit; otherwise pause writes rather than
-  create split-brain.
-
-## Identity, authorization, tenancy, and source references
-
-- Snaplink remains the authentication and global authorization authority. aero-id never stores passwords,
-  refresh/access tokens, MFA secrets, or password-reset material and never signs user tokens.
-- Snaplink is the sole human-account authority. Source-local bots, service identities, API/S3 keys, and
-  short-lived capabilities are separate principal kinds; never silently merge them into a human account.
-- Prefer local JWT verification against Snaplink JWKS for the hot path. Use introspection or Snaplink gRPC only
-  when token type or policy requires it. Validate issuer, audience, expiry, and non-empty subject.
-- The canonical account key is an internal UUIDv7 `account_id`. External identities are unique by
-  `(issuer, subject)`; `canonical_uid` may initially equal the Snaplink subject for compatibility.
-- Preserve source-native IDs as opaque references: IM participant/workspace IDs and Vault tenant/bucket/object
-  IDs are not reinterpreted as aero-id IDs.
-- Propagate `actor_uid`, `tenant_id`, `request_id`, `traceparent`, `operation_id`, and an audience-bound service
-  identity on downstream calls. Pass a user token only when its audience is valid for the target; otherwise use
-  token exchange or a scoped service credential with original-actor attribution.
-- Global authorization is decided by Snaplink. Resource authorization is rechecked by the source service.
-  Cached authorization may improve latency but cannot silently grant on cache miss or policy uncertainty.
-- Current aero-id roles/bans are legacy local-domain controls. Do not expand them into a competing global RBAC
-  or identity lifecycle system; migrate or explicitly namespace them before account-management rollout.
-- Define field ownership before exposing profile mutation. Snaplink owns verified identity and lifecycle
-  fields; aero-id may own explicitly named presentation/preferences fields or orchestrate a Snaplink command.
-  A generic profile PATCH must never create two writable copies of email, phone, verification, or status.
-- An account can belong to multiple Snaplink tenants, IM workspaces, and Vault tenants/buckets. Never collapse
-  these scopes into a single unqualified `tenant_id`; store source and scope type with every membership.
-
-## Transport, query, and projection rules
-
-- Public/browser clients use HTTP JSON + OpenAPI. Internal request/response calls prefer gRPC + Protobuf.
-  Source connectors may initially use a source's stable HTTP API when no gRPC control plane exists.
-- The checked source snapshot exposes Snaplink JWKS plus stable AuthZ/Admin/Audit gRPC APIs, Aero IM REST/WS
-  plus NATS JetStream/outbox, and Aero Vault REST/S3/WebDAV/MCP plus persisted events/SSE/HMAC webhooks. No
-  stable public account-summary gRPC API was found in IM or Vault. Use these published seams and re-check the
-  deployed source version before implementation; do not invent a gRPC dependency from roadmap prose.
-- Every remote call has a deadline, bounded message size, concurrency limit, circuit breaker, and metrics.
-  Automatic retries are limited to idempotent operations and consume a retry budget.
-- Use batch source APIs for account enrichment and summaries. Never introduce an N+1 cross-data-center loop.
-- Do not consume raw IM room/live subjects or Vault object bytes into a general account projection. Add
-  redacted account/workspace/resource-summary events or an allow-listed adapter at the source boundary.
-- Generic account-data APIs expose an allow-listed, typed dataset registry. They do not proxy arbitrary paths,
-  SQL, source filters, or source response bodies.
-- Store normalized indexed columns for account/source/scope/status/time fields. Versioned JSONB may hold
-  redacted source extensions, but it is not the primary public contract.
-- Projections are disposable and replayable; account links, operation state, audit facts, idempotency receipts,
-  and callback delivery state are authoritative and are not disposable.
-- External success responses retain `{"data": ...}`. Partial aggregate responses additionally report per-source
-  freshness/errors without exposing internal network or database details.
-- IDs are UUIDv7 and list APIs use keyset pagination (`id < cursor`, descending, `limit + 1`). Do not use offset
-  pagination on high-cardinality account, activity, operation, audit, callback, or resource lists.
-
-## Event, outbox, and synchronization invariants
-
-- Delivery is **at least once**. Producers, consumers, projections, callbacks, and replay workers must be
-  idempotent. Exactly-once behavior is achieved with unique receipts and state transitions, not assumed from a
-  broker.
-- A source mutation and its durable source event/outbox row must commit atomically inside that source. Within
-  aero-id, account/operation/audit state and the event that announces it follow the same rule.
-- Canonical event envelope fields are: `event_id`, `source`, `source_region`, `event_type`, `schema_version`,
-  `aggregate_type`, `aggregate_id`, `aggregate_version`, `actor_uid`, `tenant_id`, `operation_id`,
-  `correlation_id`, `causation_id`, `trace_id`, `occurred_at`, and redacted payload.
-- Consumers reject malformed or unsupported versions to a dead-letter/quarantine path; they do not acknowledge
-  poison events as successfully applied.
-- Duplicate and out-of-order events are normal. Projection writes compare source version/cursor and record a
-  durable receipt keyed by `(source, event_id)`.
-- Event transport is an implementation detail behind ports. HTTP CloudEvents/webhooks, NATS JetStream, and
-  Kafka-compatible streams may coexist through adapters; do not couple domain code to one broker.
-- Periodic reconciliation is mandatory. It compares source summaries/cursors with projections and repairs
-  missed events without performing unbounded full scans in one run.
-
-## Audit, operation, replay, and callback invariants
-
-- Distinguish `request_id` (one transport request), `trace_id` (technical call graph), `operation_id` (one user
-  intent/workflow), `event_id` (one immutable fact), and `causation_id` (parent fact). Never overload one ID for
-  all purposes.
-- The compliance audit ledger is append-only and durable. The dead-tree best-effort `AuditLogger`
-  (`internal/audit`, deleted in the 2026-08-10 quarantine) was suitable for legacy diagnostics only;
-  it is not the target ledger and must not be advertised as complete audit evidence.
-- Every state-changing, administrative, security, export, replay, callback-management, and sensitive-read
-  operation produces a durable audit fact. Routine high-volume reads may use metadata-only access audit, but
-  audit mode and retention must be explicit per dataset/tenant.
-- Audit payloads are allow-listed and redacted before persistence. Never record bearer tokens, cookies,
-  passwords, MFA/recovery material, object bytes, unrestricted message bodies, or connector credentials.
-- Tamper evidence uses a versioned hash/signature chain per source/partition plus immutable/WORM archival.
-  Cross-region events form a causal DAG; do not claim one global hash-chain order.
-- Replay has three distinct modes: forensic reconstruction (no effects), dry-run simulation, and controlled
-  command re-execution. Controlled replay creates a new `replay_id`, reauthorizes, uses new idempotency keys,
-  enforces step limits/approval, and writes new audit facts. It never reuses historical credentials.
-- Callbacks are asynchronous and emitted only after the source fact is durable. Deliveries are signed,
-  versioned, idempotent, rate-limited, retried with backoff/jitter, dead-lettered after a cap, and manually
-  replayable. Callback failure never erases or rolls back the audit fact.
-- Callback registration and delivery enforce HTTPS/endpoint verification, redirect limits, DNS-rebinding and
-  private-network policy, bounded response reads, and controlled egress. Tenant callbacks must not become an
-  SSRF path into metadata endpoints or internal control planes.
-- Cross-app operations persist every step, attempt, source operation ID, result, and compensation. A worker
-  crash or region failover resumes from durable state rather than restarting the operation blindly.
-
-## Data ownership and minimization
-
-aero-id may persist canonical account/profile data, source links, memberships, resource references, aggregate
-snapshots, activity indexes, sync cursors/jobs, operation state, audit facts, callback subscriptions/deliveries,
-and export metadata.
-
-It must not persist source credentials, Vault object bytes, unrestricted IM message history, or a second mutable
-copy of source ACLs. Temporary export artifacts are encrypted, access-controlled, TTL-bound, and stored through
-object storage. Every projected field has a documented authority, freshness contract, retention rule, and erase
-behavior.
-
-## Legacy live feature invariants
-
-Until explicitly migrated, current live APIs keep their existing behavior:
-
-- File mutation is owner-only; read is owner, public, or shared-with. Search remains owner-scoped.
-- Messages are visible/reactable only to participants; user paths cannot forge `system` messages; attachments
-  must be owned by the sender.
-- Comments have exactly two levels and are readable only when their target is readable.
-- Notifications are created only by the dispatcher from outbox events, never directly in request handlers.
-- Current domain mutations append required outbox events in the same GORM transaction. Drain concurrency uses
-  `FOR UPDATE SKIP LOCKED`.
-- Repository errors are translated in service; raw DB errors never cross the service boundary.
-- Middleware order remains load-bearing: RequestID -> Tracing -> Recovery -> Metrics -> Sample -> AccessLog ->
-  CORS -> Degradation -> Timeout; `/v1`: Auth -> Ban -> RateLimit -> Idempotency.
-- `signing_key` signs only local-storage download URLs. It is never a token-signing key.
-- SSE is best-effort; durable notification state and replay provide correctness.
-- Live-layer audit writes (`Record` and `Log`) are durable; swallowing either is a gate violation
-  (`make check-audit-swallow`). The dead-tree `AuditLogger` carve-out is historical (the interface
-  was deleted in the 2026-08-10 quarantine) and never applied to the live `service.AuditLogger`
-  adapter; the legacy fail-open carve-out for Ban and other middleware
-  must never be re-applied to audit writes: the fail-closed `audit.ingest_failed`/503 contract
-  stands for every live-layer audit site.
-- The audit-coverage invariant covers every operation that emits an audit fact, not every mutation.
-  Until the 2026-08-15 B3 Gap-4 migration, the former legacy compatibility surfaces were exempt
-  (verified per op: zero `Record`/`Log` sites) but are now fully audited with durable facts: file
-  create/delete/update (`internal/service/file.go`, `file_presign.go`, `file_share.go`; file *share*
-  has been audited in-tx since B2-1 via `buildLegacyAuditFact`), message send/edit/react/unreact
-  (`internal/service/message.go`, `message_audit.go`; delete has been audited since B2-1,
-  `auditMessageDelete`), preferences (`internal/service/preference.go`), region promotion
-  (`internal/service/region_fencing.go`, in-tx with the fencing CAS), projection replication
-  publishes and projection replay runs (`internal/service/projection_replication.go`,
-  `projection_replay.go`). Create/send/delete facts anchor their EventID on the resource ID so
-  retries dedup at the ledger; preference.set and region.promote derive a deterministic
-  `idgen.Anchor` EventID; replication publishes reuse the deterministic snapshot-envelope EventID.
-  Multi-occurrence ops (update/edit/react/unreact/replay) record fresh per-execution rows with no
-  retry-dedup contract — a retry may append a duplicate row distinguishable by `occurred_at`, never
-  a silently dropped fact. Two documented carve-outs remain: `SendSystem` (server-internal emit path
-  with no tenant or actor attribution — the ledger rejects tenant-less facts — and no production
-  callers) and per-job sync projection summaries (`persistSyncSummary`; disposable replayable
-  projection writes whose lifecycle is already audited at the job layer). The comment tree was
-  quarantined on 2026-08-08 and live comment report is audited in-tx (`ResolveReportWithAudit`,
-  `internal/service/comment.go`), so comment ops are not exempt. `make check-audit-manifest`
-  enumerates every bare site; `make check-audit-swallow` bans swallowed/bare writes.
-
-Do not add new canonical file/chat authority to aero-id while Aero Vault/Aero IM are the target authorities.
-Treat the current file/message/comment surface as a compatibility source until a migration/deprecation decision
-is implemented and tested.
-
-## Errors, configuration, and secrets
-
-- Services translate raw dependency errors to `*pkg/errors.AppError` with stable dotted codes and matching HTTP
-  and gRPC status. Source outages, stale projection, partial result, unknown outcome, and retry exhaustion need
-  distinct codes.
-- Do not leak source URLs, topology, credentials, SQL, stack traces, or authorization internals in API errors.
-- Configuration remains in `configs/config.yaml` with `AERO_ID_*` environment overrides. New regional/source
-  config validates region IDs, public/internal endpoints, TLS, audiences, deadlines, concurrency, and queue caps
-  at startup.
-- Secrets come from environment or an approved secret provider, never committed config. This includes DB,
-  Redis, signing/HMAC, mTLS, source credentials, callback keys, broker, and object-store credentials.
-- A `0` value means code default unless the key explicitly documents `0 = disabled`.
-
-## High-concurrency and availability rules
-
-- API/query services are stateless and horizontally scalable. Background consumers use partitioned ownership,
-  leases/fencing, or broker consumer groups; only one active attempt may mutate a given operation step.
-- Apply bulkheads per source and workload class. Audit ingestion, callbacks, exports, and reconciliation must not
-  exhaust interactive query/command pools.
-- Bound queues, request bodies, batch sizes, streams, per-account concurrency, and in-flight source calls.
-  Backpressure returns stable overload errors or parks durable work; it never grows memory without limit.
-- Cache entries are versioned and invalidated by events; stale service is explicit. Authorization and lifecycle
-  revocation paths fail according to a documented security policy, not a generic availability default.
-- Health is layered: liveness is process health; readiness includes local required dependencies; source health
-  and projection lag are reported separately and do not make every regional read endpoint unready.
-- Required metrics include per-source latency/error/circuit state, projection lag, consumer lag, operation age,
-  unknown outcomes, audit ingest failures, callback retries/DLQ, reconciliation drift, and regional freshness.
-- Release testing covers duplicate/out-of-order events, source outage, WAN timeout/partition, Redis loss,
-  database failover, worker crash after remote success, callback outage, poison events, and region failover.
-
-## Engineering constraints
-
-Non-negotiable limits enforced by the repository gates:
-
-| File (non-test/generated) | Function | Cyclomatic | Package average | Responsibility |
-|---|---|---|---|---|
-| <= 500 lines | <= 50 lines | <= 10 | <= 5.0 | one cohesive concern/file |
-
-At 400 lines, plan a split; over 500, split before feature work. Prefer sibling files within the live layer.
-Create a new package only for a real domain or infrastructure boundary. Tests follow the split.
-
-- Unit tests live beside code and use deterministic fakes; they make no real cross-data-center calls.
-- Connector contract tests cover auth context, deadlines, pagination, partial responses, idempotency, and error
-  mapping. Network-backed tests use the integration build tag.
-- Repository and migration work is tested against real PostgreSQL. Source event/projector work tests duplicate,
-  out-of-order, gap, replay, and poison-event behavior.
-- Operation tests inject crashes before and after remote success. Callback tests cover signing, retry, DLQ,
-  duplicate delivery, key rotation, and manual replay.
-- Generated protobuf is committed. Never hand-edit `*.pb.go`; edit `.proto`, then run `make proto` (and
-  `make check-proto-sync` to prove the committed stubs match the pinned toolchain) with plugin
-  versions compatible with `go.mod`.
-
-## Current repository gotchas
-
-- The dead trees `internal/{file,message,notification,audit}` were quarantined (deleted) in the
-  2026-08-10 quarantine with `check-audit-swallow` FM-12 must-not-exist guards and Makefile tripwire
-  roots, like `internal/block`, `internal/comment`, and `internal/search` before them (2026-08-08 —
-  `internal/comment` carried the last swallowed fail-open out-of-transaction audit write;
-  `internal/block`'s `BlockChecker` role is served by the live `service.BlockChecker`).
-  The running application uses `internal/service` + `internal/repository`. Do not implement target
-  account/audit work in an unwired tree.
-- `make check-architecture` guards the live layered runtime: dead-tree import ban (`internal/{file,message,notification,audit}`), domain purity (stdlib + `internal/pkg/*` only), repository-not-importing-service, infra-layer (`connector/event/outbox/region/sso`) isolation, and the handler→repository import ban — a green result is meaningful for those boundaries; the script header is the canonical rule definition.
-- Migrations are not auto-applied unless `database.auto_migrate: true`; production uses `cmd/migrate`. Every
-  zero-padded `NNNNNN_name.up.sql` has a matching `.down.sql`; never edit an applied migration. The
-  zero-padded-pair/duplicate/malformed invariants are mechanically enforced by `make check-migration-set`
-  (bash+grep, CI-safe) and by strict `Discover()` in `internal/pkg/migrate`; `migrate validate` reports
-  migration-set integrity and disk-vs-applied drift without mutating.
-- HTTP idempotency currently covers POST + `Idempotency-Key`; existing gRPC calls have no generic idempotency.
-  New command RPCs must carry an explicit idempotency/operation key before enabling automatic retries.
-- `make proto` currently enumerates only `sso.proto` and `aero_id.proto`. Adding split account/audit/operation
-  protobuf files also requires updating the generation target; creating a `.proto` file alone generates nothing.
-- Current rate limits, SSO caches, and some notification limits are process-local unless Redis-backed. Do not
-  describe them as globally enforced.
-- Ban and several legacy middleware checks fail open by design. This carve-out covers request
-  middleware only and must never be re-applied to live-layer audit writes, which are fail-closed
-  by contract and by `make check-audit-swallow`. Global account lifecycle and security policy
-  must not inherit this behavior accidentally.
-- Build through `make build` / `go build ./...`; do not leave binaries at repository root.
-- Toolchain is Go 1.26; module path is `github.com/aero/aero-id`.
+- Source enablement/auth/coverage: `docs/contracts/source-account-summary.md`.
+- Internal membership attestation: `docs/contracts/agent-membership-check.md`.
+- Browser contract/auth: `docs/clients/aero-account-console-contract.md`, `web/README.md`.
+- Retention/hold/erase: `docs/DATA_RETENTION.md`; runtime code wins if older status text differs.
+- Release/preflight: `deployments/k8s/README.md`; load: `scripts/load/README.md`.
+- Recovery: `docs/runbooks/{outbox,outbox-retry-eligibility,replication-parked}.md`, `docs/runbook.md`.

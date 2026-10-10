@@ -1,6 +1,6 @@
 # Data Retention Policy
 
-> Last updated: 2026-07-12
+> Last updated: 2026-10-07
 > Applies to: aero-id v0.1.x
 
 This document defines the TTL-based cleanup strategy for every table that
@@ -8,6 +8,48 @@ grows unboundedly. Cleaners run as background goroutines inside the aero-id
 process and are configured via `config.yaml` under `data_retention.*`.
 
 ---
+
+## Current control-plane exports and lifecycle
+
+The table index below primarily describes legacy compatibility cleaners; it is
+not the complete control-plane retention policy. Canonical account links,
+operations, command intents, event receipts and the immutable audit ledger have independent
+retention/hold rules. Temporary export deletion does not authorize ledger
+purging or source-system erasure.
+
+Account and audit exports keep encrypted content in access-controlled,
+TTL-bound storage. New job results and checkpoint continuations contain only
+bounded metadata. Historical job reads omit embedded content, but this does
+not clean previously persisted copies. With deterministic storage, the original
+key, digest, size and TTL are checkpointed before Put; lost acknowledgements
+remain unknown and recovery does not regenerate content or extend its TTL.
+
+Publication and final download admission use the same local account lock as
+erase (account → job). An erase that commits first rejects admission; one-time
+consumption and successful-read audit are atomic. Bytes admitted/sent before
+erase cannot be recalled and may arrive afterwards. Cross-region disposition,
+stale replicas, old writers, late remote writes after disposal, historical
+content retention and Legal Hold/source deletion acceptance remain separate
+work—not claims closed by these local transactions.
+
+Expiration filtering happens before the bounded cleanup limit. Unknown jobs,
+consumed pointers awaiting confirmed deletion and lease-expired running
+artifacts remain eligible through their internal checkpoint. Object deletion
+runs outside database transactions; a checkpoint is removed only after deletion
+is confirmed (including NotFound). Physical deletion timing still depends on
+storage availability and deployment lifecycle/retention policies.
+
+Implementation: `internal/service/sync_artifact_{prepare,resume,validation}.go`,
+`internal/service/sync_export_download.go` and
+`internal/repository/sync_job_export_{fence,download,cleanup}.go`.
+
+Command intents contain bounded, normalized/redacted plan and receipt metadata,
+not tokens or source content. Their five-minute `expires_at` limits new confirmed
+receipt admission, not historical retrieval, retention or Legal Hold. No automatic
+intent purge is enabled; migration `000072` refuses rollback while any intent
+exists. Expiry must not discard an uncertain execution receipt or authorize a
+second command under a new key. A hold-aware intent retention/disposition policy
+and expired-preview operator UX remain separate work.
 
 ## Table Index
 
@@ -225,5 +267,5 @@ The following tables never grow unboundedly and are excluded from TTL cleanup:
 | `comments` | Same as messages |
 | `user_blocks` | Block relationships are indefinite |
 | `unread_counts` | One row per active user; bounded by user count |
-| `users` | Identity is owned by SSO; aero-id has no accounts table |
+| `users` | Legacy compatibility projection; human identity is Snaplink-owned. Canonical `accounts` links/tombstones are separate authoritative control-plane records, not covered by this legacy cleaner table. |
 | `storage_refs` | Only orphaned refs are cleaned (see table above); active refs are permanent |

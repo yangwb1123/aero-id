@@ -61,8 +61,11 @@ ConfigMap.
 
 Each API and worker pod has a `preflight` init container using the same
 immutable image, ConfigMap, and Secret context as its application container.
-It runs before the application can bind a port, validates the full config, and
-when Aero IM target assertions are enabled verifies the dedicated Ed25519 JWKS
+It runs before the application can bind a port, validates the full config and
+uses the standard startup JWKS constructor/claims-capability guard (issuer,
+audience and claims-capable authentication are mandatory). That static guard
+does not fetch Snaplink JWKS or prove live login, client registration or AuthZ.
+When Aero IM target assertions are enabled it verifies the dedicated Ed25519 JWKS
 binding without redirects or proxies. Both the init container and the
 application verify the pod-template `checksum/config` against the mounted file.
 A failed check leaves the pod in initialization (or exits the process) and
@@ -167,7 +170,11 @@ of silently skipping the gate.
 
 ## Deployment and rollback sequencing
 
-The current relay requires migration `000069` before any new-version process
+The current server additionally requires migrations through `000072`: `000071`
+adds command request binding and `000072` adds durable caller-bound command intents.
+Startup and `migrate verify` check the watermark and actual receipt/intent schema.
+The intent down migration refuses to discard any persisted preview or receipt;
+expiry does not authorize deletion or remove retention/Legal Hold requirements. The relay requires migration `000069` before any new-version process
 starts. The migration is additive but rollout is intentionally quiesced: an old
 relay ignores `next_attempt_at`, while a new relay must never share a queue with
 it.

@@ -5,10 +5,13 @@ export interface AsyncResource<T> {
   readonly error: Error | undefined;
   readonly loading: boolean;
   reload(): void;
+  refresh(): Promise<void>;
   replace(data: T): void;
 }
 
-export function useAsyncResource<T>(load: () => Promise<T>): AsyncResource<T> {
+export function useAsyncResource<T>(
+  load: (signal: AbortSignal) => Promise<T>,
+): AsyncResource<T> {
   const state = shallowReactive({
     data: undefined as T | undefined,
     error: undefined as Error | undefined,
@@ -17,20 +20,28 @@ export function useAsyncResource<T>(load: () => Promise<T>): AsyncResource<T> {
   const revision = ref(0);
   let active = true;
   let generation = 0;
+  let request: AbortController | undefined;
 
-  const run = async (): Promise<void> => {
+  const run = async (background = false): Promise<void> => {
+    if (!active) return;
+    request?.abort();
+    const controller = new AbortController();
+    request = controller;
     const current = ++generation;
-    state.loading = true;
+    state.loading = !background || state.data === undefined;
     state.error = undefined;
     try {
-      const value = await load();
+      const value = await load(controller.signal);
       if (!active || current !== generation) return;
       state.data = value;
     } catch (reason) {
       if (!active || current !== generation) return;
       state.error = reason instanceof Error ? reason : new Error("请求失败");
     } finally {
-      if (active && current === generation) state.loading = false;
+      if (active && current === generation) {
+        state.loading = false;
+        request = undefined;
+      }
     }
   };
 
@@ -39,6 +50,8 @@ export function useAsyncResource<T>(load: () => Promise<T>): AsyncResource<T> {
   onBeforeUnmount(() => {
     active = false;
     generation += 1;
+    request?.abort();
+    request = undefined;
   });
 
   return {
@@ -54,7 +67,11 @@ export function useAsyncResource<T>(load: () => Promise<T>): AsyncResource<T> {
     reload: () => {
       revision.value += 1;
     },
+    refresh: () => run(true),
     replace: (value) => {
+      generation += 1;
+      request?.abort();
+      request = undefined;
       state.data = value;
       state.error = undefined;
       state.loading = false;

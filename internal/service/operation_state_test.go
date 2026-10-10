@@ -13,9 +13,13 @@ import (
 // operationStateOp builds an operation with an explicit CreatedAt (the shared
 // crashedOperation helper leaves it zero) and the given steps.
 func operationStateOp(status domain.OperationStatus, steps []*domain.OperationStep) *domain.Operation {
+	for _, step := range steps {
+		step.Source, step.Action = "aero-vault", "erase"
+		step.RequestPayload = map[string]any{"datasets": []string{"aero-vault.tenants"}}
+	}
 	return &domain.Operation{
 		ID: idgen.NewID(), AccountID: idgen.NewID(), ActorUID: "u-1", TenantID: "tenant-a",
-		HomeRegion: "local", OperationType: "source.erase", Status: status,
+		HomeRegion: "local", OperationType: "erase", Status: status,
 		CreatedAt: time.Now().UTC().Add(-time.Hour),
 		Steps:     steps,
 	}
@@ -135,7 +139,7 @@ func TestProcessRunnableEmitsOperationAgeForOpenOperations(t *testing.T) {
 		op := operationStateOp(domain.OperationWaiting, []*domain.OperationStep{{Status: domain.StepPending}})
 		repo := &runnableListRepo{crashTestRepo: &crashTestRepo{operation: op, step: op.Steps[0]},
 			runnableIDs: []domain.ID{op.ID}}
-		svc := NewOperationService(repo, WithOperationRunner(&crashRunner{}), WithOperationMetrics(spy)).(*operationService)
+		svc := NewOperationService(repo, operationTestExecutionPorts(), WithOperationRunner(&crashRunner{}), WithOperationMetrics(spy)).(*operationService)
 
 		svc.processRunnable(context.Background())
 		if len(spy.operationAges) != 1 {
@@ -154,7 +158,7 @@ func TestProcessRunnableEmitsOperationAgeForOpenOperations(t *testing.T) {
 		op := operationStateOp(domain.OperationUnknown, []*domain.OperationStep{{Status: domain.StepUnknown}})
 		repo := &runnableListRepo{crashTestRepo: &crashTestRepo{operation: op, step: op.Steps[0]},
 			reconcileIDs: []domain.ID{op.ID}}
-		svc := NewOperationService(repo, WithOperationRunner(&crashRunner{}), WithOperationMetrics(spy)).(*operationService)
+		svc := NewOperationService(repo, operationTestExecutionPorts(), WithOperationRunner(&crashRunner{}), WithOperationMetrics(spy)).(*operationService)
 
 		svc.processRunnable(context.Background())
 		if len(spy.operationAges) != 1 {
@@ -172,7 +176,7 @@ func TestProcessRunnableEmitsOperationAgeForOpenOperations(t *testing.T) {
 		op := operationStateOp(domain.OperationWaiting, []*domain.OperationStep{{Status: domain.StepPending}})
 		repo := &runnableListRepo{crashTestRepo: &crashTestRepo{operation: op, step: op.Steps[0]},
 			runnableIDs: []domain.ID{op.ID}}
-		svc := NewOperationService(repo, WithOperationRunner(&crashRunner{})).(*operationService)
+		svc := NewOperationService(repo, operationTestExecutionPorts(), WithOperationRunner(&crashRunner{})).(*operationService)
 
 		svc.processRunnable(context.Background()) // must not panic with the noop default
 	})
@@ -182,7 +186,7 @@ func TestProcessRunnableEmitsOperationAgeForOpenOperations(t *testing.T) {
 		op.CreatedAt = time.Time{}
 		repo := &runnableListRepo{crashTestRepo: &crashTestRepo{operation: op, step: op.Steps[0]},
 			runnableIDs: []domain.ID{op.ID}}
-		svc := NewOperationService(repo, WithOperationRunner(&crashRunner{}), WithOperationMetrics(spy)).(*operationService)
+		svc := NewOperationService(repo, operationTestExecutionPorts(), WithOperationRunner(&crashRunner{}), WithOperationMetrics(spy)).(*operationService)
 
 		svc.processRunnable(context.Background())
 		if len(spy.operationAges) != 0 {

@@ -32,7 +32,8 @@ func operationToRow(operation *domain.Operation) (*operationRow, error) {
 	}
 	return &operationRow{ID: operation.ID, AccountID: nullableUUID(operation.AccountID), ActorUID: operation.ActorUID,
 		TenantID: operation.TenantID, RequestID: operation.RequestID, HomeRegion: operation.HomeRegion, OperationType: operation.OperationType,
-		Status: string(operation.Status), IdempotencyKey: operation.IdempotencyKey, RequestPayload: request,
+		Status: string(operation.Status), IdempotencyKey: operation.IdempotencyKey,
+		RequestFingerprint: operation.RequestFingerprint, RequestPayload: request,
 		Result: result, ErrorCode: operation.ErrorCode, ErrorMessage: operation.ErrorMessage, CreatedAt: operation.CreatedAt,
 		UpdatedAt: operation.UpdatedAt, CompletedAt: operation.CompletedAt}, nil
 }
@@ -49,7 +50,8 @@ func operationRowToDomain(row *operationRow) (*domain.Operation, error) {
 	return &domain.Operation{ID: row.ID, AccountID: idFromNullableUUID(row.AccountID), ActorUID: row.ActorUID,
 		TenantID: row.TenantID, RequestID: row.RequestID, HomeRegion: row.HomeRegion,
 		OperationType: row.OperationType, Status: domain.OperationStatus(row.Status),
-		IdempotencyKey: row.IdempotencyKey, RequestPayload: request, Result: result, ErrorCode: row.ErrorCode,
+		IdempotencyKey: row.IdempotencyKey, RequestFingerprint: row.RequestFingerprint,
+		RequestPayload: request, Result: result, ErrorCode: row.ErrorCode,
 		ErrorMessage: row.ErrorMessage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: row.CompletedAt}, nil
 }
 

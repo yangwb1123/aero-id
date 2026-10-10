@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { provide } from "vue";
+import { provide, ref, watch } from "vue";
 import {
   IrisAlert,
   IrisCard,
@@ -22,7 +22,19 @@ try {
 }
 
 const auth = config ? createAuthState(config) : undefined;
-if (auth) provide(authKey, auth);
+const identityGeneration = ref(0);
+if (auth) {
+  provide(authKey, auth);
+  // A new identity/tenant session gets fresh page state and a fresh writer pin.
+  // Never use a token string as a route key or preserve another session's data.
+  watch(
+    () => auth.session,
+    () => {
+      identityGeneration.value += 1;
+    },
+    { flush: "sync" },
+  );
+}
 </script>
 
 <template>
@@ -40,6 +52,7 @@ if (auth) provide(authKey, auth);
       </main>
       <AeroShell
         v-else-if="auth?.status === 'authenticated'"
+        :key="identityGeneration"
         :config="config"
       />
       <LoginPage v-else />

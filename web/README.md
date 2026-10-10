@@ -1,6 +1,6 @@
 # Aero Platform Console
 
-`aero-id/web` 下基于 Iris UI Vue 适配器的独立平台控制台。当前端到端切片负责：
+`aero-id/web` 下基于 Iris UI Vue 适配器的独立平台控制台。以下功能已接入代码；真实登录、源部署和浏览器 E2E 验收另行记录，不以页面存在或单元测试通过代替：
 
 - 通过 Snaplink Authorization Code + PKCE（S256）登录；
 - 在浏览器内存中持有短期 access token，不写入 localStorage/sessionStorage；
@@ -21,6 +21,20 @@
 - Replay 管理严格区分 forensic、dry-run、controlled，并为真实命令强制新幂等键和 Account ID 二次确认；支持按 Replay ID 恢复查看持久化详情；另提供按 Tenant/Account 鉴权、逐窗口审计且绝不自动修复的 Shadow Projection Replay；
 - 明确展示 partial、stale、unavailable 和 unknown 状态；
 - 使用独立链接进入 Audit Governance、Aero IM 和 Aero Vault 控制台，不跨 audience 转发 token。
+
+## 范围、重试与任务跟踪
+
+- 同步/导出必须显式勾选数据集；已注册不代表源已启用、获授权或新鲜。导出包含核心账户/资料和所选来源引用，不包含 Vault 文件或完整 IM 消息；任务结果仅显示元数据，内容留在加密 TTL 制品。
+- 同步/导出先调用 `/command-intents` 获取五分钟服务端预览，显示目标、范围、步骤、本地版本和到期时间；输入确认后才调用原意图的 execute 创建既有任务回执，不自动运行。执行回应不确定时保留原预览/确认摘要；关闭页面不回滚。
+- 预览创建结果不确定时保留原幂等键，相同范围只允许用户主动重试。待确认键按部署、issuer、client、tenant、account 隔离保存到 sessionStorage（最多 16 项；存储被禁用则仅保留内存），不会存储 token、导出内容或自动重新提交命令。
+- `#/jobs/<UUID>`、`#/operations/<UUID>` 可分享/刷新恢复详情；原有 `#jobs`、`#/jobs` 等页面链接继续有效。链接不是权限凭据，后端仍检查当前授权。
+- 详情自动刷新只调用 metadata GET，等待上一请求完成，逐步退避，最多 60 次/5 分钟；隐藏标签页、操作进行中或读取错误时暂停，终态/unknown 停止。unknown 不是失败，对账不会盲目重发原命令。
+- 身份/租户会话变更会重新挂载页面、清除旧上下文/writer pin 并取消未完成读取；取消读取或关闭页面不是取消/回滚已接受的命令。租户不能仅靠修改请求 `tenant_id` 切换。
+- Header 使用已验证 `/me` 的账户/租户，不使用占位身份。`/me/capabilities` 报告验证客户端上下文；菜单和深链接区分未配置、无权限与未知，未知不作为允许。源新鲜度面板分别统计注册、启用、本地读取资格及新鲜度；不探测源健康或推断源 ACL。
+- 同步/导出按钮依据能力状态提示；未启用来源不能新建同步，但仍可显式导出已有本地投影。报告和预览不是授权凭据；执行重新检查当前权限、计划与本地前置条件。授权版本未受支持，源 ACL 未知，Writer Epoch 不是因果水位。
+- 预览键使用独立作用域；检测到旧直接创建接口的未确认键时暂停新预览，不能换接口重复创建。过期不自动换键。Operation、管理员及擦除页面仍待逐动作接入预览；延迟 worker 的权限复查与真实浏览器验收也尚未完成。菜单、链接和前端状态都不是安全边界。
+
+完整进度及未通过门禁见 [`../docs/plans/control-plane-production-readiness.md`](../docs/plans/control-plane-production-readiness.md)。
 
 ## Snaplink client
 

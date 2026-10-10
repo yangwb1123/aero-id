@@ -12,10 +12,6 @@ import (
 
 //nolint:cyclop,funlen // recovery validates, replays, and dispatches only missing source work.
 func (s *syncJobService) reconcileSync(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
-	recovery, ok := s.repo.(repository.SyncJobRecoveryRepository)
-	if !ok {
-		return s.executeSync(ctx, job)
-	}
 	datasets, scopeErr := parsePersistedSyncDatasets(job.Request, true)
 	if scopeErr != nil {
 		return s.recoveryFailure(ctx, job, "sync.invalid_dataset_scope", "sync job dataset scope is invalid", scopeErr)
@@ -23,6 +19,14 @@ func (s *syncJobService) reconcileSync(ctx context.Context, job *domain.SyncJob)
 	required, scopeErr := validatedDatasetsBySource(datasets)
 	if scopeErr != nil {
 		return s.recoveryFailure(ctx, job, "sync.invalid_dataset_scope", "sync job dataset scope is invalid", scopeErr)
+	}
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return s.pauseSyncExecution(ctx, job, err, false, nil)
+	}
+	recovery, ok := s.repo.(repository.SyncJobRecoveryRepository)
+	if !ok {
+		cause := apperr.Unavailable("sync.recovery_unavailable", "stored summary recovery is unavailable")
+		return nil, s.finishJobFailure(ctx, job, domain.SyncJobUnknown, cause.Code, cause.Message, job.Result, cause)
 	}
 	replays, err := recovery.ListSummaryReplays(ctx, job.ID)
 	if err != nil {
@@ -33,13 +37,10 @@ func (s *syncJobService) reconcileSync(ctx context.Context, job *domain.SyncJob)
 	}
 	reconciler, canReconcile := s.application.(repository.SummaryApplicationReconciler)
 	skip := make(map[connector.Source]bool)
-	result := map[string]any{"mode": string(job.JobType), "sources": map[string]any{}}
+	result := cloneSyncResult(job.Result)
+	result["mode"] = string(job.JobType)
 	for _, replay := range replays {
-		if replay.State == "resolved" {
-			skip[connector.Source(replay.Source)] = true
-			continue
-		}
-		if replay.State != "pending" && replay.State != "unknown" {
+		if replay.State != "pending" && replay.State != "unknown" && replay.State != "resolved" {
 			return s.recoveryFailure(ctx, job, "sync.replay_state_invalid", "summary replay state is invalid", repository.ErrSyncReplayStateInvalid)
 		}
 		if replay.JobID != job.ID || replay.Request.AccountID != job.AccountID || replay.Request.Source != replay.Source {
@@ -49,9 +50,20 @@ func (s *syncJobService) reconcileSync(ctx context.Context, job *domain.SyncJob)
 			return s.recoveryFailure(ctx, job, "sync.replay_state_invalid",
 				"summary replay source is outside the job scope", repository.ErrSyncReplayStateInvalid)
 		}
+		if !sameIntentDatasets(replay.Request.RequestedDatasets, required[connector.Source(replay.Source)]) {
+			return s.recoveryFailure(ctx, job, "sync.replay_state_invalid",
+				"summary replay datasets differ from the job scope", repository.ErrSyncReplayStateInvalid)
+		}
+		if replay.State == "resolved" {
+			skip[connector.Source(replay.Source)] = true
+			continue
+		}
 		if !canReconcile {
 			return s.recoveryFailure(ctx, job, "sync.replay_unsupported",
 				"summary application cannot reconcile a stored request", repository.ErrSummaryApplicationUnavailable)
+		}
+		if err := s.checkSyncExecution(ctx, job, false); err != nil {
+			return s.pauseSyncExecution(ctx, job, err, false, nil)
 		}
 		applyResult, reconcileErr := reconciler.ReconcileSummary(ctx, replay.Request)
 		if reconcileErr != nil {

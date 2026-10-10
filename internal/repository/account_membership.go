@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -73,8 +74,16 @@ func membershipDomainToRow(membership *domain.AccountMembership) *accountMembers
 }
 
 func (r *accountRepo) ListMemberships(ctx context.Context, accountID domain.ID, page domain.Page) ([]*domain.AccountMembership, string, error) {
+	return r.listMemberships(ctx, accountID, nil, page)
+}
+
+func (r *accountRepo) listMemberships(ctx context.Context, accountID domain.ID,
+	sources []string, page domain.Page) ([]*domain.AccountMembership, string, error) {
 	page.Normalize()
 	q := r.db.WithContext(ctx).Where("account_id = ?", accountID).Order("id DESC")
+	if sources != nil {
+		q = q.Where("source IN ?", sources)
+	}
 	if page.Cursor != "" {
 		q = q.Where("id < ?", page.Cursor)
 	}
@@ -104,11 +113,16 @@ func (r *accountRepo) UpsertMembership(ctx context.Context, membership *domain.A
 	}
 	membership.UpdatedAt = now
 	row := membershipDomainToRow(membership)
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "scope_type"}, {Name: "scope_id"}, {Name: "source_member_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"source_region", "role", "status", "version", "last_synced_at", "error_code", "data", "updated_at",
-		}),
-		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_memberships.version <= EXCLUDED.version"}}},
-	}).Create(row).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWritableAccountTx(tx, membership.AccountID); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "scope_type"}, {Name: "scope_id"}, {Name: "source_member_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"source_region", "role", "status", "version", "last_synced_at", "error_code", "data", "updated_at",
+			}),
+			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_memberships.version <= EXCLUDED.version"}}},
+		}).Create(row).Error
+	})
 }

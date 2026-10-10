@@ -48,59 +48,68 @@ func (s *operationService) authorizeOperationCreate(ctx context.Context, actor s
 }
 
 func (s *operationService) authorizeEffectiveActions(ctx context.Context, actor string, input OperationInput) error {
-	// source.command and replay are generic workflow envelopes. Their
-	// authorization must follow the effect of every step; operation.manage or
-	// audit.replay alone is not permission to smuggle an erase through them.
-	if input.OperationType != "source.command" && input.OperationType != "replay" {
-		return nil
+	permissions, err := operationEffectPermissions(input)
+	if err != nil {
+		return err
 	}
-	seen := make(map[string]struct{}, len(input.Steps))
-	for _, step := range input.Steps {
-		permission := operationActionPermission(step.Action)
-		if permission == "" {
-			return apperr.BadRequest("operation.invalid_action", "operation action is not allow-listed")
-		}
-		// Generic source.command/replay envelopes require the permission implied
-		// by every actual remote effect, including reads/syncs and erases.
-		if _, ok := seen[permission]; ok {
-			continue
-		}
-		seen[permission] = struct{}{}
+	for _, permission := range permissions {
 		if err := s.requireOperationPermission(ctx, actor, permission); err != nil {
 			return err
 		}
-	}
-	if input.OperationType == "source.command" {
-		return s.requireOperationPermission(ctx, actor, domain.PermOperationManage)
 	}
 	return nil
 }
 
 func (s *operationService) prepareOperation(ctx context.Context, actor, tenantID string,
 	input OperationInput) (*domain.Operation, *domain.Operation, error) {
-	if err := validateOperationInput(&input); err != nil {
-		return nil, nil, err
-	}
-	if err := s.authorizeOperationCreate(ctx, actor, input); err != nil {
-		return nil, nil, err
-	}
-	normalizedSteps, err := normalizeOperationDatasetScopes(input.Steps)
+	operation, err := s.prepareOperationCommand(ctx, actor, tenantID, input)
 	if err != nil {
 		return nil, nil, err
 	}
-	input.Steps = normalizedSteps
-	existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, input.IdempotencyKey)
+	existing, err := s.repo.FindByIdempotency(ctx, actor, tenantID, operation.IdempotencyKey)
 	if err == nil {
-		return nil, existing, nil
+		existing, err = reuseOperation(existing, operation.RequestFingerprint)
+		return nil, existing, err
 	}
 	if !isOperationNotFound(err) {
 		return nil, nil, apperr.Internal("operation.idempotency_lookup_failed", "failed to check operation idempotency").Wrap(err)
 	}
-	if err := s.resolveOperationRegion(ctx, tenantID, &input); err != nil {
-		return nil, nil, err
+	return operation, nil, nil
+}
+
+// PrepareOperationCommand shares Create's validation/authorization/normalization
+// without creating a receipt, claiming a lease or contacting any source.
+func (s *operationService) PrepareOperationCommand(ctx context.Context, input OperationInput) (*domain.Operation, error) {
+	actor, err := mustActor(ctx)
+	if err != nil {
+		return nil, err
 	}
-	operation, err := buildOperation(ctx, actor, tenantID, input, s.region)
-	return operation, nil, err
+	tenant, err := mustTenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureOperationWorkersAccepting(); err != nil {
+		return nil, err
+	}
+	return s.prepareOperationCommand(ctx, actor, tenant, input)
+}
+
+func (s *operationService) prepareOperationCommand(ctx context.Context, actor, tenant string, input OperationInput) (*domain.Operation, error) {
+	if err := validateOperationInput(&input); err != nil {
+		return nil, err
+	}
+	if err := s.authorizeOperationCreate(ctx, actor, input); err != nil {
+		return nil, err
+	}
+	steps, err := normalizeOperationDatasetScopes(input.Steps)
+	if err != nil {
+		return nil, err
+	}
+	input.Steps = steps
+	if err := s.resolveOperationRegion(ctx, tenant, &input); err != nil {
+		return nil, err
+	}
+	return buildOperation(ctx, actor, tenant, input, s.region)
 }
 
 func (s *operationService) resolveOperationRegion(ctx context.Context, tenantID string, input *OperationInput) error {
@@ -136,11 +145,13 @@ func buildOperation(ctx context.Context, actor, tenantID string, input Operation
 	if err != nil {
 		return nil, err
 	}
-	return &domain.Operation{ID: idgen.NewID(), ActorUID: actor, AccountID: input.AccountID,
+	operation := &domain.Operation{ID: idgen.NewID(), ActorUID: actor, AccountID: input.AccountID,
 		TenantID: tenantID, RequestID: RequestIDFrom(ctx), HomeRegion: input.HomeRegion,
 		OperationType: input.OperationType, Status: domain.OperationRequested,
 		IdempotencyKey: input.IdempotencyKey, RequestPayload: requestPayload,
-		Result: map[string]any{}, Steps: steps}, nil
+		Result: map[string]any{}, Steps: steps}
+	operation.RequestFingerprint, err = operationFingerprint(ctx, operation)
+	return operation, err
 }
 
 func buildOperationSteps(input OperationInput) ([]*domain.OperationStep, error) {
@@ -167,6 +178,9 @@ func buildOperationStep(operationType string, plan OperationStepInput, keys map[
 	compensation := strings.ToLower(strings.TrimSpace(plan.CompensationAction))
 	if compensation != "" && !allowedOperationAction(compensation) {
 		return nil, apperr.BadRequest("operation.invalid_compensation", "compensation action is not allow-listed")
+	}
+	if err := validateOperationCompensationScope(plan); err != nil {
+		return nil, err
 	}
 	payload, err := normalizeOperationPayload(plan.RequestPayload)
 	if err != nil {

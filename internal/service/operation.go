@@ -60,14 +60,15 @@ type OperationOutcomeReconciler interface {
 }
 
 type operationService struct {
-	repo       repository.OperationRepository
-	accounts   repository.AccountRepository
-	permission PermissionChecker
-	audit      AuditLedgerService
-	runner     OperationRunner
-	region     string
-	metrics    ControlPlaneMetrics
-	workerGate *operationWorkerGate
+	repo                repository.OperationRepository
+	accounts            repository.AccountRepository
+	permission          PermissionChecker
+	executionPermission PermissionChecker
+	audit               AuditLedgerService
+	runner              OperationRunner
+	region              string
+	metrics             ControlPlaneMetrics
+	workerGate          *operationWorkerGate
 }
 
 type OperationOption func(*operationService)
@@ -102,6 +103,11 @@ func WithOperationMetrics(metrics ControlPlaneMetrics) OperationOption {
 
 func WithOperationPermission(checker PermissionChecker) OperationOption {
 	return func(s *operationService) { s.permission = checker }
+}
+
+// Execution checks must use the authority directly, never legacy local fallback.
+func WithOperationExecutionPermission(checker PermissionChecker) OperationOption {
+	return func(s *operationService) { s.executionPermission = checker }
 }
 
 func NewOperationService(repo repository.OperationRepository, opts ...OperationOption) OperationService {
@@ -139,7 +145,7 @@ func (s *operationService) persistCreatedOperation(ctx context.Context, actor st
 	if err := s.createWithAudit(ctx, operation); err != nil {
 		existing, findErr := s.repo.FindByIdempotency(ctx, actor, operation.TenantID, operation.IdempotencyKey)
 		if findErr == nil {
-			return existing, nil
+			return reuseOperation(existing, operation.RequestFingerprint)
 		}
 		if !isOperationNotFound(findErr) {
 			return nil, apperr.Internal("operation.idempotency_lookup_failed", "failed to check operation idempotency").Wrap(findErr)
@@ -228,6 +234,9 @@ func (s *operationService) authorizeRun(ctx context.Context, id domain.ID) (*dom
 		return nil, err
 	}
 	if err := s.requireOperationPermission(ctx, actor, domain.PermOperationManage); err != nil {
+		return nil, err
+	}
+	if err := s.authorizePersistedOperation(ctx, actor, operation); err != nil {
 		return nil, err
 	}
 	if err := requireHomeRegion(ctx, s.accounts, operation.AccountID, s.region); err != nil {

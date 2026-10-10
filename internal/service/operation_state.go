@@ -17,17 +17,20 @@ func (s *operationService) reconcileClaimed(ctx context.Context, operation *doma
 	if operationTerminalForReconcile(operation.Status) {
 		return operation, nil
 	}
-	if hasPendingCompensation(operation.Steps) {
-		if err := s.compensate(ctx, operation, worker); err != nil {
-			return nil, apperr.Internal("operation.compensation_failed", "failed to resume operation compensation").Wrap(err)
-		}
+	if err := s.checkOperationExecution(ctx, operation, nil, false, true, ""); err != nil {
+		return nil, err
+	}
+	var err error
+	operation, err = s.resumeCompensationForReconcile(ctx, operation, worker)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.reconcileForwardSteps(ctx, operation, worker, reconciler); err != nil {
 		return nil, err
 	}
 	if compensationReconciler, ok := s.runner.(OperationCompensationOutcomeReconciler); ok {
 		if err := s.reconcileCompensations(ctx, operation, worker, compensationReconciler); err != nil {
-			return nil, apperr.Internal("operation.compensation_reconcile_failed", "failed to reconcile compensation outcome").Wrap(err)
+			return nil, operationContinuationError(err, "operation.compensation_reconcile_failed", "failed to reconcile compensation outcome")
 		}
 	}
 	// operation.reconciled is a standalone fact with no domain write of its own
@@ -60,15 +63,12 @@ func operationTerminalForReconcile(status domain.OperationStatus) bool {
 func (s *operationService) reconcileForwardSteps(ctx context.Context, operation *domain.Operation, worker string,
 	reconciler OperationOutcomeReconciler) error {
 	for {
-		owner := operationLeaseOwner(worker)
-		claimCtx, claimCancel := operationPersistenceContext(ctx)
-		step, err := s.repo.ClaimUnknownStep(claimCtx, operation.ID, owner, operationLeaseDuration)
-		claimCancel()
+		step, owner, err := s.claimUnknownStepForExecution(ctx, operation, worker)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
 		if err != nil {
-			return apperr.Internal("operation.reconcile_claim_failed", "failed to claim unknown operation step").Wrap(err)
+			return operationContinuationError(err, "operation.reconcile_claim_failed", "failed to claim unknown operation step")
 		}
 		status, sourceOperationID, result, reconcileErr := reconciledStepResult(ctx, reconciler, operation, step)
 		if sourceOperationID == "" {
@@ -129,7 +129,7 @@ func (s *operationService) abortReconciledOperation(ctx context.Context, operati
 		return apperr.Internal("operation.skip_steps_failed", "failed to close skipped operation steps").Wrap(err)
 	}
 	if err := s.compensate(ctx, operation, worker); err != nil {
-		return apperr.Internal("operation.compensation_failed", "failed to run operation compensation").Wrap(err)
+		return operationContinuationError(err, "operation.compensation_failed", "failed to run operation compensation")
 	}
 	return nil
 }

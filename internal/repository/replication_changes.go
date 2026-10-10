@@ -96,6 +96,9 @@ func (r *accountSnapshotRepo) DeleteSnapshot(ctx context.Context, accountID doma
 	dataset domain.AccountDataset) error {
 	var snapshot accountSnapshotRow
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := lockAccountDispositionTx(tx, accountID); err != nil {
+			return err
+		}
 		if err := tx.Where("account_id = ? AND source = ? AND dataset = ?", accountID, source, dataset).First(&snapshot).Error; err != nil {
 			return err
 		}

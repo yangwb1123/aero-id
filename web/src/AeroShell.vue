@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, provide } from "vue";
 import {
   IrisAdminLayout,
+  IrisAlert,
   IrisAvatar,
   IrisBadge,
   IrisButton,
@@ -12,7 +13,13 @@ import {
 import { AeroIdClient } from "./api/aeroId";
 import { useAuth } from "./auth/auth";
 import type { PlatformConfig } from "./config";
-import { useHashRoute } from "./router";
+import { routeDetails, useHashRoute } from "./router";
+import { useAsyncResource } from "./hooks/useAsyncResource";
+import { accountScopeKey } from "./hooks/accountContext";
+import { capabilityContextKey } from "./hooks/capabilityContext";
+import { routeEligibility } from "./capabilityNavigation";
+import PageLoading from "./components/PageLoading.vue";
+import PageError from "./components/PageError.vue";
 import ActivityPage from "./pages/ActivityPage.vue";
 import AdminAccountsPage from "./pages/AdminAccountsPage.vue";
 import AdminGovernancePage from "./pages/AdminGovernancePage.vue";
@@ -35,7 +42,7 @@ const auth = useAuth();
 const { skin, setMode, setSkin } = useSkin();
 const { route, navigate } = useHashRoute("overview");
 
-const menus: NavNode[] = [
+const menuRegistry: NavNode[] = [
   { key: "overview", title: "账户概览", icon: "home" },
   { key: "profile", title: "个人资料", icon: "user" },
   { key: "connections", title: "来源与成员关系", icon: "link" },
@@ -53,15 +60,74 @@ const menus: NavNode[] = [
   { key: "replays", title: "审计 Replay", icon: "clock" },
   { key: "services", title: "平台服务", icon: "grid" },
 ];
-const routeKeys = new Set(menus.map((item) => item.key));
+const routeKeys = new Set(menuRegistry.map((item) => item.key));
+const details = computed(() => routeDetails(route.value));
 const activeRoute = computed({
-  get: () => (routeKeys.has(route.value) ? route.value : "overview"),
+  get: () =>
+    routeKeys.has(details.value.page) ? details.value.page : "overview",
   set: (value: string) => navigate(value),
 });
 const client = new AeroIdClient(
   props.config.aeroIdApiBase,
   () => auth.session?.accessToken ?? "",
 );
+const context = useAsyncResource((signal) => client.getMe(signal));
+const capabilities = useAsyncResource(async (signal) => {
+  const report = await client.getCapabilities(signal);
+  if (
+    report.issuer !== props.config.snaplinkIssuer ||
+    report.client_id !== props.config.snaplinkClientId
+  ) {
+    throw new Error("能力报告与当前登录客户端不一致；不会推断权限");
+  }
+  return report;
+});
+provide(capabilityContextKey, () =>
+  capabilities.error ? undefined : capabilities.data,
+);
+const currentEligibility = computed(() =>
+  routeEligibility(
+    activeRoute.value,
+    capabilities.error ? undefined : capabilities.data,
+  ),
+);
+const menus = computed<NavNode[]>(() =>
+  menuRegistry.map((item) => {
+    const eligibility = routeEligibility(
+      item.key,
+      capabilities.error ? undefined : capabilities.data,
+    );
+    return {
+      ...item,
+      disabled: !eligibility.available,
+      badge: eligibility.reason || undefined,
+    };
+  }),
+);
+provide(accountScopeKey, () => {
+  const account = context.data?.account;
+  if (
+    typeof account?.account_id !== "string" ||
+    typeof account?.tenant_id !== "string"
+  )
+    return undefined;
+  return JSON.stringify([
+    props.config.aeroIdApiBase,
+    props.config.snaplinkIssuer,
+    props.config.snaplinkClientId,
+    account.tenant_id,
+    account.account_id,
+  ]);
+});
+const accountName = computed(
+  () =>
+    context.data?.profile?.display_name ||
+    String(context.data?.account?.canonical_uid ?? "已认证账户"),
+);
+const tenantLabel = computed(() =>
+  String(context.data?.account?.tenant_id ?? "账户上下文加载中"),
+);
+onBeforeUnmount(() => client.cancelPendingReads());
 const pageMap = {
   overview: OverviewPage,
   profile: ProfilePage,
@@ -83,11 +149,14 @@ const pageMap = {
 const pageComponent = computed(
   () => pageMap[activeRoute.value as keyof typeof pageMap],
 );
-const pageProps = computed(() =>
-  activeRoute.value === "services"
-    ? { client, config: props.config }
-    : { client },
-);
+const pageProps = computed(() => {
+  if (activeRoute.value === "services") return { client, config: props.config };
+  if (activeRoute.value === "jobs")
+    return { client, jobId: details.value.jobID };
+  if (activeRoute.value === "operations")
+    return { client, operationId: details.value.operationID };
+  return { client };
+});
 const dark = computed(() => skin.value.type === "dark");
 
 function toggleTheme(): void {
@@ -114,14 +183,46 @@ function toggleTheme(): void {
         >
           <IrisIcon :name="dark ? 'sun' : 'moon'" :size="16" />
         </IrisButton>
-        <IrisAvatar name="Aero User" :size="32" />
+        <IrisBadge :tone="context.error ? 'warning' : 'neutral'">{{
+          context.error ? "账户上下文不可用" : tenantLabel
+        }}</IrisBadge>
+        <IrisAvatar :name="accountName" :size="32" />
         <IrisButton variant="ghost" size="sm" @click="void auth.logout()">
           退出
         </IrisButton>
       </div>
     </template>
     <template #default>
-      <component :is="pageComponent" v-bind="pageProps" />
+      <PageLoading v-if="capabilities.loading" />
+      <PageError
+        v-else-if="capabilities.error"
+        :error="capabilities.error"
+        :retry="capabilities.reload"
+      />
+      <IrisAlert
+        v-else-if="!currentEligibility.available"
+        tone="warning"
+        :title="currentEligibility.reason"
+      >
+        当前页面不可用。能力状态是提示，不是授权凭据；后端每次命令仍重新校验。不要仅修改
+        tenant_id 切换租户。
+        <IrisButton variant="outline" @click="capabilities.reload"
+          >重新查询能力</IrisButton
+        >
+      </IrisAlert>
+      <template v-else>
+        <IrisAlert
+          v-if="capabilities.data?.partial"
+          tone="warning"
+          title="部分能力尚未确认"
+        >
+          权限或投影依赖暂不可用，未知权限不会视为允许。
+          <IrisButton size="sm" variant="ghost" @click="capabilities.reload"
+            >刷新能力</IrisButton
+          >
+        </IrisAlert>
+        <component :is="pageComponent" v-bind="pageProps" />
+      </template>
     </template>
     <template #footer>
       <div class="shell-footer">账户由 aero-id 聚合 · 身份由 Snaplink 验证</div>

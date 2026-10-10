@@ -79,6 +79,9 @@ func (r *accountRepo) updateProfile(ctx context.Context, profile *domain.Account
 	profile.UpdatedAt = now
 	row := profileDomainToRow(profile)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWritableAccountTx(tx, profile.AccountID); err != nil {
+			return err
+		}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "account_id"}},
 			DoUpdates: clause.Assignments(map[string]any{

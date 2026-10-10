@@ -18,11 +18,13 @@ import {
 import type { AeroIdClient } from "../api/aeroId";
 import type { JsonRecord, PageData } from "../types";
 import { useAsyncResource } from "../hooks/useAsyncResource";
+import { useTaskPolling } from "../hooks/useTaskPolling";
 import { mergePage } from "./table";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
 import { safeJsonPreview } from "./safeJsonPreview";
+import { taskHref } from "../router";
 import {
   loadOperationReconcileKey,
   operationRunIdempotencyKey,
@@ -64,11 +66,11 @@ function auditVariant(action: string): IrisTimelineVariant {
   if (/(complet|succeed|deliver)/i.test(action)) return "success";
   return "info";
 }
-const resource = useAsyncResource(() =>
-  props.client.getOperation(props.operationId),
+const resource = useAsyncResource((signal) =>
+  props.client.getOperation(props.operationId, signal),
 );
-const auditResource = useAsyncResource(() =>
-  props.client.listOperationAudit(props.operationId),
+const auditResource = useAsyncResource((signal) =>
+  props.client.listOperationAudit(props.operationId, undefined, signal),
 );
 const auditPage = ref<PageData<JsonRecord>>({ items: [] });
 const consumedAuditCursors = new Set<string>();
@@ -80,6 +82,10 @@ const runningOperation = ref(false);
 const runPending = ref(false);
 const runConfirmation = ref("");
 const actionError = ref<Error>();
+const polling = useTaskPolling(() => resource.data?.status, resource.refresh, {
+  blocked: () =>
+    Boolean(resource.error) || reconciling.value || runningOperation.value,
+});
 watch(
   () => auditResource.data,
   (value) => {
@@ -217,6 +223,18 @@ const steps = computed(() => records(resource.data?.steps));
         ><div class="detail-actions">
           <IrisButton size="sm" variant="ghost" @click="emit('close')"
             >关闭</IrisButton
+          >
+          <a
+            v-if="taskHref('operations', operationId)"
+            :href="taskHref('operations', operationId)"
+            >详情永久链接</a
+          >
+          <IrisButton
+            size="sm"
+            variant="ghost"
+            :disabled="reconciling || runningOperation"
+            @click="resource.reload"
+            >刷新状态</IrisButton
           ><IrisButton
             v-if="
               ['requested', 'waiting'].includes(String(resource.data.status))
@@ -243,6 +261,14 @@ const steps = computed(() => records(resource.data?.steps));
       <IrisAlert v-if="actionError" tone="danger">{{
         actionError.message
       }}</IrisAlert>
+      <IrisAlert
+        v-if="polling.exhausted"
+        tone="warning"
+        title="自动刷新已达预算"
+      >
+        请手动刷新。自动状态查询不运行、不重试、不对账命令；投影可见性与
+        Operation 完成是独立状态。
+      </IrisAlert>
       <IrisAlert
         v-if="resource.data.status === 'unknown'"
         tone="warning"

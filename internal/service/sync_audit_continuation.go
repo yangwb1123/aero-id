@@ -63,7 +63,11 @@ func (s *syncJobService) auditExportStartCursor(ctx context.Context, job *domain
 	if job == nil || job.Request == nil {
 		return "", nil
 	}
-	raw, ok := job.Request[auditExportContinuationRequestKey].(string)
+	value, present := job.Request[auditExportContinuationRequestKey]
+	if !present {
+		return "", nil
+	}
+	raw, ok := value.(string)
 	if !ok || strings.TrimSpace(raw) == "" {
 		return "", apperr.Internal("audit_export.invalid_continuation", "audit export continuation state is invalid")
 	}

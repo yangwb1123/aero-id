@@ -82,8 +82,15 @@ func sourceDomainToRow(source *domain.AccountSource) *accountSourceRow {
 }
 
 func (r *accountRepo) ListSources(ctx context.Context, accountID domain.ID, page domain.Page) ([]*domain.AccountSource, string, error) {
+	return r.listSources(ctx, accountID, nil, page)
+}
+
+func (r *accountRepo) listSources(ctx context.Context, accountID domain.ID, sources []string, page domain.Page) ([]*domain.AccountSource, string, error) {
 	page.Normalize()
 	q := r.db.WithContext(ctx).Where("account_id = ?", accountID).Order("id DESC")
+	if sources != nil {
+		q = q.Where("source IN ?", sources)
+	}
 	if page.Cursor != "" {
 		q = q.Where("id < ?", page.Cursor)
 	}
@@ -113,13 +120,18 @@ func (r *accountRepo) UpsertSource(ctx context.Context, source *domain.AccountSo
 	}
 	source.UpdatedAt = now
 	row := sourceDomainToRow(source)
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "source_account_id"}, {Name: "scope_type"}, {Name: "scope_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"source_region", "status", "version", "generated_at", "last_synced_at", "error_code", "data", "updated_at",
-		}),
-		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_sources.version <= EXCLUDED.version"}}},
-	}).Create(row).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWritableAccountTx(tx, source.AccountID); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "source_account_id"}, {Name: "scope_type"}, {Name: "scope_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"source_region", "status", "version", "generated_at", "last_synced_at", "error_code", "data", "updated_at",
+			}),
+			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_sources.version <= EXCLUDED.version"}}},
+		}).Create(row).Error
+	})
 }
 
 func (r *accountRepo) MarkMissingReferences(ctx context.Context, accountID domain.ID, source string,
@@ -128,6 +140,9 @@ func (r *accountRepo) MarkMissingReferences(ctx context.Context, accountID domai
 		return nil
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWritableAccountTx(tx, accountID); err != nil {
+			return err
+		}
 		if err := markMissingSources(tx, accountID, source, compactSources(returnedSources), version); err != nil {
 			return err
 		}

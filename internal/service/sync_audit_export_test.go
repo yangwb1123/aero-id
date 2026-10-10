@@ -147,19 +147,22 @@ func (r *pagedAuditLedgerRepo) List(_ context.Context, filter domain.AuditFactFi
 func newAuditExportService(facts []*domain.AuditFact, store storage.FileStorage) *syncJobService {
 	key := sha256.Sum256([]byte("test-export-key"))
 	svc := &syncJobService{
-		repo:        &minimalSyncJobRepo{},
-		auditLedger: &fakeAuditLedgerRepo{facts: facts},
-		store:       store,
-		exportKey:   key[:],
-		exportTTL:   time.Hour,
-		maxExport:   1 << 20,
-		region:      "local",
+		repo:                &minimalSyncJobRepo{},
+		accountRepo:         syncFixtureAccount{region: "local"},
+		executionPermission: allowAllPermissions{},
+		auditLedger:         &fakeAuditLedgerRepo{facts: facts},
+		store:               store,
+		exportKey:           key[:],
+		exportTTL:           time.Hour,
+		maxExport:           1 << 20,
+		region:              "local",
 	}
 	return svc
 }
 
 // minimalSyncJobRepo records finished jobs for the export tests.
 type minimalSyncJobRepo struct {
+	syncTestExecutionPorts
 	finished map[domain.ID]*domain.SyncJob
 }
 
@@ -328,7 +331,11 @@ func TestAuditExport_DownloadExpiryAcceptsTimeValueAndFailsClosed(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result.Result["expires_at"] = time.Now().UTC().Add(time.Hour)
+	expires, ok := exportExpiry(result.Result["expires_at"])
+	if !ok {
+		t.Fatal("export did not preserve an expiry")
+	}
+	result.Result["expires_at"] = expires
 	completed := &domain.SyncJob{ID: job.ID, TenantID: job.TenantID, ActorUID: job.ActorUID,
 		JobType: job.JobType, Status: result.Status, Result: result.Result}
 	svc.repo.(*minimalSyncJobRepo).SeedJob(completed)

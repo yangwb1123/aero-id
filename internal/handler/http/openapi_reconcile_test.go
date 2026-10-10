@@ -22,13 +22,16 @@ type route struct {
 // invariants in this file (M1..M4) keep manifest <-> router <-> spec aligned
 // in both directions; deleting an entry makes at least one assertion fail.
 //
-// Coverage arithmetic: 38 documented operations (after the REQ-7 replay
-// reconciliation) + 22 previously-undocumented served control-plane routes
-// (direction b) = 60 entries.
+// Coverage arithmetic: 42 documented operations (including capabilities/intents)
+// + 22 previously-undocumented served control-plane routes (direction b) = 64 entries.
 var routeManifest = []route{
 	// -- documented client contract (spec operations) --
 	{method: "GET", path: "/account-datasets"},
 	{method: "GET", path: "/me"},
+	{method: "GET", path: "/me/capabilities"},
+	{method: "POST", path: "/command-intents"},
+	{method: "GET", path: "/command-intents/{id}"},
+	{method: "POST", path: "/command-intents/{id}/execute"},
 	{method: "GET", path: "/me/profile"},
 	{method: "PATCH", path: "/me/profile"},
 	{method: "GET", path: "/me/sources"},
@@ -69,28 +72,28 @@ var routeManifest = []route{
 	{method: "POST", path: "/admin/callback-subscriptions/deliveries/{id}/replay"},
 	// -- control-plane routes served but undocumented until the spec additions
 	// (direction b; each is registered in the handlers listed) --
-	{method: "GET", path: "/me/resources"},                                        // aggregation.go:26
-	{method: "GET", path: "/admin/accounts"},                                      // account.go:47
-	{method: "GET", path: "/admin/accounts/{id}"},                                 // account.go:48
-	{method: "POST", path: "/admin/accounts/backfill/legacy-identities"},          // account.go:56
-	{method: "POST", path: "/admin/migration/legacy/compare"},                     // account.go:74 (cond. migration)
-	{method: "GET", path: "/admin/migration/legacy/cutover/{tenant_id}"},          // account.go:83 (cond. cutover)
-	{method: "POST", path: "/admin/migration/legacy/cutover"},                     // account.go:84 (cond. cutover)
+	{method: "GET", path: "/me/resources"},                                         // aggregation.go:26
+	{method: "GET", path: "/admin/accounts"},                                       // account.go:47
+	{method: "GET", path: "/admin/accounts/{id}"},                                  // account.go:48
+	{method: "POST", path: "/admin/accounts/backfill/legacy-identities"},           // account.go:56
+	{method: "POST", path: "/admin/migration/legacy/compare"},                      // account.go:74 (cond. migration)
+	{method: "GET", path: "/admin/migration/legacy/cutover/{tenant_id}"},           // account.go:83 (cond. cutover)
+	{method: "POST", path: "/admin/migration/legacy/cutover"},                      // account.go:84 (cond. cutover)
 	{method: "GET", path: "/admin/migration/legacy/cleanup-readiness/{tenant_id}"}, // account.go:85 (cond. cutover)
-	{method: "GET", path: "/admin/accounts/{id}/overview"},                        // aggregation.go:34
-	{method: "GET", path: "/admin/accounts/{id}/data"},                            // aggregation.go:35
-	{method: "POST", path: "/admin/accounts/{id}/sync"},                           // sync_job.go:31
-	{method: "POST", path: "/admin/accounts/{id}/export"},                         // sync_job.go:33
-	{method: "POST", path: "/admin/accounts/{id}/erase"},                          // sync_job.go:35
-	{method: "GET", path: "/admin/audit-log"},                                     // admin.go:56
-	{method: "GET", path: "/admin/roles"},                                         // admin.go:57
-	{method: "GET", path: "/admin/roles/{uid}"},                                   // admin.go:58
-	{method: "POST", path: "/admin/roles/grant"},                                  // admin.go:65
-	{method: "POST", path: "/admin/roles/revoke"},                                 // admin.go:66
-	{method: "POST", path: "/admin/bans"},                                         // admin.go:74 (cond. bans)
-	{method: "GET", path: "/admin/bans"},                                          // admin.go:75 (cond. bans)
-	{method: "DELETE", path: "/admin/bans/{uid}"},                                 // admin.go:76 (cond. bans)
-	{method: "GET", path: "/audit/verify"},                                        // audit_ledger.go:44
+	{method: "GET", path: "/admin/accounts/{id}/overview"},                         // aggregation.go:34
+	{method: "GET", path: "/admin/accounts/{id}/data"},                             // aggregation.go:35
+	{method: "POST", path: "/admin/accounts/{id}/sync"},                            // sync_job.go:31
+	{method: "POST", path: "/admin/accounts/{id}/export"},                          // sync_job.go:33
+	{method: "POST", path: "/admin/accounts/{id}/erase"},                           // sync_job.go:35
+	{method: "GET", path: "/admin/audit-log"},                                      // admin.go:56
+	{method: "GET", path: "/admin/roles"},                                          // admin.go:57
+	{method: "GET", path: "/admin/roles/{uid}"},                                    // admin.go:58
+	{method: "POST", path: "/admin/roles/grant"},                                   // admin.go:65
+	{method: "POST", path: "/admin/roles/revoke"},                                  // admin.go:66
+	{method: "POST", path: "/admin/bans"},                                          // admin.go:74 (cond. bans)
+	{method: "GET", path: "/admin/bans"},                                           // admin.go:75 (cond. bans)
+	{method: "DELETE", path: "/admin/bans/{uid}"},                                  // admin.go:76 (cond. bans)
+	{method: "GET", path: "/audit/verify"},                                         // audit_ledger.go:44
 }
 
 // ---------------------------------------------------------------------------

@@ -25,9 +25,7 @@ func lockSummaryRowsTx(tx *gorm.DB, accountID domain.ID, source string) error {
 }
 
 func lockSummaryAccountTx(tx *gorm.DB, accountID domain.ID) error {
-	var row accountRow
-	return tx.Model(&accountRow{}).Select("id").Where("id = ?", accountID).
-		Clauses(clause.Locking{Strength: "UPDATE"}).Take(&row).Error
+	return lockWritableAccountTx(tx, accountID)
 }
 
 func lockSummarySnapshotsTx(tx *gorm.DB, accountID domain.ID, source string) error {

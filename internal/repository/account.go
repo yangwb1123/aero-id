@@ -118,10 +118,17 @@ func (r *accountRepo) EraseAccount(ctx context.Context, tenantID string, id doma
 
 func (r *accountRepo) EraseAccountWithSyncJobLease(ctx context.Context, tenantID string, id, jobID domain.ID, worker string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		account, err := lockAccountDispositionTx(tx, id)
+		if err != nil {
+			return err
+		}
+		if account.TenantID != tenantID {
+			return gorm.ErrRecordNotFound
+		}
 		var lease struct{ ID uuid.UUID }
 		locked := tx.Table("sync_jobs").Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
-			Where("id = ? AND status = ? AND lease_owner = ? AND lease_until > clock_timestamp()", jobID,
-				string(domain.SyncJobRunning), worker).First(&lease)
+			Where("id = ? AND account_id = ? AND tenant_id = ? AND status = ? AND lease_owner = ? AND lease_until > clock_timestamp()", jobID,
+				id, tenantID, string(domain.SyncJobRunning), worker).First(&lease)
 		if errors.Is(locked.Error, gorm.ErrRecordNotFound) {
 			return ErrSyncJobLeaseLost
 		}
@@ -133,21 +140,36 @@ func (r *accountRepo) EraseAccountWithSyncJobLease(ctx context.Context, tenantID
 }
 
 func eraseAccountTx(tx *gorm.DB, tenantID string, id domain.ID) error {
-	if result := tx.Model(&accountRow{}).Where("tenant_id = ? AND id = ?", tenantID, id).Updates(map[string]any{
-		"status": string(domain.AccountErased), "canonical_uid": "erased:" + id.String(), "updated_at": time.Now().UTC(),
-	}); result.Error != nil {
-		return result.Error
-	} else if result.RowsAffected == 0 {
+	account, err := lockAccountDispositionTx(tx, id)
+	if err != nil {
+		return err
+	}
+	if account.TenantID != tenantID {
 		return gorm.ErrRecordNotFound
 	}
-	if err := tx.Model(&accountProfileRow{}).Where("account_id = ?", id).Updates(map[string]any{
-		"display_name": "", "avatar_url": "", "locale": "", "preferences": datatypes.JSONMap{}, "updated_at": time.Now().UTC(),
+	if account.Status == string(domain.AccountErased) {
+		return nil
+	}
+	now := time.Now().UTC()
+	marker := "erased:" + id.String()
+	if err := tx.Model(&accountRow{}).Where("id = ?", id).Updates(map[string]any{
+		"status": string(domain.AccountErased), "canonical_uid": marker, "updated_at": now,
 	}).Error; err != nil {
 		return err
 	}
-	return tx.Model(&accountSnapshotRow{}).Where("account_id = ?", id).Updates(map[string]any{
-		"status": string(domain.SnapshotUnavailable), "data": datatypes.JSONMap{}, "error_code": "account.erased", "updated_at": time.Now().UTC(),
-	}).Error
+	if err := tx.Model(&accountIdentityRow{}).Where("account_id = ?", id).
+		Update("canonical_uid", marker).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&accountProfileRow{}).Where("account_id = ?", id).Updates(map[string]any{
+		"display_name": "", "avatar_url": "", "locale": "", "timezone": "", "preferences": datatypes.JSONMap{}, "updated_at": now,
+	}).Error; err != nil {
+		return err
+	}
+	if err := eraseAccountReferencesTx(tx, id, now); err != nil {
+		return err
+	}
+	return eraseAccountSnapshotsTx(tx, id, now)
 }
 
 func (r *accountRepo) ListAccounts(ctx context.Context, filter AccountListFilter) ([]*domain.Account, string, error) {

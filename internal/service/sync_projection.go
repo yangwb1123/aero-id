@@ -24,6 +24,9 @@ func syncSummaryStatus(summary *connector.Summary) (string, bool) {
 }
 
 func summaryPersistenceStatus(err error) (string, string, bool) {
+	if errors.Is(err, repository.ErrAccountErased) {
+		return "erased", "account.erased", false
+	}
 	var summaryErr *repository.SummaryApplicationError
 	if errors.As(err, &summaryErr) && summaryErr.Kind == repository.SummaryApplyCommitUnknown {
 		return "unknown", "projection.commit_unknown", true
@@ -56,17 +59,10 @@ func (s *syncJobService) persistSyncSummary(ctx context.Context, job *domain.Syn
 			return &repository.SummaryApplicationError{Kind: repository.SummaryApplyCommitUnknown, Cause: err}
 		}
 	}
-	_, err := s.application.ApplySummary(ctx, request)
-	if err != nil {
-		var applyErr *repository.SummaryApplicationError
-		if hasRecovery && errors.As(err, &applyErr) && applyErr.Kind == repository.SummaryApplyCommitUnknown {
-			if stateRepo, stateOK := s.repo.(repository.SummaryReplayStateRepository); stateOK {
-				markCtx := syncRecoveryContext(ctx, job.LeaseOwner)
-				if stateErr := stateRepo.MarkSummaryReplayUnknown(markCtx, job.ID, string(source), job.Attempt); stateErr != nil {
-					return errors.Join(err, stateErr)
-				}
-			}
-		}
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return err
+	}
+	if err := s.applySyncSummary(ctx, job, request, hasRecovery); err != nil {
 		return err
 	}
 	if hasRecovery {
@@ -83,6 +79,20 @@ func (s *syncJobService) persistSyncSummary(ctx context.Context, job *domain.Syn
 		}
 	}
 	return nil
+}
+
+func (s *syncJobService) applySyncSummary(ctx context.Context, job *domain.SyncJob, request domain.SummaryApplicationRequest, hasRecovery bool) error {
+	_, err := s.application.ApplySummary(ctx, request)
+	var applyErr *repository.SummaryApplicationError
+	if hasRecovery && errors.As(err, &applyErr) && applyErr.Kind == repository.SummaryApplyCommitUnknown {
+		if stateRepo, ok := s.repo.(repository.SummaryReplayStateRepository); ok {
+			markCtx := syncRecoveryContext(ctx, job.LeaseOwner)
+			if stateErr := stateRepo.MarkSummaryReplayUnknown(markCtx, job.ID, request.Source, job.Attempt); stateErr != nil {
+				return errors.Join(err, stateErr)
+			}
+		}
+	}
+	return err
 }
 
 func summaryApplicationRequest(job *domain.SyncJob, account *domain.Account, source connector.Source,

@@ -293,6 +293,9 @@ func (s *accountService) requirePermission(ctx context.Context, permission strin
 }
 
 func mapAccountError(err error, code, message string) error {
+	if errors.Is(err, repository.ErrAccountErased) {
+		return apperr.Forbidden("account.erased", "account is erased")
+	}
 	if errors.Is(err, repository.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
 		return apperr.NotFound(code, message).Wrap(err)
 	}

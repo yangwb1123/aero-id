@@ -69,6 +69,14 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 		_ = sqlDB.Close()
 		return nil, err
 	}
+	if err := migrate.VerifyCommandRequestBinding(gdb); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+	if err := migrate.VerifyCommandIntents(gdb); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 	store, downloader, err := buildStorage(ctx, cfg)
 	if err != nil {
 		return nil, err

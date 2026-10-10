@@ -84,6 +84,9 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
 			"erase job requires a non-empty valid dataset scope", job.Result, scopeErr)
 	}
+	if err := s.checkSyncExecution(ctx, job, true); err != nil {
+		return s.pauseSyncExecution(ctx, job, err, false, nil)
+	}
 	result := cloneSyncResult(job.Result)
 	sources := syncResultSources(result)
 	if durableSources, durableErr := s.durableEraseSources(ctx, job, required); durableErr != nil {
@@ -133,6 +136,7 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 		sourceResult      map[string]any
 		reconcileErr      error
 		checkpointErr     error
+		blocked           bool
 	}
 	pending := make(chan sourceReconcileResult, len(sources))
 	var wait sync.WaitGroup
@@ -145,6 +149,10 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 		go func(source string, value map[string]any) {
 			defer wait.Done()
 			status, sourceOperationID, sourceResult, reconcileErr := s.reconcileEraseSource(ctx, account, job, source, value)
+			if isSyncExecutionBlocked(reconcileErr) {
+				pending <- sourceReconcileResult{source: source, reconcileErr: reconcileErr, blocked: true}
+				return
+			}
 			if reconcileErr != nil {
 				if isUnknownRemote(reconcileErr) {
 					status = "unknown"
@@ -165,7 +173,12 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 	}
 	wait.Wait()
 	close(pending)
+	var blocked error
 	for reconciled := range pending {
+		if reconciled.blocked {
+			blocked = reconciled.reconcileErr
+			continue
+		}
 		if reconciled.checkpointErr != nil {
 			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "erase.outcome_checkpoint_failed", "source erase outcome could not be recorded", result)
 		}
@@ -186,9 +199,15 @@ func (s *syncJobService) reconcileErase(ctx context.Context, job *domain.SyncJob
 			failures++
 		}
 	}
+	if blocked != nil {
+		return s.pauseSyncExecution(ctx, job, blocked, false, result)
+	}
 	result["reconciled_at"] = time.Now().UTC()
 	status, code, message := eraseReconcileStatus(unknown, failures)
 	if status == domain.SyncJobCompleted {
+		if err := s.checkSyncExecution(ctx, job, true); err != nil {
+			return s.pauseSyncExecution(ctx, job, err, false, result)
+		}
 		persistCtx, persistCancel := syncPersistenceContext(ctx)
 		err := s.eraseAccountWithLease(persistCtx, job)
 		persistCancel()
@@ -218,6 +237,9 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 	// while the six-minute job lease is being held.
 	remoteCtx, remoteCancel := syncRemoteContext(ctx)
 	defer remoteCancel()
+	if err := s.checkSyncExecution(remoteCtx, job, false); err != nil {
+		return "unknown", existingOperationID, nil, err
+	}
 	result, err := statusClient.OperationStatus(remoteCtx, connector.OperationStatusRequest{
 		AccountID: account.ID, CanonicalUID: account.CanonicalUID, ActorUID: job.ActorUID, TenantID: job.TenantID,
 		RequestID: job.RequestID, Region: account.HomeRegion, OperationID: job.ID.String(), SourceOperationID: existingOperationID,
@@ -253,6 +275,9 @@ func (s *syncJobService) reconcileEraseSource(ctx context.Context, account *doma
 		command, ok := client.(connector.CommandConnector)
 		if !ok {
 			return "unknown", operationID, nil, remoteUnknownError(source, "source.command_not_configured")
+		}
+		if err := s.checkSyncExecution(remoteCtx, job, false); err != nil {
+			return "unknown", operationID, result.Result, err
 		}
 		retried, retryErr := command.Erase(remoteCtx, eraseRequestForJob(account, job, sourceType, requiredDatasetsForOutcome(job, source)))
 		retriedOperationID, retryCorrelated := trustedSyncEraseSourceOperationID(sourceType, job.ID.String(), operationID, retried)

@@ -50,6 +50,7 @@ const (
 	quarantineEnvelope         = "envelope_validation"
 	quarantineResidency        = "residency"
 	quarantineProjection       = "projection"
+	quarantineLifecycle        = "lifecycle"
 )
 
 type eventIngestService struct {
@@ -175,16 +176,16 @@ func (s *eventIngestService) apply(ctx context.Context, envelope *event.Envelope
 	if err != nil {
 		return nil, mapEventApplyError(err)
 	}
-	s.metrics.ObserveEventApplied(string(mutation.Dataset))
+	s.observeEventOutcome(envelope, mutation, result)
 	if result.Status == "" {
 		return nil, apperr.Internal("event.apply_failed", "event apply returned empty status")
 	}
 	if !atomicAudit && s.audit != nil {
-		if err := s.recordAudit(ctx, envelope, mutation, string(result.Status)); err != nil {
+		if err := s.recordEventOutcomeAudit(ctx, envelope, mutation, result); err != nil {
 			return nil, apperr.Internal("event.audit_failed", "failed to record event audit").Wrap(err)
 		}
 	}
-	return &EventIngestResult{EventID: envelope.EventID.String(), Status: string(result.Status)}, nil
+	return &EventIngestResult{EventID: envelope.EventID.String(), Status: string(result.Status), ErrorCode: result.ErrorCode}, nil
 }
 
 func (s *eventIngestService) regionAllowed(sourceRegion string) bool {
@@ -383,7 +384,7 @@ func detailsForStage(details repository.EventQuarantineDetails, stage string) re
 
 func quarantineStage(stage string) string {
 	switch stage {
-	case quarantineCanonicalization, quarantineEnvelope, quarantineResidency, quarantineProjection:
+	case quarantineCanonicalization, quarantineEnvelope, quarantineResidency, quarantineProjection, quarantineLifecycle:
 		return stage
 	default:
 		return quarantineEnvelope
@@ -398,6 +399,8 @@ func deterministicQuarantineError(code string) error {
 	switch code {
 	case "event.region_not_allowed":
 		return apperr.Forbidden(code, "event source region violates residency policy")
+	case "event.account_erased":
+		return apperr.Forbidden(code, "event target data is erased")
 	case "event.invalid_projection":
 		return apperr.BadRequest(code, "event cannot update an approved projection")
 	default:

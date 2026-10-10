@@ -228,9 +228,13 @@ func syncCorrelationReconcileFixture(t *testing.T, result *connector.CommandResu
 	svc := &syncJobService{connectors: map[connector.Source]connector.Connector{
 		connector.SourceSnaplink: fake,
 	}}
-	job := &domain.SyncJob{ID: syncCorrelationJobID(t), ActorUID: "actor-1", TenantID: "tenant-1",
+	job := &domain.SyncJob{ID: syncCorrelationJobID(t), AccountID: domain.ID{1}, JobType: domain.SyncJobErase, ActorUID: "actor-1", TenantID: "tenant-1",
 		RequestID: "request-1", IdempotencyKey: "idem-1"}
-	account := &domain.Account{ID: domain.ID{1}, CanonicalUID: "uid-1", HomeRegion: "region-1"}
+	account := &domain.Account{ID: domain.ID{1}, TenantID: job.TenantID, CanonicalUID: "uid-1", HomeRegion: "region-1"}
+	svc.region = "region-1"
+	svc.accountRepo = syncFixtureAccount{region: svc.region}
+	svc.executionPermission = allowAllPermissions{}
+	svc.repo = &minimalSyncJobRepo{}
 	return svc, fake, account, job
 }
 

@@ -13,6 +13,65 @@ servers:
 security:
   - snaplinkBearer: []
 paths:
+  /command-intents:
+    post:
+      operationId: prepareCommandIntent
+      description: >-
+        Persist a five-minute server-owned normalized preview without source calls or execution.
+        Requires verified claims and explicit datasets for sync/export/erase. Local metadata
+        versions and writer fencing are not source ACLs or causal watermarks.
+      parameters:
+        - {$ref: '#/components/parameters/RequiredIdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CommandIntentRequest'}}}
+      responses:
+        '201': {$ref: '#/components/responses/CommandIntent'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /command-intents/{id}:
+    get:
+      operationId: getCommandIntent
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      description: Caller/issuer/subject/client/tenant scoped; never an authorization grant.
+      responses:
+        '200': {$ref: '#/components/responses/CommandIntent'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /command-intents/{id}/execute:
+    post:
+      operationId: executeCommandIntent
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+      description: >-
+        Reauthorize and replan the persisted request. Compare current local metadata,
+        version and expiry in the same transaction as the existing Operation/Sync receipt
+        and audit. Confirmed retries return that receipt; no automatic run or rollback.
+        Snaplink policy versions and source resource ACL versions remain unsupported/unknown.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, confirmation_digest]
+              properties:
+                version: {type: integer, format: int64, minimum: 1}
+                confirmation_digest: {type: string, pattern: '^v1:[0-9a-f]{64}$'}
+      responses:
+        '200': {$ref: '#/components/responses/CommandIntent'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /account-datasets:
     get:
       operationId: listAccountDatasets
@@ -29,6 +88,21 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /me/capabilities:
+    get:
+      operationId: getMyCapabilities
+      description: >-
+        Content-free control-plane eligibility and local projection freshness.
+        No source fan-out, no source resource authorization grant. Snaplink Check
+        currently has no policy version; commands always reauthorize. Errors in
+        permission/projection dependencies produce redacted unknown/partial states.
+      responses:
+        '200':
+          description: Verified caller-scoped capability report; Cache-Control no-store.
+          content: {application/json: {schema: {$ref: '#/components/schemas/CapabilityEnvelope'}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
   /me/sources:
     get:
@@ -819,6 +893,9 @@ components:
     TenantID: {name: tenant_id, in: path, required: true, schema: {type: string}}
     UID: {name: uid, in: path, required: true, schema: {type: string}}
   responses:
+    CommandIntent:
+      description: Server-owned preview/execution receipt; Cache-Control no-store.
+      content: {application/json: {schema: {$ref: '#/components/schemas/CommandIntentEnvelope'}}}
     Error:
       description: Stable application error.
       content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
@@ -847,6 +924,123 @@ components:
       description: Keyset-paginated operation list.
       content: {application/json: {schema: {$ref: '#/components/schemas/OperationListEnvelope'}}}
   schemas:
+    CommandIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [plan]
+      properties:
+        account_id: {type: string, format: uuid}
+        plan: {$ref: '#/components/schemas/CommandPlan'}
+    CommandPlan:
+      type: object
+      additionalProperties: false
+      required: [kind, datasets]
+      properties:
+        kind: {type: string, enum: [sync, export, erase, operation]}
+        datasets: {type: array, maxItems: 11, uniqueItems: true, items: {type: string}}
+        operation_type: {type: string, enum: [sync, erase, source.command, replay]}
+        request_payload: {type: object}
+        steps:
+          type: array
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [step_key, source, action]
+            properties:
+              step_key: {type: string, minLength: 1, maxLength: 128}
+              source: {type: string, enum: [snaplink, aero-im, aero-vault]}
+              action: {type: string, enum: [sync, summary, source.summary, erase, delete, source.erase]}
+              compensation_action: {type: string, enum: [sync, summary, source.summary, erase, delete, source.erase]}
+              request_payload: {type: object}
+    CommandIntentEnvelope:
+      type: object
+      required: [data]
+      properties: {data: {$ref: '#/components/schemas/CommandIntent'}}
+    CommandIntent:
+      type: object
+      required: [intent_id, schema_version, account_id, tenant_id, client_id, issuer, version, status, plan,
+        preconditions, confirmation_digest, destructive, authorization_version, resource_authorization, created_at, expires_at]
+      properties:
+        intent_id: {type: string, format: uuid}
+        schema_version: {type: integer, const: 1}
+        account_id: {type: string, format: uuid}
+        tenant_id: {type: string}
+        client_id: {type: string}
+        issuer: {type: string}
+        version: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [prepared, executed]}
+        plan: {$ref: '#/components/schemas/CommandPlan'}
+        preconditions:
+          type: object
+          description: Local metadata only; captured absence is not source deletion authority.
+          required: [account_status, home_region, writer_epoch, resolver_version, snapshots]
+          properties:
+            account_status: {type: string, enum: [active, suspended, erased]}
+            home_region: {type: string}
+            writer_epoch: {type: integer, format: int64, minimum: 0}
+            resolver_version: {type: string}
+            snapshots: {type: array, maxItems: 11, items: {type: object}}
+        confirmation_digest: {type: string, pattern: '^v1:[0-9a-f]{64}$'}
+        destructive: {type: boolean}
+        authorization_version: {type: string, enum: [unsupported]}
+        resource_authorization: {type: string, enum: [unknown]}
+        receipt_kind: {type: string, enum: [sync_job, operation]}
+        receipt_id: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+    CapabilityEnvelope:
+      type: object
+      required: [data]
+      properties: {data: {$ref: '#/components/schemas/CapabilityReport'}}
+    AccessState: {type: string, enum: [allowed, denied, unknown]}
+    Capability:
+      type: object
+      additionalProperties: false
+      required: [name, registered, enabled, authorization, authorization_scope, available]
+      properties:
+        name: {type: string}
+        registered: {type: boolean}
+        enabled: {type: boolean}
+        authorization: {$ref: '#/components/schemas/AccessState'}
+        authorization_scope: {type: string, enum: [self, global]}
+        available: {type: boolean}
+        reason_code: {type: string}
+    DatasetCapability:
+      type: object
+      additionalProperties: false
+      required: [name, source, pii, registered, enabled, authorization, resource_authorization, status, fresh, version]
+      properties:
+        name: {type: string}
+        source: {type: string, enum: [snaplink, aero-im, aero-vault]}
+        pii: {type: boolean}
+        registered: {type: boolean}
+        enabled: {type: boolean}
+        authorization: {$ref: '#/components/schemas/AccessState'}
+        resource_authorization: {type: string, enum: [unknown], description: Always rechecked at the source; never inferred from this report.}
+        status: {type: string, enum: [fresh, stale, unavailable, unknown]}
+        fresh: {type: boolean}
+        version: {type: integer, format: int64}
+        generated_at: {type: string, format: date-time}
+        last_synced_at: {type: string, format: date-time}
+        reason_code: {type: string}
+    CapabilityReport:
+      type: object
+      additionalProperties: false
+      required: [schema_version, account_id, tenant_id, client_id, issuer, home_region, local_region, generated_at, authorization_version, partial, capabilities, datasets]
+      properties:
+        schema_version: {type: integer, const: 1}
+        account_id: {type: string, format: uuid}
+        tenant_id: {type: string}
+        client_id: {type: string}
+        issuer: {type: string}
+        home_region: {type: string}
+        local_region: {type: string}
+        generated_at: {type: string, format: date-time}
+        authorization_version: {type: string, enum: [unsupported]}
+        partial: {type: boolean}
+        capabilities: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/Capability'}}
+        datasets: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/DatasetCapability'}}
     ErrorEnvelope:
       type: object
       required: [error]

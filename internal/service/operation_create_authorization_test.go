@@ -61,11 +61,20 @@ func TestOperationCreateReauthorizesBeforeIdempotencyLookup(t *testing.T) {
 
 func TestOperationCreateReturnsExistingAfterReauthorization(t *testing.T) {
 	accountID := idgen.NewID()
-	existing := &domain.Operation{ID: idgen.NewID(), AccountID: accountID}
+	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-a"})
+	input := replayOperationInput(accountID)
+	var err error
+	input.Steps, err = normalizeOperationDatasetScopes(input.Steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := buildOperation(ctx, "admin-1", "tenant-a", input, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	repo := &operationAuthorizationRepo{existing: existing}
 	permission := &operationAuthorizationPermission{allowed: true}
 	service := NewOperationService(repo, WithOperationPermission(permission))
-	ctx := WithIdentity(t.Context(), &domain.TokenIdentity{UID: "admin-1", TenantID: "tenant-a"})
 
 	result, err := service.Create(ctx, replayOperationInput(accountID))
 	if err != nil {

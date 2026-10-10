@@ -1,5 +1,5 @@
-// Command preflight verifies release-time source trust before API or worker
-// pods are started. It uses the same config loader and connector code as the
+// Command preflight verifies startup authentication configuration and release-time
+// source trust before API or worker pods are started. It uses the same config loader and connector code as the
 // server, but performs no database or application wiring.
 package main
 
@@ -30,6 +30,9 @@ func run(configPath string) error {
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
+		return err
+	}
+	if err := app.PreflightControlPlaneAuthentication(cfg); err != nil {
 		return err
 	}
 	return app.PreflightAeroIMTargetAssertion(cfg)

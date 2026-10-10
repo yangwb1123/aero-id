@@ -13,7 +13,7 @@
 //	up            apply all pending migrations
 //	down [N]      roll back the most recent migration (or the most recent N)
 //	version       print the current schema version
-//	verify        verify the deployed schema is compatible with the current relay
+//	verify        verify the deployed relay and command-receipt schema
 //	validate      report migration-set integrity and disk-vs-applied drift without mutating
 package main
 
@@ -41,7 +41,7 @@ commands:
   up            apply all pending migrations
   down [N]      roll back the most recent migration (or the most recent N)
   version       print the current schema version
-  verify        verify the deployed schema is compatible with the current relay
+  verify        verify the deployed relay and command-receipt schema
   validate      report migration-set integrity and disk-vs-applied drift without mutating`
 }
 
@@ -194,7 +194,13 @@ func runVerify(m *migrate.Migrator) error {
 	} else {
 		fmt.Printf("%06d\n", v)
 	}
-	return m.VerifyOutboxRetryEligibility()
+	if err := m.VerifyOutboxRetryEligibility(); err != nil {
+		return err
+	}
+	if err := m.VerifyCommandRequestBinding(); err != nil {
+		return err
+	}
+	return m.VerifyCommandIntents()
 }
 
 // validateCmd implements "migrate validate": strict Discover (any D-rule

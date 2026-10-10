@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -176,6 +175,13 @@ func (r *syncJobRepo) lockRecoveryJob(tx *gorm.DB, id domain.ID, worker string) 
 			return nil, ErrSyncJobLeaseLost
 		}
 		return nil, result.Error
+	}
+	var live bool
+	if err := tx.Model(&syncJobRow{}).Select("lease_until > clock_timestamp()").Where("id = ?", id).Scan(&live).Error; err != nil {
+		return nil, err
+	}
+	if !live {
+		return nil, ErrSyncJobLeaseLost
 	}
 	return &row, nil
 }
@@ -433,58 +439,6 @@ func validEraseOutcomeTransition(current, next string) bool {
 		return false
 	}
 	return next == "completed" || next == "failed" || next == "unknown"
-}
-
-func validArtifactDigest(value string) bool {
-	if len(value) != sha256.Size*2 {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
-}
-
-func validArtifactStorageKey(value string, jobID domain.ID) bool {
-	return len(value) > 0 && len(value) <= 1024 && !strings.ContainsAny(value, "\\\x00") &&
-		!strings.Contains(value, "..") && strings.Contains(value, "/"+jobID.String()+"/")
-}
-
-func (r *syncJobRepo) GetArtifact(ctx context.Context, id domain.ID, kind string) (*ArtifactMetadata, error) {
-	var row artifactRow
-	if err := r.db.WithContext(ctx).Where("job_id = ? AND kind = ?", id, kind).First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	var continuation map[string]any
-	if err := json.Unmarshal(row.Continuation, &continuation); err != nil {
-		return nil, ErrSyncReplayStateInvalid
-	}
-	return &ArtifactMetadata{JobID: row.JobID, Kind: row.Kind, StorageKey: row.StorageKey,
-		ManifestSHA256: row.ManifestSHA256, SizeBytes: row.SizeBytes, Continuation: continuation, UpdatedAt: row.UpdatedAt}, nil
-}
-
-func (r *syncJobRepo) CheckpointArtifact(ctx context.Context, checkpoint ArtifactCheckpoint) error {
-	data, err := json.Marshal(resultOrEmpty(checkpoint.Continuation))
-	if err != nil {
-		return err
-	}
-	if !validArtifactDigest(checkpoint.ManifestSHA256) || checkpoint.SizeBytes < 0 ||
-		!validArtifactStorageKey(checkpoint.StorageKey, checkpoint.JobID) {
-		return ErrSyncReplayStateInvalid
-	}
-	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := r.lockRecoveryJob(tx, checkpoint.JobID, checkpoint.Worker); err != nil {
-			return err
-		}
-		if checkpoint.Kind != string(domain.SyncJobExport) && checkpoint.Kind != string(domain.SyncJobAuditExport) {
-			return ErrSyncReplayStateInvalid
-		}
-		row := &artifactRow{JobID: checkpoint.JobID, Kind: checkpoint.Kind, StorageKey: checkpoint.StorageKey,
-			ManifestSHA256: checkpoint.ManifestSHA256, SizeBytes: checkpoint.SizeBytes, Continuation: datatypes.JSON(data), UpdatedAt: now}
-		return tx.Save(row).Error
-	})
 }
 
 func recoveryWorker(ctx context.Context) string {

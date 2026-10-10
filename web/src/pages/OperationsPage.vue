@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
 import type { JsonRecord } from "../types";
@@ -11,11 +11,18 @@ import PageHeader from "../components/PageHeader.vue";
 import PageLoading from "../components/PageLoading.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { operationID } from "../components/operationHelpers";
-const { client } = defineProps<{ client: AeroIdClient }>();
+const props = defineProps<{ client: AeroIdClient; operationId?: string }>();
+const { client } = props;
 const resource = useAsyncResource(() => client.listOperations());
 const datasetsResource = useAsyncResource(() => client.listDatasets());
 const meResource = useAsyncResource(() => client.getMe());
-const selectedOperation = ref<string>();
+const selectedOperation = ref(props.operationId);
+watch(
+  () => props.operationId,
+  (value) => {
+    selectedOperation.value = value;
+  },
+);
 const defaultAccountID = computed(() => {
   const value = meResource.data?.account?.account_id;
   return typeof value === "string" ? value : undefined;

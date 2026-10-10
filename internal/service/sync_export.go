@@ -63,43 +63,23 @@ func decryptExport(data, key []byte) ([]byte, error) {
 
 //nolint:cyclop,funlen // export execution coordinates projection reads, encryption, storage, and durable job state.
 func (s *syncJobService) executeExport(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
-	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
+	if job.ErrorCode == "export.cleanup_unknown" {
+		return s.reconcileInvalidatedExport(ctx, job)
+	}
+	if shouldRecoverExport(job) {
+		return s.recoverExportArtifact(ctx, job)
+	}
+	ctx, cancel := syncRemoteContext(ctx)
+	defer cancel()
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return s.pauseSyncExecution(ctx, job, err, true, nil)
+	}
+	manifest, err := s.buildAccountExportManifest(ctx, job)
 	if err != nil {
-		cause := apperr.Internal("export.account_load_failed", "failed to load account").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.account_load_failed", "failed to load account", nil, cause)
+		return s.exportDataFailure(ctx, job, err)
 	}
-	snapshots, err := s.snapshots.ListSnapshots(ctx, job.AccountID, nil)
-	if err != nil {
-		cause := apperr.Internal("export.snapshot_load_failed", "failed to load export data").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.snapshot_load_failed", "failed to load export data", nil, cause)
-	}
-	profile, err := s.accountRepo.GetProfile(ctx, job.AccountID)
-	if err != nil {
-		cause := apperr.Internal("export.profile_load_failed", "failed to load export profile").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.profile_load_failed", "failed to load export profile", nil, cause)
-	}
-	sources, _, err := s.accountRepo.ListSources(ctx, job.AccountID, domain.Page{Limit: domain.MaxPageLimit})
-	if err != nil {
-		cause := apperr.Internal("export.sources_load_failed", "failed to load export sources").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.sources_load_failed", "failed to load export sources", nil, cause)
-	}
-	memberships, _, err := s.accountRepo.ListMemberships(ctx, job.AccountID, domain.Page{Limit: domain.MaxPageLimit})
-	if err != nil {
-		cause := apperr.Internal("export.memberships_load_failed", "failed to load export memberships").Wrap(err)
-		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.memberships_load_failed", "failed to load export memberships", nil, cause)
-	}
-	datasets := make([]map[string]any, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if snapshot != nil {
-			datasets = append(datasets, exportSnapshot(snapshot))
-		}
-	}
-	manifest := map[string]any{"schema_version": 1, "type": "export", "job_id": job.ID.String(), "tenant_id": job.TenantID,
-		"account_id": job.AccountID.String(), "account": exportAccount(account), "profile": exportProfile(profile),
-		"sources": exportSources(sources), "memberships": exportMemberships(memberships), "datasets": datasets,
-		"generated_at": time.Now().UTC()}
 	if s.store == nil {
-		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "export.store_unavailable", "temporary export storage is not configured", manifest)
+		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "export.store_unavailable", "temporary export storage is not configured", nil)
 	}
 	if len(s.exportKey) == 0 {
 		return s.finishJobAndLoad(ctx, job, domain.SyncJobPartiallyComplete, "export.encryption_not_configured", "export encryption is not configured", nil)
@@ -120,54 +100,48 @@ func (s *syncJobService) executeExport(ctx context.Context, job *domain.SyncJob)
 		cause := apperr.Internal("export.encrypt_failed", "failed to encrypt export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.encrypt_failed", "failed to encrypt export artifact", nil, cause)
 	}
+	if err := s.recheckExportAccount(ctx, job); err != nil {
+		return s.exportDataFailure(ctx, job, err)
+	}
 	key, _, err := s.putSyncArtifact(ctx, job, "export", encrypted, manifest, "account-export-"+job.ID.String()+".bin")
+	if key != "" {
+		manifest["_storage_key"] = key
+	}
 	if err != nil {
+		if isSyncExecutionBlocked(err) {
+			return s.pauseSyncExecution(ctx, job, err, false, manifest)
+		}
 		var checkpointErr *artifactCheckpointError
 		if errors.As(err, &checkpointErr) {
 			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "export.artifact_checkpoint_unknown",
-				"export artifact metadata outcome is unknown", nil)
+				"export artifact metadata outcome is unknown", safeAccountExportResult(manifest))
 		}
 		cause := apperr.Internal("export.write_failed", "failed to write export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "export.write_failed", "failed to write export artifact", nil, cause)
 	}
 	manifest["_storage_key"] = key
-	return s.finishJobAndLoad(ctx, job, domain.SyncJobCompleted, "", "", manifest)
+	if err := s.recheckExportAccount(ctx, job); err != nil {
+		return s.discardExportAfterDispositionChange(ctx, job, manifest, key, err)
+	}
+	return s.finishExportArtifact(ctx, job, manifest, key)
 }
 
-//nolint:cyclop // export download enforces ownership, expiry, decryption, and artifact validation.
 func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID, oneTime bool) ([]byte, error) {
-	job, err := s.Get(ctx, id)
+	job, err := s.loadExportDownload(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if s.permission != nil {
-		allowed, permissionErr := s.permission.HasPermission(ctx, actorFromContext(ctx), syncPermission(job.JobType))
-		if permissionErr != nil {
-			return nil, apperr.Internal("export.permission_check_failed", "failed to verify export permission").Wrap(permissionErr)
-		}
-		if !allowed {
-			return nil, apperr.Forbidden("export.forbidden", "export permission is required")
-		}
-	}
-	if s.accountRepo != nil {
-		account, accountErr := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
-		if accountErr != nil {
-			return nil, apperr.NotFound("export.not_found", "export artifact not found")
-		}
-		if account == nil || account.Status == domain.AccountErased {
-			return nil, apperr.Forbidden("export.account_erased", "export is unavailable for an erased account")
-		}
-	}
-	if job.Status != domain.SyncJobCompleted || len(s.exportKey) == 0 {
-		return nil, apperr.Conflict("export.not_available", "export artifact is not available")
-	}
-	expires, ok := exportExpiry(job.Result["expires_at"])
-	if !ok || !time.Now().UTC().Before(expires) {
-		s.deleteExpiredExport(ctx, job)
-		return nil, apperr.Conflict("export.expired", "export artifact has expired")
-	}
 	plain, key, err := s.readExportArtifact(ctx, job)
 	if err != nil {
+		return nil, err
+	}
+	if admitted, err := s.admitExportDownload(ctx, job, key, oneTime, len(plain)); admitted {
+		if err != nil {
+			return nil, err
+		}
+		return bytes.TrimSpace(plain), nil
+	}
+	if err := s.recheckLegacyExportDownload(ctx, job); err != nil {
 		return nil, err
 	}
 	if s.audit != nil {
@@ -176,12 +150,8 @@ func (s *syncJobService) DownloadExport(ctx context.Context, id domain.ID, oneTi
 			return nil, apperr.Unavailable("audit.ingest_failed", "audit record unavailable").Wrap(err)
 		}
 	}
-	if oneTime {
-		// P7-06: one-time sensitive result — the artifact is burned after the
-		// first successful read; a second download fails with not_found.
-		if err := s.burnExportArtifact(ctx, job, key); err != nil {
-			return nil, apperr.Internal("export.burn_failed", "failed to finalize one-time export").Wrap(err)
-		}
+	if err := s.burnOneTimeExport(ctx, job, key, oneTime); err != nil {
+		return nil, apperr.Internal("export.burn_failed", "failed to finalize one-time export").Wrap(err)
 	}
 	return bytes.TrimSpace(plain), nil
 }
@@ -216,17 +186,13 @@ func (s *syncJobService) readExportArtifact(ctx context.Context, job *domain.Syn
 		return nil, "", apperr.Internal("export.read_failed", "failed to read export artifact").Wrap(err)
 	}
 	defer reader.Close()
-	data, err := io.ReadAll(io.LimitReader(reader, s.maxExport+256))
-	if err != nil || int64(len(data)) > s.maxExport {
+	data, err := io.ReadAll(io.LimitReader(reader, s.maxExport+257))
+	if err != nil || int64(len(data)) > s.maxExport+256 {
 		return nil, "", apperr.Internal("export.read_failed", "export artifact is too large").Wrap(err)
 	}
-	plain, err := decryptExport(data, s.exportKey)
+	plain, manifest, err := s.decodeExportArtifact(data)
 	if err != nil {
-		return nil, "", apperr.Internal("export.decrypt_failed", "failed to decrypt export artifact").Wrap(err)
-	}
-	var manifest map[string]any
-	if err := json.Unmarshal(plain, &manifest); err != nil {
-		return nil, "", apperr.Internal("export.invalid_artifact", "export artifact is invalid").Wrap(err)
+		return nil, "", err
 	}
 	if err := s.validateDownloadedArtifact(ctx, job, key, len(data), manifest); err != nil {
 		return nil, "", err

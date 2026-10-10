@@ -185,6 +185,18 @@ func TestRecoveryDownRefusesLiveState(t *testing.T) {
 	if _, err := m.Up(); err != nil {
 		t.Fatalf("up: %v", err)
 	}
+	// This is specifically the 000070 recovery rollback contract, not the
+	// latest migration's rollback. Later additive migrations must not silently
+	// turn the first refusal assertion into an unrelated successful Down(1).
+	version, err := m.CurrentVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version > 70 {
+		if _, err := m.Down(int(version - 70)); err != nil {
+			t.Fatalf("prepare recovery-version fixture: %v", err)
+		}
+	}
 
 	accountID := "00000000-0000-0000-0000-000000000070"
 	jobID := "00000000-0000-0000-0000-000000000071"

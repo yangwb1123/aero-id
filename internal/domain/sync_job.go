@@ -5,10 +5,10 @@ import "time"
 type SyncJobType string
 
 const (
-	SyncJobSync      SyncJobType = "sync"
-	SyncJobReconcile SyncJobType = "reconcile"
-	SyncJobExport    SyncJobType = "export"
-	SyncJobErase     SyncJobType = "erase"
+	SyncJobSync        SyncJobType = "sync"
+	SyncJobReconcile   SyncJobType = "reconcile"
+	SyncJobExport      SyncJobType = "export"
+	SyncJobErase       SyncJobType = "erase"
 	SyncJobAuditExport SyncJobType = "audit_export"
 )
 
@@ -32,15 +32,17 @@ type SyncJob struct {
 	JobType        SyncJobType
 	Status         SyncJobStatus
 	IdempotencyKey string
-	Request        map[string]any
-	Result         map[string]any
-	ErrorCode      string
-	ErrorMessage   string
-	Attempt        int
-	LeaseOwner     string
-	LeaseUntil     *time.Time
-	LeaseKind      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CompletedAt    *time.Time
+	// RequestFingerprint is internal request binding, never a public credential.
+	RequestFingerprint string `json:"-"`
+	Request            map[string]any
+	Result             map[string]any
+	ErrorCode          string
+	ErrorMessage       string
+	Attempt            int
+	LeaseOwner         string
+	LeaseUntil         *time.Time
+	LeaseKind          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CompletedAt        *time.Time
 }

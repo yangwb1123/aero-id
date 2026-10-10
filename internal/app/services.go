@@ -72,6 +72,8 @@ type serviceBundle struct {
 	cutoverSvc          service.LegacyCutoverService
 	legacyMigrationSvc  service.LegacyMigrationService
 	aggregationSvc      service.AggregationService
+	capabilitySvc       service.CapabilityService
+	commandIntentSvc    service.CommandIntentService
 	eventIngestSvc      service.EventIngestService
 	operationSvc        service.OperationService
 	replaySvc           service.ReplayService
@@ -178,6 +180,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		service.WithOperationRunner(operationRunner),
 		service.WithOperationAccountRepository(deps.accountRepo),
 		service.WithOperationPermission(permissionChecker),
+		service.WithOperationExecutionPermission(deps.ssoClient),
 		service.WithOperationMetrics(deps.controlMetrics))
 	var stopOperations func()
 	var drainOperations func()
@@ -195,6 +198,7 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 	syncJobSvc := service.NewSyncJobServiceWithOptions(deps.syncJobRepo, accountSvc, deps.accountRepo, deps.snapshotRepo,
 		deps.summaryApplication, deps.store, deps.sourceConnectors,
 		service.WithSyncJobPermission(permissionChecker),
+		service.WithSyncJobExecutionPermission(deps.ssoClient),
 		service.WithSyncJobAudit(deps.auditLedger),
 		service.WithSyncJobAuditLedger(repository.NewAuditLedgerRepository(deps.gdb,
 			repository.AuditLedgerConfig{SigningKey: deps.cfg.AuditLedger.SigningKey})),
@@ -245,7 +249,9 @@ func buildServices(deps serviceDependencies) (serviceBundle, error) {
 		agentMembershipSvc: agentMembershipSvc,
 		legacyMigrationSvc: legacyMigrationSvc,
 		aggregationSvc:     aggregationSvc, eventIngestSvc: eventIngestSvc,
-		operationSvc: operationSvc, replaySvc: replaySvc, projectionReplaySvc: projectionReplaySvc,
+		capabilitySvc:    buildCapabilityService(deps, accountSvc),
+		commandIntentSvc: buildCommandIntentService(deps, accountSvc, operationSvc, syncJobSvc),
+		operationSvc:     operationSvc, replaySvc: replaySvc, projectionReplaySvc: projectionReplaySvc,
 		syncJobSvc: syncJobSvc, banSvc: banSvc, replicationSvc: replicationSvc,
 		permissionChecker: permissionChecker,
 		stopEventBus:      stopEventBus, stopReplication: stopReplication,

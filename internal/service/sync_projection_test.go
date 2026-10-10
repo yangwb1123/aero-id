@@ -58,6 +58,7 @@ func (fakeAccountService) UpsertMembership(context.Context, *domain.AccountMembe
 }
 
 type recoveryProjectionRepo struct {
+	syncTestExecutionPorts
 	repository.SyncJobRepository
 	saved   []repository.SummaryReplayInput
 	saveErr error
@@ -103,7 +104,8 @@ func newSyncProjectionHarness() (*syncJobService, *fakeSnapshotRepo, *fakeAccoun
 	accountRepo := &fakeAccountRepo{}
 	application := &fakeSummaryApplication{}
 	svc := &syncJobService{
-		accounts: fakeAccountService{}, accountRepo: accountRepo, snapshots: snapshots, application: application,
+		accounts: fakeAccountService{}, accountRepo: syncFixtureAccount{region: "local"}, snapshots: snapshots, application: application,
+		repo: &minimalSyncJobRepo{}, region: "local", executionPermission: allowAllPermissions{},
 	}
 	return svc, snapshots, accountRepo, application
 }
@@ -117,8 +119,8 @@ var vaultDatasets = []domain.AccountDataset{
 func TestPersistSyncSummaryPersistsExactRequestBeforeApplying(t *testing.T) {
 	recovery := &recoveryProjectionRepo{}
 	application := &fakeSummaryApplication{}
-	svc := &syncJobService{repo: recovery, application: application}
-	job := &domain.SyncJob{ID: idgen.NewID(), AccountID: idgen.NewID(), Attempt: 4, LeaseOwner: "worker"}
+	svc := &syncJobService{repo: recovery, application: application, accountRepo: syncFixtureAccount{region: "local"}, region: "local", executionPermission: allowAllPermissions{}}
+	job := &domain.SyncJob{ID: idgen.NewID(), AccountID: idgen.NewID(), Attempt: 4, LeaseOwner: "worker", ActorUID: "actor", TenantID: "tenant", JobType: domain.SyncJobSync}
 	summary := &connector.Summary{Source: connector.SourceAeroIM, SourceRegion: "local", Version: 9, Complete: true,
 		Coverage: domain.SummaryCoverage{Datasets: []domain.AccountDataset{"aero-im.profile"}, Explicit: true}}
 	if err := svc.persistSyncSummary(t.Context(), job, nil, connector.SourceAeroIM, []domain.AccountDataset{"aero-im.profile"}, summary); err != nil {
@@ -177,7 +179,7 @@ func TestDatasetsBySourceKeepsMissingConnectorDetectionScoped(t *testing.T) {
 func TestPersistSyncSummary_SkipsSuppressReconcileMarking(t *testing.T) {
 	svc, snapshots, accountRepo, application := newSyncProjectionHarness()
 	accountID := idgen.NewID()
-	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile}
+	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile, ActorUID: "actor", TenantID: "tenant"}
 	account := &domain.Account{ID: accountID}
 	summary := &connector.Summary{
 		Source:          connector.SourceAeroVault,
@@ -207,7 +209,7 @@ func TestPersistSyncSummary_SkipsSuppressReconcileMarking(t *testing.T) {
 func TestPersistSyncSummary_GateIsOnCompleteNotOnSkips(t *testing.T) {
 	svc, snapshots, accountRepo, application := newSyncProjectionHarness()
 	accountID := idgen.NewID()
-	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile}
+	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile, ActorUID: "actor", TenantID: "tenant"}
 	account := &domain.Account{ID: accountID}
 	summary := &connector.Summary{Source: connector.SourceAeroVault, Complete: false, Version: 5}
 
@@ -230,7 +232,7 @@ func TestPersistSyncSummary_GateIsOnCompleteNotOnSkips(t *testing.T) {
 func TestPersistSyncSummary_CompleteSummaryRunsReconcileMarking(t *testing.T) {
 	svc, snapshots, accountRepo, application := newSyncProjectionHarness()
 	accountID := idgen.NewID()
-	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile}
+	job := &domain.SyncJob{AccountID: accountID, JobType: domain.SyncJobReconcile, ActorUID: "actor", TenantID: "tenant"}
 	account := &domain.Account{ID: accountID}
 	summary := &connector.Summary{
 		Source:   connector.SourceAeroVault,

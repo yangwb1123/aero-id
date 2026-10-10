@@ -157,17 +157,21 @@ func (r *accountSnapshotRepo) UpsertSnapshot(ctx context.Context, snapshot *doma
 	snapshot.UpdatedAt = now
 	row := snapshotDomainToRow(snapshot)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWritableAccountTx(tx, snapshot.AccountID); err != nil {
+			return err
+		}
 		result := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "dataset"}},
 			DoUpdates: clause.AssignmentColumns([]string{
 				"source_region", "status", "version", "generated_at", "last_synced_at", "expires_at", "error_code", "data", "updated_at",
 			}),
 			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "account_snapshots.version <= EXCLUDED.version"}}},
-		}).Create(row)
+		}, clause.Returning{}).Create(row)
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
-		return appendReplicationChange(tx, snapshot, false)
+		snapshot.ID = row.ID
+		return appendReplicationChange(tx, snapshotRowToDomain(row), false)
 	})
 }
 
@@ -262,6 +266,9 @@ func (r *accountSnapshotRepo) MarkUnavailable(ctx context.Context, accountID dom
 	}
 	changed := 0
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWritableAccountTx(tx, accountID); err != nil {
+			return err
+		}
 		var rows []accountSnapshotRow
 		if err := tx.Where("account_id = ? AND source = ? AND dataset IN ? AND version <= ?", accountID, source, names, version).Find(&rows).Error; err != nil {
 			return err

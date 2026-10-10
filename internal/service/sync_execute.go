@@ -25,18 +25,23 @@ func (s *syncJobService) executeSyncForSources(ctx context.Context, job *domain.
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.invalid_dataset_scope",
 			"sync job requires a non-empty valid dataset scope", nil, scopeErr)
 	}
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return s.pauseSyncExecution(ctx, job, err, true, nil)
+	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
 		cause := apperr.Internal("sync.account_load_failed", "failed to load account").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "sync.account_load_failed", "failed to load account", nil, cause)
 	}
-	result := map[string]any{"mode": string(job.JobType), "sources": map[string]any{}}
+	result := cloneSyncResult(job.Result)
+	result["mode"] = string(job.JobType)
 	var wait sync.WaitGroup
 	var mu sync.Mutex
 	var failures int
 	var incomplete int
 	var unknown int
 	var missing int
+	var blocked error
 	for source, requested := range required {
 		if skip[source] {
 			continue
@@ -60,6 +65,12 @@ func (s *syncJobService) executeSyncForSources(ctx context.Context, job *domain.
 		wait.Add(1)
 		go func(source connector.Source, client connector.Connector, requested []domain.AccountDataset) {
 			defer wait.Done()
+			if err := s.checkSyncExecution(ctx, job, false); err != nil {
+				mu.Lock()
+				blocked = err
+				mu.Unlock()
+				return
+			}
 			before, listErr := s.snapshots.ListSnapshots(ctx, account.ID, requested)
 			if listErr != nil {
 				mu.Lock()
@@ -75,6 +86,13 @@ func (s *syncJobService) executeSyncForSources(ctx context.Context, job *domain.
 				result["sources"].(map[string]any)[string(source)] = map[string]any{
 					"status": "invalid_request", "error_code": "source.target_binding_invalid",
 				}
+				mu.Unlock()
+				return
+			}
+			if err := s.checkSyncExecution(ctx, job, false); err != nil {
+				mu.Lock()
+				blocked = err
+				result["sources"].(map[string]any)[string(source)] = map[string]any{"status": "not_started"}
 				mu.Unlock()
 				return
 			}
@@ -103,6 +121,11 @@ func (s *syncJobService) executeSyncForSources(ctx context.Context, job *domain.
 			if persistErr != nil {
 				status, code, isUnknown := summaryPersistenceStatus(persistErr)
 				mu.Lock()
+				if isSyncExecutionBlocked(persistErr) {
+					blocked = persistErr
+					mu.Unlock()
+					return
+				}
 				if isUnknown {
 					unknown++
 				} else {
@@ -138,6 +161,9 @@ func (s *syncJobService) executeSyncForSources(ctx context.Context, job *domain.
 		}(source, client, requested)
 	}
 	wait.Wait()
+	if blocked != nil {
+		return s.pauseSyncExecution(ctx, job, blocked, false, result)
+	}
 	status := domain.SyncJobCompleted
 	if unknown > 0 {
 		status = domain.SyncJobUnknown

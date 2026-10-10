@@ -81,6 +81,8 @@ func buildRouter(deps routerDependencies) http.Handler {
 			deps.workers.cutoverFacadeSvc,
 			deps.svcs.permissionChecker),
 		httpapi.NewAggregationHandler(deps.svcs.aggregationSvc, deps.svcs.permissionChecker),
+		httpapi.NewCapabilityHandler(deps.svcs.capabilitySvc),
+		httpapi.NewCommandIntentHandler(deps.svcs.commandIntentSvc),
 		httpapi.NewEventIngestHandler(deps.svcs.eventIngestSvc, deps.cfg.EventIngest.SigningKey,
 			deps.cfg.EventIngest.MaxBodyBytes, deps.cfg.EventIngest.ClockSkew,
 			httpapi.WithEventSourceKeys(deps.cfg.EventIngest.SourceKeys),

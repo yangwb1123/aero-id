@@ -26,7 +26,8 @@ const (
 )
 
 type EventApplyResult struct {
-	Status EventApplyStatus
+	Status    EventApplyStatus
+	ErrorCode string
 }
 
 type EventReceiptRepository interface {
@@ -120,43 +121,32 @@ func (r *eventReceiptRepo) applySnapshotEvent(ctx context.Context, envelope *eve
 	}
 	result := EventApplyResult{}
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result.Status, err = r.applySnapshotEventTx(ctx, tx, envelope, mutation, fact, payload, contentHash)
+		result, err = r.applySnapshotEventTx(ctx, tx, envelope, mutation, fact, payload, contentHash)
 		return err
 	})
 	return result, err
 }
 
 func (r *eventReceiptRepo) applySnapshotEventTx(ctx context.Context, tx *gorm.DB, envelope *event.Envelope,
-	mutation *event.SnapshotMutation, fact *domain.AuditFact, payload []byte, contentHash string) (EventApplyStatus, error) {
+	mutation *event.SnapshotMutation, fact *domain.AuditFact, payload []byte, contentHash string) (EventApplyResult, error) {
 	now := time.Now().UTC()
-	// Claim first so an existing key is content-checked before target
-	// validation. A newly inserted claim is rolled back if its target tenant is
-	// invalid; an exact existing duplicate still retains the tenant check.
-	receipt, owner, err := claimEventReceipt(tx, envelope, payload, contentHash, now)
+	// Content-check first; only a placeholder is written until the locked
+	// account disposition is known. Late content must not enter a receipt/WAL.
+	receipt, owner, err := claimEventReceipt(tx, envelope, []byte("{}"), contentHash, now)
 	if err != nil {
-		return "", err
+		return EventApplyResult{}, err
 	}
-	if err := verifyEventAccountTenant(tx, envelope.TenantID, mutation.AccountID); err != nil {
-		return "", err
+	targetErr := verifyEventAccountTenant(tx, envelope.TenantID, mutation.AccountID)
+	if targetErr != nil && !errors.Is(targetErr, ErrAccountErased) {
+		return EventApplyResult{}, targetErr
 	}
 	if owner == "" {
-		return EventDuplicate, nil
+		return duplicateEventDisposition(receipt), nil
 	}
-	if r.events != nil {
-		// P3-07: the canonical event becomes durable in the same transaction as
-		// its receipt and projection update, so replay can rebuild projections.
-		if err := appendEventStore(tx, envelope); err != nil {
-			return "", fmt.Errorf("append event store: %w", err)
-		}
+	if errors.Is(targetErr, ErrAccountErased) {
+		return r.quarantineErasedEventTx(ctx, tx, envelope, mutation, fact, receipt, owner, now)
 	}
-	status, err := r.applySnapshotRow(tx, envelope, mutation, now)
-	if err != nil {
-		return "", err
-	}
-	if err := r.appendEventAudit(ctx, tx, fact, mutation, status); err != nil {
-		return "", err
-	}
-	return status, finishEventReceipt(tx, receipt.ID, owner, status, now)
+	return r.applyWritableEventTx(ctx, tx, envelope, mutation, fact, receipt, owner, payload, now)
 }
 
 func (r *eventReceiptRepo) applySnapshotRow(tx *gorm.DB, envelope *event.Envelope,
@@ -184,6 +174,12 @@ func (r *eventReceiptRepo) applySnapshotRow(tx *gorm.DB, envelope *event.Envelop
 	}
 	if insert.RowsAffected == 0 {
 		return EventOutOfOrder, nil
+	}
+	if lookup.Error == nil {
+		snapshot.ID = existing.ID
+	}
+	if err := appendReplicationChange(tx, snapshot, false); err != nil {
+		return "", fmt.Errorf("append snapshot replication change: %w", err)
 	}
 	return EventApplied, nil
 }
@@ -361,12 +357,18 @@ func verifyEventAccountTenant(tx *gorm.DB, tenantID string, accountID domain.ID)
 	if tenantID == "" || accountID == (domain.ID{}) {
 		return ErrEventTenantMismatch
 	}
-	var count int64
-	if err := tx.Model(&accountRow{}).Where("tenant_id = ? AND id = ?", tenantID, accountID).Count(&count).Error; err != nil {
+	account, err := lockAccountDispositionTx(tx, accountID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrEventTenantMismatch
+	}
+	if err != nil {
 		return fmt.Errorf("verify event account tenant: %w", err)
 	}
-	if count != 1 {
+	if account.TenantID != tenantID {
 		return ErrEventTenantMismatch
+	}
+	if account.Status == string(domain.AccountErased) {
+		return ErrAccountErased
 	}
 	return nil
 }

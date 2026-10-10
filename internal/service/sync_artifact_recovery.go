@@ -23,16 +23,31 @@ func (e *artifactCheckpointError) Unwrap() error { return e.cause }
 
 func (s *syncJobService) putSyncArtifact(ctx context.Context, job *domain.SyncJob, kind string,
 	data []byte, manifest map[string]any, legacyName string) (string, int64, error) {
+	preparedKey, err := s.prepareJobArtifact(ctx, job, kind, data, manifest)
+	if err != nil {
+		return preparedKey, 0, &artifactCheckpointError{cause: err}
+	}
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return preparedKey, 0, err
+	}
 	key, size, err := s.writeJobArtifact(ctx, job, kind, data, legacyName)
 	if err != nil {
-		return "", 0, err
+		if preparedKey != "" {
+			return preparedKey, 0, &artifactCheckpointError{cause: err}
+		}
+		return key, size, err
 	}
 	if err := validateJobArtifactKey(job, kind, key, s.store); err != nil {
-		return "", 0, err
+		return preparedKey, size, &artifactCheckpointError{cause: err}
 	}
-	if recovery, ok := s.repo.(repository.SyncJobRecoveryRepository); ok {
-		if err := s.checkpointJobArtifact(ctx, recovery, job, kind, key, size, manifest); err != nil {
-			return "", 0, &artifactCheckpointError{cause: err}
+	if size != int64(len(data)) {
+		return key, size, &artifactCheckpointError{cause: errors.New("artifact writer size mismatch")}
+	}
+	if preparedKey == "" {
+		if recovery, ok := s.repo.(repository.SyncJobRecoveryRepository); ok {
+			if err := s.checkpointJobArtifact(ctx, recovery, job, kind, key, size, manifest); err != nil {
+				return key, size, &artifactCheckpointError{cause: err}
+			}
 		}
 	}
 	return key, size, nil
@@ -70,6 +85,9 @@ func (s *syncJobService) checkpointJobArtifact(ctx context.Context, recovery rep
 			continuation[name] = value
 		}
 	}
+	result := artifactResultMetadata(job.JobType, manifest)
+	result["_storage_key"] = key
+	continuation["_artifact_result"] = result
 	persistCtx, cancel := syncPersistenceContext(ctx)
 	defer cancel()
 	return recovery.CheckpointArtifact(syncRecoveryContext(persistCtx, job.LeaseOwner), repository.ArtifactCheckpoint{
@@ -91,6 +109,8 @@ func (s *syncJobService) validateDownloadedArtifact(ctx context.Context, job *do
 		if err := validateAuditArtifactManifest(manifest); err != nil {
 			return err
 		}
+	} else if err := validateAccountArtifactManifest(job, manifest); err != nil {
+		return err
 	}
 	return s.validateArtifactMetadata(ctx, job, expectedType, key, size, manifest)
 }
@@ -120,8 +140,8 @@ func expectedArtifactType(jobType domain.SyncJobType) (string, error) {
 
 func validateArtifactExpiry(job *domain.SyncJob, manifest map[string]any) error {
 	expires, artifactOK := exportExpiry(manifest["expires_at"])
-	_, jobOK := exportExpiry(job.Result["expires_at"])
-	if !artifactOK || !jobOK || !time.Now().UTC().Before(expires) {
+	jobExpires, jobOK := exportExpiry(job.Result["expires_at"])
+	if !artifactOK || !jobOK || !expires.Equal(jobExpires) || !time.Now().UTC().Before(expires) {
 		return apperr.Internal("export.invalid_artifact", "export artifact expiry is invalid")
 	}
 	return nil
@@ -145,11 +165,19 @@ func (s *syncJobService) validateArtifactMetadata(ctx context.Context, job *doma
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return apperr.Internal("export.metadata_read_failed", "export artifact metadata is unavailable").Wrap(err)
 	}
-	if err == nil && (metadata == nil || metadata.StorageKey != key || metadata.SizeBytes != int64(size) ||
-		metadata.ManifestSHA256 != artifactManifestDigest(manifest)) {
+	if err != nil || metadata == nil {
+		return apperr.Unavailable("export.metadata_unavailable", "export artifact metadata is unavailable")
+	}
+	if !artifactMetadataMatches(metadata, job, kind, key, size, manifest) {
 		return apperr.Internal("export.integrity_failed", "export artifact metadata does not match its content")
 	}
 	return nil
+}
+
+func artifactMetadataMatches(metadata *repository.ArtifactMetadata, job *domain.SyncJob, kind, key string,
+	size int, manifest map[string]any) bool {
+	return metadata.JobID == job.ID && metadata.Kind == kind && metadata.StorageKey == key && metadata.SizeBytes == int64(size) &&
+		metadata.ManifestSHA256 == artifactManifestDigest(manifest)
 }
 
 func artifactManifestDigest(manifest map[string]any) string {

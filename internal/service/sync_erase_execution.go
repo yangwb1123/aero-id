@@ -21,6 +21,9 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "erase.invalid_dataset_scope",
 			"erase job requires a non-empty valid dataset scope", nil, scopeErr)
 	}
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return s.pauseSyncExecution(ctx, job, err, true, nil)
+	}
 	account, err := s.accountRepo.GetByID(ctx, job.TenantID, job.AccountID)
 	if err != nil {
 		cause := apperr.Internal("erase.account_load_failed", "failed to load account").Wrap(err)
@@ -33,10 +36,12 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 			"source erase outcome could not be checkpointed", result, err)
 	}
 	unknown := false
+	var blocked error
 	failures := 0
 	var wait sync.WaitGroup
 	var mu sync.Mutex
-	for source, requested := range required {
+	commands := make(map[connector.Source]connector.CommandConnector, len(required))
+	for source := range required {
 		client, configured := s.connectors[source]
 		if !configured {
 			statuses[string(source)] = map[string]any{"status": "failed", "error_code": "source.not_configured"}
@@ -61,9 +66,19 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 			}
 			continue
 		}
+		commands[source] = command
+	}
+	for source, command := range commands {
 		wait.Add(1)
 		go func(source connector.Source, command connector.CommandConnector, requested []domain.AccountDataset) {
 			defer wait.Done()
+			if err := s.checkSyncExecution(ctx, job, false); err != nil {
+				mu.Lock()
+				blocked = err
+				statuses[string(source)] = map[string]any{"status": "pending"}
+				mu.Unlock()
+				return
+			}
 			remoteCtx, remoteCancel := syncRemoteContext(ctx)
 			commandResult, callErr := command.Erase(remoteCtx, eraseRequestForJob(account, job, source, requested))
 			remoteCancel()
@@ -133,9 +148,12 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 			} else if outcomeStatus == "unknown" {
 				unknown = true
 			}
-		}(source, command, requested)
+		}(source, command, required[source])
 	}
 	wait.Wait()
+	if blocked != nil {
+		return s.pauseSyncExecution(ctx, job, blocked, false, result)
+	}
 	status := domain.SyncJobCompleted
 	code, message := "", ""
 	if unknown {
@@ -145,6 +163,9 @@ func (s *syncJobService) executeErase(ctx context.Context, job *domain.SyncJob) 
 		status = domain.SyncJobPartiallyComplete
 		code, message = "erase.partial_failure", "one or more source deletion commands failed"
 	} else {
+		if err := s.checkSyncExecution(ctx, job, true); err != nil {
+			return s.pauseSyncExecution(ctx, job, err, false, result)
+		}
 		persistCtx, persistCancel := syncPersistenceContext(ctx)
 		err := s.eraseAccountWithLease(persistCtx, job)
 		persistCancel()

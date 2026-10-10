@@ -66,6 +66,27 @@ func (f *crashTestRepo) ClaimUnknownStep(ctx context.Context, operationID domain
 	f.step.LeaseUntil = &until
 	return &step, nil
 }
+func (f *crashTestRepo) CheckExecutionLease(_ context.Context, operationID, stepID domain.ID, owner string, compensation, reconcile bool) error {
+	if f.operation.ID != operationID || f.step.ID != stepID {
+		return repository.ErrOperationStateConflict
+	}
+	if compensation {
+		if f.step.CompensationStatus == domain.StepRunning && f.step.CompensationLeaseOwner == owner && f.step.CompensationLeaseUntil != nil &&
+			f.step.CompensationLeaseUntil.After(time.Now()) {
+			return nil
+		}
+	} else {
+		kind := "forward"
+		if reconcile {
+			kind = "reconcile"
+		}
+		if f.step.Status == domain.StepRunning && f.step.LeaseOwner == owner && f.step.LeaseKind == kind && f.step.LeaseUntil != nil && f.step.LeaseUntil.After(time.Now()) {
+			return nil
+		}
+	}
+	return repository.ErrOperationStateConflict
+}
+
 func (f *crashTestRepo) FinishStep(ctx context.Context, operationID domain.ID, worker string, status domain.OperationStepStatus,
 	sourceOperationID, code string, result map[string]any, message string) error {
 	f.finished = status
@@ -132,7 +153,7 @@ func crashedOperation(status domain.OperationStatus, stepStatus domain.Operation
 	past := time.Now().UTC().Add(-time.Hour)
 	return &domain.Operation{
 		ID: operationID, AccountID: idgen.NewID(), ActorUID: "u-1", TenantID: "tenant-a",
-		HomeRegion: "local", OperationType: "source.erase", Status: status,
+		HomeRegion: "local", OperationType: "erase", Status: status,
 		Steps: []*domain.OperationStep{{
 			ID: stepID, OperationID: operationID, StepKey: "erase-vault", Source: "aero-vault",
 			Action: "erase", Status: stepStatus, Attempt: 1, LeaseOwner: "dead-worker",
@@ -155,8 +176,22 @@ func (allowAllPermissions) HasPermission(ctx context.Context, uid, permission st
 	return true, nil
 }
 
+type operationExecutionAccountFixture struct{ repository.AccountRepository }
+
+func (operationExecutionAccountFixture) GetByID(_ context.Context, tenant string, id domain.ID) (*domain.Account, error) {
+	return &domain.Account{ID: id, TenantID: tenant, HomeRegion: "local", CanonicalUID: "u-1", Status: domain.AccountActive}, nil
+}
+func operationTestExecutionPorts() OperationOption {
+	return func(s *operationService) {
+		s.accounts = operationExecutionAccountFixture{}
+		s.executionPermission = allowAllPermissions{}
+		s.region = "local"
+	}
+}
+
 func crashTestService(repo repository.OperationRepository, runner OperationRunner) OperationService {
 	return NewOperationService(repo,
+		operationTestExecutionPorts(),
 		WithOperationRunner(runner),
 		WithOperationPermission(allowAllPermissions{}),
 		WithOperationRegion("local"),
@@ -252,6 +287,7 @@ func TestOperationRun_OrdinaryExecutionStillWorks(t *testing.T) {
 			step := *repo.step
 			repo.step.Status = domain.StepRunning
 			repo.step.LeaseOwner = worker
+			repo.step.LeaseKind = "forward"
 			until := time.Now().UTC().Add(lease)
 			repo.step.LeaseUntil = &until
 			return &step, nil

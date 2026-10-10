@@ -35,6 +35,7 @@
 ```text
 GET  /v1/account-datasets
 GET  /v1/me
+GET  /v1/me/capabilities
 GET  /v1/me/profile
 PATCH /v1/me/profile
 GET  /v1/me/sources?limit=50&cursor=<cursor>
@@ -45,6 +46,14 @@ GET  /v1/me/activity
 ```
 
 `/v1/account-datasets` 是 allow-list；客户端只能请求返回的 dataset 名称，不能拼接源系统路径或 SQL。
+
+`/v1/me/capabilities` 要求验证后的 issuer、subject、tenant 和 client claims，并与当前账户范围一致；返回
+`Cache-Control: no-store` 的元数据报告。`registered`、`enabled`、`authorization`（`allowed/denied/unknown`）、
+`available` 和投影 `status/fresh/version/last_synced_at` 分别表示不同条件，不能互相推断。权限检查有界并发和总期限；
+依赖故障返回脱敏的 `unknown`/`partial`，不会回退到本地角色允许。数据集资格只表示自己的本地投影读取，
+`resource_authorization` 始终为 `unknown`，来源调用仍检查资源 ACL；报告不探测源健康或发起源 fan-out。
+Snaplink Check 当前没有策略版本，`authorization_version` 明确为 `unsupported`；没有伪造策略水位或承诺
+该报告可以授权后续命令。前端导航和按钮依据报告提示，后端每次写入仍重新授权。
 `aero-im.notifications` 是 Aero IM 通知收件箱的有界、无正文投影；只含通知与关联资源 ID、类型、时间、
 聚合数、重要度、未读总数和截断标记。账户控制台不通过 aero-id 修改通知状态，处理动作仍进入 Aero IM，
 避免在账户系统中建立第二套通知权威。尚未在 Aero IM 完成首次 Snaplink JIT 关联时，投影保持相同结构并以
@@ -85,7 +94,55 @@ GET  /v1/audit/operations/:id
 同步、导出、删除和跨源命令均为异步任务或 Operation。客户端按 `job_id`/`operation_id` 轮询，展示
 `completed`、`partially_completed`、`failed`、`unknown` 等终态；`unknown` 不能自动当作失败重试，必须等待
 对账或人工确认。Sync Job 与 Operation 的 `reconcile` POST 都使用 `Idempotency-Key`；结果不确定时保留原键，收到明确响应后下一次人工对账才创建新键。Operation `run` 复用稳定键。
-导出文件是短时、加密、受权限保护的临时工件，不能缓存到公共 URL。
+导出文件是短时、加密、受权限保护的临时工件，不能缓存到公共 URL。账户/审计导出任务只返回元数据；
+历史任务读取过滤不代表旧持久内容已经清理。制品结果不确定时仅对账原 key、摘要、大小和 TTL，
+不会重新生成或延长有效期；对象暂时不存在仍可能是旧写入尚未完成，不能据此创建第二份导出。
+下载核对持久检查点、内容与任务的范围/有效期，并再次检查当前权限。最终本地下载准入与擦除共用事务锁；
+一次性下载的指针消费与成功审计原子提交，删除不确定时保留内部清理检查点。
+一次性响应丢失后不能保证再次下载成功。擦除前已获准的响应仍可能随后到达，无法撤回已经发送的字节；
+这些本地屏障不等于跨区域擦除、源删除证明或 Legal Hold 验收。
+
+## 服务端命令预览与执行
+
+```text
+POST /v1/command-intents                  # Idempotency-Key；显式 plan/datasets
+GET  /v1/command-intents/:id               # 原 caller/issuer/subject/client/tenant 范围
+POST /v1/command-intents/:id/execute       # 仅 version + confirmation_digest
+```
+
+预览持久化规范化计划、目标账户、本地 disposition/目录/区域 epoch 和所选快照元数据，默认有效期五分钟。
+创建和执行有事务审计；GET 是原调用者范围内的脱敏计划/回执读取，不读来源内容。
+工作流步骤必须显式声明同源数据集；补偿动作也需匹配实际权限和范围。export 必须启用，未启用源不新建同步/擦除。
+所有接口 `no-store`，请求有 256 KiB/32 步预算。拒绝客户端 tenant、未知顶层字段、尾随 JSON 和执行载荷覆盖。
+
+执行重新授权、重建并比对原计划，再在 directory → regional epoch → account → intent 锁序下核对
+本地前置条件、版本和数据库当前时钟，原子创建现有 Operation/Sync receipt、执行审计及 intent 状态。
+同一确认的并发/丢响应重试只返回原回执，不自动运行命令。未确认结果保留原意图；关闭页面不是取消或回滚。
+过期、版本/确认冲突、本地版本变化分别返回稳定的 `command.expired`、
+`command.confirmation_conflict`、`command.stale`（409），不会自动换键。
+`authorization_version: unsupported`、`resource_authorization: unknown` 必须保留；本地源版本/Writer Epoch
+不证明全局时点、源 ACL 或投影可见性。权限检查不是 Snaplink 与本地数据库的分布式事务，来源仍复查资源授权。
+Operation 的后台/手动执行现在在领取前和每个正向、补偿、状态对账调用前复查持久发起者的当前 Snaplink
+根命令及实际动作权限，使用三秒共享准入期限；不以当前管理员、账户 ownership、预览资格或本地 fallback 代替。
+发送前还核对本地活租约、账户 disposition、目录与 writer epoch。拒绝/依赖故障保留原回执和已有结果，
+事务记录 `operation.execution.blocked`；后台资格查询按本地一分钟间隔重新检查，不代表全局限流。
+只在确定尚未调用 runner 时，领取的正向/补偿动作才可回到 pending；原 unknown 仍保持 unknown。
+过期正向/补偿尝试以事务审计转为 unknown，不能重新发送，未知正向结果不授权开始回滚。
+`operation.authorization_denied`（403）、`operation.authorization_unavailable`、
+`operation.execution_lease_lost`、`operation.execution_defer_unknown`、`operation.execution_block_unknown`（503）
+均需查询原 Operation，不能换键创建第二个命令。准入后发生撤权/租约/区域变化仍不能撤回已发送动作，来源必须重新授权。
+Sync/Erase/Export/审计导出的延迟执行也已接入持久发起者的权威权限复查，不借用手动操作者或 ownership。
+领取后的准入及每次来源调用、投影应用、内容分页、对象写入/恢复读取和最终制品发布前，核对当前权限与活租约/目录 fence；
+审计导出同时要求 `audit.export` 和 `audit.read`，每页复查。每次准入共享三秒期限；账户/审计导出生成和原制品恢复各有五分钟整体期限。
+本地检查仍不是来源 ACL 或分布式事务。
+拒绝/故障以 `sync.execution.blocked` 事务审计暂停，保留原来源结果、summary replay、制品 key/digest/TTL。
+只有尚未读取内容/调用来源、没有恢复记录的新执行领取才可回 pending；已开始及原 unknown/reconcile 保持 unknown。
+后台 pending/unknown 查询按本地一分钟间隔重新检查，手动重查可覆盖间隔但不能覆盖当前授权/活租约；不是全局限流。
+`sync.authorization_denied`（403）、`sync.authorization_unavailable`、`sync.execution_lease_lost`、
+`sync.execution_defer_unknown`（503）要求查询原 job，不换键、重生成制品、延长 TTL 或将超时当作删除失败重发。
+未知恢复端口缺失会停止，不以重新读取来源替代原 summary replay。未开始对象 Put、但已留检查点的结果也只恢复/处置原制品；
+暂时 NotFound 不授权再次 Put。擦除/到期后的原制品处置不依赖重新获得导出生成权限，且不授权扩大删除范围或解除 Legal Hold。
+完整逐动作 Web 接线、全量集成、真实权威/源/browser/跨区域验收仍未关闭。
 
 ## 管理端
 

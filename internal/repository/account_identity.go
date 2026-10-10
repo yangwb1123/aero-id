@@ -101,9 +101,15 @@ func useExistingAccountIdentity(tx *gorm.DB, input accountIdentityInput, created
 		First(&existing).Error; err != nil {
 		return domain.ID{}, false, fmt.Errorf("load existing account identity: %w", err)
 	}
-	if err := tx.Model(&accountIdentityRow{}).Where("id = ?", existing.ID).
-		Updates(map[string]any{"canonical_uid": input.canonicalUID, "last_seen_at": now}).Error; err != nil {
-		return domain.ID{}, false, fmt.Errorf("touch account identity: %w", err)
+	account, err := lockAccountDispositionTx(tx, existing.AccountID)
+	if err != nil {
+		return domain.ID{}, false, fmt.Errorf("lock account identity disposition: %w", err)
+	}
+	if account.Status != string(domain.AccountErased) {
+		if err := tx.Model(&accountIdentityRow{}).Where("id = ?", existing.ID).
+			Updates(map[string]any{"canonical_uid": input.canonicalUID, "last_seen_at": now}).Error; err != nil {
+			return domain.ID{}, false, fmt.Errorf("touch account identity: %w", err)
+		}
 	}
 	if err := tx.Delete(&accountRow{}, "id = ?", createdID).Error; err != nil {
 		return domain.ID{}, false, fmt.Errorf("remove competing account: %w", err)

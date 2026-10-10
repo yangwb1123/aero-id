@@ -105,6 +105,45 @@ region. Its source OAuth client ID must match the assertion `client_id`. The
 shipped configuration leaves this block disabled; enabling it without the
 external JWKS and matching Aero IM configuration is not a valid rollout.
 
+## Deferred Operation and Sync-job authorization
+
+Operation workers use the stored initiator and tenant/account scope, not the current
+administrator or historical user credentials. Production rechecks Snaplink's configured
+Authorizer.Check directly, without legacy local fallback, for the root command and the
+actual forward/compensation action. These global grants are distinct from enqueue's
+self-service ownership eligibility: source enablement must also verify initiator action
+grants for the configured aero-id AuthZ client. The authority does not expose a policy
+version or tenant-specific source resource ACL through this Check contract.
+
+Checks run before claims and again before each effect/status query, with a shared
+three-second admission deadline. Local live leases, account disposition and the durable
+directory/epoch must also match before calling a source. Denials/outages pause the
+original receipt with transactional audit; they never authorize fallback, a second
+command or destructive compensation. A forward/compensation lease expiry remains
+unknown until original-key/source-ID reconciliation. An unknown forward effect is not
+rollback authorization. These local checks are not atomic with external authority or
+source requests; the source must still enforce its own resource authorization/fencing.
+Sync/Erase/Export/audit-export jobs also check the durable initiator directly, the
+current tenant/account/home/disposition and exact live lease/directory fence after
+claiming and before source calls, projection application, content pages, artifact
+Put/recovery reads and publication. Audit exports require both `audit.export` and
+`audit.read`; each page rechecks the grants. Each admission uses a shared three-second
+budget. These checks neither fabricate a client/session grant nor supply source ACLs.
+
+Audited deferral preserves original source operation IDs/results, stored summary
+replays and original artifact key/digest/size/TTL. Only an untouched execution claim
+with no durable recovery state may return to pending; a reconciliation or started
+claim remains unknown. Background eligibility is locally paced for one minute;
+manual checks do not bypass current authorization or leases. Expired Sync execution
+leases commit unknown and expiry audit before returning the sentinel, never reissue
+an erase. Status-query admission is not renewable permission to repeat erase;
+even an explicit `not_accepted` result must pass new action/lease admission and keep
+the original idempotency key. An absent summary recovery port does not authorize
+another source read. Revoked export generation does not prevent retention disposal
+of the original expired/invalidated object, and disposal never authorizes a new Put.
+Real authority/resource-ACL, sends followed by revocation/lease loss, WAN, old-writer
+and storage/retention acceptance remain external gates.
+
 ## Source authentication
 
 Snaplink and Aero IM may use OAuth client credentials, a transitional static bearer token, or mTLS. The

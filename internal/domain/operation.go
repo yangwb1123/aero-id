@@ -36,14 +36,17 @@ type Operation struct {
 	OperationType  string
 	Status         OperationStatus
 	IdempotencyKey string
-	RequestPayload map[string]any
-	Result         map[string]any
-	ErrorCode      string
-	ErrorMessage   string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CompletedAt    *time.Time
-	Steps          []*OperationStep
+	// RequestFingerprint binds this durable receipt to the originating intent.
+	// It is internal metadata, not part of the public transport contract.
+	RequestFingerprint string `json:"-"`
+	RequestPayload     map[string]any
+	Result             map[string]any
+	ErrorCode          string
+	ErrorMessage       string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CompletedAt        *time.Time
+	Steps              []*OperationStep
 }
 
 type OperationStep struct {

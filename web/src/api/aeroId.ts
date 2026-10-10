@@ -1,12 +1,15 @@
 import type {
   AccountView,
   AggregateView,
+  CapabilityReport,
   Dataset,
   JsonRecord,
   PageData,
   Profile,
 } from "../types";
 import { CallbackClient } from "./callback";
+import { CommandIntentClient } from "./commandIntent";
+import { parseCapabilities } from "./capabilities";
 import { ComplianceClient } from "./compliance";
 import { MigrationClient } from "./migration";
 import { RegionClient } from "./region";
@@ -102,6 +105,7 @@ function activityPage(data: JsonRecord): PageData<JsonRecord> {
 export class AeroIdClient {
   private readonly transport: AeroIdTransport;
   readonly callbacks: CallbackClient;
+  readonly commands: CommandIntentClient;
   readonly compliance: ComplianceClient;
   readonly migration: MigrationClient;
   readonly regions: RegionClient;
@@ -114,14 +118,21 @@ export class AeroIdClient {
   ) {
     this.transport = new AeroIdTransport(baseUrl, accessToken, fetcher);
     this.callbacks = new CallbackClient(this.transport);
+    this.commands = new CommandIntentClient(this.transport);
     this.compliance = new ComplianceClient(this.transport);
     this.migration = new MigrationClient(this.transport);
     this.regions = new RegionClient(this.transport);
     this.replays = new ReplayClient(this.transport);
   }
 
-  async listDatasets(): Promise<Dataset[]> {
-    const data = dataOf(await this.request("GET", "/account-datasets"));
+  cancelPendingReads(): void {
+    this.transport.cancelPendingReads();
+  }
+
+  async listDatasets(signal?: AbortSignal): Promise<Dataset[]> {
+    const data = dataOf(
+      await this.request("GET", "/account-datasets", { signal }),
+    );
     return records(data.datasets).flatMap((item) => {
       if (typeof item.name !== "string" || typeof item.source !== "string")
         return [];
@@ -129,8 +140,14 @@ export class AeroIdClient {
     });
   }
 
-  async getMe(): Promise<AccountView> {
-    return dataOf(await this.request("GET", "/me")) as AccountView;
+  async getCapabilities(signal?: AbortSignal): Promise<CapabilityReport> {
+    return parseCapabilities(
+      dataOf(await this.request("GET", "/me/capabilities", { signal })),
+    );
+  }
+
+  async getMe(signal?: AbortSignal): Promise<AccountView> {
+    return dataOf(await this.request("GET", "/me", { signal })) as AccountView;
   }
 
   async getProfile(): Promise<Profile> {
@@ -251,20 +268,26 @@ export class AeroIdClient {
     );
   }
 
-  async listSyncJobs(cursor?: string): Promise<PageData<JsonRecord>> {
+  async listSyncJobs(
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<PageData<JsonRecord>> {
     return pageOf(
       dataOf(
         await this.request("GET", "/sync/jobs", {
           query: { cursor, limit: 50 },
+          signal,
         }),
       ),
       "jobs",
     );
   }
 
-  async getSyncJob(id: string): Promise<JsonRecord> {
+  async getSyncJob(id: string, signal?: AbortSignal): Promise<JsonRecord> {
     return dataOf(
-      await this.request("GET", `/sync/jobs/${encodeURIComponent(id)}`),
+      await this.request("GET", `/sync/jobs/${encodeURIComponent(id)}`, {
+        signal,
+      }),
     );
   }
 
@@ -337,9 +360,11 @@ export class AeroIdClient {
     );
   }
 
-  async getOperation(id: string): Promise<JsonRecord> {
+  async getOperation(id: string, signal?: AbortSignal): Promise<JsonRecord> {
     return dataOf(
-      await this.request("GET", `/operations/${encodeURIComponent(id)}`),
+      await this.request("GET", `/operations/${encodeURIComponent(id)}`, {
+        signal,
+      }),
     );
   }
 
@@ -392,13 +417,14 @@ export class AeroIdClient {
   async listOperationAudit(
     id: string,
     cursor?: string,
+    signal?: AbortSignal,
   ): Promise<PageData<JsonRecord>> {
     return pageOf(
       dataOf(
         await this.request(
           "GET",
           `/audit/operations/${encodeURIComponent(id)}`,
-          { query: { cursor, limit: 50 } },
+          { query: { cursor, limit: 50 }, signal },
         ),
       ),
       "events",

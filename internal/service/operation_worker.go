@@ -25,14 +25,13 @@ func (s *operationService) runClaimed(ctx context.Context, operation *domain.Ope
 		worker = "inline"
 	}
 	worker = operationWorkerRole(worker)
-	startCtx, startCancel := operationPersistenceContext(ctx)
-	if err := s.setOperationStatus(startCtx, operation, domain.OperationRunning, "", "", nil, "operation.started",
-		map[string]any{"status": domain.OperationRunning, "worker_role": worker}); err != nil {
-		startCancel()
-		return nil, apperr.Internal("operation.start_failed", "failed to start operation").Wrap(err)
+	if err := s.startClaimedOperation(ctx, operation, worker); err != nil {
+		return nil, err
 	}
-	startCancel()
 	for {
+		if err := s.checkOperationExecution(ctx, operation, nil, false, false, ""); err != nil {
+			return nil, err
+		}
 		owner := operationLeaseOwner(worker)
 		step, claimErr := s.repo.ClaimNextStep(ctx, operation.ID, owner, operationLeaseDuration)
 		if claimErr != nil {
@@ -70,6 +69,9 @@ func terminalOperationStatus(status domain.OperationStatus) bool {
 }
 
 func (s *operationService) runClaimedStep(ctx context.Context, operation *domain.Operation, step *domain.OperationStep, worker string) error {
+	if err := s.checkOperationExecution(ctx, operation, step, false, false, worker); err != nil {
+		return err
+	}
 	if s.runner == nil {
 		stateCtx, stateCancel := operationPersistenceContext(ctx)
 		err := s.finishStep(stateCtx, operation, step, worker, domain.StepFailed, "", "operation.runner_unavailable", nil,
@@ -109,7 +111,7 @@ func (s *operationService) abortOperationSteps(ctx context.Context, operation *d
 		return apperr.Internal("operation.skip_steps_failed", "failed to close skipped operation steps").Wrap(err)
 	}
 	if err := s.compensate(ctx, operation, worker); err != nil {
-		return apperr.Internal("operation.compensation_failed", "failed to run operation compensation").Wrap(err)
+		return operationContinuationError(err, "operation.compensation_failed", "failed to run operation compensation")
 	}
 	return nil
 }
@@ -209,21 +211,25 @@ func (s *operationService) processOperations(ctx context.Context, ids []domain.I
 		if !operation.CreatedAt.IsZero() {
 			s.metrics.ObserveOperationAge(string(operation.Status), time.Since(operation.CreatedAt))
 		}
-		if reconcile {
-			reconciler, ok := s.runner.(OperationOutcomeReconciler)
-			if !ok {
-				continue
-			}
-			if _, err := s.reconcileClaimed(ctx, operation, worker, reconciler); err != nil {
-				return false
-			}
-			continue
-		}
-		if _, runErr := s.runClaimed(ctx, operation, worker); runErr != nil {
+		if !s.processClaimedOperation(ctx, operation, worker, reconcile) {
 			return false
 		}
 	}
 	return true
+}
+
+func (s *operationService) processClaimedOperation(ctx context.Context, operation *domain.Operation, worker string, reconcile bool) bool {
+	var err error
+	if reconcile {
+		reconciler, ok := s.runner.(OperationOutcomeReconciler)
+		if !ok {
+			return true
+		}
+		_, err = s.reconcileClaimed(ctx, operation, worker, reconciler)
+	} else {
+		_, err = s.runClaimed(ctx, operation, worker)
+	}
+	return err == nil || isOperationExecutionBlocked(err)
 }
 
 func (s *operationService) operationInRegion(ctx context.Context, operation *domain.Operation) bool {

@@ -29,15 +29,30 @@ const auditExportEventsPerPage = domain.MaxPageLimit
 //
 //nolint:cyclop // export assembles header, pages and digest with explicit outcomes.
 func (s *syncJobService) executeAuditExport(ctx context.Context, job *domain.SyncJob) (*domain.SyncJob, error) {
+	if job.ErrorCode == "export.cleanup_unknown" {
+		return s.reconcileInvalidatedExport(ctx, job)
+	}
+	if shouldRecoverExport(job) {
+		return s.recoverExportArtifact(ctx, job)
+	}
 	if s.auditLedger == nil {
 		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_unavailable", "audit ledger repository is not configured", nil)
 	}
+	if err := s.checkSyncExecution(ctx, job, false); err != nil {
+		return s.pauseSyncExecution(ctx, job, err, true, nil)
+	}
+	ctx, cancel := syncRemoteContext(ctx)
+	defer cancel()
 	cursor, err := s.auditExportStartCursor(ctx, job)
 	if err != nil {
 		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.invalid_continuation", "audit export continuation state is invalid", nil)
 	}
-	events, next, truncated, err := collectAuditExportEvents(ctx, s.auditLedger, job.TenantID, cursor, maxAuditExportEvents)
+	ledger := &authorizedSyncExportLedger{AuditLedgerRepository: s.auditLedger, service: s, job: job}
+	events, next, truncated, err := collectAuditExportEvents(ctx, ledger, job.TenantID, cursor, maxAuditExportEvents)
 	if err != nil {
+		if isSyncExecutionBlocked(err) {
+			return s.pauseSyncExecution(ctx, job, err, false, nil)
+		}
 		return s.finishJobAndLoad(ctx, job, domain.SyncJobFailed, "audit_export.ledger_read_failed", "failed to read the audit ledger", nil)
 	}
 	generatedAt := time.Now().UTC()
@@ -93,17 +108,23 @@ func (s *syncJobService) writeAuditExportArtifact(ctx context.Context, job *doma
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.encrypt_failed", "failed to encrypt audit export artifact", nil, cause)
 	}
 	key, _, err := s.putSyncArtifact(ctx, job, "audit_export", encrypted, artifactManifest, "audit-export-"+job.ID.String()+".bin")
+	if key != "" {
+		manifest["_storage_key"] = key
+	}
 	if err != nil {
+		if isSyncExecutionBlocked(err) {
+			return s.pauseSyncExecution(ctx, job, err, false, manifest)
+		}
 		var checkpointErr *artifactCheckpointError
 		if errors.As(err, &checkpointErr) {
 			return s.finishJobAndLoad(ctx, job, domain.SyncJobUnknown, "audit_export.artifact_checkpoint_unknown",
-				"audit export artifact metadata outcome is unknown", nil)
+				"audit export artifact metadata outcome is unknown", artifactResultMetadata(job.JobType, manifest))
 		}
 		cause := apperr.Internal("audit_export.write_failed", "failed to write audit export artifact").Wrap(err)
 		return nil, s.finishJobFailure(ctx, job, domain.SyncJobFailed, "audit_export.write_failed", "failed to write audit export artifact", nil, cause)
 	}
 	manifest["_storage_key"] = key
-	return s.finishJobAndLoad(ctx, job, domain.SyncJobCompleted, "", "", manifest)
+	return s.finishExportArtifact(ctx, job, manifest, key)
 }
 
 // collectAuditExportEvents reads only bounded keyset pages. The final page is

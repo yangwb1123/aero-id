@@ -7,9 +7,13 @@ import PageError from "../components/PageError.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageLoading from "../components/PageLoading.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
+import { useCapabilities } from "../hooks/capabilityContext";
+import SourceFreshnessPanel from "../components/SourceFreshnessPanel.vue";
 
 type Props = { client: AeroIdClient };
 const { client } = defineProps<Props>();
+const capabilities = useCapabilities();
+const capabilityReport = computed(() => capabilities?.());
 const resource = useAsyncResource(async () => {
   const [me, datasets, overview] = await Promise.all([
     client.getMe(),
@@ -24,7 +28,7 @@ const metrics = computed(() => {
   return [
     ["来源账户", value.me.sources?.length ?? 0],
     ["成员关系", value.me.memberships?.length ?? 0],
-    ["可用数据集", value.datasets.length],
+    ["已注册数据集", value.datasets.length],
     ["聚合快照", value.overview.snapshots?.length ?? 0],
   ] as const;
 });
@@ -84,6 +88,7 @@ const metrics = computed(() => {
         <IrisBadge tone="danger">{{ message }}</IrisBadge>
       </div>
     </IrisCard>
+    <SourceFreshnessPanel v-if="capabilityReport" :report="capabilityReport" />
     <AccountDataPanel :client="client" :datasets="resource.data.datasets" />
   </section>
 </template>

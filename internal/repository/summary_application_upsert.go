@@ -38,13 +38,18 @@ func upsertSnapshotTx(tx *gorm.DB, snapshot *domain.AccountSnapshot, appliedAt t
 	}
 	snapshot.UpdatedAt = appliedAt
 	row := snapshotDomainToRow(snapshot)
-	return tx.Clauses(clause.OnConflict{
+	result := tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "account_id"}, {Name: "source"}, {Name: "dataset"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"source_region", "status", "version", "generated_at", "last_synced_at", "expires_at", "error_code", "data", "updated_at",
 		}),
 		Where: versionFence("account_snapshots"),
-	}).Create(row).Error
+	}, clause.Returning{}).Create(row)
+	if result.Error != nil || result.RowsAffected == 0 {
+		return result.Error
+	}
+	snapshot.ID = row.ID
+	return appendReplicationChange(tx, snapshotRowToDomain(row), false)
 }
 
 func upsertSummarySourcesTx(tx *gorm.DB, request domain.SummaryApplicationRequest,
@@ -139,11 +144,20 @@ func markMissingSnapshotsTx(tx *gorm.DB, request domain.SummaryApplicationReques
 	if len(missing) == 0 {
 		return nil
 	}
-	return tx.Model(&accountSnapshotRow{}).
+	var rows []accountSnapshotRow
+	if err := tx.Model(&rows).Clauses(clause.Returning{}).
 		Where("account_id = ? AND source = ? AND dataset IN ? AND version <= ?",
 			request.AccountID, request.Source, missing, request.Version).
 		Updates(map[string]any{"status": string(domain.SnapshotUnavailable), "version": request.Version,
-			"error_code": "source.reconciled_absent", "last_synced_at": appliedAt, "updated_at": appliedAt}).Error
+			"error_code": "source.reconciled_absent", "last_synced_at": appliedAt, "updated_at": appliedAt}).Error; err != nil {
+		return err
+	}
+	for i := range rows {
+		if err := appendReplicationChange(tx, snapshotRowToDomain(&rows[i]), false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func missingRequestedDatasets(requested []domain.AccountDataset, returned []*domain.AccountSnapshot) []domain.AccountDataset {

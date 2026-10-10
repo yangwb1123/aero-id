@@ -43,7 +43,7 @@ func (s *syncJobService) reloadSyncJob(ctx context.Context, id domain.ID) (*doma
 	if err != nil {
 		return nil, apperr.Internal("sync.reload_failed", "failed to reload sync job").Wrap(err)
 	}
-	return job, nil
+	return sanitizeAccountExportJob(job), nil
 }
 
 // finishJobFailure preserves the original service error when the terminal

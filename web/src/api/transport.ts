@@ -10,6 +10,7 @@ interface ErrorEnvelope {
 interface PendingResponse {
   response: Response;
   timedOut(): boolean;
+  canceled(): boolean;
   finish(): void;
 }
 
@@ -18,6 +19,7 @@ export interface RequestOptions {
   body?: unknown;
   idempotencyKey?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export class AeroIdError extends Error {
@@ -66,6 +68,7 @@ export class AeroIdTransport {
   private writeEpoch?: string;
   private requestSequence = 0;
   private writeEpochSequence = 0;
+  private readonly reads = new Set<AbortController>();
 
   constructor(
     baseUrl: string,
@@ -73,6 +76,11 @@ export class AeroIdTransport {
     private readonly fetcher: typeof fetch,
   ) {
     this.baseUrl = validateApiBase(baseUrl);
+  }
+
+  cancelPendingReads(): void {
+    for (const controller of this.reads) controller.abort();
+    this.reads.clear();
   }
 
   pinWriteEpoch(region: string, epoch: number): void {
@@ -104,7 +112,11 @@ export class AeroIdTransport {
         this.rejectStaleRead(pending.response);
       return payload;
     } catch (reason) {
-      throw this.responseReadError(reason, pending.timedOut());
+      throw this.responseReadError(
+        reason,
+        pending.timedOut(),
+        pending.canceled(),
+      );
     } finally {
       pending.finish();
     }
@@ -121,7 +133,11 @@ export class AeroIdTransport {
       this.rejectStaleRead(pending.response);
       return blob;
     } catch (reason) {
-      throw this.responseReadError(reason, pending.timedOut());
+      throw this.responseReadError(
+        reason,
+        pending.timedOut(),
+        pending.canceled(),
+      );
     } finally {
       pending.finish();
     }
@@ -141,6 +157,7 @@ export class AeroIdTransport {
       this.buildHeaders(token, options),
       options.body,
       options.timeoutMs,
+      options.signal,
     );
     const responseEpoch = pending.response.headers.get("X-Aero-Write-Epoch");
     if (responseEpoch && sequence > this.writeEpochSequence) {
@@ -182,10 +199,17 @@ export class AeroIdTransport {
     headers: Headers,
     body: unknown,
     timeoutMs = requestTimeoutMs,
+    signal?: AbortSignal,
   ): Promise<PendingResponse> {
+    if (signal?.aborted) throw canceledRequest();
     const controller = new AbortController();
+    const isRead = method.toUpperCase() === "GET";
+    if (isRead) this.reads.add(controller);
+    const cancel = () => controller.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
     let timeoutTriggered = false;
     const timeout = window.setTimeout(() => {
+      if (controller.signal.aborted) return;
       timeoutTriggered = true;
       controller.abort();
     }, timeoutMs);
@@ -194,6 +218,8 @@ export class AeroIdTransport {
       if (finished) return;
       finished = true;
       window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", cancel);
+      this.reads.delete(controller);
     };
     try {
       const response = await this.fetcher(url, {
@@ -203,11 +229,17 @@ export class AeroIdTransport {
         credentials: "omit",
         signal: controller.signal,
       });
-      return { response, timedOut: () => timeoutTriggered, finish };
+      return {
+        response,
+        timedOut: () => timeoutTriggered,
+        canceled: () => controller.signal.aborted && !timeoutTriggered,
+        finish,
+      };
     } catch {
       finish();
       if (timeoutTriggered)
         throw new AeroIdError(0, "network.timeout", "aero-id 请求超时");
+      if (controller.signal.aborted) throw canceledRequest();
       throw new AeroIdError(0, "network.unavailable", "无法连接 aero-id");
     }
   }
@@ -315,12 +347,25 @@ export class AeroIdTransport {
     );
   }
 
-  private responseReadError(reason: unknown, timedOut: boolean): Error {
+  private responseReadError(
+    reason: unknown,
+    timedOut: boolean,
+    canceled: boolean,
+  ): Error {
     if (reason instanceof AeroIdError) return reason;
     if (timedOut)
       return new AeroIdError(0, "network.timeout", "aero-id 请求超时");
+    if (canceled) return canceledRequest();
     return new AeroIdError(0, "network.unavailable", "无法读取 aero-id 响应");
   }
+}
+
+function canceledRequest(): AeroIdError {
+  return new AeroIdError(
+    0,
+    "request.canceled",
+    "请求已取消；已提交命令的结果仍需查询核实",
+  );
 }
 
 export function requireDataEnvelope(value: unknown): JsonRecord {

@@ -35,7 +35,9 @@ type IdempotencyObserver interface {
 	Overflowed()              // response capture exceeded maxIdempotencyCaptureBytes
 }
 
-// Idempotency makes POST requests that carry an Idempotency-Key safe to retry: the
+// Idempotency caches legacy keyed POST responses. Durable command creation
+// bypasses this cache to validate request binding and current authorization.
+// For legacy routes, the
 // first request for a (actor, concrete request path, key) runs the handler and
 // its response is stored; identical retries replay that stored response without
 // re-executing. A concurrent duplicate still in flight gets 409. Store errors
@@ -47,7 +49,7 @@ func Idempotency(store idempotency.Store, ttl time.Duration, obs IdempotencyObse
 	}
 	return func(c *gin.Context) {
 		key := c.GetHeader("Idempotency-Key")
-		if c.Request.Method != http.MethodPost || key == "" {
+		if c.Request.Method != http.MethodPost || key == "" || durableCommandEndpoint(c.FullPath()) {
 			c.Next()
 			return
 		}

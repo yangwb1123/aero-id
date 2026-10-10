@@ -64,8 +64,10 @@ func TestSyncRecoveryPostgresDuplicateAndLeaseFence(t *testing.T) {
 	if err := recovery.CheckpointEraseOutcome(ctx, repository.EraseOutcomeCheckpoint{JobID: job.ID, Source: "aero-im", Worker: claimed.LeaseOwner, Status: "unknown", ErrorCode: "source.timeout"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := recovery.CheckpointArtifact(ctx, repository.ArtifactCheckpoint{JobID: job.ID, Kind: "export", Worker: claimed.LeaseOwner,
-		StorageKey: "recovery/" + job.ID.String() + "/artifact", ManifestSHA256: strings.Repeat("a", 64), SizeBytes: 3}); err != nil {
+	_, exportJobs, exportJob := exportFenceFixture(t, db, "recovery-artifact-user")
+	if err := exportJobs.(repository.SyncJobRecoveryRepository).CheckpointArtifact(t.Context(),
+		repository.ArtifactCheckpoint{JobID: exportJob.ID, Kind: "export", Worker: exportJob.LeaseOwner,
+			StorageKey: "recovery/" + exportJob.ID.String() + "/artifact", ManifestSHA256: strings.Repeat("a", 64), SizeBytes: 3}); err != nil {
 		t.Fatal(err)
 	}
 

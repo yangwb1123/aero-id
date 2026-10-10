@@ -67,25 +67,26 @@ func NewSyncJobRepository(db *gorm.DB, audit AuditLedgerTransactionalRepository)
 }
 
 type syncJobRow struct {
-	ID             uuid.UUID      `gorm:"column:id;primaryKey"`
-	AccountID      uuid.UUID      `gorm:"column:account_id"`
-	ActorUID       string         `gorm:"column:actor_uid"`
-	TenantID       string         `gorm:"column:tenant_id"`
-	RequestID      string         `gorm:"column:request_id"`
-	JobType        string         `gorm:"column:job_type"`
-	Status         string         `gorm:"column:status"`
-	IdempotencyKey string         `gorm:"column:idempotency_key"`
-	Request        datatypes.JSON `gorm:"column:request"`
-	Result         datatypes.JSON `gorm:"column:result"`
-	ErrorCode      string         `gorm:"column:error_code"`
-	ErrorMessage   string         `gorm:"column:error_message"`
-	Attempt        int            `gorm:"column:attempt"`
-	LeaseOwner     string         `gorm:"column:lease_owner"`
-	LeaseUntil     *time.Time     `gorm:"column:lease_until"`
-	LeaseKind      string         `gorm:"column:lease_kind"`
-	CreatedAt      time.Time      `gorm:"column:created_at"`
-	UpdatedAt      time.Time      `gorm:"column:updated_at"`
-	CompletedAt    *time.Time     `gorm:"column:completed_at"`
+	ID                 uuid.UUID      `gorm:"column:id;primaryKey"`
+	AccountID          uuid.UUID      `gorm:"column:account_id"`
+	ActorUID           string         `gorm:"column:actor_uid"`
+	TenantID           string         `gorm:"column:tenant_id"`
+	RequestID          string         `gorm:"column:request_id"`
+	JobType            string         `gorm:"column:job_type"`
+	Status             string         `gorm:"column:status"`
+	IdempotencyKey     string         `gorm:"column:idempotency_key"`
+	RequestFingerprint string         `gorm:"column:request_fingerprint"`
+	Request            datatypes.JSON `gorm:"column:request"`
+	Result             datatypes.JSON `gorm:"column:result"`
+	ErrorCode          string         `gorm:"column:error_code"`
+	ErrorMessage       string         `gorm:"column:error_message"`
+	Attempt            int            `gorm:"column:attempt"`
+	LeaseOwner         string         `gorm:"column:lease_owner"`
+	LeaseUntil         *time.Time     `gorm:"column:lease_until"`
+	LeaseKind          string         `gorm:"column:lease_kind"`
+	CreatedAt          time.Time      `gorm:"column:created_at"`
+	UpdatedAt          time.Time      `gorm:"column:updated_at"`
+	CompletedAt        *time.Time     `gorm:"column:completed_at"`
 }
 
 func (syncJobRow) TableName() string { return "sync_jobs" }
@@ -177,26 +178,13 @@ func (r *syncJobRepo) List(ctx context.Context, actor, tenant string, page domai
 func (r *syncJobRepo) Claim(ctx context.Context, id domain.ID, worker string, lease time.Duration) (*domain.SyncJob, error) {
 	var result *domain.SyncJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		leaseOwner := newSyncLeaseOwner()
 		var row syncJobRow
-		now := time.Now().UTC()
 		query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Where("id = ? AND status = ?", id, string(domain.SyncJobPending)).First(&row)
 		if query.Error != nil {
 			return query.Error
 		}
-		until := now.Add(lease)
-		if err := tx.Model(&row).Updates(map[string]any{"status": string(domain.SyncJobRunning), "attempt": gorm.Expr("attempt + 1"),
-			"lease_owner": leaseOwner, "lease_until": until, "lease_kind": "execute", "completed_at": nil, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		row.Status = string(domain.SyncJobRunning)
-		row.Attempt++
-		row.LeaseOwner = leaseOwner
-		row.LeaseUntil = &until
-		row.LeaseKind = "execute"
-		result, _ = syncJobFromRow(&row)
-		return nil
+		return claimSyncJob(tx, &row, worker, lease, "execute", &result)
 	})
 	return result, err
 }
@@ -204,9 +192,7 @@ func (r *syncJobRepo) Claim(ctx context.Context, id domain.ID, worker string, le
 func (r *syncJobRepo) ClaimUnknown(ctx context.Context, id domain.ID, worker string, lease time.Duration) (*domain.SyncJob, error) {
 	var result *domain.SyncJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		leaseOwner := newSyncLeaseOwner()
 		var row syncJobRow
-		now := time.Now().UTC()
 		query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Where("id = ? AND (status = ? OR (status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
 				"(status = ? AND job_type = ? AND error_code = ?))",
@@ -215,18 +201,7 @@ func (r *syncJobRepo) ClaimUnknown(ctx context.Context, id domain.ID, worker str
 		if query.Error != nil {
 			return query.Error
 		}
-		until := now.Add(lease)
-		if err := tx.Model(&row).Updates(map[string]any{"status": string(domain.SyncJobRunning), "attempt": gorm.Expr("attempt + 1"),
-			"lease_owner": leaseOwner, "lease_until": until, "lease_kind": "reconcile", "completed_at": nil, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		row.Status = string(domain.SyncJobRunning)
-		row.Attempt++
-		row.LeaseOwner = leaseOwner
-		row.LeaseUntil = &until
-		row.LeaseKind = "reconcile"
-		result, _ = syncJobFromRow(&row)
-		return nil
+		return claimSyncJob(tx, &row, worker, lease, "reconcile", &result)
 	})
 	return result, err
 }
@@ -234,9 +209,7 @@ func (r *syncJobRepo) ClaimUnknown(ctx context.Context, id domain.ID, worker str
 func (r *syncJobRepo) ClaimUnknownNext(ctx context.Context, worker string, lease time.Duration) (*domain.SyncJob, error) {
 	var result *domain.SyncJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		leaseOwner := newSyncLeaseOwner()
 		var row syncJobRow
-		now := time.Now().UTC()
 		query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
 			Where("(status = ? AND (lease_until IS NULL OR lease_until < clock_timestamp())) OR "+
 				"(status = ? AND lease_kind = ? AND lease_until < clock_timestamp()) OR "+
@@ -247,62 +220,13 @@ func (r *syncJobRepo) ClaimUnknownNext(ctx context.Context, worker string, lease
 		if query.Error != nil {
 			return query.Error
 		}
-		until := now.Add(lease)
-		if err := tx.Model(&row).Updates(map[string]any{"status": string(domain.SyncJobRunning), "attempt": gorm.Expr("attempt + 1"),
-			"lease_owner": leaseOwner, "lease_until": until, "lease_kind": "reconcile", "completed_at": nil, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		row.Status, row.Attempt, row.LeaseOwner, row.LeaseUntil, row.LeaseKind = string(domain.SyncJobRunning), row.Attempt+1, leaseOwner, &until, "reconcile"
-		result, _ = syncJobFromRow(&row)
-		return nil
+		return claimSyncJob(tx, &row, worker, lease, "reconcile", &result)
 	})
 	return result, err
 }
 
 func (r *syncJobRepo) ClaimNext(ctx context.Context, worker string, lease time.Duration) (*domain.SyncJob, error) {
-	var result *domain.SyncJob
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var row syncJobRow
-		now := time.Now().UTC()
-		query := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-			Where("status = ?", string(domain.SyncJobPending)).
-			Order("created_at ASC, id ASC").First(&row)
-		if errors.Is(query.Error, gorm.ErrRecordNotFound) {
-			var stale syncJobRow
-			staleQuery := tx.Where("status = ? AND lease_kind = ? AND lease_until < clock_timestamp()", string(domain.SyncJobRunning), "execute").
-				Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-				Order("lease_until ASC, created_at ASC, id ASC").First(&stale)
-			if errors.Is(staleQuery.Error, gorm.ErrRecordNotFound) {
-				return query.Error
-			}
-			if staleQuery.Error != nil {
-				return staleQuery.Error
-			}
-			if err := tx.Model(&stale).Updates(map[string]any{"status": string(domain.SyncJobUnknown),
-				"error_code": "sync.unknown_outcome", "error_message": "worker lease expired before the result was recorded",
-				"lease_owner": "", "lease_until": nil, "lease_kind": "", "updated_at": now}).Error; err != nil {
-				return err
-			}
-			return ErrSyncJobUnknown
-		}
-		if query.Error != nil {
-			return query.Error
-		}
-		until := now.Add(lease)
-		leaseOwner := newSyncLeaseOwner()
-		if err := tx.Model(&row).Updates(map[string]any{"status": string(domain.SyncJobRunning), "attempt": gorm.Expr("attempt + 1"),
-			"lease_owner": leaseOwner, "lease_until": until, "lease_kind": "execute", "updated_at": now}).Error; err != nil {
-			return err
-		}
-		row.Status = string(domain.SyncJobRunning)
-		row.Attempt++
-		row.LeaseOwner = leaseOwner
-		row.LeaseUntil = &until
-		row.LeaseKind = "execute"
-		result, _ = syncJobFromRow(&row)
-		return nil
-	})
-	return result, err
+	return r.claimNextForRegion(ctx, worker, lease, "")
 }
 
 func (r *syncJobRepo) Finish(ctx context.Context, id domain.ID, worker string, status domain.SyncJobStatus, code, message string, result map[string]any) error {
@@ -315,33 +239,6 @@ func (r *syncJobRepo) FinishWithAudit(ctx context.Context, id domain.ID, worker 
 		return fmt.Errorf("transactional audit repository is not configured")
 	}
 	return r.finish(ctx, id, worker, status, code, message, result, fact)
-}
-
-func (r *syncJobRepo) ListExpiredExports(ctx context.Context, now time.Time, limit int) ([]*domain.SyncJob, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	var rows []syncJobRow
-	if err := r.db.WithContext(ctx).Where("job_type IN ? AND status = ?",
-		[]string{string(domain.SyncJobExport), string(domain.SyncJobAuditExport)}, string(domain.SyncJobCompleted)).
-		Order("updated_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	result := make([]*domain.SyncJob, 0, len(rows))
-	for i := range rows {
-		job, err := syncJobFromRow(&rows[i])
-		if err != nil {
-			return nil, err
-		}
-		expires, ok := syncJobExpiry(job.Result["expires_at"])
-		if !ok || !now.Before(expires) {
-			// Export artifacts are always TTL-bound. Treat a missing or
-			// malformed legacy expiry as expired so cleanup cannot leave an
-			// artifact that the download path will correctly refuse.
-			result = append(result, job)
-		}
-	}
-	return result, nil
 }
 
 func (r *syncJobRepo) BurnArtifact(ctx context.Context, id domain.ID, kind, storageKey string) error {
@@ -372,32 +269,6 @@ func (r *syncJobRepo) BurnArtifact(ctx context.Context, id domain.ID, kind, stor
 	})
 }
 
-func (r *syncJobRepo) ClearExportArtifact(ctx context.Context, id domain.ID, storageKey string) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var row syncJobRow
-		if err := tx.Where("id = ? AND job_type IN ?", id,
-			[]string{string(domain.SyncJobExport), string(domain.SyncJobAuditExport)}).First(&row).Error; err != nil {
-			return err
-		}
-		result, err := syncJobFromRow(&row)
-		if err != nil {
-			return err
-		}
-		if current, ok := result.Result["_storage_key"].(string); !ok || current != storageKey {
-			return nil
-		}
-		delete(result.Result, "_storage_key")
-		result.Result["artifact_deleted_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-		payload, err := json.Marshal(result.Result)
-		if err != nil {
-			return fmt.Errorf("marshal expired export result: %w", err)
-		}
-		return tx.Model(&syncJobRow{}).Where("id = ?", id).Updates(map[string]any{
-			"result": datatypes.JSON(payload), "updated_at": time.Now().UTC(),
-		}).Error
-	})
-}
-
 func syncJobToRow(job *domain.SyncJob) (*syncJobRow, error) {
 	request, err := json.Marshal(resultOrEmpty(job.Request))
 	if err != nil {
@@ -409,7 +280,8 @@ func syncJobToRow(job *domain.SyncJob) (*syncJobRow, error) {
 	}
 	return &syncJobRow{ID: job.ID, AccountID: job.AccountID, ActorUID: job.ActorUID, TenantID: job.TenantID,
 		RequestID: job.RequestID, JobType: string(job.JobType), Status: string(job.Status),
-		IdempotencyKey: job.IdempotencyKey, Request: datatypes.JSON(request), Result: datatypes.JSON(result), ErrorCode: job.ErrorCode,
+		IdempotencyKey: job.IdempotencyKey, RequestFingerprint: job.RequestFingerprint,
+		Request: datatypes.JSON(request), Result: datatypes.JSON(result), ErrorCode: job.ErrorCode,
 		ErrorMessage: job.ErrorMessage, Attempt: job.Attempt, LeaseOwner: job.LeaseOwner, LeaseUntil: job.LeaseUntil,
 		LeaseKind: job.LeaseKind,
 		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt, CompletedAt: job.CompletedAt}, nil
@@ -426,7 +298,8 @@ func syncJobFromRow(row *syncJobRow) (*domain.SyncJob, error) {
 	}
 	return &domain.SyncJob{ID: row.ID, AccountID: row.AccountID, ActorUID: row.ActorUID, TenantID: row.TenantID,
 		RequestID: row.RequestID, JobType: domain.SyncJobType(row.JobType),
-		Status: domain.SyncJobStatus(row.Status), IdempotencyKey: row.IdempotencyKey, Request: request, Result: result,
+		Status: domain.SyncJobStatus(row.Status), IdempotencyKey: row.IdempotencyKey,
+		RequestFingerprint: row.RequestFingerprint, Request: request, Result: result,
 		ErrorCode: row.ErrorCode, ErrorMessage: row.ErrorMessage, Attempt: row.Attempt, LeaseOwner: row.LeaseOwner,
 		LeaseUntil: row.LeaseUntil, LeaseKind: row.LeaseKind, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CompletedAt: row.CompletedAt}, nil
 }

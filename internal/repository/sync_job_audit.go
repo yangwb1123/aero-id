@@ -23,6 +23,9 @@ func (r *syncJobRepo) finish(ctx context.Context, id domain.ID, worker string, s
 	now := time.Now().UTC()
 	updates := syncJobFinishUpdates(status, code, message, data, now)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockExportPublicationTx(tx, id, status); err != nil {
+			return err
+		}
 		// Lock before checking the lease. clock_timestamp() is required here:
 		// now() is fixed at transaction start and can approve a worker that
 		// waited past expiry for this row lock.

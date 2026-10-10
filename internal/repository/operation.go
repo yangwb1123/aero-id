@@ -67,22 +67,23 @@ func NewOperationRepository(db *gorm.DB, audit AuditLedgerTransactionalRepositor
 }
 
 type operationRow struct {
-	ID             uuid.UUID      `gorm:"column:id;primaryKey"`
-	AccountID      *uuid.UUID     `gorm:"column:account_id"`
-	ActorUID       string         `gorm:"column:actor_uid"`
-	TenantID       string         `gorm:"column:tenant_id"`
-	RequestID      string         `gorm:"column:request_id"`
-	HomeRegion     string         `gorm:"column:home_region"`
-	OperationType  string         `gorm:"column:operation_type"`
-	Status         string         `gorm:"column:status"`
-	IdempotencyKey string         `gorm:"column:idempotency_key"`
-	RequestPayload datatypes.JSON `gorm:"column:request_payload"`
-	Result         datatypes.JSON `gorm:"column:result"`
-	ErrorCode      string         `gorm:"column:error_code"`
-	ErrorMessage   string         `gorm:"column:error_message"`
-	CreatedAt      time.Time      `gorm:"column:created_at"`
-	UpdatedAt      time.Time      `gorm:"column:updated_at"`
-	CompletedAt    *time.Time     `gorm:"column:completed_at"`
+	ID                 uuid.UUID      `gorm:"column:id;primaryKey"`
+	AccountID          *uuid.UUID     `gorm:"column:account_id"`
+	ActorUID           string         `gorm:"column:actor_uid"`
+	TenantID           string         `gorm:"column:tenant_id"`
+	RequestID          string         `gorm:"column:request_id"`
+	HomeRegion         string         `gorm:"column:home_region"`
+	OperationType      string         `gorm:"column:operation_type"`
+	Status             string         `gorm:"column:status"`
+	IdempotencyKey     string         `gorm:"column:idempotency_key"`
+	RequestFingerprint string         `gorm:"column:request_fingerprint"`
+	RequestPayload     datatypes.JSON `gorm:"column:request_payload"`
+	Result             datatypes.JSON `gorm:"column:result"`
+	ErrorCode          string         `gorm:"column:error_code"`
+	ErrorMessage       string         `gorm:"column:error_message"`
+	CreatedAt          time.Time      `gorm:"column:created_at"`
+	UpdatedAt          time.Time      `gorm:"column:updated_at"`
+	CompletedAt        *time.Time     `gorm:"column:completed_at"`
 }
 
 func (operationRow) TableName() string { return "operations" }
@@ -252,6 +253,7 @@ func (r *operationRepo) List(ctx context.Context, actor, tenant string, page dom
 
 func (r *operationRepo) ClaimNextStep(ctx context.Context, operationID domain.ID, worker string, lease time.Duration) (*domain.OperationStep, error) {
 	var result *domain.OperationStep
+	unknown := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		var row operationStepRow
@@ -271,30 +273,13 @@ func (r *operationRepo) ClaimNextStep(ctx context.Context, operationID domain.ID
 		if !errors.Is(query.Error, gorm.ErrRecordNotFound) {
 			return query.Error
 		}
-		var stale operationStepRow
-		staleQuery := tx.Where("operation_steps.operation_id = ? AND operation_steps.status = ? AND "+
-			"operation_steps.lease_kind = ? AND operation_steps.lease_until < clock_timestamp()",
-			operationID, string(domain.StepRunning), "forward").
-			Where(`NOT EXISTS (
-				SELECT 1 FROM operation_steps previous_step
-				WHERE previous_step.operation_id = operation_steps.operation_id
-				  AND (previous_step.created_at < operation_steps.created_at OR
-				       (previous_step.created_at = operation_steps.created_at AND previous_step.id < operation_steps.id))
-			  AND previous_step.status IN ('pending', 'running', 'unknown', 'failed')
-			)`)
-		staleQuery = staleQuery.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-			Order("lease_until ASC, created_at ASC, id ASC").First(&stale)
-		if errors.Is(staleQuery.Error, gorm.ErrRecordNotFound) {
-			return staleQuery.Error
-		}
-		if staleQuery.Error != nil {
-			return staleQuery.Error
-		}
-		if err := markUnknownForwardStep(tx, &stale, now); err != nil {
-			return err
-		}
-		return ErrOperationStepUnknown
+		var expiryErr error
+		unknown, expiryErr = r.expireForwardAttemptTx(tx, ctx, operationID, now)
+		return expiryErr // Commit the unknown transition before returning its sentinel.
 	})
+	if err == nil && unknown {
+		return nil, ErrOperationStepUnknown
+	}
 	return result, err
 }
 
@@ -323,55 +308,6 @@ func (r *operationRepo) ClaimCompensationStep(ctx context.Context, operationID d
 func (r *operationRepo) ClaimUnknownCompensationStep(ctx context.Context, operationID domain.ID, worker string,
 	lease time.Duration) (*domain.OperationStep, error) {
 	return r.claimCompensationStep(ctx, operationID, worker, lease, true)
-}
-
-func (r *operationRepo) claimCompensationStep(ctx context.Context, operationID domain.ID, worker string,
-	lease time.Duration, unknown bool) (*domain.OperationStep, error) {
-	var result *domain.OperationStep
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC()
-		var row operationStepRow
-		query := tx.Where("operation_id = ? AND status = ? AND compensation_action <> ''", operationID, string(domain.StepSucceeded))
-		if unknown {
-			condition := "((compensation_status = ? AND (compensation_lease_until IS NULL OR " +
-				"compensation_lease_until < clock_timestamp())) OR (compensation_status = ? AND " +
-				"compensation_lease_until < clock_timestamp()))"
-			query = query.Where(condition,
-				string(domain.StepUnknown), string(domain.StepRunning))
-		} else {
-			condition := "((compensation_status = ? AND (compensation_lease_until IS NULL OR " +
-				"compensation_lease_until < clock_timestamp())) OR (compensation_status = ? AND " +
-				"compensation_lease_until < clock_timestamp()))"
-			query = query.Where(condition,
-				string(domain.StepPending), string(domain.StepRunning))
-		}
-		query = query.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked}).
-			Order("created_at DESC, id DESC")
-		query = query.First(&row)
-		if query.Error != nil {
-			return query.Error
-		}
-		until := now.Add(lease)
-		if err := tx.Model(&row).Updates(map[string]any{"compensation_status": string(domain.StepRunning),
-			"compensation_attempt": gorm.Expr("compensation_attempt + 1"), "compensation_lease_owner": worker,
-			"compensation_lease_until": databaseLeaseUntil(lease), "compensation_updated_at": now, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		row.CompensationStatus = string(domain.StepRunning)
-		row.CompensationAttempt++
-		row.CompensationLeaseOwner = worker
-		row.CompensationLeaseUntil = &until
-		row.CompensationUpdatedAt = &now
-		attempt := &operationAttemptRow{ID: idgen.NewID(), OperationID: row.OperationID, StepID: row.ID,
-			Attempt: row.CompensationAttempt, AttemptKind: "compensation", Status: string(domain.StepRunning), StartedAt: now}
-		if err := tx.Create(attempt).Error; err != nil {
-			return fmt.Errorf("create compensation attempt: %w", err)
-		}
-		var conversionErr error
-		result, conversionErr = operationStepRowToDomain(&row)
-		return conversionErr
-	})
-	return result, err
 }
 
 func (r *operationRepo) claimForwardStep(tx *gorm.DB, row *operationStepRow, worker string, lease time.Duration,
