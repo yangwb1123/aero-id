@@ -3,12 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,12 +19,13 @@ import (
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
+	"github.com/aero/aero-id/internal/repository"
 )
 
 // callback_worker.go owns the delivery/publication worker loop (Start), the
 // dead-letter retention purge (purgeDeadLetters), the deliveries drain
 // (drain), and every delivery-attempt helper (markDelivery, deliver,
-// retryDelay, decrypt, httpClient, and the endpoint validation policy).
+// retryDelay, httpClient, and the endpoint validation policy).
 // The request path (Register/List/Delete/ReplayDelivery) lives in
 // callback.go; the audit publication drain lives in callback_audit.go.
 
@@ -74,6 +72,9 @@ func (s *callbackService) purgeDeadLetters(ctx context.Context) {
 			s.metrics.ObserveAuditPublicationPurged("publication", purged)
 		}
 	}
+	if s.cfg.DeliveryPaused || len(s.key) == 0 {
+		return // Preserve callback deliveries during operator/key maintenance.
+	}
 	purged, err := s.repo.PurgeDeadLetterDeliveries(ctx, cutoff, 50)
 	if err != nil {
 		s.metrics.ObserveAuditPublicationPurgeFailed("delivery", err)
@@ -83,6 +84,14 @@ func (s *callbackService) purgeDeadLetters(ctx context.Context) {
 }
 
 func (s *callbackService) drain(ctx context.Context) {
+	if s.cfg.DeliveryPaused {
+		s.metrics.ObserveCallbackOutcome("paused")
+		return
+	}
+	if len(s.key) == 0 {
+		s.metrics.ObserveCallbackOutcome("key_unavailable")
+		return
+	}
 	deliveries, err := s.repo.FetchDueDeliveries(ctx, 50, s.worker, 5*time.Minute)
 	if err != nil {
 		return
@@ -107,6 +116,10 @@ func (s *callbackService) drain(ctx context.Context) {
 
 func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.CallbackDelivery) {
 	statusCode, response, deliverErr := s.deliver(ctx, delivery)
+	if errors.Is(deliverErr, errCallbackSecretUnavailable) {
+		s.deferSecretUnavailable(ctx, delivery)
+		return
+	}
 	status := "success"
 	errorCode := ""
 	next := time.Now().UTC()
@@ -130,11 +143,13 @@ func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.Cal
 }
 
 func (s *callbackService) deliver(ctx context.Context, delivery *domain.CallbackDelivery) (int, string, error) {
-	if err := validateCallbackEndpoint(delivery.Endpoint, s.cfg.AllowPrivateTarget); err != nil {
-		return 0, "", err
-	}
+	// Detect local key failures before endpoint validation can resolve DNS or
+	// consume the remote retry budget. Egress policy still precedes any send.
 	secret, err := s.decrypt(delivery.SecretCiphertext)
 	if err != nil {
+		return 0, "", err
+	}
+	if err := validateCallbackEndpoint(delivery.Endpoint, s.cfg.AllowPrivateTarget); err != nil {
 		return 0, "", err
 	}
 	body, err := json.Marshal(delivery.Payload)
@@ -201,20 +216,24 @@ func (s *callbackService) retryDelay(attempt int) time.Duration {
 	}
 	return delay + jitter
 }
-func (s *callbackService) decrypt(value string) ([]byte, error) {
-	data, err := base64.RawStdEncoding.DecodeString(value)
-	if err != nil {
-		return nil, err
+
+// deferSecretUnavailable leaves the remote-attempt budget untouched. The same
+// lease owner/generation/expiry CAS as settlement fences old workers; no plain
+// MarkDelivery fallback may consume an attempt when the deferrer is unwired.
+func (s *callbackService) deferSecretUnavailable(ctx context.Context, delivery *domain.CallbackDelivery) {
+	repo, ok := s.repo.(repository.CallbackDeliveryDeferrer)
+	if !ok {
+		s.metrics.ObserveCallbackOutcome("defer_failed")
+		return
 	}
-	block, err := aes.NewCipher(s.key)
-	if err != nil {
-		return nil, err
+	persistenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := repo.DeferDelivery(persistenceCtx, delivery.ID, s.worker, delivery.LeaseGeneration,
+		"callback.secret_unavailable", 5*time.Minute); err != nil {
+		s.metrics.ObserveCallbackOutcome("defer_failed")
+		return
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil || len(data) < gcm.NonceSize() {
-		return nil, errors.New("invalid callback secret")
-	}
-	return gcm.Open(nil, data[:gcm.NonceSize()], data[gcm.NonceSize():], nil)
+	s.metrics.ObserveCallbackOutcome("secret_unavailable")
 }
 
 //nolint:cyclop // endpoint validation is deliberately fail-closed across URL, DNS, and private-network checks.

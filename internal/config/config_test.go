@@ -830,6 +830,7 @@ func prodHardeningYAML() string {
 		"audit_ledger: {signing_key: 5e8bc08391a257146c2dcffbe98bc4382f9757b048d14b3574368cfbcb57aa4d}",
 		"audit_ledger: {signing_key: "+prodHardeningAuditKey()+"}", 1)
 	content = strings.Replace(content, "signing_key: testkey", "signing_key: "+prodHardeningRootKey(), 1)
+	content += "\ncallback:\n  master_key: " + strings.Repeat("c", 64) + "\n  previous_master_keys: []\n"
 	return content
 }
 
@@ -851,6 +852,8 @@ func pinProdHardeningEnv(t *testing.T, env, root, audit string, insecure, authz 
 	t.Setenv("AERO_ID_APP_ENV", env)
 	t.Setenv("AERO_ID_SIGNING_KEY", root)
 	t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", audit)
+	t.Setenv("AERO_ID_CALLBACK_MASTER_KEY", strings.Repeat("c", 64))
+	t.Setenv("AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS", "")
 	t.Setenv("AERO_ID_SSO_INSECURE", strconv.FormatBool(insecure))
 	t.Setenv("AERO_ID_SSO_AUTHZ_REQUIRED", strconv.FormatBool(authz))
 	t.Setenv("AERO_ID_SSO_AUTHZ_LEGACY_FALLBACK", "false")

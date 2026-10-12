@@ -22,6 +22,28 @@ func validateCallback(value CallbackConfig) error {
 	return validateCallbackCaps(value)
 }
 
+func validateCallbackPolicy(value CallbackConfig, environment string) error {
+	if err := validateCallback(value); err != nil {
+		return err
+	}
+	if err := validateCallbackMasterKeys(value, environment); err != nil {
+		return err
+	}
+	if value.AllowPrivateTarget && !callbackPrivateTargetsAllowed(environment) {
+		return fmt.Errorf("callback.allow_private_target requires an explicit non-production environment")
+	}
+	return nil
+}
+
+func callbackPrivateTargetsAllowed(environment string) bool {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "dev", "development", "test", "testing", "local":
+		return true
+	default:
+		return false
+	}
+}
+
 func validateCallbackNonNegative(value CallbackConfig) error {
 	if value.RequestTimeout < 0 || value.MaxResponseBytes < 0 || value.MaxAttempts < 0 ||
 		value.RetryBase < 0 || value.WorkerConcurrency < 0 {

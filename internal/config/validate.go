@@ -186,7 +186,8 @@ func (c *Config) validateRuntimeLimits() error {
 		validateStorage(c.Storage), validateRateLimit(c.RateLimit), validateStorageGC(c.Storage.GC),
 		validateExport(c.Export), validateWebhook(c.Outbox.Webhook), validateEventIngest(c.EventIngest),
 		validateEventBus(c.EventBus), validateReplication(c.Replication), validateAuditLedger(c.AuditLedger),
-		validateDataRetention(c.DataRetention), validateAuditGovernance(c.AuditGovernance), validateCallback(c.Callback),
+		validateDataRetention(c.DataRetention), validateAuditGovernance(c.AuditGovernance),
+		validateCallbackPolicy(c.Callback, c.App.Env),
 		c.validateCommercialIntegrations(),
 	}
 	for _, err := range checks {

@@ -23,6 +23,12 @@ import (
 // New builds the fully wired application. It opens the DB, storage, and SSO
 // connections; constructs repositories, services, and both transports.
 func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("application configuration is missing")
+	}
+	if err := config.ValidateCallbackConfig(cfg.Callback, cfg.App.Env); err != nil {
+		return nil, err
+	}
 	gdb, err := db.Open(db.Options{
 		DSN:             cfg.Database.DSN(),
 		MaxOpenConns:    cfg.Database.MaxOpenConns,

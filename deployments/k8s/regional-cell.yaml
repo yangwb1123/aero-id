@@ -220,6 +220,9 @@ data:
       http_bearer_token: ""             # transport=http: service identity token from secret provider
     callback:
       master_key: ""                       # injected through AERO_ID_CALLBACK_MASTER_KEY
+      previous_master_keys: []              # optional comma-separated prior keys during rotation
+      secret_envelope_version: 0             # raise to 1 only after all API/worker readers have upgraded
+      delivery_paused: false                 # preserves queued callbacks; governance publications still run
       worker_interval: 1s
       worker_concurrency: 4
     storage:
@@ -247,7 +250,8 @@ data:
 # Secret `aero-id-secrets` is provisioned out of band by the approved secret
 # provider. It must contain database_password, redis_password, signing_key,
 # callback_master_key, event_ingest_signing_key, audit_ledger_signing_key and
-# export_encryption_key; add replication_http_bearer_token when HTTP
+# export_encryption_key; callback_previous_master_keys is optional during key
+# rotation. Add replication_http_bearer_token when HTTP
 # replication is enabled. When the bound Aero IM summary is enabled, also add
 # aero_im_target_assertion_private_key and aero_im_oauth_client_secret; the
 # latter is exposed only as AERO_ID_SOURCES_AERO_IM_OAUTH_CLIENT_SECRET. No
@@ -357,6 +361,9 @@ spec:
             - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
+            - name: AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_previous_master_keys, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
@@ -433,6 +440,9 @@ spec:
             - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
+            - name: AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_previous_master_keys, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
@@ -578,6 +588,9 @@ spec:
             - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
+            - name: AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_previous_master_keys, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id
@@ -638,6 +651,9 @@ spec:
             - name: AERO_ID_REPLICATION_HTTP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef: {name: aero-id-secrets, key: replication_http_bearer_token, optional: true}
+            - name: AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS
+              valueFrom:
+                secretKeyRef: {name: aero-id-secrets, key: callback_previous_master_keys, optional: true}
           volumeMounts:
             - name: config
               mountPath: /etc/aero-id

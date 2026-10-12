@@ -2,11 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -35,13 +30,16 @@ type CallbackInput struct {
 }
 
 type CallbackConfig struct {
-	MasterKey          string
-	RequestTimeout     time.Duration
-	MaxResponseBytes   int64
-	MaxAttempts        int
-	RetryBase          time.Duration
-	AllowPrivateTarget bool
-	WorkerConcurrency  int // in-flight deliveries/publications (P6-06); <=0 => serial
+	MasterKey             string
+	PreviousMasterKeys    []string
+	SecretEnvelopeVersion int  // 0 = legacy-compatible writes; 1 = versioned, after every reader is upgraded
+	DeliveryPaused        bool // registration/delivery/purge paused; audit publications and durable fan-out continue
+	RequestTimeout        time.Duration
+	MaxResponseBytes      int64
+	MaxAttempts           int
+	RetryBase             time.Duration
+	AllowPrivateTarget    bool
+	WorkerConcurrency     int // in-flight deliveries/publications (P6-06); <=0 => serial
 	// PublicationTimeout bounds one governance publish (M-5); 0 = 5s default
 	// (matches audit_governance.timeout's connector default). It sizes the
 	// drain lease: lease = max(5m, 2 × 50 × timeout / concurrency) so a slow
@@ -59,6 +57,8 @@ type callbackService struct {
 	repo         repository.CallbackRepository
 	cfg          CallbackConfig
 	key          []byte
+	activeKeyID  string
+	keyring      map[string][]byte
 	worker       string
 	publications repository.AuditPublicationRepository
 	publishers   []AuditPublisher
@@ -76,9 +76,10 @@ const (
 
 func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) CallbackService {
 	cfg = normalizeCallbackConfig(cfg)
-	sum := sha256.Sum256([]byte(cfg.MasterKey))
-	return &callbackService{repo: repo, cfg: cfg, key: sum[:], worker: "callback-" + idgen.NewID().String(),
-		bulkhead: bulkhead.New(cfg.WorkerConcurrency), metrics: noopControlPlaneMetrics{}}
+	activeKey, activeKeyID, keyring := callbackKeys(cfg)
+	return &callbackService{repo: repo, cfg: cfg, key: activeKey, activeKeyID: activeKeyID, keyring: keyring,
+		worker: "callback-" + idgen.NewID().String(), bulkhead: bulkhead.New(cfg.WorkerConcurrency),
+		metrics: noopControlPlaneMetrics{}}
 }
 
 func normalizeCallbackConfig(cfg CallbackConfig) CallbackConfig {
@@ -159,8 +160,11 @@ func (s *callbackService) Register(ctx context.Context, input CallbackInput) (*d
 	if requestedTenant := strings.TrimSpace(input.TenantID); requestedTenant != "" && requestedTenant != tenantID {
 		return nil, "", apperr.Forbidden("callback.tenant_forbidden", "callback tenant does not match authenticated tenant")
 	}
+	if s.cfg.DeliveryPaused {
+		return nil, "", apperr.Unavailable("callback.paused", "callback registration is paused")
+	}
 	input.Endpoint = strings.TrimSpace(input.Endpoint)
-	if input.Endpoint == "" || len(input.Endpoint) > 2048 || len(s.cfg.MasterKey) == 0 {
+	if input.Endpoint == "" || len(input.Endpoint) > 2048 || len(s.key) == 0 {
 		return nil, "", apperr.BadRequest("callback.not_configured", "callback endpoint or encryption key is not configured")
 	}
 	eventTypes, err := normalizeCallbackEventTypes(input.EventTypes)
@@ -305,26 +309,4 @@ func (s *callbackService) ReplayDelivery(ctx context.Context, id domain.ID) erro
 		return apperr.Internal("callback.delivery_replay_failed", "failed to replay callback delivery").Wrap(err)
 	}
 	return nil
-}
-
-func (s *callbackService) encrypt(value []byte) (string, error) {
-	block, err := aes.NewCipher(s.key)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	return base64.RawStdEncoding.EncodeToString(append(nonce, gcm.Seal(nil, nonce, value, nil)...)), nil
-}
-
-func randomSecret() ([]byte, error) {
-	value := make([]byte, 32)
-	_, err := rand.Read(value)
-	return value, err
 }

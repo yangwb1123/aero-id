@@ -124,14 +124,17 @@ type AuditLedgerConfig struct {
 }
 
 type CallbackConfig struct {
-	MasterKey          string        `mapstructure:"master_key"`
-	RequestTimeout     time.Duration `mapstructure:"request_timeout"`
-	MaxResponseBytes   int64         `mapstructure:"max_response_bytes"`
-	MaxAttempts        int           `mapstructure:"max_attempts"`
-	RetryBase          time.Duration `mapstructure:"retry_base"`
-	AllowPrivateTarget bool          `mapstructure:"allow_private_target"`
-	WorkerInterval     time.Duration `mapstructure:"worker_interval"`
-	WorkerConcurrency  int           `mapstructure:"worker_concurrency"` // in-flight deliveries/publications (P6-06); 0 = serial
+	MasterKey             string        `mapstructure:"master_key"`
+	PreviousMasterKeys    []string      `mapstructure:"previous_master_keys"`
+	SecretEnvelopeVersion int           `mapstructure:"secret_envelope_version"` // 0 = legacy-compatible writes; 1 = versioned
+	DeliveryPaused        bool          `mapstructure:"delivery_paused"`         // registration/delivery/purge only; facts still enqueue
+	RequestTimeout        time.Duration `mapstructure:"request_timeout"`
+	MaxResponseBytes      int64         `mapstructure:"max_response_bytes"`
+	MaxAttempts           int           `mapstructure:"max_attempts"`
+	RetryBase             time.Duration `mapstructure:"retry_base"`
+	AllowPrivateTarget    bool          `mapstructure:"allow_private_target"`
+	WorkerInterval        time.Duration `mapstructure:"worker_interval"`
+	WorkerConcurrency     int           `mapstructure:"worker_concurrency"` // in-flight deliveries/publications (P6-06); 0 = serial
 }
 
 type ExportConfig struct {

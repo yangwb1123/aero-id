@@ -68,10 +68,15 @@ func buildAuditStack(cfg *config.Config, gdb *gorm.DB, controlMetrics service.Co
 	if err := validateAuditGovernanceGate(cfg); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := config.ValidateCallbackConfig(cfg.Callback, cfg.App.Env); err != nil {
+		return nil, nil, nil, err
+	}
 	auditLedgerRepo := repository.NewAuditLedgerRepository(gdb, repository.AuditLedgerConfig{SigningKey: cfg.AuditLedger.SigningKey})
 	callbackRepo := repository.NewCallbackRepository(gdb, auditLedgerRepo)
 	callbackSvc := service.NewCallbackService(callbackRepo, service.CallbackConfig{
-		MasterKey: cfg.Callback.MasterKey, RequestTimeout: cfg.Callback.RequestTimeout,
+		MasterKey: cfg.Callback.MasterKey, PreviousMasterKeys: cfg.Callback.PreviousMasterKeys,
+		SecretEnvelopeVersion: cfg.Callback.SecretEnvelopeVersion, DeliveryPaused: cfg.Callback.DeliveryPaused,
+		RequestTimeout:   cfg.Callback.RequestTimeout,
 		MaxResponseBytes: cfg.Callback.MaxResponseBytes, MaxAttempts: cfg.Callback.MaxAttempts,
 		RetryBase: cfg.Callback.RetryBase, AllowPrivateTarget: cfg.Callback.AllowPrivateTarget,
 		WorkerConcurrency: cfg.Callback.WorkerConcurrency,

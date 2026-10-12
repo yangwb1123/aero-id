@@ -278,7 +278,10 @@ billing:                         # Snaplink entitlement + globally atomic quota 
   allow_insecure_loopback: false
   bindings: {}                   # tenant_id -> {token_url, client_id, client_secret_env, scope: "billing:entitlement:read metering:write", resources: [billing-api]}
 callback:
-  master_key: ""                  # encrypts per-subscription secrets; empty disables registration
+  master_key: ""                  # AERO_ID_CALLBACK_MASTER_KEY; required in production unless delivery_paused=true
+  previous_master_keys: []         # optional comma-separated AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS during rotation
+  secret_envelope_version: 0       # legacy-compatible writes; set 1 only after every reader supports key envelopes
+  delivery_paused: false           # pauses registration/delivery/DLQ purge, not audit publications or durable enqueue
   request_timeout: 5s
   max_response_bytes: 65536
   max_attempts: 8

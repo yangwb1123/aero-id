@@ -102,6 +102,9 @@ ingest 签名/绑定配置错误（`X-Aero-Event-Signature` 校验失败率）�
 
 ## 5. Callback 风暴 / 投递故障
 
+密钥缺失、加密格式升级与滚动轮换见 [Callback master-key maintenance](runbooks/callback-keys.md)。
+本地密钥故障延后投递，不消耗接收端重试预算；暂停投递不会暂停审计事实或持久入队。
+
 **症状**：`callback_retry`/`callback_dlq` 指标飙升；回调接收端 5xx/超时；`audit_publications` 堆积。
 
 **影响**：投递退避重试（指数 + jitter），**不影响**审计事实（事实已先持久化，投递失败不回滚）；

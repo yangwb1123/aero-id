@@ -80,6 +80,8 @@ func pinRegionalCellConfigEnvironment(t *testing.T) {
 	t.Setenv("AERO_ID_DATABASE_PASSWORD", "database-password")
 	t.Setenv("AERO_ID_SIGNING_KEY", strings.Repeat("s", 32))
 	t.Setenv("AERO_ID_AUDIT_LEDGER_SIGNING_KEY", strings.Repeat("a", 32))
+	t.Setenv("AERO_ID_CALLBACK_MASTER_KEY", strings.Repeat("c", 32))
+	t.Setenv("AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS", "")
 	t.Setenv("AERO_ID_AUDIT_GOVERNANCE_ENABLED", "false")
 	t.Setenv("AERO_ID_BILLING_ENABLED", "false")
 	t.Setenv("AERO_ID_ACCOUNT_REGION", "us-east-1")

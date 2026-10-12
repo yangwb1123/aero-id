@@ -165,7 +165,7 @@ func newCallbackFakeRepo(deliveries ...*domain.CallbackDelivery) *callbackFakeRe
 func callbackDelivery(endpoint string, attempt int) *domain.CallbackDelivery {
 	const masterKey = "test-master-key-0123456789abcdef"
 	sum := sha256.Sum256([]byte(masterKey))
-	svc := &callbackService{key: sum[:]}
+	svc := NewCallbackService(nil, CallbackConfig{MasterKey: masterKey}).(*callbackService)
 	secret, err := svc.encrypt(sum[:])
 	if err != nil {
 		panic(err)

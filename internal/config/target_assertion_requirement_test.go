@@ -28,6 +28,7 @@ func loadAeroIMRequirementConfig(t *testing.T, environment, source string) (*Con
 		content = strings.Replace(content, "env: test", "env: "+environment, 1)
 	}
 	if productionLikeEnvironment(environment) {
+		t.Setenv("AERO_ID_CALLBACK_MASTER_KEY", testCallbackMasterKey)
 		content = strings.Replace(content, `server:
   http: {host: 0.0.0.0, port: 8080, read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s}`, `server:
   http: {host: 0.0.0.0, port: 8080, cors_origins: ["https://console.example"], read_timeout: 15s, write_timeout: 15s, shutdown_timeout: 10s}`, 1)

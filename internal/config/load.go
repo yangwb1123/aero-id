@@ -57,6 +57,8 @@ func configEnvironmentKeys() []string {
 		"sources.aero_vault.capabilities.operation_status", "sources.snaplink.capabilities.summary",
 		"sources.snaplink.capabilities.erase", "sources.snaplink.capabilities.operation_status",
 		"sources.snaplink.capabilities.erase_contract_version", "replication.max_terminal_attempts",
+		"callback.master_key", "callback.previous_master_keys",
+		"callback.secret_envelope_version", "callback.delivery_paused",
 	}
 	for _, source := range []string{"snaplink", "aero_im", "aero_vault"} {
 		for _, setting := range []string{"bearer_token", "oauth_token_url", "oauth_client_id", "oauth_client_secret",
