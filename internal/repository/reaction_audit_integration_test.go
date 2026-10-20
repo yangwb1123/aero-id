@@ -4,6 +4,7 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestMessageReactionsRepo(t *testing.T) {
 	}
 
 	// Reacting to a message that does not exist is rejected before any insert.
-	if err := repo.ReactToMessage(ctx, idgen.NewID(), "bob"); err != repository.ErrNotFound {
+	if err := repo.ReactToMessage(ctx, idgen.NewID(), "bob"); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("react to missing message: err = %v, want ErrNotFound", err)
 	}
 

@@ -7,6 +7,7 @@ import type {
   PageData,
   Profile,
 } from "../types";
+import { accountReferencePage } from "./accountReferences";
 import { CallbackClient } from "./callback";
 import { CommandIntentClient } from "./commandIntent";
 import { parseCapabilities } from "./capabilities";
@@ -14,7 +15,9 @@ import { ComplianceClient } from "./compliance";
 import { MigrationClient } from "./migration";
 import { RegionClient } from "./region";
 import { ReplayClient } from "./replay";
+import { isTaskStatus } from "./taskStatus";
 import {
+  AeroIdError,
   AeroIdTransport,
   requireDataEnvelope as dataOf,
   type RequestOptions,
@@ -79,6 +82,113 @@ function pageOf(data: JsonRecord, field: string): PageData<JsonRecord> {
     nextCursor:
       typeof data.next_cursor === "string" ? data.next_cursor : undefined,
   };
+}
+
+function taskPageOf(
+  value: unknown,
+  field: "jobs" | "operations",
+): PageData<JsonRecord> {
+  const data = dataOf(value);
+  if (
+    !Array.isArray(data[field]) ||
+    !data[field].every(isRecord) ||
+    (data.next_cursor !== undefined && typeof data.next_cursor !== "string")
+  )
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "列表响应无效；请重读原任务列表",
+    );
+  return pageOf(data, field);
+}
+
+function profileOf(value: unknown): Profile {
+  const data = dataOf(value);
+  if (
+    ["display_name", "avatar_url", "locale", "timezone"].some(
+      (field) => typeof data[field] !== "string",
+    )
+  )
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "资料响应无效；请核实当前资料，不会自动重试保存",
+    );
+  return data as Profile;
+}
+
+function resourceSourceErrorsValid(value: unknown): boolean {
+  if (value === undefined) return true;
+  return (
+    isRecord(value) &&
+    Object.keys(value).length <= 16 &&
+    Object.values(value).every((code) => typeof code === "string")
+  );
+}
+
+function resourceAggregateOf(value: unknown): AggregateView {
+  const data = dataOf(value);
+  const stale = data.stale_datasets;
+  if (
+    !Array.isArray(data.snapshots) ||
+    data.snapshots.length > 64 ||
+    !data.snapshots.every(isRecord) ||
+    typeof data.partial !== "boolean" ||
+    (data.consistency !== undefined &&
+      !["eventual", "bounded", "strong"].includes(
+        data.consistency as string,
+      )) ||
+    !resourceSourceErrorsValid(data.source_errors) ||
+    (stale !== null &&
+      stale !== undefined &&
+      (!Array.isArray(stale) ||
+        stale.length > 64 ||
+        !stale.every((name) => typeof name === "string")))
+  )
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "资源摘要响应无效；请显式重读，不会触发来源同步",
+    );
+  return data as AggregateView;
+}
+
+function taskDetailOf(
+  value: unknown,
+  field: "job_id" | "operation_id",
+  id: string,
+): JsonRecord {
+  const data = dataOf(value);
+  if (
+    !id ||
+    typeof data[field] !== "string" ||
+    data[field] !== id ||
+    !isTaskStatus(data.status, field)
+  )
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "任务详情与原请求不一致；请核实原回执，不会重发命令",
+    );
+  return data;
+}
+
+function operationAuditOf(value: unknown, id: string): PageData<JsonRecord> {
+  const data = dataOf(value);
+  if (
+    !id ||
+    typeof data.operation_id !== "string" ||
+    data.operation_id !== id ||
+    !Array.isArray(data.events) ||
+    !data.events.every(isRecord) ||
+    (data.next_cursor !== undefined && typeof data.next_cursor !== "string")
+  )
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "审计响应无效；请重读原 Operation",
+    );
+  return pageOf(data, "events");
 }
 
 function requiredIdempotencyKey(value: string): string {
@@ -150,35 +260,51 @@ export class AeroIdClient {
     return dataOf(await this.request("GET", "/me", { signal })) as AccountView;
   }
 
-  async getProfile(): Promise<Profile> {
-    return dataOf(await this.request("GET", "/me/profile")) as Profile;
+  async getProfile(signal?: AbortSignal): Promise<Profile> {
+    return profileOf(await this.request("GET", "/me/profile", { signal }));
   }
 
   async updateProfile(profile: Partial<Profile>): Promise<Profile> {
-    return dataOf(
+    return profileOf(
       await this.request("PATCH", "/me/profile", { body: profile }),
-    ) as Profile;
+    );
   }
 
-  async getOverview(datasets: string[] = []): Promise<AggregateView> {
-    return this.getAggregate("/me/overview", { datasets });
+  async getOverview(
+    datasets: string[] = [],
+    signal?: AbortSignal,
+  ): Promise<AggregateView> {
+    return this.getAggregate("/me/overview", { datasets }, signal);
   }
 
-  async getResources(datasets: string[] = []): Promise<AggregateView> {
-    return this.getAggregate("/me/resources", { datasets });
+  async getResources(
+    datasets: string[] = [],
+    signal?: AbortSignal,
+  ): Promise<AggregateView> {
+    return resourceAggregateOf(
+      await this.request("GET", "/me/resources", {
+        query: { dataset: datasets, consistency: "eventual" },
+        signal,
+      }),
+    );
   }
 
-  async getMyData(query: AggregateQuery = {}): Promise<AggregateView> {
-    return this.getAggregate("/me/data", query);
+  async getMyData(
+    query: AggregateQuery = {},
+    signal?: AbortSignal,
+  ): Promise<AggregateView> {
+    return this.getAggregate("/me/data", query, signal);
   }
 
   async getAdminAccountData(
     id: string,
     query: AggregateQuery = {},
+    signal?: AbortSignal,
   ): Promise<AggregateView> {
     return this.getAggregate(
       `/admin/accounts/${encodeURIComponent(id)}/data`,
       query,
+      signal,
     );
   }
 
@@ -202,18 +328,26 @@ export class AeroIdClient {
     );
   }
 
-  async getAdminAccount(id: string): Promise<AccountView> {
+  async getAdminAccount(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<AccountView> {
     return dataOf(
-      await this.request("GET", `/admin/accounts/${encodeURIComponent(id)}`),
+      await this.request("GET", `/admin/accounts/${encodeURIComponent(id)}`, {
+        signal,
+      }),
     ) as AccountView;
   }
 
-  async getAdminAccountOverview(id: string): Promise<AggregateView> {
+  async getAdminAccountOverview(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<AggregateView> {
     return dataOf(
       await this.request(
         "GET",
         `/admin/accounts/${encodeURIComponent(id)}/overview`,
-        { query: { consistency: "eventual" } },
+        { query: { consistency: "eventual" }, signal },
       ),
     ) as AggregateView;
   }
@@ -236,24 +370,28 @@ export class AeroIdClient {
     );
   }
 
-  async listSources(cursor?: string): Promise<PageData<JsonRecord>> {
-    return pageOf(
-      dataOf(
-        await this.request("GET", "/me/sources", {
-          query: { cursor, limit: 50 },
-        }),
-      ),
+  async listSources(
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<PageData<JsonRecord>> {
+    return accountReferencePage(
+      await this.request("GET", "/me/sources", {
+        query: { cursor, limit: 50 },
+        signal,
+      }),
       "sources",
     );
   }
 
-  async listMemberships(cursor?: string): Promise<PageData<JsonRecord>> {
-    return pageOf(
-      dataOf(
-        await this.request("GET", "/me/memberships", {
-          query: { cursor, limit: 50 },
-        }),
-      ),
+  async listMemberships(
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<PageData<JsonRecord>> {
+    return accountReferencePage(
+      await this.request("GET", "/me/memberships", {
+        query: { cursor, limit: 50 },
+        signal,
+      }),
       "memberships",
     );
   }
@@ -272,22 +410,22 @@ export class AeroIdClient {
     cursor?: string,
     signal?: AbortSignal,
   ): Promise<PageData<JsonRecord>> {
-    return pageOf(
-      dataOf(
-        await this.request("GET", "/sync/jobs", {
-          query: { cursor, limit: 50 },
-          signal,
-        }),
-      ),
+    return taskPageOf(
+      await this.request("GET", "/sync/jobs", {
+        query: { cursor, limit: 50 },
+        signal,
+      }),
       "jobs",
     );
   }
 
   async getSyncJob(id: string, signal?: AbortSignal): Promise<JsonRecord> {
-    return dataOf(
+    return taskDetailOf(
       await this.request("GET", `/sync/jobs/${encodeURIComponent(id)}`, {
         signal,
       }),
+      "job_id",
+      id,
     );
   }
 
@@ -349,22 +487,26 @@ export class AeroIdClient {
     );
   }
 
-  async listOperations(cursor?: string): Promise<PageData<JsonRecord>> {
-    return pageOf(
-      dataOf(
-        await this.request("GET", "/operations", {
-          query: { cursor, limit: 50 },
-        }),
-      ),
+  async listOperations(
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<PageData<JsonRecord>> {
+    return taskPageOf(
+      await this.request("GET", "/operations", {
+        signal,
+        query: { cursor, limit: 50 },
+      }),
       "operations",
     );
   }
 
   async getOperation(id: string, signal?: AbortSignal): Promise<JsonRecord> {
-    return dataOf(
+    return taskDetailOf(
       await this.request("GET", `/operations/${encodeURIComponent(id)}`, {
         signal,
       }),
+      "operation_id",
+      id,
     );
   }
 
@@ -419,21 +561,19 @@ export class AeroIdClient {
     cursor?: string,
     signal?: AbortSignal,
   ): Promise<PageData<JsonRecord>> {
-    return pageOf(
-      dataOf(
-        await this.request(
-          "GET",
-          `/audit/operations/${encodeURIComponent(id)}`,
-          { query: { cursor, limit: 50 }, signal },
-        ),
-      ),
-      "events",
+    return operationAuditOf(
+      await this.request("GET", `/audit/operations/${encodeURIComponent(id)}`, {
+        query: { cursor, limit: 50 },
+        signal,
+      }),
+      id,
     );
   }
 
   async listAuditEvents(
     filters: AuditEventFilters = {},
     cursor?: string,
+    signal?: AbortSignal,
   ): Promise<PageData<JsonRecord>> {
     return pageOf(
       dataOf(
@@ -447,6 +587,7 @@ export class AeroIdClient {
             cursor,
             limit: 50,
           },
+          signal,
         }),
       ),
       "events",
@@ -553,9 +694,11 @@ export class AeroIdClient {
   private async getAggregate(
     path: string,
     query: AggregateQuery,
+    signal?: AbortSignal,
   ): Promise<AggregateView> {
     return dataOf(
       await this.request("GET", path, {
+        signal,
         query: {
           dataset: query.datasets ?? [],
           consistency: query.consistency ?? "eventual",

@@ -17,7 +17,6 @@ import (
 	dbpkg "github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/repository/testpg"
-	pg "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 // bootDatabase couples a fresh testcontainers Postgres with the DatabaseConfig
@@ -37,19 +36,8 @@ const postgresFixtureTimeout = time.Minute
 func newBootDatabase(t *testing.T) bootDatabase {
 	t.Helper()
 	startCtx, cancelStart := context.WithTimeout(context.Background(), postgresFixtureTimeout)
-	c, err := pg.Run(startCtx,
-		"postgres:16-alpine",
-		pg.WithDatabase("aero_id_test"),
-		pg.WithUsername("aero"),
-		pg.WithPassword("aero"),
-		pg.BasicWaitStrategies(),
-	)
-	cancelStart()
-	if err != nil {
-		t.Fatalf("start pg container: %v", err)
-	}
 	var db *gorm.DB
-	testpg.RegisterCleanup(t, c.Terminate, func() error {
+	c, err := testpg.StartContainer(t, startCtx, func() error {
 		if db == nil {
 			return nil
 		}
@@ -59,6 +47,10 @@ func newBootDatabase(t *testing.T) bootDatabase {
 		}
 		return sqlDB.Close()
 	})
+	cancelStart()
+	if err != nil {
+		t.Fatalf("start pg container: %v", err)
+	}
 
 	hostCtx, cancelHost := context.WithTimeout(context.Background(), postgresFixtureTimeout)
 	host, err := c.Host(hostCtx)

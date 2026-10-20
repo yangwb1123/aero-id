@@ -8,7 +8,7 @@ import PageLoading from "../components/PageLoading.vue";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 
 const { client } = defineProps<{ client: AeroIdClient }>();
-const resource = useAsyncResource(() => client.listDatasets());
+const resource = useAsyncResource((signal) => client.listDatasets(signal));
 </script>
 
 <template>
@@ -21,8 +21,14 @@ const resource = useAsyncResource(() => client.listDatasets());
   <section v-else-if="resource.data">
     <PageHeader
       title="账户数据浏览"
-      description="只读取 aero-id 的 typed dataset registry 和版本化聚合投影；不会代理源系统路径或凭据。"
-    />
+      description="按明确范围查看已保存的用量、桶与工作空间引用；不会代理源系统路径或凭据。"
+    >
+      <template #actions>
+        <a href="#/overview">返回账户概览</a>
+        <a href="#/resources">资源摘要</a>
+        <a href="#/jobs">选择范围同步 / 导出</a>
+      </template>
+    </PageHeader>
     <IrisAlert tone="info">
       查询范围由服务端 allow-list 决定。请求可声明 eventual、bounded 或
       strong；结果会明确标记 partial、stale、unavailable 和 unknown。

@@ -1,0 +1,2 @@
+DROP INDEX idx_callback_deliveries_subscription_status_keyset;
+DROP INDEX idx_callback_deliveries_subscription_keyset;

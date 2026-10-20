@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { IrisAlert, IrisButton, IrisCard, IrisInput } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
 import AccountEraseAction from "../components/AccountEraseAction.vue";
@@ -16,35 +16,54 @@ const fields = [
   ["timezone", "时区"],
 ] as const;
 const { client } = defineProps<{ client: AeroIdClient }>();
-const resource = useAsyncResource(() => client.getProfile());
+const resource = useAsyncResource((signal) => client.getProfile(signal));
 const draft = reactive<Partial<Profile>>({});
 const saving = ref(false);
 const saved = ref(false);
 const saveError = ref<Error>();
+let active = true;
+onBeforeUnmount(() => {
+  active = false;
+});
+let submitted: Partial<Profile> | undefined;
+const hasUnsavedChanges = computed(() =>
+  fields.some(([key]) => (draft[key] ?? "") !== (resource.data?.[key] ?? "")),
+);
 watch(
   () => resource.data,
   (profile) => {
-    if (profile) Object.assign(draft, profile);
+    if (!profile) return;
+    for (const [key] of fields) {
+      if (
+        key in profile &&
+        (!submitted || (draft[key] ?? "") === submitted[key])
+      )
+        draft[key] = profile[key];
+    }
   },
-  { immediate: true },
+  // Apply the server result before finally releases its submitted snapshot.
+  { immediate: true, flush: "sync" },
 );
 
 async function save(): Promise<void> {
+  if (!active || saving.value) return;
   saving.value = true;
   saved.value = false;
   saveError.value = undefined;
   try {
-    const updated = await client.updateProfile({
+    submitted = {
       display_name: draft.display_name ?? "",
       avatar_url: draft.avatar_url ?? "",
       locale: draft.locale ?? "",
       timezone: draft.timezone ?? "",
-    });
+    };
+    const updated = await client.updateProfile(submitted);
     resource.replace(updated);
     saved.value = true;
   } catch (reason) {
     saveError.value = reason instanceof Error ? reason : new Error("保存失败");
   } finally {
+    submitted = undefined;
     saving.value = false;
   }
 }
@@ -68,7 +87,13 @@ async function save(): Promise<void> {
     <IrisAlert v-if="saveError" tone="danger">{{
       saveError.message
     }}</IrisAlert>
-    <IrisAlert v-if="saved" tone="success">资料已保存。</IrisAlert>
+    <IrisAlert v-if="saved" :tone="hasUnsavedChanges ? 'info' : 'success'">
+      {{
+        hasUnsavedChanges
+          ? "上次提交已保存，仍有未保存的修改。"
+          : "资料已保存。"
+      }}
+    </IrisAlert>
     <IrisCard variant="outline">
       <form class="profile-form" @submit.prevent="void save()">
         <label v-for="[key, label] in fields" :key="key" class="form-row">

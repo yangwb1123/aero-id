@@ -8,12 +8,29 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
-	"time"
+
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 )
+
+const maxCallbackResponseHeaderBytes = int64(64 << 10)
+
+func (s *callbackService) verifyRegistrationEndpoint(ctx context.Context, endpoint string) error {
+	networkCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+	defer cancel()
+	if err := s.network.validateEndpoint(networkCtx, endpoint, s.cfg.AllowPrivateTarget); err != nil {
+		return apperr.BadRequest("callback.endpoint_invalid", "callback endpoint is not allowed").Wrap(err)
+	}
+	challenge, err := randomChallenge()
+	if err != nil {
+		return apperr.Internal("callback.challenge_failed", "failed to create endpoint challenge").Wrap(err)
+	}
+	if err := s.verifyCallbackEndpoint(networkCtx, endpoint, challenge); err != nil || networkCtx.Err() != nil {
+		return apperr.BadRequest("callback.verification_failed", "callback endpoint verification failed")
+	}
+	return nil
+}
 
 func randomChallenge() (string, error) {
 	value := make([]byte, 24)
@@ -23,18 +40,19 @@ func randomChallenge() (string, error) {
 	return hex.EncodeToString(value), nil
 }
 
-func verifyCallbackEndpoint(ctx context.Context, endpoint, challenge string, cfg CallbackConfig) error {
-	client, err := newCallbackHTTPClient(endpoint, cfg)
+// The caller owns the network-phase budget, including endpoint resolution,
+// connection-time resolution, dial, TLS, headers and bounded response reads.
+func (s *callbackService) verifyCallbackEndpoint(ctx context.Context, endpoint, challenge string) error {
+	client, err := s.httpClient(ctx, endpoint)
 	if err != nil {
 		return err
 	}
+	defer client.CloseIdleConnections()
 	body, err := json.Marshal(map[string]string{"type": "aero.callback.verify", "challenge": challenge})
 	if err != nil {
 		return err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -46,12 +64,19 @@ func verifyCallbackEndpoint(ctx context.Context, endpoint, challenge string, cfg
 		return err
 	}
 	defer response.Body.Close()
+	return readCallbackChallenge(ctx, response, challenge, s.cfg.MaxResponseBytes)
+}
+
+func readCallbackChallenge(ctx context.Context, response *http.Response, challenge string, maxBytes int64) error {
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("callback verification returned a non-success status")
 	}
-	value, err := io.ReadAll(io.LimitReader(response.Body, cfg.MaxResponseBytes+1))
-	if err != nil || int64(len(value)) > cfg.MaxResponseBytes {
-		return errors.New("callback verification response is too large")
+	value, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || int64(len(value)) > maxBytes {
+		return errors.New("callback verification response is too large or unavailable")
 	}
 	return matchChallenge(value, challenge)
 }
@@ -73,59 +98,29 @@ func matchChallenge(value []byte, challenge string) error {
 	return errors.New("callback verification challenge did not match")
 }
 
-func newCallbackHTTPClient(endpoint string, cfg CallbackConfig) (*http.Client, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Hostname() == "" {
-		return nil, errors.New("invalid callback endpoint")
-	}
-	if err := validateCallbackEndpoint(endpoint, cfg.AllowPrivateTarget); err != nil {
-		return nil, err
-	}
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return dialCallbackTarget(ctx, network, address, cfg.AllowPrivateTarget)
-		},
-	}
-	return &http.Client{Timeout: cfg.RequestTimeout, Transport: transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
-}
-
-func dialCallbackTarget(ctx context.Context, network, address string, allowPrivate bool) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
+func (s *callbackService) httpClient(ctx context.Context, endpoint string) (*http.Client, error) {
+	client, err := newCallbackHTTPClient(ctx, endpoint, s.cfg, s.network)
 	if err != nil {
 		return nil, err
 	}
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
-		return nil, errors.New("callback target cannot be resolved")
+	if s.roundTripper != nil {
+		client.Transport = s.roundTripper
 	}
-	if !allowPrivate && !publicIPsOnly(ips) {
-		return nil, errors.New("callback target resolved to a private address")
-	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	for _, ip := range ips {
-		if !allowPrivate && !publicIP(ip) {
-			continue
-		}
-		conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		if dialErr == nil {
-			return conn, nil
-		}
-		err = dialErr
-	}
-	return nil, err
+	return client, nil
 }
 
-func publicIPsOnly(ips []net.IP) bool {
-	for _, ip := range ips {
-		if !publicIP(ip) {
-			return false
-		}
+func newCallbackHTTPClient(ctx context.Context, endpoint string, cfg CallbackConfig, network callbackNetwork) (*http.Client, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		return nil, errors.New("callback network deadline is required")
 	}
-	return true
-}
-
-func publicIP(ip net.IP) bool {
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !ip.IsMulticast()
+	if err := network.validateEndpoint(ctx, endpoint, cfg.AllowPrivateTarget); err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{
+		Proxy: nil, DialContext: network.boundDial(ctx, cfg.AllowPrivateTarget),
+		DisableKeepAlives: true, TLSHandshakeTimeout: cfg.RequestTimeout,
+		ResponseHeaderTimeout: cfg.RequestTimeout, MaxResponseHeaderBytes: maxCallbackResponseHeaderBytes,
+	}
+	return &http.Client{Timeout: cfg.RequestTimeout, Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }

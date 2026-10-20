@@ -5,11 +5,21 @@ import "time"
 // CommandPlan contains only normalized, allow-listed command parameters. It is
 // not a resource ACL, authorization grant or a remotely consistent snapshot.
 type CommandPlan struct {
-	Kind           string            `json:"kind"`
-	Datasets       []AccountDataset  `json:"datasets"`
-	OperationType  string            `json:"operation_type,omitempty"`
-	RequestPayload map[string]any    `json:"request_payload,omitempty"`
-	Steps          []CommandPlanStep `json:"steps,omitempty"`
+	Kind           string                 `json:"kind"`
+	Datasets       []AccountDataset       `json:"datasets"`
+	OperationType  string                 `json:"operation_type,omitempty"`
+	RequestPayload map[string]any         `json:"request_payload,omitempty"`
+	Steps          []CommandPlanStep      `json:"steps,omitempty"`
+	Callback       *CommandCallbackTarget `json:"callback,omitempty"`
+}
+
+// Callback targets are local CAS metadata, not a receiver-effect receipt.
+type CommandCallbackTarget struct {
+	SubscriptionID  ID    `json:"subscription_id"`
+	DeliveryID      ID    `json:"delivery_id"`
+	EventID         ID    `json:"event_id"`
+	Revision        int64 `json:"revision"`
+	LeaseGeneration int64 `json:"lease_generation"`
 }
 
 type CommandPlanStep struct {
@@ -69,4 +79,5 @@ type CommandIntent struct {
 	ReceiptID             ID                   `json:"receipt_id,omitempty"`
 	CreatedAt             time.Time            `json:"created_at"`
 	ExpiresAt             time.Time            `json:"expires_at"`
+	AbandonedAt           *time.Time           `json:"abandoned_at,omitempty"`
 }

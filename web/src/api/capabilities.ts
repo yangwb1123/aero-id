@@ -38,6 +38,7 @@ function validReport(value: unknown): boolean {
   )
     return false;
   if (
+    !Number.isFinite(Date.parse(String(value.generated_at))) ||
     typeof value.partial !== "boolean" ||
     !Array.isArray(value.capabilities) ||
     !Array.isArray(value.datasets)
@@ -109,7 +110,12 @@ export function capabilityAvailable(
 ): boolean {
   return Boolean(
     report?.capabilities.some(
-      (item) => names.includes(item.name) && item.available,
+      (item) =>
+        names.includes(item.name) &&
+        item.available &&
+        item.registered &&
+        item.enabled &&
+        item.authorization === "allowed",
     ),
   );
 }

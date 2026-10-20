@@ -4,6 +4,7 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -120,7 +121,7 @@ func TestCommentRepo_SoftDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := repo.Get(ctx, c.ID)
-	if err != repository.ErrNotFound {
+	if !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -221,7 +222,7 @@ func TestCommentRepo_CreateReportDedup(t *testing.T) {
 	err := repo.CreateReport(ctx, &domain.CommentReport{
 		ID: idgen.NewID(), CommentID: c.ID, ReporterUID: "reporter", Reason: "again", CreatedAt: now,
 	})
-	if err != repository.ErrDuplicate {
+	if !errors.Is(err, repository.ErrDuplicate) {
 		t.Fatalf("duplicate report err=%v, want ErrDuplicate", err)
 	}
 	// A different reporter may report the same comment.
@@ -266,11 +267,11 @@ func TestCommentRepo_UpdateContent(t *testing.T) {
 	if err := repo.SoftDelete(ctx, c.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.UpdateContent(ctx, c.ID, "x", editAt); err != repository.ErrNotFound {
+	if err := repo.UpdateContent(ctx, c.ID, "x", editAt); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("update of removed comment err=%v, want ErrNotFound", err)
 	}
 	// Editing an unknown comment is ErrNotFound too.
-	if err := repo.UpdateContent(ctx, idgen.NewID(), "x", editAt); err != repository.ErrNotFound {
+	if err := repo.UpdateContent(ctx, idgen.NewID(), "x", editAt); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("update of missing comment err=%v, want ErrNotFound", err)
 	}
 }
@@ -344,10 +345,10 @@ func TestCommentRepo_ListAndResolveReports(t *testing.T) {
 	}
 
 	// Resolving / getting a missing report is ErrNotFound.
-	if err := repo.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusDismissed, "author", resolveAt); err != repository.ErrNotFound {
+	if err := repo.ResolveReport(ctx, idgen.NewID(), domain.ReportStatusDismissed, "author", resolveAt); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("resolve missing report err=%v, want ErrNotFound", err)
 	}
-	if _, err := repo.GetReport(ctx, idgen.NewID()); err != repository.ErrNotFound {
+	if _, err := repo.GetReport(ctx, idgen.NewID()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("get missing report err=%v, want ErrNotFound", err)
 	}
 }
@@ -402,7 +403,7 @@ func TestCommentRepo_SetStatusExcludesFromListings(t *testing.T) {
 	}
 
 	// SetStatus on a missing comment is ErrNotFound.
-	if err := repo.SetStatus(ctx, idgen.NewID(), domain.CommentStatusHidden); err != repository.ErrNotFound {
+	if err := repo.SetStatus(ctx, idgen.NewID(), domain.CommentStatusHidden); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("set status on missing comment err=%v, want ErrNotFound", err)
 	}
 }

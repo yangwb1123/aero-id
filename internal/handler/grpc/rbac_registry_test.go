@@ -46,6 +46,8 @@ var pinnedGatedMethods = []string{
 	"/aero_id.v1.SourceIngestService/IngestEvents",
 	"/aero_id.v1.CallbackService/RegisterCallback",
 	"/aero_id.v1.CallbackService/ListCallbacks",
+	"/aero_id.v1.CallbackService/ListCallbackDeliveries",
+	"/aero_id.v1.CallbackService/GetCallbackDelivery",
 	"/aero_id.v1.CallbackService/DeleteCallback",
 	"/aero_id.v1.CallbackService/ReplayCallbackDelivery",
 }

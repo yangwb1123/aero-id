@@ -1,178 +1,138 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import {
-  IrisAlert,
-  IrisButton,
-  IrisCard,
-  IrisDialog,
-  IrisDialogContent,
-  IrisDialogDescription,
-  IrisDialogTitle,
-  IrisFormField,
-  IrisInput,
-} from "@iris-ui-kit/vue";
+import { computed, ref, watch } from "vue";
+import { IrisAlert, IrisButton, IrisCard } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
+import { useCapabilities } from "../hooks/capabilityContext";
+import { useCommandPreview } from "../hooks/useCommandPreview";
+import { commandUUID } from "./commandPreviewStorage";
+import { loadEraseIntent } from "./eraseIntentStorage";
+import CommandDatasetSelection from "./CommandDatasetSelection.vue";
+import CommandPreviewDialog from "./CommandPreviewDialog.vue";
+import CommandDispositionNotice from "./CommandDispositionNotice.vue";
 import JobDetails from "./JobDetails.vue";
-import { syncJobID } from "./jobHelpers";
-import { loadEraseIntent, saveEraseIntent } from "./eraseIntentStorage";
-
-const confirmationText = "ERASE MY ACCOUNT";
 const props = defineProps<{ client: AeroIdClient; accountID?: string }>();
-const open = ref(false);
-const confirmation = ref("");
-const running = ref(false);
-const error = ref<Error>();
+const capabilities = useCapabilities();
+const selected = ref<string[]>([]);
+const legacyBlocked = ref(false);
 const jobID = ref<string>();
 const showJobDetails = ref(false);
-const idempotencyKey = ref<string>();
-const attempted = ref(false);
-const recoveredIntent = ref(false);
-
-function readIntent(): { idempotencyKey?: string; jobID?: string } {
-  try {
-    return loadEraseIntent(window.sessionStorage, props.accountID);
-  } catch {
-    return {};
-  }
-}
-function persistIntent(intent: {
-  idempotencyKey?: string;
-  jobID?: string;
-}): void {
-  try {
-    saveEraseIntent(window.sessionStorage, props.accountID, intent);
-  } catch {
-    // Keep the command key in memory if session storage is unavailable.
-  }
-}
-function restoreAccountIntent(): void {
-  const saved = readIntent();
-  idempotencyKey.value = saved.idempotencyKey;
-  attempted.value = Boolean(saved.idempotencyKey);
-  recoveredIntent.value = Boolean(saved.idempotencyKey);
-  jobID.value = saved.jobID;
-  showJobDetails.value = Boolean(saved.jobID);
-  open.value = false;
-  confirmation.value = "";
-  error.value = undefined;
-}
-watch(() => props.accountID, restoreAccountIntent, { immediate: true });
-
-function openErase(): void {
-  if (jobID.value || running.value) return;
-  error.value = undefined;
-  confirmation.value = "";
-  if (!idempotencyKey.value) {
-    idempotencyKey.value = crypto.randomUUID();
-    attempted.value = false;
-    recoveredIntent.value = false;
-  } else {
-    recoveredIntent.value = attempted.value;
-  }
-  open.value = true;
-}
-function close(openValue: boolean): void {
-  if (openValue || running.value) return;
-  open.value = false;
-  confirmation.value = "";
-  error.value = undefined;
-  if (!attempted.value) {
-    persistIntent({});
-    idempotencyKey.value = undefined;
-    recoveredIntent.value = false;
-  }
-}
-
-async function erase(): Promise<void> {
-  const key = idempotencyKey.value;
-  if (running.value || confirmation.value !== confirmationText || !key) return;
-  running.value = true;
-  attempted.value = true;
-  persistIntent({ idempotencyKey: key });
-  error.value = undefined;
-  try {
-    const result = await props.client.eraseMyAccount(key);
-    const id = syncJobID(result);
-    if (!id)
-      throw new Error(
-        "任务可能已创建，但响应缺少任务 ID；原幂等键已保留，请勿换键重复创建。",
-      );
-    jobID.value = id;
+const {
+  preview,
+  busy,
+  error,
+  pending,
+  abandoned,
+  allowed,
+  prepare,
+  recover,
+  confirmed,
+} = useCommandPreview({
+  client: () => props.client,
+  channel: "account-jobs",
+  accountID: () => props.accountID,
+  legacyBlocked: () => legacyBlocked.value,
+  onReceipt: (intent) => {
+    jobID.value = intent.receipt_id;
     showJobDetails.value = true;
-    persistIntent({ jobID: id });
-    idempotencyKey.value = undefined;
-    attempted.value = false;
-    recoveredIntent.value = false;
-    open.value = false;
-    confirmation.value = "";
-  } catch (reason) {
-    error.value =
-      reason instanceof Error ? reason : new Error("账户擦除任务创建失败");
-  } finally {
-    running.value = false;
-  }
-}
+  },
+});
+const datasets = computed(
+  () =>
+    capabilities?.()?.datasets.filter((dataset) => dataset.registered) ?? [],
+);
+const plan = computed(() => ({
+  kind: "erase" as const,
+  datasets: datasets.value
+    .filter((dataset) => selected.value.includes(dataset.name))
+    .map((dataset) => dataset.name)
+    .sort(),
+}));
+const eligible = computed(
+  () => props.accountID === capabilities?.()?.account_id && allowed(plan.value),
+);
+watch(
+  () => props.accountID,
+  () => {
+    selected.value = [];
+    jobID.value = undefined;
+    showJobDetails.value = false;
+    legacyBlocked.value = false;
+    if (!props.accountID) return;
+    try {
+      const storage = window.sessionStorage;
+      // The old account-only key has no issuer/client binding and must never be
+      // migrated into a new endpoint. Even corrupt old state needs verification.
+      legacyBlocked.value = Boolean(
+        storage.getItem(`aero-id:erase-intent:${props.accountID.trim()}`),
+      );
+      const legacy = loadEraseIntent(storage, props.accountID);
+      if (commandUUID(legacy.jobID)) jobID.value = legacy.jobID;
+    } catch {
+      /* No storage: retain only in-memory state; never replay automatically. */
+    }
+  },
+  { immediate: true },
+);
 </script>
-
 <template>
   <IrisCard variant="outline">
     <template #header>账户生命周期</template>
     <IrisAlert tone="warning" title="不可逆的跨来源擦除">
-      这会创建异步擦除 Saga，要求各权威来源分别确认删除；远端超时会保留为
-      unknown，不会被前端当作成功或自动盲目重试。请先导出需要保留的合规记录，并确认这是当前登录账户。
+      先显式选择范围并获取服务端计划，再输入目标 Account ID
+      确认。确认只创建异步任务，不是删除证明；超时保持 unknown。 不能解除 Legal
+      Hold 或把本地写屏障宣称为跨区域/来源删除完成。
     </IrisAlert>
-    <IrisAlert v-if="error && !open" tone="danger">{{
-      error.message
-    }}</IrisAlert>
+    <IrisAlert v-if="legacyBlocked" tone="warning">
+      旧接口存在擦除请求或回执；请先核实旧任务，不会复用未绑定的旧键或换接口创建第二个擦除。
+    </IrisAlert>
+    <CommandDispositionNotice :records="abandoned" />
+    <IrisAlert v-if="pending" tone="warning">
+      原意图
+      {{ pending.intentID ?? "预览回应未确认" }}
+      已保留；仅核实/恢复原意图，不自动换键。
+      <IrisButton variant="outline" :disabled="busy" @click="void recover()"
+        >查询原意图 / 原任务</IrisButton
+      >
+    </IrisAlert>
+    <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
+    <CommandDatasetSelection
+      :datasets="datasets"
+      :selected="selected"
+      :disabled="busy || Boolean(pending?.intentID) || legacyBlocked"
+      @change="selected = $event"
+    />
     <IrisButton
-      v-if="jobID && !showJobDetails"
-      variant="outline"
-      @click="showJobDetails = true"
-      >查看已创建的擦除任务</IrisButton
-    >
-    <IrisButton
-      v-else
       variant="danger"
-      :disabled="Boolean(jobID)"
-      @click="openErase"
-      >擦除我的账户</IrisButton
+      :loading="busy"
+      :disabled="
+        busy || Boolean(jobID) || Boolean(pending?.intentID) || !eligible
+      "
+      @click="void prepare(plan)"
+      >预览擦除我的账户</IrisButton
+    >
+    <IrisButton v-if="jobID" variant="outline" @click="showJobDetails = true"
+      >查看原任务 / 回执</IrisButton
     >
   </IrisCard>
+  <CommandPreviewDialog
+    v-if="preview"
+    :key="preview.intent_id"
+    :client="client"
+    :intent="preview"
+    :eligible="
+      preview.plan.kind === 'erase' &&
+      props.accountID === preview.account_id &&
+      allowed(preview.plan, preview.account_id)
+    "
+    @close="preview = undefined"
+    @executed="confirmed"
+    @abandoned="confirmed"
+  />
   <JobDetails
     v-if="jobID && showJobDetails"
+    :key="jobID"
     :client="client"
     :job-id="jobID"
     @close="showJobDetails = false"
   />
-  <IrisDialog :open="open" @update:open="close">
-    <IrisDialogContent>
-      <IrisDialogTitle>确认擦除我的账户</IrisDialogTitle>
-      <IrisDialogDescription>
-        这不是退出登录。服务端会创建持久化擦除任务，删除 aero-id
-        控制面和各来源授权范围内的数据；完成前不要重复发起新的擦除意图。
-      </IrisDialogDescription>
-      <IrisAlert v-if="recoveredIntent" tone="warning">
-        检测到尚未确认结果的擦除请求；重试会复用原幂等键。请先核实任务状态，不要换键重发。
-      </IrisAlert>
-      <IrisFormField
-        :label="`输入 ${confirmationText} 以确认`"
-        :hint="confirmationText"
-      >
-        <IrisInput v-model="confirmation" autocomplete="off" />
-      </IrisFormField>
-      <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
-      <div class="dialog-actions">
-        <IrisButton variant="ghost" :disabled="running" @click="close(false)"
-          >取消</IrisButton
-        >
-        <IrisButton
-          variant="danger"
-          :loading="running"
-          :disabled="confirmation !== confirmationText"
-          @click="void erase()"
-          >创建擦除任务</IrisButton
-        >
-      </div>
-    </IrisDialogContent>
-  </IrisDialog>
 </template>

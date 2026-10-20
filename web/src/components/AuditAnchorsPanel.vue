@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import {
   IrisAlert,
   IrisButton,
@@ -11,8 +11,13 @@ import type { AeroIdClient } from "../api/aeroId";
 import AnchorRunDialog from "./AnchorRunDialog.vue";
 import RecordTable from "./RecordTable.vue";
 import type { JsonRecord } from "../types";
+import { anchorRunConfirmation } from "./dialogTypes";
 import { rememberIdempotencyKey } from "./idempotencyHelpers";
 const { client } = defineProps<{ client: AeroIdClient }>();
+let active = true;
+onBeforeUnmount(() => {
+  active = false;
+});
 const source = ref("");
 const partition = ref("");
 const manifest = ref<JsonRecord>();
@@ -34,6 +39,7 @@ function records(value: unknown): JsonRecord[] {
     : [];
 }
 async function queryManifest(): Promise<void> {
+  if (!active || querying.value) return;
   const requestedSource = source.value.trim();
   const requestedPartition = partition.value.trim();
   if (!requestedSource || !requestedPartition) {
@@ -57,6 +63,7 @@ async function queryManifest(): Promise<void> {
   }
 }
 function openRun(): void {
+  if (!active) return;
   const intent = rememberIdempotencyKey({ action: "anchor-all" }, intentKeys);
   confirmation.value = "";
   runError.value = undefined;
@@ -72,7 +79,14 @@ function cancelRun(): void {
 async function runAnchors(): Promise<void> {
   const key = runKey.value;
   const signature = runSignature.value;
-  if (!key || !signature || running.value) return;
+  if (
+    !active ||
+    !key ||
+    !signature ||
+    running.value ||
+    confirmation.value !== anchorRunConfirmation
+  )
+    return;
   running.value = true;
   runError.value = undefined;
   try {

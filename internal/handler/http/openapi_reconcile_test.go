@@ -22,8 +22,8 @@ type route struct {
 // invariants in this file (M1..M4) keep manifest <-> router <-> spec aligned
 // in both directions; deleting an entry makes at least one assertion fail.
 //
-// Coverage arithmetic: 42 documented operations (including capabilities/intents)
-// + 22 previously-undocumented served control-plane routes (direction b) = 64 entries.
+// Coverage arithmetic: 44 documented operations (including capabilities/intents)
+// + 22 previously-undocumented served control-plane routes (direction b) = 66 entries.
 var routeManifest = []route{
 	// -- documented client contract (spec operations) --
 	{method: "GET", path: "/account-datasets"},
@@ -31,7 +31,9 @@ var routeManifest = []route{
 	{method: "GET", path: "/me/capabilities"},
 	{method: "POST", path: "/command-intents"},
 	{method: "GET", path: "/command-intents/{id}"},
+	{method: "GET", path: "/command-intents/by-key"},
 	{method: "POST", path: "/command-intents/{id}/execute"},
+	{method: "POST", path: "/command-intents/{id}/abandon"},
 	{method: "GET", path: "/me/profile"},
 	{method: "PATCH", path: "/me/profile"},
 	{method: "GET", path: "/me/sources"},
@@ -58,6 +60,8 @@ var routeManifest = []route{
 	{method: "GET", path: "/audit/replays/{id}"},
 	{method: "POST", path: "/audit/export"},
 	{method: "GET", path: "/admin/callback-subscriptions"},
+	{method: "GET", path: "/admin/callback-subscriptions/{id}/deliveries"},
+	{method: "GET", path: "/admin/callback-subscriptions/{id}/deliveries/{delivery_id}"},
 	{method: "POST", path: "/admin/callback-subscriptions"},
 	{method: "DELETE", path: "/admin/callback-subscriptions/{id}"},
 	{method: "GET", path: "/admin/audit/holds"},

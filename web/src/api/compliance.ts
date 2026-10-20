@@ -1,5 +1,9 @@
 import type { JsonRecord } from "../types";
-import { AeroIdTransport, requireDataEnvelope as dataOf } from "./transport";
+import {
+  AeroIdError,
+  AeroIdTransport,
+  requireDataEnvelope as dataOf,
+} from "./transport";
 
 export type AuditHoldScope = "tenant" | "account" | "actor";
 
@@ -21,15 +25,21 @@ function requiredIdempotencyKey(value: string): string {
 }
 
 function holds(value: unknown): JsonRecord[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
+  if (!Array.isArray(value) || !value.every(isRecord))
+    throw new AeroIdError(
+      0,
+      "response.invalid",
+      "Legal Hold 列表响应无效；请显式重新读取",
+    );
+  return value;
 }
 
 export class ComplianceClient {
   constructor(private readonly transport: AeroIdTransport) {}
 
-  async listHolds(): Promise<JsonRecord[]> {
+  async listHolds(signal?: AbortSignal): Promise<JsonRecord[]> {
     const data = dataOf(
-      await this.transport.request("GET", "/admin/audit/holds"),
+      await this.transport.request("GET", "/admin/audit/holds", { signal }),
     );
     return holds(data.holds);
   }
@@ -82,12 +92,24 @@ export class ComplianceClient {
     source: string,
     partition: string,
   ): Promise<JsonRecord> {
-    return dataOf(
+    const data = dataOf(
       await this.transport.request(
         "GET",
         `/admin/audit/anchor/manifest/${encodeURIComponent(source)}/${encodeURIComponent(partition)}`,
         { timeoutMs: 30_000 },
       ),
     );
+    if (
+      typeof data.source !== "string" ||
+      data.source !== source ||
+      typeof data.partition !== "string" ||
+      data.partition !== partition
+    )
+      throw new AeroIdError(
+        0,
+        "response.invalid",
+        "Manifest 响应与原查询不一致；请核实原 Source/Partition",
+      );
+    return data;
   }
 }

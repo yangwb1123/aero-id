@@ -8,7 +8,8 @@ import (
 func buildCommandIntentService(deps serviceDependencies, accounts service.AccountService,
 	operations service.OperationService, syncJobs service.SyncJobService) service.CommandIntentService {
 	cfg := service.CommandIntentConfig{Region: deps.cfg.Account.Region,
-		ExportEnabled: deps.store != nil && deps.cfg.Export.EncryptionKey != "", Sources: map[string]service.SourceCapabilityConfig{}}
+		ExportEnabled:         deps.store != nil && deps.cfg.Export.EncryptionKey != "",
+		CallbackReplayEnabled: deps.cfg.Callback.MasterKey != "" && !deps.cfg.Callback.DeliveryPaused, Sources: map[string]service.SourceCapabilityConfig{}}
 	for _, client := range deps.sourceConnectors {
 		if client != nil {
 			cfg.Sources[string(client.Source())] = sourceCapabilityFlags(deps.cfg, client)

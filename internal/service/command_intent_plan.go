@@ -19,11 +19,14 @@ func (s *commandIntentService) prepareIntentCommand(ctx context.Context, intent 
 	if err := commandPlanBudget(plan); err != nil {
 		return plan, nil, nil, err
 	}
+	if plan.Kind == "callback_replay" {
+		return s.prepareIntentCallback(ctx, intent, plan)
+	}
+	if !validNonCallbackPlan(plan) {
+		return plan, nil, nil, apperr.BadRequest("command.invalid_plan", "command parameters differ from its kind")
+	}
 	if plan.Kind == "operation" {
 		return s.prepareIntentOperation(ctx, intent, plan)
-	}
-	if plan.OperationType != "" || len(plan.Steps) > 0 || len(plan.RequestPayload) > 0 {
-		return plan, nil, nil, apperr.BadRequest("command.invalid_plan", "sync commands cannot contain workflow parameters")
 	}
 	planner, ok := s.syncJobs.(syncCommandPlanner)
 	if !ok {
@@ -41,6 +44,10 @@ func (s *commandIntentService) prepareIntentCommand(ctx context.Context, intent 
 		return plan, nil, nil, err
 	}
 	return plan, nil, job, nil
+}
+
+func validNonCallbackPlan(plan domain.CommandPlan) bool {
+	return plan.Callback == nil && (plan.Kind == "operation" || (plan.OperationType == "" && len(plan.Steps) == 0 && len(plan.RequestPayload) == 0))
 }
 
 func (s *commandIntentService) prepareIntentOperation(ctx context.Context, intent *domain.CommandIntent,
@@ -186,7 +193,7 @@ func commandPlanBudget(plan domain.CommandPlan) error {
 func commandIntentReceiptKey(id domain.ID) string { return "command-intent:" + id.String() }
 
 func commandPlanDestructive(plan domain.CommandPlan) bool {
-	if plan.Kind == "erase" {
+	if plan.Kind == "erase" || plan.Kind == "callback_replay" {
 		return true
 	}
 	for _, step := range plan.Steps {

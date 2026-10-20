@@ -16,7 +16,9 @@ import (
 type CommandIntentService interface {
 	Create(context.Context, CommandIntentInput) (*domain.CommandIntent, error)
 	Get(context.Context, domain.ID) (*domain.CommandIntent, error)
+	FindByKey(context.Context, string) (*domain.CommandIntent, error)
 	Execute(context.Context, domain.ID, int64, string) (*domain.CommandIntent, error)
+	Abandon(context.Context, domain.ID, int64, string) (*domain.CommandIntent, error)
 }
 
 type CommandIntentInput struct {
@@ -26,9 +28,10 @@ type CommandIntentInput struct {
 }
 
 type CommandIntentConfig struct {
-	Region        string
-	ExportEnabled bool
-	Sources       map[string]SourceCapabilityConfig
+	Region                string
+	ExportEnabled         bool
+	CallbackReplayEnabled bool
+	Sources               map[string]SourceCapabilityConfig
 }
 
 type operationCommandPlanner interface {
@@ -56,6 +59,8 @@ func NewCommandIntentService(repo repository.CommandIntentRepository, accounts A
 }
 
 func (s *commandIntentService) Create(ctx context.Context, input CommandIntentInput) (*domain.CommandIntent, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	principal, err := commandPrincipal(ctx)
 	if err != nil {
 		return nil, err
@@ -97,7 +102,7 @@ func (s *commandIntentService) prepareIntent(ctx context.Context, principal doma
 	if err != nil {
 		return nil, err
 	}
-	intent.Preconditions, err = s.repo.Capture(ctx, principal.TenantID, input.AccountID, plan.Datasets)
+	intent.Preconditions, err = s.captureIntentPreconditions(ctx, intent)
 	if err != nil {
 		return nil, mapCommandIntentError(err)
 	}
@@ -175,6 +180,10 @@ func mapCommandIntentError(err error) error {
 		return apperr.Conflict("command.stale", "command local preconditions changed; prepare a new preview")
 	case errors.Is(err, repository.ErrCommandIntentTooLarge):
 		return apperr.BadRequest("command.too_large", "command intent metadata exceeds budget")
+	case errors.Is(err, repository.ErrCommandIntentAbandoned):
+		return apperr.Conflict("command.abandoned", "command preview was permanently abandoned; query its original disposition")
+	case errors.Is(err, repository.ErrCommandIntentDispositionFenced):
+		return apperr.Conflict("command.disposition_fenced", "intent disposition requires the current home-region writer")
 	case errors.Is(err, repository.ErrCommandIntentExpired):
 		return apperr.Conflict("command.expired", "command preview has expired")
 	case errors.Is(err, repository.ErrAccountErased):

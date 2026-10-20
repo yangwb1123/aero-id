@@ -9,57 +9,19 @@ import (
 	"testing"
 	"time"
 
-	pg "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"gorm.io/gorm"
 
 	dbpkg "github.com/aero/aero-id/internal/pkg/db"
 	"github.com/aero/aero-id/internal/pkg/migrate"
 )
 
-const postgresFixtureTimeout = time.Minute
-
-// RegisterCleanup closes the SQL pool before terminating the container. The
-// closePool callback may be nil while setup is still in progress; this lets
-// callers register cleanup immediately after the container starts so setup
-// failures do not leak it.
-func RegisterCleanup(t *testing.T, terminate func(context.Context) error, closePool func() error) {
-	t.Helper()
-	t.Cleanup(func() {
-		cleanupFixture(t, terminate, closePool)
-	})
-}
-
-func cleanupFixture(t *testing.T, terminate func(context.Context) error, closePool func() error) {
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), postgresFixtureTimeout)
-	defer cancel()
-	if closePool != nil {
-		if err := closePool(); err != nil {
-			t.Errorf("close PostgreSQL pool: %v", err)
-		}
-	}
-	if err := terminate(cleanupCtx); err != nil {
-		t.Errorf("terminate PostgreSQL container: %v", err)
-	}
-}
-
 // Start launches a throwaway PostgreSQL container and returns a connected *gorm.DB.
 // Cleanup is registered with t.Cleanup.
 func Start(t *testing.T) *gorm.DB {
 	t.Helper()
 	startCtx, cancelStart := context.WithTimeout(context.Background(), postgresFixtureTimeout)
-	c, err := pg.Run(startCtx,
-		"postgres:16-alpine",
-		pg.WithDatabase("aero_id_test"),
-		pg.WithUsername("aero"),
-		pg.WithPassword("aero"),
-		pg.BasicWaitStrategies(),
-	)
-	cancelStart()
-	if err != nil {
-		t.Fatalf("start pg container: %v", err)
-	}
 	var db *gorm.DB
-	RegisterCleanup(t, c.Terminate, func() error {
+	c, err := StartContainer(t, startCtx, func() error {
 		if db == nil {
 			return nil
 		}
@@ -69,18 +31,26 @@ func Start(t *testing.T) *gorm.DB {
 		}
 		return sqlDB.Close()
 	})
+	cancelStart()
+	if err != nil {
+		t.Fatalf("start pg container: %v", err)
+	}
 
+	connectionStarted := time.Now()
 	connectionCtx, cancelConnection := context.WithTimeout(context.Background(), postgresFixtureTimeout)
 	dsn, err := c.ConnectionString(connectionCtx, "sslmode=disable", "TimeZone=UTC")
 	cancelConnection()
+	logFixturePhase(t, "connection_string", connectionStarted, err)
 	if err != nil {
 		t.Fatalf("conn string: %v", err)
 	}
+	openStarted := time.Now()
 	db, err = dbpkg.Open(dbpkg.Options{
 		DSN:          dsn,
 		MaxOpenConns: 5,
 		LogLevel:     "silent",
 	})
+	logFixturePhase(t, "open_pool", openStarted, err)
 	if err != nil {
 		t.Fatalf("gorm open: %v", err)
 	}
@@ -92,7 +62,10 @@ func Start(t *testing.T) *gorm.DB {
 // transaction, and advisory-lock semantics.
 func Migrate(t *testing.T, db *gorm.DB, migrationsDir string) {
 	t.Helper()
-	if _, err := migrate.New(db, migrationsDir, nil).Up(); err != nil {
+	started := time.Now()
+	_, err := migrate.New(db, migrationsDir, nil).Up()
+	logFixturePhase(t, "migrate", started, err)
+	if err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
 }

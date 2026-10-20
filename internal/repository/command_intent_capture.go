@@ -26,6 +26,7 @@ func commandIntentFromRow(row *commandIntentRow) (*domain.CommandIntent, error) 
 		Subject: row.Subject, ClientID: row.ClientID}
 	intent.IdempotencyKey, intent.RequestFingerprint = row.IdempotencyKey, row.RequestFingerprint
 	intent.CreatedAt, intent.ExpiresAt, intent.ReceiptKind = row.CreatedAt, row.ExpiresAt, row.ReceiptKind
+	intent.AbandonedAt = row.AbandonedAt
 	if row.ReceiptID != nil {
 		intent.ReceiptID = *row.ReceiptID
 	}
@@ -37,6 +38,9 @@ func (r *commandIntentRepo) Capture(ctx context.Context, tenant string, accountI
 	var result domain.CommandPreconditions
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var err error
+		if len(datasets) == 0 {
+			return ErrCommandIntentConflict
+		}
 		result, err = captureCommandPreconditionsTx(tx, tenant, accountID, datasets)
 		return err
 	})
@@ -70,7 +74,10 @@ func captureCommandPreconditionsTx(tx *gorm.DB, tenant string, accountID domain.
 	if account.HomeRegion != directory.HomeRegion {
 		return domain.CommandPreconditions{}, ErrCommandIntentStale
 	}
-	versions, err := captureCommandSnapshotsTx(tx, accountID, datasets)
+	versions := []domain.CommandSnapshotVersion{}
+	if datasets != nil {
+		versions, err = captureCommandSnapshotsTx(tx, accountID, datasets)
+	}
 	return domain.CommandPreconditions{AccountStatus: domain.AccountStatus(account.Status), HomeRegion: directory.HomeRegion,
 		WriterEpoch: epoch.Epoch, ResolverVersion: directory.ResolverVersion, Snapshots: versions}, err
 }

@@ -14,13 +14,16 @@ import {
 } from "@iris-ui-kit/vue";
 import type { AeroIdClient, OperationCreateInput } from "../api/aeroId";
 import type { Dataset, JsonRecord } from "../types";
+import { useCommandPreview } from "../hooks/useCommandPreview";
 import OperationStepEditor from "./OperationStepEditor.vue";
+import CommandPreviewDialog from "./CommandPreviewDialog.vue";
+import CommandDispositionNotice from "./CommandDispositionNotice.vue";
 import {
-  newOperationStep,
-  operationIntentSignature,
+  operationCommandPlan,
   parseOperationSteps,
   type OperationStepDraft,
 } from "./operationFormHelpers";
+import { newSelectionOperationStep } from "./operationStepSelection";
 
 const props = defineProps<{
   client: AeroIdClient;
@@ -29,269 +32,211 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ created: [operation: JsonRecord] }>();
 const open = ref(false);
-const running = ref(false);
-const error = ref<Error>();
-const accountID = ref("");
-const homeRegion = ref("");
+const accountID = ref(props.defaultAccountId ?? "");
 const operationType = ref<OperationCreateInput["operationType"]>("sync");
-const idempotencyKey = ref("");
 const requestPayload = ref("{}");
 const steps = ref<OperationStepDraft[]>([]);
-const confirming = ref(false);
-const confirmation = ref("");
-const pending = ref<OperationCreateInput>();
-const issuedIntent = ref<{ key: string; signature: string }>();
+const {
+  preview,
+  busy,
+  error,
+  pending,
+  unresolved,
+  abandoned,
+  allowed,
+  prepare,
+  recover,
+  confirmed,
+} = useCommandPreview({
+  client: () => props.client,
+  channel: "operation",
+  accountID: () => accountID.value.trim(),
+  onReceipt: (intent) => {
+    emit("created", { operation_id: intent.receipt_id });
+    open.value = false;
+  },
+});
 const operationTypes = [
   { value: "sync", label: "sync · 来源同步/摘要" },
   { value: "erase", label: "erase · 账户擦除" },
   { value: "source.command", label: "source.command · 已授权来源命令" },
   { value: "replay", label: "replay · 审计回放命令" },
 ];
-const dangerous = computed(() => {
-  if (operationType.value === "erase") return true;
-  return steps.value.some((step) =>
-    ["erase", "delete", "source.erase"].includes(step.action),
-  );
-});
-const confirmationPhrase = computed(() =>
-  operationType.value === "erase"
-    ? "CONFIRM ERASE"
-    : "CONFIRM DESTRUCTIVE OPERATION",
-);
-const canConfirm = computed(
-  () => confirmation.value === confirmationPhrase.value,
-);
-function newID(): string {
-  return crypto.randomUUID();
-}
-function reset(): void {
-  accountID.value = props.defaultAccountId ?? "";
-  homeRegion.value = "";
-  operationType.value = "sync";
-  idempotencyKey.value = newID();
-  requestPayload.value = "{}";
-  steps.value = [newOperationStep(props.datasets)];
-  confirming.value = false;
-  confirmation.value = "";
-  pending.value = undefined;
-  issuedIntent.value = undefined;
-  error.value = undefined;
-}
-function opened(value: boolean): void {
-  if (value) {
-    if (!issuedIntent.value) reset();
-    open.value = true;
-    return;
-  }
-  if (!running.value) {
-    open.value = false;
-    confirming.value = false;
-  }
-}
-function parseObject(value: string, label: string): JsonRecord {
-  let parsed: unknown;
+const formError = ref<Error>();
+const canPrepare = computed(() => {
   try {
-    parsed = JSON.parse(value || "{}");
+    return allowed(plan());
   } catch {
-    throw new Error(`${label} 不是有效 JSON`);
+    return false;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label} 必须是 JSON 对象`);
+});
+function opened(value: boolean): void {
+  if (busy.value) return;
+  if (value && !pending.value) {
+    accountID.value = props.defaultAccountId ?? "";
+    operationType.value = "sync";
+    requestPayload.value = "{}";
+    steps.value = [newSelectionOperationStep([])];
+    formError.value = undefined;
   }
-  return parsed as JsonRecord;
+  open.value = value;
 }
-function prepare(): void {
-  if (running.value) return;
-  error.value = undefined;
+function plan() {
+  if (new TextEncoder().encode(requestPayload.value).byteLength > 64 * 1024)
+    throw new Error("Operation Payload 超出预算");
+  const payload: unknown = JSON.parse(requestPayload.value || "{}");
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    throw new Error("Operation Payload 必须是 JSON 对象");
+  return operationCommandPlan(
+    operationType.value,
+    payload as JsonRecord,
+    parseOperationSteps(steps.value, operationType.value, props.datasets),
+  );
+}
+async function prepareForm(): Promise<void> {
+  if (busy.value) return;
+  formError.value = undefined;
   try {
-    if (!accountID.value.trim()) throw new Error("Account ID 不能为空");
-    if (!idempotencyKey.value.trim()) throw new Error("幂等键不能为空");
-    const input: OperationCreateInput = {
-      accountID: accountID.value.trim(),
-      homeRegion: homeRegion.value.trim() || undefined,
-      operationType: operationType.value,
-      idempotencyKey: idempotencyKey.value.trim(),
-      requestPayload: parseObject(requestPayload.value, "Operation Payload"),
-      steps: parseOperationSteps(
-        steps.value,
-        operationType.value,
-        props.datasets,
-      ),
-    };
-    const signature = operationIntentSignature(input);
-    if (
-      issuedIntent.value?.key === input.idempotencyKey &&
-      issuedIntent.value.signature !== signature
-    ) {
-      throw new Error(
-        "上一次 Operation 结果尚未确认，不能用旧幂等键提交不同内容；请先重试原请求或核实状态，再生成新键开始新意图。",
-      );
-    }
-    pending.value = input;
-    if (dangerous.value) {
-      confirming.value = true;
-      confirmation.value = "";
-      return;
-    }
-    void execute(input);
+    await prepare(plan());
   } catch (reason) {
-    error.value =
+    formError.value =
       reason instanceof Error ? reason : new Error("Operation 参数无效");
   }
 }
-function generateNewIdempotencyKey(): void {
-  if (running.value) return;
-  idempotencyKey.value = newID();
-  issuedIntent.value = undefined;
-  pending.value = undefined;
-  error.value = undefined;
-}
-async function execute(input: OperationCreateInput): Promise<void> {
-  if (running.value) return;
-  issuedIntent.value = {
-    key: input.idempotencyKey,
-    signature: operationIntentSignature(input),
-  };
-  running.value = true;
-  error.value = undefined;
-  try {
-    const operation = await props.client.createOperation(input);
-    issuedIntent.value = undefined;
-    emit("created", operation);
-    open.value = false;
-    confirming.value = false;
-  } catch (reason) {
-    error.value =
-      reason instanceof Error ? reason : new Error("Operation 创建失败");
-  } finally {
-    running.value = false;
-  }
-}
-function confirm(): void {
-  if (running.value || !pending.value || !canConfirm.value) return;
-  void execute(pending.value);
-}
-function cancelConfirmation(): void {
-  if (running.value) return;
-  confirming.value = false;
-  pending.value = undefined;
-  confirmation.value = "";
-}
 function changeType(value: unknown): void {
-  if (
-    value === "sync" ||
-    value === "erase" ||
-    value === "source.command" ||
-    value === "replay"
-  ) {
-    operationType.value = value;
-  }
+  if (["sync", "erase", "source.command", "replay"].includes(String(value)))
+    operationType.value = value as OperationCreateInput["operationType"];
 }
 </script>
 
 <template>
-  <IrisButton @click="opened(true)">创建 Operation</IrisButton>
-  <IrisDialog :open="open" @update:open="opened">
-    <IrisDialogContent>
-      <IrisDialogTitle>{{
-        confirming ? "确认危险 Operation" : "创建跨系统 Operation"
-      }}</IrisDialogTitle>
-      <IrisDialogDescription v-if="confirming">
-        该请求包含账户擦除或来源删除动作。远端超时可能产生 unknown
-        结果，提交后必须通过 Operation ID 对账；不会自动扫描或自动修复。
+  <IrisButton @click="opened(true)">创建 Operation / 核实原意图</IrisButton>
+  <IrisDialog :open="open && !preview" @update:open="opened">
+    <IrisDialogContent
+      :style="{
+        width: 'min(920px, calc(100vw - 48px))',
+        padding: 'clamp(12px, 3vw, 20px)',
+        overflowWrap: 'anywhere',
+      }"
+    >
+      <IrisDialogTitle>选择范围，创建 Operation</IrisDialogTitle>
+      <IrisDialogDescription>
+        选择目标 → 逐步选择来源与数据集 → 核对服务端预览 → 确认原回执。
+        默认同步来源摘要并更新本地投影，不需要编写
+        JSON；不含对象或完整消息。预览不运行来源，确认也不会自动 Run。
+        主区域由服务端解析，不以输入区域或 tenant_id 切换目标。
       </IrisDialogDescription>
-      <IrisDialogDescription v-else>
-        每个步骤都会持久化为 Saga 状态。幂等键只可用于同一个具体意图的重试。
-      </IrisDialogDescription>
-      <template v-if="!confirming">
-        <form class="operation-create-form" @submit.prevent="prepare">
+      <CommandDispositionNotice :records="abandoned" />
+      <IrisAlert v-if="unresolved.length" tone="warning">
+        存在原意图。无 ID 的丢回应可用原键仅 GET 查找；NotFound 不允许换键。已知
+        ID 仅查询原意图；未经服务端关闭证明不能更改范围或创建替代命令。
+        <div v-for="record in unresolved" :key="record.idempotencyKey">
+          {{ record.accountID }} · {{ record.intentID ?? "预览回应未确认" }}
+          <IrisButton
+            variant="outline"
+            :disabled="busy"
+            @click="void recover(record)"
+            >查询原意图</IrisButton
+          >
+        </div>
+      </IrisAlert>
+      <form class="operation-create-form" @submit.prevent="void prepareForm()">
+        <fieldset :disabled="busy || Boolean(pending?.intentID)">
           <div class="operation-form-grid">
             <IrisFormField
               label="Account ID"
               required
-              hint="用户操作默认填入当前账户；管理员可输入已授权账户"
+              hint="服务端仍校验当前租户内目标与来源资源权限"
             >
               <IrisInput v-model="accountID" required placeholder="UUID" />
             </IrisFormField>
+            <IrisFormField
+              label="原预览幂等键"
+              hint="丢回应保留；不会自动生成第二个命令"
+            >
+              <IrisInput
+                :model-value="
+                  pending?.idempotencyKey ?? '首次预览前生成并持久保存'
+                "
+                readonly
+              />
+            </IrisFormField>
+          </div>
+          <p>
+            计划类型：{{
+              operationTypes.find((item) => item.value === operationType)?.label
+            }}
+          </p>
+          <details data-operation-expert>
+            <summary>高级 Operation 类型与参数（专家）</summary>
             <IrisFormField label="Operation 类型" required>
               <IrisSelect
                 :model-value="operationType"
                 :items="operationTypes"
+                :teleport="false"
                 @update:model-value="changeType"
               />
             </IrisFormField>
             <IrisFormField
-              label="Home Region"
-              hint="留空由服务端按账户归属区域解析"
+              label="Operation Request Payload JSON"
+              hint="不输入凭据或来源正文；服务端会脱敏规范化。切换类型不会重写原步骤或补偿。"
             >
-              <IrisInput v-model="homeRegion" placeholder="例如 cn-east-1" />
+              <IrisTextarea v-model="requestPayload" autosize :max-rows="6" />
             </IrisFormField>
-            <IrisFormField
-              label="幂等键"
-              required
-              hint="请求超时后保持不变；新意图请生成新键"
-            >
-              <IrisInput v-model="idempotencyKey" required readonly />
-            </IrisFormField>
-          </div>
-          <div class="operation-key-row">
-            <IrisButton
-              type="button"
-              variant="outline"
-              :disabled="running"
-              @click="generateNewIdempotencyKey"
-              >生成新幂等键</IrisButton
-            >
-          </div>
-          <IrisAlert v-if="issuedIntent" tone="warning">
-            上次请求结果尚未确认。重试请保持原参数和幂等键；更改内容前先核实状态，再显式生成新键。
-          </IrisAlert>
-          <IrisFormField label="Operation Request Payload JSON">
-            <IrisTextarea v-model="requestPayload" autosize :max-rows="6" />
-          </IrisFormField>
-          <h3 class="detail-heading">执行步骤</h3>
+          </details>
+          <h3 class="detail-heading">有序执行步骤</h3>
+          <p>
+            按显示顺序规划；可移位或添加来源步骤，必须显式选择范围。已注册不等于启用、授权或新鲜。
+          </p>
           <OperationStepEditor
             :steps="steps"
             :datasets="datasets"
             @change="steps = $event"
           />
-          <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
-          <div class="dialog-actions">
-            <IrisButton type="button" variant="ghost" @click="opened(false)"
-              >取消</IrisButton
-            >
-            <IrisButton type="submit" :loading="running">校验并继续</IrisButton>
-          </div>
-        </form>
-      </template>
-      <template v-else>
-        <IrisAlert tone="danger" title="不可逆/高风险动作">
-          即将提交 {{ operationType }}。请输入
-          <strong>{{ confirmationPhrase }}</strong> 完成二次确认。
-        </IrisAlert>
-        <IrisAlert v-if="issuedIntent" tone="warning">
-          上次请求结果尚未确认；重试请保持相同参数和幂等键，返回修改后不要直接换键重复提交。
-        </IrisAlert>
-        <IrisFormField label="确认短语" :hint="confirmationPhrase">
-          <IrisInput v-model="confirmation" autocomplete="off" />
-        </IrisFormField>
-        <IrisAlert v-if="error" tone="danger">{{ error.message }}</IrisAlert>
+        </fieldset>
+        <IrisAlert v-if="!canPrepare" tone="warning"
+          >当前动作、来源或账户上下文未确认；不发送新预览。来源擦除启用与 ACL
+          由服务端核对，不以摘要启用推断。</IrisAlert
+        >
+        <IrisAlert v-if="formError || error" tone="danger">{{
+          (formError ?? error)?.message
+        }}</IrisAlert>
         <div class="dialog-actions">
           <IrisButton
+            type="button"
             variant="ghost"
-            :disabled="running"
-            @click="cancelConfirmation"
-            >返回修改</IrisButton
+            :disabled="busy"
+            @click="opened(false)"
+            >关闭（不回滚）</IrisButton
           >
           <IrisButton
-            variant="danger"
-            :loading="running"
-            :disabled="!canConfirm"
-            @click="confirm"
-            >确认提交</IrisButton
+            v-if="!pending?.intentID"
+            type="submit"
+            :loading="busy"
+            :disabled="!canPrepare"
+            >获取服务端预览</IrisButton
           >
         </div>
-      </template>
+      </form>
     </IrisDialogContent>
   </IrisDialog>
+  <CommandPreviewDialog
+    v-if="preview"
+    :key="preview.intent_id"
+    :client="client"
+    :intent="preview"
+    :eligible="allowed(preview.plan, preview.account_id)"
+    @close="preview = undefined"
+    @executed="confirmed"
+    @abandoned="confirmed"
+  />
 </template>
+
+<style scoped>
+.operation-create-form > fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+</style>

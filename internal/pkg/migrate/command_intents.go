@@ -5,7 +5,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const MinCommandIntentVersion uint64 = 72
+const MinCommandIntentVersion uint64 = 75
 
 func VerifyCommandIntents(db *gorm.DB) error {
 	if err := RequireVersion(db, MinCommandIntentVersion); err != nil {
@@ -22,13 +22,20 @@ func VerifyCommandIntents(db *gorm.DB) error {
 		OR (column_name IN ('status','receipt_kind') AND data_type='character varying' AND character_maximum_length=16)
 		OR (column_name='document' AND data_type='jsonb')
 		OR (column_name IN ('created_at','expires_at') AND data_type='timestamp with time zone')))
-		OR (column_name='receipt_id' AND is_nullable='YES' AND data_type='uuid'))`).Scan(&count).Error; err != nil {
+		OR (column_name='receipt_id' AND is_nullable='YES' AND data_type='uuid')
+		OR (column_name='abandoned_at' AND is_nullable='YES' AND data_type='timestamp with time zone'))`).Scan(&count).Error; err != nil {
 		return fmt.Errorf("check command intent schema: %w", err)
 	}
-	if count != 16 {
+	if count != 17 {
 		return fmt.Errorf("command intent schema is incompatible; run 'migrate up' before starting")
 	}
-	return verifyCommandIntentUniqueness(db)
+	if err := verifyCommandIntentUniqueness(db); err != nil {
+		return err
+	}
+	if err := verifyCommandIntentDisposition(db); err != nil {
+		return err
+	}
+	return verifyCallbackReplaySchema(db)
 }
 
 func verifyCommandIntentUniqueness(db *gorm.DB) error {

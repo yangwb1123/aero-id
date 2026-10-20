@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, ref } from "vue";
 import {
   IrisAlert,
   IrisButton,
@@ -15,7 +15,7 @@ import AuditAnchorsPanel from "../components/AuditAnchorsPanel.vue";
 import ComplianceCommandDialog from "../components/ComplianceCommandDialog.vue";
 import type { ComplianceCommand } from "../components/dialogTypes";
 import JobDetails from "../components/JobDetails.vue";
-import { syncJobID } from "../components/jobHelpers";
+import { commandUUID } from "../components/commandPreviewStorage";
 import PageError from "../components/PageError.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageLoading from "../components/PageLoading.vue";
@@ -31,7 +31,9 @@ const scopeItems = [
   { value: "actor", label: "Actor" },
 ];
 const { client } = defineProps<{ client: AeroIdClient }>();
-const resource = useAsyncResource(() => client.compliance.listHolds());
+const resource = useAsyncResource((signal) =>
+  client.compliance.listHolds(signal),
+);
 const scopeType = ref<AuditHoldScope>("account");
 const scopeID = ref("");
 const reason = ref("");
@@ -43,14 +45,25 @@ const commandError = ref<Error>();
 const message = ref<string>();
 const jobID = ref<string>();
 const intentKeys = new Map<string, string>();
-function holdScope(record: JsonRecord): AuditHoldScope | undefined {
-  const value = record.scope_type;
-  return value === "tenant" || value === "account" || value === "actor"
-    ? value
-    : undefined;
+let active = true;
+onBeforeUnmount(() => {
+  active = false;
+});
+function holdRemoval(record: JsonRecord): ComplianceCommand | undefined {
+  const scopeType = record.scope_type;
+  const id = record.scope_id;
+  if (
+    (scopeType === "tenant" ||
+      scopeType === "account" ||
+      scopeType === "actor") &&
+    typeof id === "string" &&
+    id.length > 0
+  )
+    return { kind: "remove", scopeType, scopeID: id };
+  return undefined;
 }
 function prepareHold(): void {
-  if (running.value) return;
+  if (!active || running.value) return;
   commandError.value = undefined;
   try {
     const id = scopeID.value.trim();
@@ -81,14 +94,14 @@ function prepareHold(): void {
         : new Error("Legal Hold 输入无效");
   }
 }
-function openCommand(next: ComplianceCommand): void {
-  if (running.value) return;
+function openCommand(next: ComplianceCommand | undefined): void {
+  if (!active || running.value || !next) return;
   confirmation.value = "";
   commandError.value = undefined;
   command.value = next;
 }
 function prepareAuditExport(): void {
-  if (running.value) return;
+  if (!active || running.value) return;
   const intent = rememberIdempotencyKey({ kind: "audit-export" }, intentKeys);
   openCommand({
     kind: "export",
@@ -98,7 +111,14 @@ function prepareAuditExport(): void {
 }
 async function runCommand(): Promise<void> {
   const current = command.value;
-  if (!current || running.value) return;
+  if (!active || !current || running.value) return;
+  if (
+    current.kind === "remove" &&
+    (resource.loading ||
+      resource.error ||
+      confirmation.value !== current.scopeID)
+  )
+    return;
   running.value = true;
   commandError.value = undefined;
   message.value = undefined;
@@ -116,12 +136,12 @@ async function runCommand(): Promise<void> {
       message.value = "Legal Hold 已解除，并已写入新的审计事实。";
       resource.reload();
     } else {
-      const id = syncJobID(
-        await client.compliance.createAuditExport(current.idempotencyKey),
-      );
-      if (!id)
+      const id = (
+        await client.compliance.createAuditExport(current.idempotencyKey)
+      ).job_id;
+      if (!commandUUID(id))
         throw new Error(
-          "任务可能已创建，但响应缺少任务 ID；重试将复用当前幂等键。",
+          "任务可能已创建；响应任务 ID 无效，请先核实原任务列表与审计，保留当前幂等键。",
         );
       intentKeys.delete(current.signature);
       jobID.value = id;
@@ -190,7 +210,10 @@ async function runCommand(): Promise<void> {
       </form>
     </IrisCard>
     <IrisCard variant="outline">
-      <template #header>当前生效的 Legal Hold</template>
+      <template #header>本次查询可见的生效 Legal Hold</template>
+      <p class="muted">
+        无可见记录不证明不存在适用的 Hold，也不授权解除保全或清理。
+      </p>
       <RecordTable
         :records="resource.data"
         :columns="[
@@ -201,21 +224,15 @@ async function runCommand(): Promise<void> {
           { key: 'created_at', label: '创建时间', kind: 'date' },
           { key: 'expires_at', label: '到期时间', kind: 'date' },
         ]"
-        empty="暂无生效的 Legal Hold"
+        empty="本次查询无可见的生效 Legal Hold"
       >
         <template #actions="{ record }">
           <IrisButton
-            v-if="holdScope(record) && record.scope_id"
+            v-if="holdRemoval(record)"
             size="sm"
             variant="danger"
             :disabled="running || resource.loading || Boolean(resource.error)"
-            @click="
-              openCommand({
-                kind: 'remove',
-                scopeType: holdScope(record)!,
-                scopeID: String(record.scope_id),
-              })
-            "
+            @click="openCommand(holdRemoval(record))"
             >解除</IrisButton
           >
         </template>

@@ -10,12 +10,12 @@ Do not enable these settings on an older binary; `config.Load` rejects unknown k
 Supply keys through environment or an approved secret provider, never a committed
 ConfigMap, command-line argument, API response, log, or audit payload.
 
-| Setting / environment | Contract |
-| --- | --- |
-| `master_key` / `AERO_ID_CALLBACK_MASTER_KEY` | Active encryption key. Printable ASCII without spaces or commas, 32–4096 bytes; generate at least 32 random bytes and encode them. Required in production-like environments unless delivery is explicitly paused. |
-| `previous_master_keys` / `AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS` | Up to four retained keys, comma-separated with no padding. No duplicates or repetition of the active key. Same strength/format requirements. |
-| `secret_envelope_version` / `AERO_ID_CALLBACK_SECRET_ENVELOPE_VERSION` | `0` (default) writes the legacy-compatible format; `1` writes `v1:<key-id>:<ciphertext>` after every reader has upgraded. Both formats are readable by this implementation. |
-| `delivery_paused` / `AERO_ID_CALLBACK_DELIVERY_PAUSED` | `true` rejects registration with `callback.paused`/503 and stops callback claims and callback DLQ purge. Listing, deletion and audited replay remain available. |
+| Setting / environment                                                  | Contract                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `master_key` / `AERO_ID_CALLBACK_MASTER_KEY`                           | Active encryption key. Printable ASCII without spaces or commas, 32–4096 bytes; generate at least 32 random bytes and encode them. Required in production-like environments unless delivery is explicitly paused. |
+| `previous_master_keys` / `AERO_ID_CALLBACK_PREVIOUS_MASTER_KEYS`       | Up to four retained keys, comma-separated with no padding. No duplicates or repetition of the active key. Same strength/format requirements.                                                                      |
+| `secret_envelope_version` / `AERO_ID_CALLBACK_SECRET_ENVELOPE_VERSION` | `0` (default) writes the legacy-compatible format; `1` writes `v1:<key-id>:<ciphertext>` after every reader has upgraded. Both formats are readable by this implementation.                                       |
+| `delivery_paused` / `AERO_ID_CALLBACK_DELIVERY_PAUSED`                 | `true` rejects registration with `callback.paused`/503 and stops callback claims and callback DLQ purge. Listing, deletion and audited replay remain available.                                                   |
 
 Configured keys must remain valid even while paused. A non-empty
 `previous_master_keys` always requires an active key, including during a pause.
@@ -37,7 +37,24 @@ fails, the row remains leased until recovery; it is not falsely settled.
 The audit ledger/publication drain and durable callback fan-out continue while
 callback delivery is paused. A pause is **not** a queue-size limit: monitor database
 capacity/backlog and bound the maintenance window. Destination failures still use
-the normal bounded remote retry budget/DLQ path.
+the normal bounded delivery-attempt/retry/DLQ path; an attempt counter alone does
+not prove any HTTP bytes reached the receiver.
+
+Upgraded workers also check the exact live claim and current enabled/verified
+parent before endpoint processing and HTTP transport admission. Refusal preserves
+the original leased row/attempt/Event ID; it does not reset a delivery. These
+[local send checks](callback-deliveries.md#worker-send-admission-checks) cannot
+recall already-admitted calls and are not a dynamic pause/acknowledgment protocol.
+Every API/worker sender still needs the static configuration rollout below.
+
+The upgraded [network-phase budget and destination policy](callback-deliveries.md#network-phase-budget-and-destination-policy)
+shares the configured timeout across DNS, both send checks, dial/TLS and response
+reads. Connection-time DNS is rechecked, special/shared-address ranges fail closed,
+answers are capped at32 and response headers at64KiB; owned single-use sockets close
+on deadline/cancellation even during TLS. This does not undo a receiver effect or
+turn a network timeout into an eligibility-check refusal. Review production
+DNS/CA/egress and all existing destinations before rollout; never widen the
+private-target setting or change keys/Event IDs to bypass a network refusal.
 
 ## Safe staged rollout
 
@@ -98,24 +115,43 @@ inspection; an inventory of versioned rows alone is not permission to retire key
 - Deliveries already dead-lettered by older binaries are not reset automatically.
   Use the separately authorized/audited replay flow after restoring keys.
 
+## Metadata recovery during maintenance
+
+[Delivery recovery](callback-deliveries.md) documents the owned-subscription
+list/detail HTTP and gRPC reads. They need current authoritative `callback.manage`
+and durable read audit, but do not decrypt/read ciphertext or require a delivery
+master key. `callback.read` guidance therefore remains available while paused;
+it is not a write grant. The Web console conservatively disables management writes
+when delivery is paused/unconfigured. Existing authenticated deletion/replay APIs
+remain available under their compatibility contract, including its cache/unknown
+outcome limitations. Reading metadata does not resume workers or reset attempts.
+
 ## Observability and verification
 
 The existing `aero_control_callback_deliveries_total{status=...}` counter adds
-bounded labels `paused`, `key_unavailable`, `secret_unavailable`, and `defer_failed`.
-They count skipped drain passes/deferred outcomes, **not backlog gauges**.
+bounded labels `paused`, `key_unavailable`, `secret_unavailable`, `defer_failed`,
+`send_ineligible` and `send_check_failed`.
+They count skipped drain passes/deferred or refused outcomes, **not backlog gauges**.
 `secret_unavailable` reports a successfully persisted local deferral;
 `defer_failed` requires investigation of lease loss/DB or wiring failures.
-No key, endpoint, ciphertext or receiver response is a metric label.
+`send_ineligible` is a failed local claim/parent eligibility check;
+`send_check_failed` is unavailable wiring/DB/context/deadline evidence, not a
+receiver outage. Both leave the existing claim untouched and prove no absence of
+an older remote effect. No key, endpoint, ciphertext or receiver response is a metric label.
 
 Unit tests cover legacy-format writes, old/new-key reads, non-key identifiers,
 GCM tamper rejection, pause/config guards and detached bounded deferral contexts.
 PostgreSQL tests cover attempt/dedup/audit preservation, expired/same-owner
-reclaimed lease fencing, and resumption with the original signing secret:
+reclaimed lease fencing, resumption with the original signing secret, and a
+controlled loopback HTTPS lost-acknowledgment retry with the same signed Event ID.
+The last exercise uses a local test CA and receiver dedup seam, not a deployed
+receiver/production trust acceptance:
 
 ```bash
 go test ./internal/config ./internal/service ./internal/repository ./internal/app -count=1
-go test -tags integration -p 1 ./internal/repository ./internal/service \
-  -run '^TestCallback(DeliveryDeferral|KeyRotation)' -count=1 -timeout=3m
+go test -tags integration -p 1 \
+  ./internal/repository ./internal/repository/auditintegration ./internal/service \
+  -run '^TestCallback(DeliveryDeferral|KeyRotation|SendAdmissionPostgres|NetworkPostgres)' -count=1 -timeout=3m
 ```
 
 Run the backend done gate and `make test-integration` before release. Targeted tests,

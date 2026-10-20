@@ -28,6 +28,8 @@ func (h *CallbackHandler) RegisterRoutes(r Routes) {
 		group.Use(middleware.RequirePermission(domain.PermCallbackManage, h.permission))
 	}
 	group.GET("", h.List)
+	group.GET("/:id/deliveries", h.ListDeliveries)
+	group.GET("/:id/deliveries/:delivery_id", h.GetDelivery)
 	group.POST("", h.Create)
 	group.DELETE("/:id", h.Delete)
 	group.POST("/deliveries/:id/replay", h.Replay)

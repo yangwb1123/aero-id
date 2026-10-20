@@ -3297,6 +3297,8 @@ var OperationService_ServiceDesc = grpc.ServiceDesc{
 const (
 	CallbackService_RegisterCallback_FullMethodName       = "/aero_id.v1.CallbackService/RegisterCallback"
 	CallbackService_ListCallbacks_FullMethodName          = "/aero_id.v1.CallbackService/ListCallbacks"
+	CallbackService_ListCallbackDeliveries_FullMethodName = "/aero_id.v1.CallbackService/ListCallbackDeliveries"
+	CallbackService_GetCallbackDelivery_FullMethodName    = "/aero_id.v1.CallbackService/GetCallbackDelivery"
 	CallbackService_DeleteCallback_FullMethodName         = "/aero_id.v1.CallbackService/DeleteCallback"
 	CallbackService_ReplayCallbackDelivery_FullMethodName = "/aero_id.v1.CallbackService/ReplayCallbackDelivery"
 )
@@ -3307,6 +3309,8 @@ const (
 type CallbackServiceClient interface {
 	RegisterCallback(ctx context.Context, in *RegisterCallbackRequest, opts ...grpc.CallOption) (*RegisterCallbackResponse, error)
 	ListCallbacks(ctx context.Context, in *ListCallbacksRequest, opts ...grpc.CallOption) (*ListCallbacksResponse, error)
+	ListCallbackDeliveries(ctx context.Context, in *ListCallbackDeliveriesRequest, opts ...grpc.CallOption) (*ListCallbackDeliveriesResponse, error)
+	GetCallbackDelivery(ctx context.Context, in *GetCallbackDeliveryRequest, opts ...grpc.CallOption) (*GetCallbackDeliveryResponse, error)
 	DeleteCallback(ctx context.Context, in *DeleteCallbackRequest, opts ...grpc.CallOption) (*DeleteCallbackResponse, error)
 	ReplayCallbackDelivery(ctx context.Context, in *ReplayCallbackDeliveryRequest, opts ...grpc.CallOption) (*ReplayCallbackDeliveryResponse, error)
 }
@@ -3339,6 +3343,26 @@ func (c *callbackServiceClient) ListCallbacks(ctx context.Context, in *ListCallb
 	return out, nil
 }
 
+func (c *callbackServiceClient) ListCallbackDeliveries(ctx context.Context, in *ListCallbackDeliveriesRequest, opts ...grpc.CallOption) (*ListCallbackDeliveriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCallbackDeliveriesResponse)
+	err := c.cc.Invoke(ctx, CallbackService_ListCallbackDeliveries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *callbackServiceClient) GetCallbackDelivery(ctx context.Context, in *GetCallbackDeliveryRequest, opts ...grpc.CallOption) (*GetCallbackDeliveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCallbackDeliveryResponse)
+	err := c.cc.Invoke(ctx, CallbackService_GetCallbackDelivery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *callbackServiceClient) DeleteCallback(ctx context.Context, in *DeleteCallbackRequest, opts ...grpc.CallOption) (*DeleteCallbackResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteCallbackResponse)
@@ -3365,6 +3389,8 @@ func (c *callbackServiceClient) ReplayCallbackDelivery(ctx context.Context, in *
 type CallbackServiceServer interface {
 	RegisterCallback(context.Context, *RegisterCallbackRequest) (*RegisterCallbackResponse, error)
 	ListCallbacks(context.Context, *ListCallbacksRequest) (*ListCallbacksResponse, error)
+	ListCallbackDeliveries(context.Context, *ListCallbackDeliveriesRequest) (*ListCallbackDeliveriesResponse, error)
+	GetCallbackDelivery(context.Context, *GetCallbackDeliveryRequest) (*GetCallbackDeliveryResponse, error)
 	DeleteCallback(context.Context, *DeleteCallbackRequest) (*DeleteCallbackResponse, error)
 	ReplayCallbackDelivery(context.Context, *ReplayCallbackDeliveryRequest) (*ReplayCallbackDeliveryResponse, error)
 	mustEmbedUnimplementedCallbackServiceServer()
@@ -3382,6 +3408,12 @@ func (UnimplementedCallbackServiceServer) RegisterCallback(context.Context, *Reg
 }
 func (UnimplementedCallbackServiceServer) ListCallbacks(context.Context, *ListCallbacksRequest) (*ListCallbacksResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListCallbacks not implemented")
+}
+func (UnimplementedCallbackServiceServer) ListCallbackDeliveries(context.Context, *ListCallbackDeliveriesRequest) (*ListCallbackDeliveriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListCallbackDeliveries not implemented")
+}
+func (UnimplementedCallbackServiceServer) GetCallbackDelivery(context.Context, *GetCallbackDeliveryRequest) (*GetCallbackDeliveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCallbackDelivery not implemented")
 }
 func (UnimplementedCallbackServiceServer) DeleteCallback(context.Context, *DeleteCallbackRequest) (*DeleteCallbackResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteCallback not implemented")
@@ -3446,6 +3478,42 @@ func _CallbackService_ListCallbacks_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CallbackService_ListCallbackDeliveries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCallbackDeliveriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CallbackServiceServer).ListCallbackDeliveries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CallbackService_ListCallbackDeliveries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CallbackServiceServer).ListCallbackDeliveries(ctx, req.(*ListCallbackDeliveriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CallbackService_GetCallbackDelivery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCallbackDeliveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CallbackServiceServer).GetCallbackDelivery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CallbackService_GetCallbackDelivery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CallbackServiceServer).GetCallbackDelivery(ctx, req.(*GetCallbackDeliveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CallbackService_DeleteCallback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteCallbackRequest)
 	if err := dec(in); err != nil {
@@ -3496,6 +3564,14 @@ var CallbackService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCallbacks",
 			Handler:    _CallbackService_ListCallbacks_Handler,
+		},
+		{
+			MethodName: "ListCallbackDeliveries",
+			Handler:    _CallbackService_ListCallbackDeliveries_Handler,
+		},
+		{
+			MethodName: "GetCallbackDelivery",
+			Handler:    _CallbackService_GetCallbackDelivery_Handler,
 		},
 		{
 			MethodName: "DeleteCallback",

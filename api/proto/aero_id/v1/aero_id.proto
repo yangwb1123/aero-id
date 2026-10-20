@@ -644,10 +644,41 @@ message DeleteCallbackRequest { string id = 1; }
 message DeleteCallbackResponse {}
 message ReplayCallbackDeliveryRequest { string id = 1; }
 message ReplayCallbackDeliveryResponse {}
+// Current local delivery metadata only, not payload/response/secret or history.
+message CallbackDeliveryMetadata {
+  string id = 1;
+  string subscription_id = 2;
+  string event_id = 3;
+  string tenant_id = 4;
+  string action = 5;
+  string status = 6;
+  int32 attempt = 7;
+  int64 lease_generation = 8;
+  google.protobuf.Timestamp lease_until = 9;
+  google.protobuf.Timestamp next_attempt_at = 10;
+  int32 status_code = 11;
+  string error_code = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  int64 revision = 15; // Local all-writer CAS revision, not a causal watermark.
+}
+message ListCallbackDeliveriesRequest {
+  string subscription_id = 1;
+  string status = 2;
+  Page page = 3;
+}
+message ListCallbackDeliveriesResponse {
+  repeated CallbackDeliveryMetadata deliveries = 1;
+  string next_cursor = 2;
+}
+message GetCallbackDeliveryRequest { string subscription_id = 1; string delivery_id = 2; }
+message GetCallbackDeliveryResponse { CallbackDeliveryMetadata delivery = 1; }
 
 service CallbackService {
   rpc RegisterCallback(RegisterCallbackRequest) returns (RegisterCallbackResponse);
   rpc ListCallbacks(ListCallbacksRequest) returns (ListCallbacksResponse);
+  rpc ListCallbackDeliveries(ListCallbackDeliveriesRequest) returns (ListCallbackDeliveriesResponse);
+  rpc GetCallbackDelivery(GetCallbackDeliveryRequest) returns (GetCallbackDeliveryResponse);
   rpc DeleteCallback(DeleteCallbackRequest) returns (DeleteCallbackResponse);
   rpc ReplayCallbackDelivery(ReplayCallbackDeliveryRequest) returns (ReplayCallbackDeliveryResponse);
 }

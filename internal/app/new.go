@@ -154,6 +154,7 @@ func New(ctx context.Context, cfg *config.Config, log *zap.Logger) (*App, error)
 	if err != nil {
 		return nil, err
 	}
+	wireCallbackDeliveryPermission(callbackSvc, ssoClient)
 	// P4-07: one shared hold registry for the audit TTL cleaner and the hold service.
 	holdRepo := repository.NewAuditHoldRepository(gdb, auditLedgerRepo)
 	// F-1 (storage GC audit): NewFileRepository gains the ledger for the

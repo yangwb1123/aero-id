@@ -31,6 +31,7 @@ func (s *capabilityService) features() []capabilityFeature {
 		{name: "audit.read", permission: domain.PermAuditRead, enabled: true},
 		{name: "audit.export", permission: domain.PermAuditExport, enabled: s.config.ExportEnabled, write: true},
 		{name: "audit.replay", permission: domain.PermAuditReplay, enabled: true, write: true},
+		{name: "callback.read", permission: domain.PermCallbackManage, enabled: true},
 		{name: "callback.manage", permission: domain.PermCallbackManage, enabled: s.config.CallbacksEnabled, write: true},
 		{name: "system.config", permission: domain.PermSystemConfig, enabled: true, write: true},
 		{name: "user.ban", permission: domain.PermUserBan, enabled: true, write: true},
@@ -65,6 +66,9 @@ func (s *capabilityService) authorizationDecisions(ctx context.Context, actor st
 	queue := make(chan string, len(s.features()))
 	for _, feature := range s.features() {
 		if feature.permission != "" {
+			if _, exists := decisions[feature.permission]; exists {
+				continue
+			}
 			decisions[feature.permission] = domain.AccessUnknown
 			queue <- feature.permission
 		}

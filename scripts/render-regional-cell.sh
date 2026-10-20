@@ -36,7 +36,7 @@ if [[ ! -f "$TEMPLATE" ]]; then
 fi
 
 tmp=$(mktemp)
-trap 'rm -f "$tmp" "$tmp.rendered"' EXIT
+trap 'rm -f "$tmp" "$tmp.rendered" "$tmp.paused"' EXIT
 
 # REGION is restricted above, so it is safe to use as a sed replacement. The
 # digest is hexadecimal and therefore safe as well. Do this before hashing:
@@ -66,15 +66,25 @@ sed "s/REPLACE_WITH_CONFIG_SHA256/${config_hash}/g" "$tmp" >"$tmp.rendered"
 # pods before the migration completes.
 if [[ "${AERO_ID_PAUSE_WORKLOADS:-0}" == 1 ]]; then
   awk '
-    /^---$/ { kind=""; object=""; skip=0 }
-    $0 == "kind: HorizontalPodAutoscaler" { skip=1; next }
-    skip { next }
+    # Buffer the whole document: apiVersion/comments precede kind, so streaming
+    # skip-from-kind leaves a malformed orphan document before the next resource.
+    function flush_document(    i) {
+      if (count && !skip) {
+        if (printed++) print "---"
+        for (i=1; i<=count; i++) print lines[i]
+      }
+      delete lines
+      count=0; kind=""; object=""; skip=0
+    }
+    /^---$/ { flush_document(); next }
+    $0 == "kind: HorizontalPodAutoscaler" { skip=1 }
     $0 == "kind: Deployment" { kind="Deployment" }
     kind == "Deployment" && $0 == "  name: aero-id-api" { object="aero-id-api" }
     kind == "Deployment" && $0 == "  name: aero-id-workers" { object="aero-id-workers" }
     kind == "Deployment" && object == "aero-id-api" && $0 == "  replicas: 3" { sub(/3$/, "0") }
     kind == "Deployment" && object == "aero-id-workers" && $0 == "  replicas: 2" { sub(/2$/, "0") }
-    { print }
+    { lines[++count]=$0 }
+    END { flush_document() }
   ' "$tmp.rendered" >"$tmp.paused"
   mv "$tmp.paused" "$tmp.rendered"
 fi

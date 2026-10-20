@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref, onBeforeUnmount } from "vue";
 import {
   IrisAlert,
   IrisButton,
@@ -15,14 +15,40 @@ import { useTaskPolling } from "../hooks/useTaskPolling";
 import PageError from "./PageError.vue";
 import PageLoading from "./PageLoading.vue";
 import RecordTable from "./RecordTable.vue";
+import TaskExecutionDiagnostic from "./TaskExecutionDiagnostic.vue";
+import JobResultSummary from "./JobResultSummary.vue";
+import { jobDownloadState } from "./jobExportSummary";
 import { safeJsonPreview } from "./safeJsonPreview";
 import { taskHref } from "../router";
+import { useAccountScope } from "../hooks/accountContext";
+import {
+  useCapabilities,
+  useRefreshCapabilities,
+  refreshAfterAuthorizationError,
+} from "../hooks/capabilityContext";
+import {
+  jobReconcileAvailable,
+  jobDownloadAvailable,
+  matchesOriginalTask,
+} from "./taskActionEligibility";
 import {
   loadSyncJobReconcileKey,
   saveSyncJobReconcileKey,
 } from "./operationRequestKeys";
 
 const props = defineProps<{ client: AeroIdClient; jobId: string }>();
+const capabilities = useCapabilities();
+const accountScope = useAccountScope();
+const refreshCapabilities = useRefreshCapabilities();
+let active = true;
+const now = ref(Date.now());
+const clock = window.setInterval(() => {
+  now.value = Date.now();
+}, 1000);
+onBeforeUnmount(() => {
+  active = false;
+  window.clearInterval(clock);
+});
 const emit = defineEmits<{ close: []; changed: [] }>();
 function readReconcileKey(): string | undefined {
   try {
@@ -45,8 +71,44 @@ const action = ref<"reconcile" | "download">();
 const reconcileKey = ref(readReconcileKey());
 const actionError = ref<Error>();
 const confirmDownload = ref(false);
+const downloadReceived = ref(false);
+// Observed metadata gates this view, not the durable initiator's authorization.
+const canReconcile = computed(
+  () =>
+    !resource.loading &&
+    !resource.error &&
+    resource.data?.status === "unknown" &&
+    jobReconcileAvailable(
+      resource.data,
+      props.jobId,
+      capabilities?.(),
+      accountScope?.(),
+    ),
+);
+const downloadEligible = computed(() =>
+  jobDownloadAvailable(
+    resource.data,
+    props.jobId,
+    capabilities?.(),
+    accountScope?.(),
+  ),
+);
+const downloadInfo = computed(() =>
+  resource.data
+    ? jobDownloadState(resource.data, now.value, downloadReceived.value)
+    : undefined,
+);
+const canDownload = computed(
+  () =>
+    !resource.loading &&
+    !resource.error &&
+    resource.data?.status === "completed" &&
+    downloadEligible.value &&
+    !downloadInfo.value?.blocked,
+);
 const polling = useTaskPolling(() => resource.data?.status, resource.refresh, {
-  blocked: () => Boolean(resource.error) || Boolean(action.value),
+  blocked: () =>
+    resource.loading || Boolean(resource.error) || Boolean(action.value),
 });
 function saveExport(blob: Blob): void {
   const url = URL.createObjectURL(blob);
@@ -59,35 +121,58 @@ function saveExport(blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function reconcile(): Promise<void> {
-  if (action.value) return;
+  if (!active || action.value || !canReconcile.value) return;
   const key = reconcileKey.value ?? crypto.randomUUID();
   reconcileKey.value = key;
   persistReconcileKey(key);
   action.value = "reconcile";
   actionError.value = undefined;
   try {
-    resource.replace(await props.client.reconcileSyncJob(props.jobId, key));
+    const result = await props.client.reconcileSyncJob(props.jobId, key);
+    if (!active) return;
+    if (!matchesOriginalTask(result, resource.data, props.jobId, "job_id"))
+      throw new Error("对账回执与原任务不一致；保留原键，请核实状态。");
+    resource.replace(result);
     reconcileKey.value = undefined;
     persistReconcileKey(undefined);
     emit("changed");
   } catch (reason) {
+    if (!active) return;
     actionError.value =
       reason instanceof Error ? reason : new Error("任务对账失败");
+    refreshAfterAuthorizationError(reason, refreshCapabilities);
   } finally {
-    action.value = undefined;
+    if (active) action.value = undefined;
   }
 }
 async function download(): Promise<void> {
+  if (
+    !active ||
+    action.value ||
+    !canDownload.value ||
+    !resource.data ||
+    jobDownloadState(resource.data, Date.now(), downloadReceived.value).blocked
+  )
+    return;
   action.value = "download";
   actionError.value = undefined;
   try {
-    saveExport(await props.client.downloadExport(props.jobId, true));
+    const blob = await props.client.downloadExport(props.jobId, true);
+    if (!active) return;
+    downloadReceived.value = true;
+    saveExport(blob);
     confirmDownload.value = false;
   } catch (reason) {
+    if (!active) return;
     actionError.value =
-      reason instanceof Error ? reason : new Error("导出下载失败");
+      reason instanceof Error
+        ? reason
+        : new Error(
+            "导出下载失败；一次性消费可能已发生，请核实原任务，不会生成新导出",
+          );
+    refreshAfterAuthorizationError(reason, refreshCapabilities);
   } finally {
-    action.value = undefined;
+    if (active) action.value = undefined;
   }
 }
 </script>
@@ -122,7 +207,7 @@ async function download(): Promise<void> {
             size="sm"
             variant="outline"
             :loading="action === 'reconcile'"
-            :disabled="Boolean(action)"
+            :disabled="Boolean(action) || !canReconcile"
             @click="void reconcile()"
             >对账未知结果</IrisButton
           >
@@ -134,6 +219,7 @@ async function download(): Promise<void> {
               resource.data.status === 'completed'
             "
             size="sm"
+            :disabled="Boolean(action) || !canDownload"
             @click="confirmDownload = true"
             >一次性下载</IrisButton
           >
@@ -147,40 +233,65 @@ async function download(): Promise<void> {
         自动状态查询有时间与次数上限，后台标签页暂停查询。unknown
         不是失败，必须对账后才能决定是否重试；自动刷新从不重新提交命令。
       </IrisAlert>
+      <IrisAlert
+        v-if="
+          (resource.data.status === 'unknown' && !canReconcile) ||
+          (resource.data.status === 'completed' &&
+            ['export', 'audit_export'].includes(
+              String(resource.data.job_type),
+            ) &&
+            !downloadEligible)
+        "
+        tone="warning"
+        >当前动作权限或账户范围未确认时，暂停对账/下载；不以任务 ownership
+        或详情链接推断权限。继续执行核对原发起者，下载另核对当前读取者；审计下载同时需要
+        audit.export 和 audit.read。</IrisAlert
+      >
       <IrisAlert v-if="actionError && !confirmDownload" tone="danger">{{
         actionError.message
       }}</IrisAlert>
-      <IrisAlert
-        v-if="resource.data.error_code"
-        tone="danger"
-        :title="String(resource.data.error_code)"
-        >{{ String(resource.data.error_message ?? "任务执行失败") }}</IrisAlert
-      >
-      <RecordTable
-        :records="[resource.data]"
-        :columns="[
-          { key: 'job_type', label: '类型', aliases: ['type'] },
-          { key: 'status', label: '状态', kind: 'status' },
-          { key: 'attempt', label: '尝试次数' },
-          { key: 'created_at', label: '创建时间', kind: 'date' },
-          { key: 'updated_at', label: '更新时间', kind: 'date' },
-          { key: 'completed_at', label: '完成时间', kind: 'date' },
-        ]"
+      <TaskExecutionDiagnostic kind="sync" :task="resource.data" />
+      <JobResultSummary
+        :job="resource.data"
+        :now="now"
+        :download-eligible="downloadEligible"
+        :download-received="downloadReceived"
       />
-      <div class="detail-json-grid">
-        <div>
-          <h3>请求</h3>
-          <pre class="json-preview">{{
-            safeJsonPreview(resource.data.request)
-          }}</pre>
+      <details data-job-diagnostics class="job-diagnostics">
+        <summary>技术诊断 · 原请求与结果元数据</summary>
+        <div
+          class="job-diagnostic-table"
+          role="region"
+          aria-label="任务技术元数据（可横向滚动）"
+          tabindex="0"
+        >
+          <RecordTable
+            :records="[resource.data]"
+            :columns="[
+              { key: 'job_type', label: '类型', aliases: ['type'] },
+              { key: 'status', label: '状态', kind: 'status' },
+              { key: 'attempt', label: '尝试次数' },
+              { key: 'created_at', label: '创建时间', kind: 'date' },
+              { key: 'updated_at', label: '更新时间', kind: 'date' },
+              { key: 'completed_at', label: '完成时间', kind: 'date' },
+            ]"
+          />
         </div>
-        <div>
-          <h3>结果元数据</h3>
-          <pre class="json-preview">{{
-            safeJsonPreview(resource.data.result)
-          }}</pre>
+        <div class="detail-json-grid">
+          <div>
+            <h3>请求</h3>
+            <pre class="json-preview">{{
+              safeJsonPreview(resource.data.request)
+            }}</pre>
+          </div>
+          <div>
+            <h3>结果元数据</h3>
+            <pre class="json-preview">{{
+              safeJsonPreview(resource.data.result)
+            }}</pre>
+          </div>
         </div>
-      </div>
+      </details>
     </IrisCard>
     <IrisDialog
       :open="confirmDownload"
@@ -189,7 +300,17 @@ async function download(): Promise<void> {
       <IrisDialogContent>
         <IrisDialogTitle>确认一次性下载</IrisDialogTitle>
         <IrisDialogDescription
-          >服务端会在本次成功读取后销毁导出制品。请确认当前设备和保存位置可信。</IrisDialogDescription
+          >请确认当前设备和保存位置可信。一次性指针消费与读取审计先于响应提交；丢失回应或删除不确定可能无法重下，不会生成新导出。审计下载同时要求当前
+          audit.export 和 audit.read。</IrisDialogDescription
+        >
+        <IrisAlert
+          v-if="downloadInfo"
+          :tone="downloadInfo.blocked ? 'warning' : 'info'"
+          :title="downloadInfo.title"
+          >{{ downloadInfo.detail }}</IrisAlert
+        >
+        <IrisAlert v-if="!downloadEligible" tone="warning"
+          >当前读取者权限或账户范围未确认；请关闭确认并仅刷新原状态/资格，不自动下载。</IrisAlert
         >
         <IrisAlert v-if="actionError" tone="danger">{{
           actionError.message
@@ -201,7 +322,10 @@ async function download(): Promise<void> {
             @click="confirmDownload = false"
             >取消</IrisButton
           >
-          <IrisButton :loading="action === 'download'" @click="void download()"
+          <IrisButton
+            :loading="action === 'download'"
+            :disabled="Boolean(action) || !canDownload"
+            @click="void download()"
             >确认并下载</IrisButton
           >
         </div>
@@ -209,3 +333,24 @@ async function download(): Promise<void> {
     </IrisDialog>
   </template>
 </template>
+
+<style scoped>
+.job-diagnostics {
+  margin-block-start: 20px;
+  min-width: 0;
+}
+.job-diagnostic-table {
+  min-width: 0;
+  overflow-x: auto;
+}
+.job-diagnostic-table :deep(table) {
+  min-width: 800px;
+}
+.job-diagnostic-table :deep(.table-scroll) {
+  overflow: visible;
+}
+.job-diagnostics summary {
+  cursor: pointer;
+  margin-block-end: 14px;
+}
+</style>

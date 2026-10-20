@@ -15,6 +15,7 @@ import (
 	httpapi "github.com/aero/aero-id/internal/handler/http"
 	"github.com/aero/aero-id/internal/idempotency"
 	"github.com/aero/aero-id/internal/middleware"
+	apperr "github.com/aero/aero-id/internal/pkg/errors"
 	"github.com/aero/aero-id/internal/pkg/idgen"
 	"github.com/aero/aero-id/internal/service"
 )
@@ -77,6 +78,14 @@ func (f *callbackServiceFake) ReplayDelivery(context.Context, domain.ID) error {
 }
 
 func (*callbackServiceFake) Start(context.Context, time.Duration) func() { return func() {} }
+
+func (*callbackServiceFake) ListDeliveries(context.Context, domain.ID, domain.CallbackDeliveryFilter) ([]*domain.CallbackDeliveryMetadata, string, error) {
+	return []*domain.CallbackDeliveryMetadata{}, "", nil
+}
+
+func (*callbackServiceFake) GetDeliveryMetadata(context.Context, domain.ID, domain.ID) (*domain.CallbackDeliveryMetadata, error) {
+	return nil, apperr.NotFound("callback.delivery_not_found", "callback delivery not found")
+}
 
 func TestCallbackReplayRequiresIdempotencyKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)

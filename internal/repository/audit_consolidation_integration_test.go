@@ -580,17 +580,20 @@ func TestFinishPublicationRawDBErrorReturned(t *testing.T) {
 //     len == N, every entry == 1, sum == N. A set union cannot see a double
 //     claim (two workers claiming the same row still yield a set of size N);
 //     the multiplicity map can.
-//   - per-worker claimed >= 1: the start barrier makes all first claims
-//     simultaneous and limit=4 < N=20 forces >= 2 claim waves (the default
-//     limit=50 would let one worker drain the whole seed and the other three
-//     exit on empty without ever exercising the claim leg concurrently).
+//   - per-worker claimed >= 1: a first-wave completion barrier prevents any
+//     worker starting its second claim before every first claim returns.
+//     W=4 and limit=4 < N=20 leave eligible rows for every first claim even
+//     when the scheduler delays a worker. A start signal alone cannot prove
+//     fairness; a fast worker could otherwise drain the seed before another
+//     worker's first claim. The default limit=50 would also exhaust the seed.
 //   - every row settled completed exactly once with attempt 1; none stranded
 //     delivering; a post-phase duplicate finish by a foreign worker is fenced
 //     by ErrAuditPublicationLeaseLost.
 //
 // Overlap is best-effort exercise — the partition is guaranteed by Postgres
-// row locks, not by the harness, so no sleeps are needed (and must never be
-// added to "stabilize" this test). -race is hygiene here, not mechanism: the
+// row locks, not by the harness. The first-wave barrier only bounds each
+// worker's initial progress; claims and finishes still race. No sleeps are
+// needed (and must never be added to "stabilize" this test). -race is hygiene here, not mechanism: the
 // partition proof is the DB, not the harness mutexes. SKIP LOCKED is
 // deliberately behavior-pinned, not clause-pinned: replacing it with plain
 // FOR UPDATE still partitions (transactions serialize) and the regression
@@ -606,7 +609,7 @@ func TestConcurrentClaimPublicationPartition(t *testing.T) {
 	const (
 		rows    = 20
 		workers = 4
-		limit   = 4 // < rows: forces >= 2 claim waves under the barrier
+		limit   = 4 // workers * limit < rows: leaves work for each first claim
 	)
 	for i := 0; i < rows; i++ {
 		fact := &domain.AuditFact{Source: "aero-id", SourceRegion: "local", PartitionKey: "claim-partition",
@@ -622,15 +625,22 @@ func TestConcurrentClaimPublicationPartition(t *testing.T) {
 	var claimsMu sync.Mutex
 	perWorker := make([]int, workers)
 	errCh := make(chan error, workers)
-	var wg sync.WaitGroup
+	var firstWave, wg sync.WaitGroup
+	firstWave.Add(workers)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
 			workerID := fmt.Sprintf("worker-%d", w)
 			<-start
+			firstClaim := true
 			for {
 				items, err := pubRepo.ClaimPublication(ctx, workerID, 5*time.Minute, limit)
+				if firstClaim {
+					firstClaim = false
+					firstWave.Done()
+					firstWave.Wait()
+				}
 				if err != nil {
 					errCh <- fmt.Errorf("worker %d claim: %w", w, err)
 					return
@@ -675,7 +685,7 @@ func TestConcurrentClaimPublicationPartition(t *testing.T) {
 	}
 	for w := 0; w < workers; w++ {
 		if perWorker[w] == 0 {
-			t.Fatalf("worker %d claimed 0 rows, want >= 1 (barrier + limit < N)", w)
+			t.Fatalf("worker %d claimed 0 rows, want >= 1 (first-wave barrier + workers*limit < N)", w)
 		}
 	}
 	var completed, delivering int64

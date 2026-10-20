@@ -4,37 +4,17 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go/modules/minio"
-
 	"github.com/aero/aero-id/internal/storage"
 )
 
 func TestS3_RoundTrip(t *testing.T) {
-	ctx := context.Background()
-	m, err := minio.Run(ctx, "minio/minio:RELEASE.2025-01-20T14-49-07Z",
-		minio.WithUsername("minio"), minio.WithPassword("minio123"))
-	if err != nil {
-		t.Fatalf("minio start: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Terminate(ctx) })
-
-	endpoint, _ := m.ConnectionString(ctx)
-	s, err := storage.NewS3(ctx, storage.S3Config{
-		Region:       "us-east-1",
-		Bucket:       "test-bucket",
-		Endpoint:     "http://" + endpoint,
-		AccessKey:    "minio",
-		SecretKey:    "minio123",
-		UsePathStyle: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx, s := startS3Fixture(t, "test-bucket")
 
 	// Bucket creation is a one-time bootstrap; MinIO does not auto-create.
 	// For MVP we assume infra creates buckets; here we create it via raw client.
@@ -54,8 +34,14 @@ func TestS3_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(rc)
-	rc.Close()
+	body, readErr := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if readErr != nil {
+		t.Fatalf("read object: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close object: %v", closeErr)
+	}
 	if string(body) != "hello s3" {
 		t.Errorf("body = %q", body)
 	}
@@ -73,7 +59,7 @@ func TestS3_RoundTrip(t *testing.T) {
 	if err := s.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(ctx, key); err != storage.ErrNotFound {
+	if _, err := s.Get(ctx, key); !errors.Is(err, storage.ErrNotFound) {
 		t.Errorf("after delete: %v", err)
 	}
 }
@@ -82,26 +68,7 @@ func TestS3_RoundTrip(t *testing.T) {
 // with an object larger than the in-memory part size, plus the presigned direct-PUT
 // URL. It must COMPILE under -tags integration; it is not run by the default suite.
 func TestS3_StreamingUpload(t *testing.T) {
-	ctx := context.Background()
-	m, err := minio.Run(ctx, "minio/minio:RELEASE.2025-01-20T14-49-07Z",
-		minio.WithUsername("minio"), minio.WithPassword("minio123"))
-	if err != nil {
-		t.Fatalf("minio start: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Terminate(ctx) })
-
-	endpoint, _ := m.ConnectionString(ctx)
-	s, err := storage.NewS3(ctx, storage.S3Config{
-		Region:       "us-east-1",
-		Bucket:       "stream-bucket",
-		Endpoint:     "http://" + endpoint,
-		AccessKey:    "minio",
-		SecretKey:    "minio123",
-		UsePathStyle: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx, s := startS3Fixture(t, "stream-bucket")
 	if err := s.EnsureBucket(ctx); err != nil {
 		t.Fatal(err)
 	}

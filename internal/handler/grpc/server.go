@@ -404,6 +404,8 @@ func requiredPermForMethod(fullMethod string) (string, bool) {
 		"/aero_id.v1.SourceIngestService/IngestEvents":       domain.PermSourceEventIngest,
 		"/aero_id.v1.CallbackService/RegisterCallback":       domain.PermCallbackManage,
 		"/aero_id.v1.CallbackService/ListCallbacks":          domain.PermCallbackManage,
+		"/aero_id.v1.CallbackService/ListCallbackDeliveries": domain.PermCallbackManage,
+		"/aero_id.v1.CallbackService/GetCallbackDelivery":    domain.PermCallbackManage,
 		"/aero_id.v1.CallbackService/DeleteCallback":         domain.PermCallbackManage,
 		"/aero_id.v1.CallbackService/ReplayCallbackDelivery": domain.PermCallbackManage,
 		"/aero_id.v1.AdminService/GrantRole":                 domain.PermSystemConfig,

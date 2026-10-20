@@ -12,11 +12,11 @@ import RecordTable from "./RecordTable.vue";
 import RegionDirectoryPanel from "./RegionDirectoryPanel.vue";
 const props = defineProps<{ client: AeroIdClient; accountId: string }>();
 const emit = defineEmits<{ close: [] }>();
-const resource = useAsyncResource(async () => {
+const resource = useAsyncResource(async (signal) => {
   const [account, overview, datasets] = await Promise.all([
-    props.client.getAdminAccount(props.accountId),
-    props.client.getAdminAccountOverview(props.accountId),
-    props.client.listDatasets(),
+    props.client.getAdminAccount(props.accountId, signal),
+    props.client.getAdminAccountOverview(props.accountId, signal),
+    props.client.listDatasets(signal),
   ]);
   return { account, overview, datasets };
 });
@@ -116,6 +116,11 @@ const promotionMessage = ref<string>();
         }
       "
     />
-    <AdminAccountActions :client="client" :account-i-d="accountId" />
+    <AdminAccountActions
+      :key="accountId"
+      :client="client"
+      :account-i-d="accountId"
+      :datasets="resource.data.datasets"
+    />
   </template>
 </template>

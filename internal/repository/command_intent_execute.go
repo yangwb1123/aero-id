@@ -12,7 +12,7 @@ import (
 func (r *commandIntentRepo) Execute(ctx context.Context, input CommandIntentExecution) (*domain.CommandIntent, error) {
 	var result *domain.CommandIntent
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		current, err := captureCommandPreconditionsTx(tx, input.Intent.Principal.TenantID, input.Intent.AccountID, input.Intent.Plan.Datasets)
+		current, err := captureIntentAccountTx(tx, input.Intent)
 		if err != nil {
 			return err
 		}
@@ -32,18 +32,20 @@ func (r *commandIntentRepo) Execute(ctx context.Context, input CommandIntentExec
 			result = intent
 			return nil
 		}
+		input.Intent = intent // Execute only the locked authoritative plan.
 		kind, receipt, err := r.createIntentReceiptTx(ctx, tx, input)
 		if err != nil {
 			return err
 		}
-		if err := tx.Model(&row).Updates(map[string]any{"status": "executed", "version": row.Version + 1,
+		nextVersion := row.Version + 1
+		if err := tx.Model(&row).Updates(map[string]any{"status": "executed", "version": nextVersion,
 			"receipt_kind": kind, "receipt_id": receipt}).Error; err != nil {
 			return err
 		}
 		if err := r.audit.AppendInTx(ctx, tx, input.ExecutedFact); err != nil {
 			return err
 		}
-		intent.Status, intent.Version, intent.ReceiptKind, intent.ReceiptID = "executed", row.Version+1, kind, receipt
+		intent.Status, intent.Version, intent.ReceiptKind, intent.ReceiptID = "executed", nextVersion, kind, receipt
 		result = intent
 		return nil
 	})
@@ -54,6 +56,9 @@ func validateIntentExecutionTx(tx *gorm.DB, intent *domain.CommandIntent, curren
 	input CommandIntentExecution) error {
 	if intent.ConfirmationDigest != input.ConfirmationDigest || intent.RequestFingerprint != input.Intent.RequestFingerprint {
 		return ErrCommandIntentConflict
+	}
+	if intent.Status == "abandoned" {
+		return ErrCommandIntentAbandoned
 	}
 	if intent.Status == "executed" {
 		if input.ExpectedVersion != intent.Version-1 {
@@ -81,6 +86,9 @@ func (r *commandIntentRepo) createIntentReceiptTx(ctx context.Context, tx *gorm.
 	input CommandIntentExecution) (string, domain.ID, error) {
 	if input.RequestedFact == nil || input.ExecutedFact == nil {
 		return "", domain.ID{}, ErrCommandIntentConflict
+	}
+	if input.Intent.Plan.Kind == "callback_replay" {
+		return r.queueCallbackReplayTx(ctx, tx, input)
 	}
 	if input.Operation != nil && input.Job == nil {
 		operation := input.Operation

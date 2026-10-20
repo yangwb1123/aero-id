@@ -15,6 +15,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/nats-io/nats.go v1.52.0
 	github.com/redis/rueidis v1.0.76
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/viper v1.19.0
 	github.com/testcontainers/testcontainers-go v0.32.0
 	github.com/testcontainers/testcontainers-go/modules/minio v0.32.0

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { AeroIdClient } from "./aeroId";
 import { capabilityAvailable, parseCapabilities } from "./capabilities";
-import { routeEligibility } from "../capabilityNavigation";
+import {
+  routeEligibility,
+  preserveAdmittedCapabilityPage,
+} from "../capabilityNavigation";
 import type { CapabilityReport } from "../types";
 
 function report(): CapabilityReport {
@@ -81,6 +84,7 @@ describe("typed capability contract", () => {
     for (const value of [
       {},
       { ...report(), schema_version: 2 },
+      { ...report(), generated_at: "not-a-time" },
       { ...report(), authorization_version: "invented-policy-version" },
       {
         ...report(),
@@ -101,10 +105,45 @@ describe("typed capability contract", () => {
     }
   });
 
+  it("retains only the already-admitted exact view on refresh/outage, never a new deep link", () => {
+    expect(
+      preserveAdmittedCapabilityPage("jobs/id-a", "jobs/id-a", undefined),
+    ).toBe(true);
+    expect(
+      preserveAdmittedCapabilityPage("jobs/id-b", "jobs/id-a", undefined),
+    ).toBe(false);
+    expect(
+      preserveAdmittedCapabilityPage("admin-accounts", "jobs", undefined),
+    ).toBe(false);
+    expect(preserveAdmittedCapabilityPage("jobs", undefined, undefined)).toBe(
+      false,
+    );
+    expect(preserveAdmittedCapabilityPage("jobs", "jobs", report())).toBe(
+      false,
+    );
+    expect(routeEligibility("admin-accounts", undefined).available).toBe(false);
+  });
+
+  it("admits current callback metadata reads without borrowing eligibility for writes", () => {
+    const value = report();
+    value.capabilities.push({
+      name: "callback.read",
+      registered: true,
+      enabled: true,
+      authorization: "allowed",
+      authorization_scope: "global",
+      available: true,
+    });
+    expect(routeEligibility("callbacks", value).available).toBe(true);
+    expect(capabilityAvailable(value, ["callback.manage"])).toBe(false);
+    value.capabilities[value.capabilities.length - 1].authorization = "unknown";
+    value.capabilities[value.capabilities.length - 1].available = false;
+    expect(routeEligibility("callbacks", value).available).toBe(false);
+  });
   it("gates administrative deep links without blocking eligible self projection reads", () => {
     expect(routeEligibility("overview", report()).available).toBe(true);
     expect(routeEligibility("audit", report()).available).toBe(false);
-    expect(routeEligibility("callbacks", report()).reason).toBe("未配置");
+    expect(routeEligibility("callbacks", report()).reason).toBe("能力尚未确认");
     expect(routeEligibility("admin-accounts", undefined).available).toBe(false);
     const unknown = report();
     unknown.capabilities[1].authorization = "unknown";

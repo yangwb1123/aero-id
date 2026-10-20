@@ -1,6 +1,6 @@
 # Data Retention Policy
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-15
 > Applies to: aero-id v0.1.x
 
 This document defines the TTL-based cleanup strategy for every table that
@@ -32,6 +32,15 @@ stale replicas, old writers, late remote writes after disposal, historical
 content retention and Legal Hold/source deletion acceptance remain separate
 work—not claims closed by these local transactions.
 
+Download checks require the current verified reader's direct `account.export`, or
+both `audit.export` and `audit.read` for audit exports, before and after object IO.
+Each admission check shares a three-second grant budget and rejects missing/late
+or unavailable authority without a legacy/owner fallback. An authorization refusal does not
+consume the pointer, delete/regenerate content, extend TTL or append a successful
+read fact. This does not authorize retention cleanup or release a Legal Hold;
+already-admitted bytes cannot be recalled after revocation. Download responses
+are `no-store`, not a browser/storage erasure guarantee.
+
 Expiration filtering happens before the bounded cleanup limit. Unknown jobs,
 consumed pointers awaiting confirmed deletion and lease-expired running
 artifacts remain eligible through their internal checkpoint. Object deletion
@@ -48,8 +57,66 @@ not tokens or source content. Their five-minute `expires_at` limits new confirme
 receipt admission, not historical retrieval, retention or Legal Hold. No automatic
 intent purge is enabled; migration `000072` refuses rollback while any intent
 exists. Expiry must not discard an uncertain execution receipt or authorize a
-second command under a new key. A hold-aware intent retention/disposition policy
-and expired-preview operator UX remain separate work.
+second command under a new key. Web previews now support read-only original-intent
+and receipt recovery on expiry/conflict; browser pointers retain the original ID/key
+and an immutable-metadata hash without payloads. A prepared GET is not proof that an
+old admitted execution cannot commit, so the UI does not discard/renew intents or
+mint replacement keys on expiry or a prepared/NotFound read. Confirmed erase pointers
+are retained across refresh.
+
+Explicit `POST /v1/command-intents/:id/abandon` now closes only the verified original
+caller's unexecuted preview. It shares directory → epoch → account → intent locks
+with Execute, uses the original version/digest and commits a durable fact atomically.
+If Execute won, it returns the original executed receipt; it does not cancel that
+Job/Operation or its unknown/in-flight effects. If withdrawal won, the immutable
+`abandoned` version 2 outcome prevents later receipt creation. Plan, original key,
+expiry and facts remain unchanged/retained; no source call, cleanup or Legal Hold
+release occurs. Closing one's own unsent preview needs verified original identity,
+not renewed generation/source privileges. Any new preview still needs those privileges.
+Migration `000073` adds database-clock closure metadata and a terminal guard; its
+down migration refuses to remove abandonment proof even after preview expiry.
+
+Browser storage retains bounded original UUID/hash/key pointers plus disposition
+flags, not plans or confirmation text. A local flag is not authority: before an
+explicit new preparation, retained closures are re-read with GET under one overall
+15-second budget and matched to immutable metadata. Prepared/NotFound/outage,
+wrong caller/target, corruption or late state regression fail closed. Original-key
+GET lookup also recovers missing IDs without another preparation; NotFound cannot
+prove an older preparation will never arrive. This is local admission disposition,
+not distributed cancellation or retention acceptance. A hold-aware intent retention
+policy, physical metadata/history cleanup and real browser/WAN/old-writer acceptance
+remain separate work. No automatic intent purge is enabled.
+
+## Callback operational metadata and evidence
+
+Callback delivery list/detail reads select bounded current-row metadata and commit
+independent `callback.deliveries.read` / `callback.delivery.read` facts in the same
+transaction before returning it. They do not load signed payloads, receiver bodies,
+endpoints, worker identifiers or subscription ciphertext. Unknown historical errors
+are mapped to fixed safe codes. This read-model boundary does **not** physically
+redact or purge previously stored delivery payloads/responses/ciphertext; metadata
+reads and the UI do not authorize erasing them or releasing a hold. Read facts use
+existing immutable-ledger retention/hold rules, not the HTTP idempotency cache TTL.
+
+Migration `000075` adds all-writer local delivery revisions and durable `callback_replay`
+intent receipts; they follow the existing immutable-fact/intent hold and retention boundaries.
+They are not attempt history, receiver acknowledgments or deletion authority. Original
+payload, response evidence, signing secret, event ID and attempt count remain unchanged
+by the new queue command. `abandon` closes only unexecuted intent admission; neither it
+nor preview expiry cancels a send, purges evidence or releases Legal Hold.
+The Web retains callback queue-receipt UUID/hash/key pointers through refresh and
+supports an explicit GET-only operator acknowledgment. This acknowledgment is not
+an authoritative delivery status, receiver-completion receipt or cancellation/purge
+fact. All related abandoned/acknowledged pointers are live-verified before another
+explicit preview, with a 15-second aggregate read budget. The 16-pointer browser cap
+includes these entries and is not physical retention or permission to evict evidence.
+
+Migration `000074` adds `(subscription_id, id DESC)` and filtered-status keyset indexes;
+it changes no retention policy or authoritative command state. Current local delivery
+rows and timestamps are not attempt history, a receiver completion receipt or a causal
+watermark. The existing callback DLQ purge/deletion-cascade policies and missing
+hold-aware callback/history retention remain separate work. Registration/replay HTTP
+cache expiry is likewise not permission to forget unknown outcomes or mint new intent.
 
 ## Table Index
 

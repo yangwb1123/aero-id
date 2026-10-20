@@ -8,7 +8,14 @@ export interface CommandPlanStep {
   compensation_action?: string;
 }
 export interface CommandPlan {
-  kind: "sync" | "export" | "erase" | "operation";
+  kind: "sync" | "export" | "erase" | "operation" | "callback_replay";
+  callback?: {
+    subscription_id: string;
+    delivery_id: string;
+    event_id: string;
+    revision: number;
+    lease_generation: number;
+  };
   datasets: string[];
   operation_type?: "sync" | "erase" | "source.command" | "replay";
   request_payload?: Record<string, unknown>;
@@ -33,7 +40,7 @@ export interface CommandIntent {
   client_id: string;
   issuer: string;
   version: number;
-  status: "prepared" | "executed";
+  status: "prepared" | "executed" | "abandoned";
   plan: CommandPlan;
   preconditions: {
     account_status: string;
@@ -46,10 +53,11 @@ export interface CommandIntent {
   destructive: boolean;
   authorization_version: "unsupported";
   resource_authorization: "unknown";
-  receipt_kind?: "sync_job" | "operation";
+  receipt_kind?: "sync_job" | "operation" | "callback_replay";
   receipt_id?: string;
   created_at: string;
   expires_at: string;
+  abandoned_at?: string;
 }
 
 export class CommandIntentClient {
@@ -60,6 +68,15 @@ export class CommandIntentClient {
     key: string,
     accountID?: string,
   ): Promise<CommandIntent> {
+    if (
+      plan.kind === "callback_replay" &&
+      !validCallbackPlan(plan as unknown as Record<string, unknown>)
+    )
+      invalidIntent();
+    if (accountID !== undefined) {
+      if (!uuid(accountID)) invalidIntent();
+      accountID = accountID.toLowerCase();
+    }
     const value = parseCommandIntent(
       requireDataEnvelope(
         await this.transport.request("POST", "/command-intents", {
@@ -74,8 +91,10 @@ export class CommandIntentClient {
     )
       invalidIntent();
     if (
-      plan.datasets.length > 0 &&
-      !sameDatasets(plan.datasets, value.plan.datasets)
+      !sameDatasets(plan.datasets, value.plan.datasets) ||
+      (plan.kind === "operation" && !sameOperationOutline(plan, value.plan)) ||
+      (plan.kind === "callback_replay" &&
+        !sameCallbackTarget(plan.callback, value.plan.callback))
     )
       invalidIntent();
     return value;
@@ -92,8 +111,48 @@ export class CommandIntentClient {
     if (value.intent_id !== id) invalidIntent();
     return value;
   }
+  async findByKey(key: string, signal?: AbortSignal): Promise<CommandIntent> {
+    if (!key.trim() || key.length > 200) invalidIntent();
+    key = key.trim();
+    const value = requireDataEnvelope(
+      await this.transport.request("GET", "/command-intents/by-key", {
+        idempotencyKey: key,
+        signal,
+      }),
+    );
+    if (
+      !record(value) ||
+      value.key_digest !== (await commandLookupKeyDigest(key))
+    )
+      invalidIntent();
+    return parseCommandIntent(value.intent);
+  }
+  async abandon(intent: CommandIntent): Promise<CommandIntent> {
+    requireIntentID(intent.intent_id);
+    const value = parseCommandIntent(
+      requireDataEnvelope(
+        await this.transport.request(
+          "POST",
+          `/command-intents/${intent.intent_id}/abandon`,
+          {
+            body: {
+              version: 1,
+              confirmation_digest: intent.confirmation_digest,
+            },
+          },
+        ),
+      ),
+    );
+    if (
+      !sameOriginalCommandIntent(intent, value) ||
+      !["abandoned", "executed"].includes(value.status)
+    )
+      invalidIntent();
+    return value;
+  }
   async execute(intent: CommandIntent): Promise<CommandIntent> {
     requireIntentID(intent.intent_id);
+    if (intent.status === "abandoned") invalidIntent();
     const value = parseCommandIntent(
       requireDataEnvelope(
         await this.transport.request(
@@ -109,13 +168,10 @@ export class CommandIntentClient {
       ),
     );
     if (
-      value.intent_id !== intent.intent_id ||
-      value.confirmation_digest !== intent.confirmation_digest ||
-      value.account_id !== intent.account_id ||
-      value.tenant_id !== intent.tenant_id ||
-      value.client_id !== intent.client_id ||
-      value.issuer !== intent.issuer ||
-      value.status !== "executed"
+      !sameOriginalCommandIntent(intent, value) ||
+      value.status !== "executed" ||
+      value.version !==
+        (intent.status === "executed" ? intent.version : intent.version + 1)
     )
       invalidIntent();
     return value;
@@ -179,7 +235,8 @@ function validIntent(value: unknown): boolean {
     validReceipt(value) &&
     validPlan(value.plan) &&
     validDestructive(value) &&
-    validPreconditions(value.preconditions)
+    validPreconditions(value.preconditions) &&
+    validSnapshotScope(value)
   );
 }
 function validConfirmation(value: Record<string, unknown>): boolean {
@@ -205,6 +262,7 @@ function validDestructive(value: Record<string, unknown>): boolean {
   return (
     value.destructive ===
     (plan.kind === "erase" ||
+      plan.kind === "callback_replay" ||
       Boolean(
         plan.steps?.some(
           (step) =>
@@ -221,20 +279,50 @@ function sameDatasets(a: string[], b: string[]): boolean {
   );
 }
 function validReceipt(value: Record<string, unknown>): boolean {
+  if (value.status === "abandoned")
+    return (
+      value.version === 2 &&
+      !value.receipt_kind &&
+      !value.receipt_id &&
+      time(value.abandoned_at) &&
+      Date.parse(value.abandoned_at) >= Date.parse(String(value.created_at))
+    );
+  if (value.abandoned_at !== undefined) return false;
   if (value.status === "prepared")
     return value.version === 1 && !value.receipt_kind && !value.receipt_id;
+  const plan = value.plan;
   return (
     value.status === "executed" &&
-    Number(value.version) >= 2 &&
-    ["sync_job", "operation"].includes(String(value.receipt_kind)) &&
-    uuid(value.receipt_id)
+    value.version === 2 &&
+    record(plan) &&
+    value.receipt_kind === expectedReceiptKind(plan.kind) &&
+    uuid(value.receipt_id) &&
+    sameReceiptTarget(value, plan)
+  );
+}
+function expectedReceiptKind(kind: unknown): string {
+  return kind === "callback_replay"
+    ? "callback_replay"
+    : kind === "operation"
+      ? "operation"
+      : "sync_job";
+}
+function sameReceiptTarget(
+  value: Record<string, unknown>,
+  plan: Record<string, unknown>,
+): boolean {
+  return (
+    plan.kind !== "callback_replay" || value.receipt_id === value.intent_id
   );
 }
 function validPlan(value: unknown): boolean {
+  if (record(value) && value.kind === "callback_replay")
+    return validCallbackPlan(value);
   if (
     !record(value) ||
     !["sync", "export", "erase", "operation"].includes(String(value.kind)) ||
-    !datasets(value.datasets)
+    !datasets(value.datasets) ||
+    value.callback !== undefined
   )
     return false;
   if (value.kind !== "operation")
@@ -250,8 +338,63 @@ function validPlan(value: unknown): boolean {
     value.steps.length > 0 &&
     value.steps.length <= 32 &&
     value.steps.every(validStep) &&
-    new Set(value.steps.map((item) => item.step_key)).size ===
-      value.steps.length
+    validOperationScope(value as unknown as CommandPlan)
+  );
+}
+function sameCallbackTarget(
+  a: CommandPlan["callback"],
+  b: CommandPlan["callback"],
+): boolean {
+  return Boolean(
+    a &&
+    b &&
+    a.subscription_id.toLowerCase() === b.subscription_id &&
+    a.delivery_id.toLowerCase() === b.delivery_id &&
+    a.event_id.toLowerCase() === b.event_id &&
+    a.revision === b.revision &&
+    a.lease_generation === b.lease_generation,
+  );
+}
+
+function validCallbackPlan(value: Record<string, unknown>): boolean {
+  const target = value.callback;
+  return (
+    Object.keys(value).every((key) =>
+      ["kind", "datasets", "callback"].includes(key),
+    ) &&
+    Array.isArray(value.datasets) &&
+    value.datasets.length === 0 &&
+    !value.operation_type &&
+    !value.steps &&
+    !value.request_payload &&
+    record(target) &&
+    [target.subscription_id, target.delivery_id, target.event_id].every(uuid) &&
+    integer(target.revision) &&
+    target.revision > 0 &&
+    integer(target.lease_generation) &&
+    Object.keys(target).every((key) =>
+      [
+        "subscription_id",
+        "delivery_id",
+        "event_id",
+        "revision",
+        "lease_generation",
+      ].includes(key),
+    )
+  );
+}
+
+function validOperationScope(plan: CommandPlan): boolean {
+  const steps = plan.steps!;
+  return (
+    (plan.request_payload === undefined || record(plan.request_payload)) &&
+    new Set(steps.map((step) => step.step_key)).size === steps.length &&
+    sameDatasets(plan.datasets, [
+      ...new Set(
+        steps.flatMap((step) => step.request_payload!.datasets as string[]),
+      ),
+    ]) &&
+    steps.every((step) => operationTypeAllows(plan.operation_type, step.action))
   );
 }
 const actions = new Set([
@@ -273,8 +416,16 @@ function validStep(value: unknown): boolean {
     actions.has(String(value.action)) &&
     (value.compensation_action === undefined ||
       actions.has(String(value.compensation_action))) &&
-    (value.request_payload === undefined || record(value.request_payload))
+    record(value.request_payload) &&
+    datasets(value.request_payload.datasets) &&
+    value.request_payload.datasets.every((name) =>
+      name.startsWith(`${String(value.source)}.`),
+    )
   );
+}
+function operationTypeAllows(type: unknown, action: string): boolean {
+  const destructive = ["erase", "delete", "source.erase"].includes(action);
+  return (type !== "sync" || !destructive) && (type !== "erase" || destructive);
 }
 function validPreconditions(value: unknown): boolean {
   if (
@@ -290,7 +441,13 @@ function validPreconditions(value: unknown): boolean {
     value.snapshots.length > 11
   )
     return false;
-  return value.snapshots.every(validSnapshot);
+  return (
+    value.snapshots.every(validSnapshot) &&
+    new Set(value.snapshots.map((item) => item.id)).size ===
+      value.snapshots.length &&
+    new Set(value.snapshots.map((item) => item.dataset)).size ===
+      value.snapshots.length
+  );
 }
 function validSnapshot(value: unknown): boolean {
   if (
@@ -300,8 +457,105 @@ function validSnapshot(value: unknown): boolean {
     !integer(value.version)
   )
     return false;
-  if (typeof value.source_region !== "string") return false;
+  if (
+    typeof value.source_region !== "string" ||
+    value.source_region.length > 128
+  )
+    return false;
   return [value.generated_at, value.last_synced_at, value.expires_at].every(
     (item) => item === undefined || time(item),
   );
+}
+function validSnapshotScope(value: Record<string, unknown>): boolean {
+  const intent = value as unknown as CommandIntent;
+  return intent.preconditions.snapshots.every(
+    (snapshot) =>
+      intent.plan.datasets.includes(snapshot.dataset) &&
+      snapshot.dataset.startsWith(`${snapshot.source}.`) &&
+      ["fresh", "stale", "unavailable", "unknown"].includes(snapshot.status),
+  );
+}
+function sameOperationOutline(
+  requested: CommandPlan,
+  prepared: CommandPlan,
+): boolean {
+  return (
+    requested.operation_type === prepared.operation_type &&
+    requested.steps?.length === prepared.steps?.length &&
+    Boolean(
+      requested.steps?.every((step, index) => {
+        const other = prepared.steps?.[index];
+        return (
+          other &&
+          step.step_key === other.step_key &&
+          step.source === other.source &&
+          step.action === other.action &&
+          (step.compensation_action ?? "") ===
+            (other.compensation_action ?? "") &&
+          sameDatasets(
+            (step.request_payload?.datasets as string[]) ?? [],
+            (other.request_payload?.datasets as string[]) ?? [],
+          )
+        );
+      }),
+    )
+  );
+}
+
+// GET/execute may add a receipt and advance version, never change the original
+// immutable plan, lifetime, principal or admission metadata under one digest.
+export function sameOriginalCommandIntent(
+  original: CommandIntent,
+  result: CommandIntent,
+): boolean {
+  return (
+    immutableCommandMetadata(original) === immutableCommandMetadata(result)
+  );
+}
+export function immutableCommandMetadata(intent: CommandIntent): string {
+  return canonical({
+    ...intent,
+    version: undefined,
+    status: undefined,
+    receipt_kind: undefined,
+    receipt_id: undefined,
+    abandoned_at: undefined,
+    created_at: canonicalDatabaseTime(intent.created_at),
+    expires_at: canonicalDatabaseTime(intent.expires_at),
+  });
+}
+// Create returns Go's nanosecond time; Get/execute use the authoritative
+// PostgreSQL/pgx microsecond columns. Normalize ONLY these two DB timestamps,
+// preserving microseconds (Date.parse alone would lose another three digits).
+// The original confirmation digest and all plan/snapshot metadata stay exact.
+function canonicalDatabaseTime(value: string): string {
+  const parts =
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+      value,
+    );
+  if (!parts) invalidIntent();
+  const second = new Date(`${parts[1]}${parts[3]}`).toISOString().slice(0, 19);
+  const fraction = (parts[2] ?? "").padEnd(6, "0").slice(0, 6);
+  return `${second}.${fraction}Z`;
+}
+export async function commandLookupKeyDigest(key: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(key),
+  );
+  return `v1:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+function canonical(value: unknown, depth = 0): string {
+  if (depth > 16) invalidIntent();
+  if (Array.isArray(value))
+    return `[${value.map((item) => canonical(item, depth + 1)).join(",")}]`;
+  if (record(value))
+    return `{${Object.keys(value)
+      .filter((key) => value[key] !== undefined)
+      .sort()
+      .map(
+        (key) => `${JSON.stringify(key)}:${canonical(value[key], depth + 1)}`,
+      )
+      .join(",")}}`;
+  return JSON.stringify(value);
 }

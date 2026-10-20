@@ -11,7 +11,7 @@ import (
 func buildCapabilityService(deps serviceDependencies, accounts service.AccountService) service.CapabilityService {
 	cfg := service.CapabilityConfig{LocalRegion: deps.cfg.Account.Region,
 		ExportEnabled:    deps.store != nil && deps.cfg.Export.EncryptionKey != "",
-		CallbacksEnabled: deps.cfg.Callback.MasterKey != "", Sources: map[string]service.SourceCapabilityConfig{}}
+		CallbacksEnabled: deps.cfg.Callback.MasterKey != "" && !deps.cfg.Callback.DeliveryPaused, Sources: map[string]service.SourceCapabilityConfig{}}
 	for _, client := range deps.sourceConnectors {
 		if client == nil {
 			continue

@@ -7,7 +7,7 @@ package middleware
 func durableCommandEndpoint(path string) bool {
 	switch path {
 	case "/v1/operations", "/v1/audit/replays", "/v1/audit/export",
-		"/v1/command-intents", "/v1/command-intents/:id/execute",
+		"/v1/command-intents", "/v1/command-intents/:id/execute", "/v1/command-intents/:id/abandon",
 		"/v1/me/sync", "/v1/me/export", "/v1/me/erase",
 		"/v1/admin/accounts/:id/sync", "/v1/admin/accounts/:id/export", "/v1/admin/accounts/:id/erase":
 		return true

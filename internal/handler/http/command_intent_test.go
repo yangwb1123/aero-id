@@ -39,6 +39,12 @@ func (f *intentHTTPService) Create(ctx context.Context, input service.CommandInt
 func (f *intentHTTPService) Get(context.Context, domain.ID) (*domain.CommandIntent, error) {
 	return nil, nil
 }
+func (f *intentHTTPService) FindByKey(context.Context, string) (*domain.CommandIntent, error) {
+	return nil, nil
+}
+func (f *intentHTTPService) Abandon(context.Context, domain.ID, int64, string) (*domain.CommandIntent, error) {
+	return nil, nil
+}
 func (f *intentHTTPService) Execute(context.Context, domain.ID, int64, string) (*domain.CommandIntent, error) {
 	f.executions++
 	return nil, nil
@@ -52,6 +58,9 @@ func TestCommandIntentHTTPClaimsBoundsAndStrictExecutionEnvelope(t *testing.T) {
 	}{
 		{"UID-only", `{"plan":{"kind":"sync","datasets":["aero-vault.usage"]}}`, false, 401},
 		{"verified preview", `{"plan":{"kind":"sync","datasets":["aero-vault.usage"]}}`, true, 201},
+		{"typed callback preview", `{"plan":{"kind":"callback_replay","datasets":[],"callback":{"subscription_id":"01800000-0000-7000-8000-000000000001","delivery_id":"01800000-0000-7000-8000-000000000002","event_id":"01800000-0000-7000-8000-000000000003","revision":7,"lease_generation":4}}}`, true, 201},
+		{"callback unknown field", `{"plan":{"kind":"callback_replay","datasets":[],"callback":{"tenant_id":"foreign"}}}`, true, 400},
+		{"callback fractional revision", `{"plan":{"kind":"callback_replay","datasets":[],"callback":{"revision":1.5}}}`, true, 400},
 		{"tenant override", `{"tenant_id":"foreign","plan":{"kind":"sync","datasets":[]}}`, true, 400},
 		{"trailing JSON", `{"plan":{}} {}`, true, 400},
 		{"oversized", `{"plan":{"request_payload":{"note":"` + strings.Repeat("a", 256*1024) + `"}}}`, true, 400},

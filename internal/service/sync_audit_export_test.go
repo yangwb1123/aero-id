@@ -415,7 +415,8 @@ func TestAuditExportDigest_StableAcrossMarshalling(t *testing.T) {
 // succeeds once; the artifact and storage key are removed, so a second
 // download fails with not_found.
 func auditExportContext() context.Context {
-	return WithIdentity(context.Background(), &domain.TokenIdentity{TenantID: "tenant-a", Subject: "admin-1", UID: "admin-1"})
+	return WithIdentity(context.Background(), &domain.TokenIdentity{Verified: true, TenantID: "tenant-a", Subject: "admin-1", UID: "admin-1",
+		Issuer: "https://snaplink.example", ClientID: "account-console"})
 }
 
 func TestAuditExport_OneTimeDownloadBurnsArtifact(t *testing.T) {

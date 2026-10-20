@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { onBeforeUnmount, ref, watch } from "vue";
 import { IrisAlert, IrisButton } from "@iris-ui-kit/vue";
 import type { JsonRecord, PageData } from "../types";
 import RecordTable from "./RecordTable.vue";
 import { mergePage, type RecordColumn } from "./table";
 
-type LoadPage = (cursor: string) => Promise<PageData<JsonRecord>>;
+type LoadPage = (
+  cursor: string,
+  signal: AbortSignal,
+) => Promise<PageData<JsonRecord>>;
 const props = defineProps<{
   page: PageData<JsonRecord>;
   loadPage: LoadPage;
@@ -18,12 +21,21 @@ const current = ref<PageData<JsonRecord>>(props.page);
 const loadingMore = ref(false);
 const loadError = ref<Error>();
 let generation = 0;
+let active = true;
+let request: AbortController | undefined;
+onBeforeUnmount(() => {
+  active = false;
+  generation += 1;
+  request?.abort();
+});
 const consumedCursors = new Set<string>();
 
 watch(
   () => props.page,
   (page) => {
     generation += 1;
+    request?.abort();
+    request = undefined;
     consumedCursors.clear();
     current.value = page;
     loadingMore.value = false;
@@ -33,12 +45,14 @@ watch(
 
 async function loadMore(): Promise<void> {
   const cursor = current.value.nextCursor;
-  if (!cursor || loadingMore.value) return;
+  if (!active || !cursor || loadingMore.value) return;
   const activeGeneration = generation;
+  const controller = new AbortController();
+  request = controller;
   loadingMore.value = true;
   loadError.value = undefined;
   try {
-    const next = await props.loadPage(cursor);
+    const next = await props.loadPage(cursor, controller.signal);
     if (generation !== activeGeneration) return;
     const merged = mergePage(current.value, next, cursor, consumedCursors);
     consumedCursors.add(cursor);
@@ -48,7 +62,10 @@ async function loadMore(): Promise<void> {
     loadError.value =
       reason instanceof Error ? reason : new Error("下一页读取失败");
   } finally {
-    if (generation === activeGeneration) loadingMore.value = false;
+    if (active && generation === activeGeneration) {
+      loadingMore.value = false;
+      request = undefined;
+    }
   }
 }
 </script>

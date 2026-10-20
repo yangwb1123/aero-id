@@ -15,6 +15,9 @@ import (
 func TestDurableCreateCommandsAlwaysReachService(t *testing.T) {
 	paths := []struct{ route, concrete string }{
 		{"/v1/operations", "/v1/operations"},
+		{"/v1/command-intents", "/v1/command-intents"},
+		{"/v1/command-intents/:id/execute", "/v1/command-intents/intent-1/execute"},
+		{"/v1/command-intents/:id/abandon", "/v1/command-intents/intent-1/abandon"},
 		{"/v1/me/sync", "/v1/me/sync"},
 		{"/v1/me/export", "/v1/me/export"},
 		{"/v1/me/erase", "/v1/me/erase"},

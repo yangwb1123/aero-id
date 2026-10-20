@@ -55,7 +55,7 @@ func TestExportDownloadReauthorizesAfterObjectRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	svc.permission = capabilityPermissions(func(context.Context, string, string) (bool, error) {
+	svc.executionPermission = capabilityPermissions(func(context.Context, string, string) (bool, error) {
 		calls++
 		return calls == 1, nil
 	})

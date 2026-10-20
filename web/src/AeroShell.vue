@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, provide } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  onBeforeUnmount,
+  provide,
+  ref,
+  watch,
+} from "vue";
 import {
   IrisAdminLayout,
   IrisAlert,
@@ -16,10 +23,18 @@ import type { PlatformConfig } from "./config";
 import { routeDetails, useHashRoute } from "./router";
 import { useAsyncResource } from "./hooks/useAsyncResource";
 import { accountScopeKey } from "./hooks/accountContext";
-import { capabilityContextKey } from "./hooks/capabilityContext";
-import { routeEligibility } from "./capabilityNavigation";
+import {
+  capabilityContextKey,
+  capabilityRefreshKey,
+} from "./hooks/capabilityContext";
+import { useCapabilityResource } from "./hooks/useCapabilityResource";
+import {
+  routeEligibility,
+  preserveAdmittedCapabilityPage,
+} from "./capabilityNavigation";
 import PageLoading from "./components/PageLoading.vue";
 import PageError from "./components/PageError.vue";
+import AsyncPageStatus from "./components/AsyncPageStatus.vue";
 import ActivityPage from "./pages/ActivityPage.vue";
 import AdminAccountsPage from "./pages/AdminAccountsPage.vue";
 import AdminGovernancePage from "./pages/AdminGovernancePage.vue";
@@ -30,7 +45,6 @@ import ConnectionsPage from "./pages/ConnectionsPage.vue";
 import DataPage from "./pages/DataPage.vue";
 import JobsPage from "./pages/JobsPage.vue";
 import MigrationPage from "./pages/MigrationPage.vue";
-import OperationsPage from "./pages/OperationsPage.vue";
 import OverviewPage from "./pages/OverviewPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
 import ReplaysPage from "./pages/ReplaysPage.vue";
@@ -72,31 +86,50 @@ const client = new AeroIdClient(
   () => auth.session?.accessToken ?? "",
 );
 const context = useAsyncResource((signal) => client.getMe(signal));
-const capabilities = useAsyncResource(async (signal) => {
-  const report = await client.getCapabilities(signal);
-  if (
-    report.issuer !== props.config.snaplinkIssuer ||
-    report.client_id !== props.config.snaplinkClientId
-  ) {
-    throw new Error("能力报告与当前登录客户端不一致；不会推断权限");
-  }
-  return report;
-});
-provide(capabilityContextKey, () =>
-  capabilities.error ? undefined : capabilities.data,
+const {
+  resource: capabilities,
+  checking: capabilityChecking,
+  refresh: refreshCapabilities,
+  report: currentCapabilities,
+} = useCapabilityResource(
+  client,
+  props.config.snaplinkIssuer,
+  props.config.snaplinkClientId,
 );
+const scopedCapabilities = () => {
+  const report = currentCapabilities();
+  const account = context.data?.account;
+  return !context.error &&
+    report?.account_id === account?.account_id &&
+    report?.tenant_id === account?.tenant_id
+    ? report
+    : undefined;
+};
+provide(capabilityContextKey, scopedCapabilities);
+provide(capabilityRefreshKey, refreshCapabilities);
 const currentEligibility = computed(() =>
-  routeEligibility(
-    activeRoute.value,
-    capabilities.error ? undefined : capabilities.data,
+  routeEligibility(activeRoute.value, scopedCapabilities()),
+);
+const admittedRoute = ref<string>();
+watch(
+  [route, currentEligibility],
+  () => {
+    if (currentEligibility.value.available) admittedRoute.value = route.value;
+    else if (admittedRoute.value !== route.value)
+      admittedRoute.value = undefined;
+  },
+  { immediate: true },
+);
+const preservePage = computed(() =>
+  preserveAdmittedCapabilityPage(
+    route.value,
+    admittedRoute.value,
+    scopedCapabilities(),
   ),
 );
 const menus = computed<NavNode[]>(() =>
   menuRegistry.map((item) => {
-    const eligibility = routeEligibility(
-      item.key,
-      capabilities.error ? undefined : capabilities.data,
-    );
+    const eligibility = routeEligibility(item.key, scopedCapabilities());
     return {
       ...item,
       disabled: !eligibility.available,
@@ -136,7 +169,13 @@ const pageMap = {
   data: DataPage,
   activity: ActivityPage,
   jobs: JobsPage,
-  operations: OperationsPage,
+  operations: defineAsyncComponent({
+    loader: () => import("./pages/OperationsPage.vue"),
+    loadingComponent: AsyncPageStatus,
+    errorComponent: AsyncPageStatus,
+    delay: 0,
+    timeout: 15_000,
+  }),
   "admin-accounts": AdminAccountsPage,
   "admin-governance": AdminGovernancePage,
   migration: MigrationPage,
@@ -155,6 +194,8 @@ const pageProps = computed(() => {
     return { client, jobId: details.value.jobID };
   if (activeRoute.value === "operations")
     return { client, operationId: details.value.operationID };
+  if (activeRoute.value === "audit")
+    return { client, navigation: details.value.auditNavigation };
   return { client };
 });
 const dark = computed(() => skin.value.type === "dark");
@@ -176,6 +217,14 @@ function toggleTheme(): void {
       <div class="shell-toolbar">
         <IrisBadge tone="success">Snaplink 已认证</IrisBadge>
         <IrisButton
+          size="sm"
+          variant="outline"
+          :loading="capabilityChecking"
+          :disabled="capabilityChecking"
+          @click="void refreshCapabilities()"
+          >刷新当前能力</IrisButton
+        >
+        <IrisButton
           variant="outline"
           size="sm"
           aria-label="切换主题"
@@ -195,29 +244,39 @@ function toggleTheme(): void {
     <template #default>
       <PageLoading v-if="capabilities.loading" />
       <PageError
-        v-else-if="capabilities.error"
+        v-else-if="capabilities.error && !capabilities.data"
         :error="capabilities.error"
-        :retry="capabilities.reload"
+        :retry="() => void refreshCapabilities()"
       />
       <IrisAlert
-        v-else-if="!currentEligibility.available"
+        v-else-if="!currentEligibility.available && !preservePage"
         tone="warning"
         :title="currentEligibility.reason"
       >
         当前页面不可用。能力状态是提示，不是授权凭据；后端每次命令仍重新校验。不要仅修改
         tenant_id 切换租户。
-        <IrisButton variant="outline" @click="capabilities.reload"
+        <IrisButton variant="outline" @click="void refreshCapabilities()"
           >重新查询能力</IrisButton
         >
       </IrisAlert>
       <template v-else>
+        <IrisAlert
+          v-if="capabilityChecking || capabilities.error"
+          tone="warning"
+          title="当前能力正在重查或不可用"
+        >
+          不沿用旧写入资格；保留页面原意图，写入确认暂停。只刷新元数据，不会重新提交命令。
+        </IrisAlert>
         <IrisAlert
           v-if="capabilities.data?.partial"
           tone="warning"
           title="部分能力尚未确认"
         >
           权限或投影依赖暂不可用，未知权限不会视为允许。
-          <IrisButton size="sm" variant="ghost" @click="capabilities.reload"
+          <IrisButton
+            size="sm"
+            variant="ghost"
+            @click="void refreshCapabilities()"
             >刷新能力</IrisButton
           >
         </IrisAlert>

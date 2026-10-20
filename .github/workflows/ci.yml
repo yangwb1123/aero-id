@@ -114,6 +114,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Manifest schema validation and integration-compile are Go test gates;
+      # do not borrow the runner's mutable preinstalled toolchain.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
       - name: Audit-swallow gate (incl. quarantine tripwires)
         run: make check-audit-swallow
       - name: Architecture gate (live-layer boundaries)
@@ -148,14 +154,16 @@ jobs:
         run: make check-db-startup-hardening
       - name: Integration-test compile gate
         run: make check-integration-compile
+      - name: Integration full-suite runner contracts
+        run: make check-integration-runner
 
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      # Every integration test terminates its own fixture. Disabling Ryuk
-      # avoids an unbounded cleanup-sidecar wait on hosted runners while the
-      # explicit test cleanup remains authoritative.
+      # Fixtures register cleanup for their own exact container references.
+      # Disabling Ryuk avoids an unbounded cleanup-sidecar wait on hosted
+      # runners; external termination can still prevent explicit cleanup.
       TESTCONTAINERS_RYUK_DISABLED: "true"
       TESTCONTAINERS_RYUK_CONNECTION_TIMEOUT: 30s
       TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT: 10s
@@ -167,13 +175,26 @@ jobs:
           cache: true
       - name: Verify Docker daemon
         run: docker info
-      # The Make target applies both a per-test Go timeout and an outer process
+      # The Make target applies both a per-package Go timeout and an outer process
       # timeout, so a Testcontainers wait cannot consume the hosted runner.
       - name: Integration tests
-        run: make test-integration
+        # JSON adds fixture phase timings without changing the Make budgets,
+        # test selection or isolation. pipefail keeps tee from hiding failures.
+        run: |
+          set -o pipefail
+          GOFLAGS=-json make test-integration 2>&1 | tee integration.jsonl
       - name: Collect Docker state on failure
         if: ${{ failure() }}
         run: docker ps -a --no-trunc
+      - name: Retain integration diagnostics
+        if: ${{ always() }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-diagnostics
+          path: integration.jsonl
+          if-no-files-found: error
+          retention-days: 7
 
   # A deployed-contract job is enabled only when the protected repository
   # variables are configured. It never substitutes a fake HTTP handler for

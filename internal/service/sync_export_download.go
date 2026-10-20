@@ -15,6 +15,9 @@ import (
 )
 
 func (s *syncJobService) loadExportDownload(ctx context.Context, id domain.ID) (*domain.SyncJob, error) {
+	if _, err := verifiedControlPlaneIdentity(ctx); err != nil {
+		return nil, err
+	}
 	job, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -103,16 +106,49 @@ func (s *syncJobService) completeDownloadDisposal(ctx context.Context, job *doma
 	return nil
 }
 
+// The current reader, not the durable initiator/owner, needs direct authority
+// before object IO and again before final local admission. A generated artifact
+// or legacy permission checker cannot renew a sensitive-read grant.
 func (s *syncJobService) recheckExportDownloadPermission(ctx context.Context, job *domain.SyncJob) error {
-	if s.permission == nil {
+	identity, err := verifiedControlPlaneIdentity(ctx)
+	if err != nil {
+		return err
+	}
+	if job == nil || job.TenantID != identity.TenantID {
+		return apperr.NotFound("export.not_found", "export artifact not found")
+	}
+	permissions := exportDownloadPermissions(job.JobType)
+	if len(permissions) == 0 {
+		return apperr.Conflict("export.not_available", "export artifact is not available")
+	}
+	return s.checkExportDownloadGrants(ctx, identity.UID, permissions)
+}
+
+func exportDownloadPermissions(kind domain.SyncJobType) []string {
+	switch kind {
+	case domain.SyncJobExport:
+		return []string{domain.PermAccountExport}
+	case domain.SyncJobAuditExport:
+		return []string{domain.PermAuditExport, domain.PermAuditRead}
+	default:
 		return nil
 	}
-	allowed, err := s.permission.HasPermission(ctx, actorFromContext(ctx), syncPermission(job.JobType))
-	if err != nil {
-		return apperr.Unavailable("export.permission_check_failed", "failed to verify export permission").Wrap(err)
+}
+
+func (s *syncJobService) checkExportDownloadGrants(ctx context.Context, actor string, permissions []string) error {
+	ctx, cancel := context.WithTimeout(ctx, syncAuthorizationBudget)
+	defer cancel()
+	if isNilExecutionDependency(s.executionPermission) || ctx.Err() != nil {
+		return apperr.Unavailable("export.permission_check_failed", "current export permissions cannot be verified")
 	}
-	if !allowed {
-		return apperr.Forbidden("export.forbidden", "export permission is required")
+	for _, permission := range permissions {
+		allowed, err := s.executionPermission.HasPermission(ctx, actor, permission)
+		if err != nil || ctx.Err() != nil {
+			return apperr.Unavailable("export.permission_check_failed", "current export permissions cannot be verified")
+		}
+		if !allowed {
+			return apperr.Forbidden("export.forbidden", "current export and required read permissions are required")
+		}
 	}
 	return nil
 }

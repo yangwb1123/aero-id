@@ -41,10 +41,10 @@ func TestAuditPublicationAllNonAuth4xxArePermanent(t *testing.T) {
 	}
 	svc.SetAuditPublishers(publisher)
 
-	for _, status := range []int{http.StatusBadRequest, http.StatusRequestTimeout, http.StatusTooEarly,
+	for _, status := range []int32{http.StatusBadRequest, http.StatusRequestTimeout, http.StatusTooEarly,
 		http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity, http.StatusTooManyRequests} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			responseStatus.Store(int32(status))
+		t.Run(http.StatusText(int(status)), func(t *testing.T) {
+			responseStatus.Store(status)
 			fact := appendDrainFact(t, repository.NewAuditLedgerRepository(db, repository.AuditLedgerConfig{
 				SigningKey: "integration-audit-ledger-key-0123456789abcdef",
 			}), "tenant-classification", "test.classification")

@@ -1,5 +1,6 @@
 import type { OperationCreateInput, OperationStepInput } from "../api/aeroId";
 import type { Dataset, JsonRecord } from "../types";
+import type { CommandPlan } from "../api/commandIntent";
 
 export interface OperationStepDraft {
   id: string;
@@ -56,10 +57,9 @@ export function operationNeedsDatasets(
   source: OperationStepInput["source"],
   action: OperationStepInput["action"],
 ): boolean {
-  if (["erase", "delete", "source.erase"].includes(action)) return true;
   return (
-    source === "aero-im" &&
-    ["sync", "summary", "source.summary"].includes(action)
+    operationSources.some((item) => item.value === source) &&
+    operationActions.some((item) => item.value === action)
   );
 }
 
@@ -99,10 +99,14 @@ function validateDatasets(
   index: number,
 ): void {
   const raw = payload.datasets;
-  if (raw === undefined && !operationNeedsDatasets(source, action)) return;
-  if (raw === undefined || (Array.isArray(raw) && raw.length === 0)) {
-    if (!operationNeedsDatasets(source, action)) return;
-    throw new Error(`第 ${index + 1} 个步骤必须包含非空 datasets 数组`);
+  if (
+    !operationNeedsDatasets(source, action) ||
+    raw === undefined ||
+    (Array.isArray(raw) && raw.length === 0)
+  ) {
+    throw new Error(
+      `第 ${index + 1} 个步骤必须包含显式同源的非空 datasets 数组`,
+    );
   }
   if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string")) {
     throw new Error(`第 ${index + 1} 个步骤的 datasets 必须是字符串数组`);
@@ -159,8 +163,38 @@ export function parseOperationSteps(
       stepKey,
       source: draft.source,
       action: draft.action,
-      requestPayload: payload,
+      requestPayload: {
+        ...payload,
+        datasets: [...(payload.datasets as string[])].sort(),
+      },
       compensationAction: compensationAction || undefined,
     };
   });
+}
+
+export function operationCommandPlan(
+  operationType: OperationCreateInput["operationType"],
+  requestPayload: JsonRecord,
+  steps: OperationStepInput[],
+): CommandPlan {
+  const datasets = [
+    ...new Set(
+      steps.flatMap((step) => step.requestPayload.datasets as string[]),
+    ),
+  ].sort();
+  return {
+    kind: "operation",
+    operation_type: operationType,
+    datasets,
+    request_payload: requestPayload,
+    steps: steps.map((step) => ({
+      step_key: step.stepKey,
+      source: step.source,
+      action: step.action,
+      request_payload: step.requestPayload,
+      ...(step.compensationAction
+        ? { compensation_action: step.compensationAction }
+        : {}),
+    })),
+  };
 }

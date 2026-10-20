@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "test_count": 185,
+  "test_names_sha256": "fb743aae1c252607522dd7161f646a2d73ee41ea36da86ba4c6a0bf8db45edc5",
+  "files": [
+    {
+      "name": "account_backfill_integration_test.go",
+      "sha256": "8548ad7f0c956e860a0887537416bd01334eda635c86627be9ac3ccb35f260f6"
+    },
+    {
+      "name": "anchor_dedup_integration_test.go",
+      "sha256": "f7715b3a4a9fe92dcf59f188dd576b9656ce6e92f5912253ade135388996165c"
+    },
+    {
+      "name": "audit_hold_integration_test.go",
+      "sha256": "20e80a9ccd9e4bbc844634352fc14b094d1c781be582794e79d3f469b5fe6f02"
+    },
+    {
+      "name": "audit_publication_epq_integration_test.go",
+      "sha256": "7c805bb4fc63aca2409553266ae5d3e81c55f7e229850738bed956c7df19f23d"
+    },
+    {
+      "name": "audit_publication_replay_integration_test.go",
+      "sha256": "2f19e78645e26543bb71b3a37faa86b03a071ad203063691f6c1ce69087e9b34"
+    },
+    {
+      "name": "audit_wiring_matrix_integration_test.go",
+      "sha256": "aa6794b2342ef23eda8aee9352d9c353ad0ee59158d18871726aa504c5703ad4"
+    },
+    {
+      "name": "barrier_helpers_test.go",
+      "sha256": "ad6d072345527a4dcf59c6b30a11e428b1a2bf40d7602bbc1fb117da22aaf257"
+    },
+    {
+      "name": "callback_audit_integration_test.go",
+      "sha256": "25181ece995009f86d33520a3193cfc507b3c4421299bb28f0c23e48e286fdda"
+    },
+    {
+      "name": "callback_delivery_defer_integration_test.go",
+      "sha256": "a8e1ec8e36dcadf0df79c2de727e60a15bbc9a848dfd295a7b99abc326d1cbe2"
+    },
+    {
+      "name": "callback_delivery_read_integration_test.go",
+      "sha256": "d1695c4230174ac5d026b4e61741642eaf90f07166cbea0da6875753887e69f5"
+    },
+    {
+      "name": "comment_report_anchor_integration_test.go",
+      "sha256": "5723ef9627e55123060a21dedd242b05f100b965ec6875e4c9f39ea6fa04a340"
+    },
+    {
+      "name": "lease_fencing_integration_test.go",
+      "sha256": "86a59ac872aa1a9d06b99892bc803e16f3822d861c2131fa4b96240012843f4a"
+    },
+    {
+      "name": "legacy_cutover_integration_test.go",
+      "sha256": "5b3fb8c8b6db77f517b0d47220f3317ac277fa51685cc977fc92fbbd5071f858"
+    },
+    {
+      "name": "legacy_migration_integration_test.go",
+      "sha256": "bdcfb69a81d359614f577465383213abddfd4f69ef058c32b9244bba1f48c052"
+    }
+  ],
+  "shared_functions": [
+    "auditWiringFact",
+    "countAuditLedgerRows",
+    "countAuditPublicationRows",
+    "installFailPublicationInsertTrigger"
+  ]
+}

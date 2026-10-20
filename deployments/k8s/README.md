@@ -6,6 +6,26 @@ JetStream (canonical events). Account-affecting writes route to the account's
 home region; other regions serve local projections (see
 `docs/plans/2026-08-04-distributed-account-aggregation.md` §4).
 
+## Static manifest gate (no cluster required)
+
+`make check-k8s-manifest` now always validates all five actual rendered forms:
+steady14, paused13 and up/down/version Job1 each (30 resources). The existing
+`deployments/k8s` Go test package uses the complete vendored Kubernetes v1.34.1
+strict schemas with reviewed SHA-256/full-GVK pins and a go.mod/go.sum-pinned
+JSON Schema engine. Unknown fields/GVKs, duplicate keys, bad types, missing/changed
+schemas and empty/partial bundles fail closed; derived rejection/integrity/budget
+cases run every time. See [schema provenance and update rules](schemas/README.md).
+
+The gate never calls kubectl, reads kubeconfig or downloads schemas. Go is required;
+a cold cache may need normal verified module provisioning. The command/test budgets
+are two/one minutes. Paused rendering removes the **whole** HPA document (including
+its leading apiVersion), zeros only API/worker replicas and preserves all other
+resource/config/checksum content. Passing static schemas is not target-cluster
+compatibility, admission, image/Secret availability, startup or production acceptance.
+Keep the real server dry-run and rollout checks below; reviewed production overlays
+must still pass the actual cluster's policies. No Kubernetes credentials are needed
+or supplied to the static gate.
+
 ## Release rendering and apply
 
 `regional-cell.yaml` is a release template, not an applyable production
@@ -170,10 +190,23 @@ of silently skipping the gate.
 
 ## Deployment and rollback sequencing
 
-The current server additionally requires migrations through `000072`: `000071`
-adds command request binding and `000072` adds durable caller-bound command intents.
-Startup and `migrate verify` check the watermark and actual receipt/intent schema.
-The intent down migration refuses to discard any persisted preview or receipt;
+Apply the shipped migration set through `000075`. The server's guarded semantic
+minimum is now `000075`: `000071` adds command request binding, `000072` adds durable
+caller-bound command intents, and `000073` adds audited unexecuted-preview withdrawal
+and immutable terminal guards. `000074` adds Callback subscription/UUID and
+subscription/status/UUID keyset indexes, not a new authority or retention policy;
+plan its transactional index-build/lock budget against existing delivery volume.
+`000075` adds a positive delivery revision and a trigger that increments every UPDATE,
+including compatibility/old-writer updates, plus durable callback-replay receipt checks.
+Budget its DDL locks; startup verifies the actual enabled trigger/function and receipt
+constraints. Callback replay intents prevent rollback of this proof. This is local CAS,
+not production acceptance of old writers or revocation of an already-started send.
+Startup and `migrate verify` check the watermark, actual column/state constraints and
+terminal trigger/function, not only bookkeeping. Deploy the matching Web/API release
+before exposing withdrawal. The database guard rejects old/late local writers trying
+to reopen a terminal intent; this is not WAN/old-writer production acceptance.
+Migration 000073 down refuses to remove abandonment proof, and 000072 down refuses
+to discard any persisted preview or receipt;
 expiry does not authorize deletion or remove retention/Legal Hold requirements. The relay requires migration `000069` before any new-version process
 starts. The migration is additive but rollout is intentionally quiesced: an old
 relay ignores `next_attempt_at`, while a new relay must never share a queue with

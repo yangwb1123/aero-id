@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Static/rendered checks for the regional-cell release template. This gate does
-# not contact a cluster; it catches accidental reintroduction of mutable images,
-# non-optional feature secrets, or a deployment without the startup preflight.
+# not contact a cluster or use kubectl/kubeconfig. It catches mutable images,
+# non-optional feature secrets and missing preflight, then validates ALL steady,
+# paused and up/down/version renders against vendored SHA-256-pinned strict
+# Kubernetes schemas. Unknown GVKs/fields, duplicate keys, missing/changed schemas,
+# empty/partial bundles and invalid types fail closed; no missing-schema skips.
+# The existing deployments/k8s Go test package is the validator and self-test seam.
+# Go dependencies may need normal go.mod/go.sum-verified provisioning on a cold
+# cache; schema validation has no network or arbitrary file-reference resolver.
+# Requires Go, bash, sha256sum and timeout, not Docker or a Kubernetes client.
+# Server-side dry-run/admission/rollout remain separate production release gates.
 set -euo pipefail
 
 manifest=${1:-deployments/k8s/regional-cell.yaml}
@@ -62,15 +70,17 @@ done < <(grep -E '^[[:space:]]+image:' "$manifest" "$migration_manifest")
 grep -q 'command: \["/app/migrate"\]' "$migration_manifest" || fail "migration Job does not run /app/migrate"
 grep -q 'args: MIGRATION_ARGS_PLACEHOLDER' "$migration_manifest" || fail "migration Job args are not renderer-controlled"
 
-# Render once with a deterministic fixture to prove the checksum/image
-# substitutions produce an applyable manifest and leave no release markers.
-rendered=$(mktemp)
-paused=$(mktemp)
-migration_rendered=$(mktemp)
-migration_down=$(mktemp)
-trap 'rm -f "$rendered" "$paused" "$migration_rendered" "$migration_down"' EXIT
+# Render every release form with deterministic inputs; retain up AND version
+# instead of overwriting up before validation. Cleanup only our private tree.
+workdir=$(mktemp -d)
+rendered="$workdir/steady.yaml"
+paused="$workdir/paused.yaml"
+migration_rendered="$workdir/migration-up.yaml"
+migration_down="$workdir/migration-down.yaml"
+migration_version="$workdir/migration-version.yaml"
+trap 'rm -rf "$workdir"' EXIT
 REGION=us-east-1 \
-AERO_ID_IMAGE_DIGEST=sha256:$(printf 'a%.0s' {1..64}) \
+AERO_ID_IMAGE_DIGEST=sha256:$(printf 'a%.0s' {1..64}) AERO_ID_PAUSE_WORKLOADS=0 \
   scripts/render-regional-cell.sh "$manifest" "$rendered"
 grep -q 'checksum/config: "[0-9a-f]\{64\}"' "$rendered" || fail "rendered checksum is missing"
 ! grep -q 'REPLACE_WITH_' "$rendered" || fail "release placeholders remain after rendering"
@@ -91,7 +101,7 @@ AERO_ID_PAUSE_WORKLOADS=1 scripts/render-regional-cell.sh "$manifest" "$paused"
 ! grep -q '  replicas: [23]$' "$paused" || fail "paused render starts an application workload"
 
 RELEASE=check-release \
-AERO_ID_IMAGE_DIGEST=sha256:$(printf 'a%.0s' {1..64}) \
+AERO_ID_IMAGE_DIGEST=sha256:$(printf 'a%.0s' {1..64}) MIGRATION_ACTION=up \
   scripts/render-migration-job.sh "$migration_manifest" "$migration_rendered"
 grep -q '"up"' "$migration_rendered" || fail "migration up command is missing"
 ! grep -Eq 'REPLACE_WITH_|PLACEHOLDER' "$migration_rendered" || fail "migration release placeholders remain"
@@ -103,12 +113,14 @@ grep -q '"down", "2"' "$migration_down" || fail "migration down command is missi
 RELEASE=check-release \
 AERO_ID_IMAGE_DIGEST=sha256:$(printf 'a%.0s' {1..64}) \
 MIGRATION_ACTION=version \
-  scripts/render-migration-job.sh "$migration_manifest" "$migration_rendered"
-grep -q '"version"' "$migration_rendered" || fail "migration version command is missing"
+  scripts/render-migration-job.sh "$migration_manifest" "$migration_version"
+grep -q '"version"' "$migration_version" || fail "migration version command is missing"
 
-if command -v kubectl >/dev/null 2>&1; then
-  kubectl apply --dry-run=client -f "$rendered" >/dev/null || fail "rendered manifest is not kubectl-valid"
-  kubectl apply --dry-run=client -f "$migration_rendered" >/dev/null || fail "rendered migration Job is not kubectl-valid"
-fi
+# Never an optional validator or an ambient PATH binary. Tests consume the exact
+# artifacts above (30 resources total) and prove rejection with derived red cases.
+AERO_ID_K8S_RENDERED_DIR="$workdir" GOTOOLCHAIN=local GOWORK=off GOFLAGS= \
+  timeout --foreground --kill-after=5s 2m go test -mod=readonly ./deployments/k8s \
+  -run '^TestKubernetes(RenderedSchemaGate|StrictSchemaRejectsUnsafeDocuments|SchemaIntegrityAndNoExternalResolution|SchemaManifestBudgets)$' \
+  -count=1 -timeout=60s || fail "pinned offline schema validation or self-test failed"
 
-echo "check-k8s-manifest: ok"
+echo "check-k8s-manifest: ok (30 resources, pinned offline schemas + rejection self-tests)"

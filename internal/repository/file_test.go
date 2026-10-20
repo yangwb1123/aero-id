@@ -4,6 +4,7 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestFileRepo_CreateGetListDelete(t *testing.T) {
 	if err := repo.Delete(ctx, f.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Get(ctx, f.ID); err != repository.ErrNotFound {
+	if _, err := repo.Get(ctx, f.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -139,7 +140,7 @@ func TestFileRepo_UpdateMetadataChangesOnlyProvidedColumns(t *testing.T) {
 	}
 
 	// Updating a missing row reports ErrNotFound.
-	if err := repo.UpdateMetadata(ctx, idgen.NewID(), map[string]any{"name": "z"}); err != repository.ErrNotFound {
+	if err := repo.UpdateMetadata(ctx, idgen.NewID(), map[string]any{"name": "z"}); !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("update of missing row = %v, want ErrNotFound", err)
 	}
 
@@ -147,7 +148,7 @@ func TestFileRepo_UpdateMetadataChangesOnlyProvidedColumns(t *testing.T) {
 	if err := repo.Delete(ctx, f.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.UpdateMetadata(ctx, f.ID, map[string]any{"name": "zz"}); err != repository.ErrNotFound {
+	if err := repo.UpdateMetadata(ctx, f.ID, map[string]any{"name": "zz"}); !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("update of soft-deleted row = %v, want ErrNotFound", err)
 	}
 }
@@ -174,7 +175,7 @@ func TestFileRepo_FindByChecksumAndCount(t *testing.T) {
 		t.Fatalf("FindByChecksum got=%+v err=%v", got, err)
 	}
 	// ...but not for a different owner (dedup is per-owner).
-	if _, err := repo.FindByChecksum(ctx, "u2", "deadbeef"); err != repository.ErrNotFound {
+	if _, err := repo.FindByChecksum(ctx, "u2", "deadbeef"); !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("cross-owner FindByChecksum = %v, want ErrNotFound", err)
 	}
 

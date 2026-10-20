@@ -333,6 +333,7 @@ describe("AeroIdClient", () => {
         if (requests.length === 3) {
           return json({
             data: {
+              operation_id: "operation/1",
               events: [{ event_id: "event-1", action: "operation.created" }],
               next_cursor: "event-1",
             },

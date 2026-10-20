@@ -57,11 +57,30 @@ func (r *intentMemoryRepo) FindByKey(ctx context.Context, p domain.CommandPrinci
 	}
 	return r.Get(ctx, p, r.intent.ID)
 }
+func (r *intentMemoryRepo) Abandon(_ context.Context, input repository.CommandIntentAbandonment) (*domain.CommandIntent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.intent.ConfirmationDigest != input.ConfirmationDigest || input.ExpectedVersion != 1 {
+		return nil, repository.ErrCommandIntentConflict
+	}
+	if r.intent.Status == "prepared" {
+		if input.Fact == nil {
+			panic("abandonment without transactional audit")
+		}
+		now := time.Now().UTC()
+		r.intent.Status, r.intent.Version, r.intent.AbandonedAt = "abandoned", 2, &now
+	}
+	copy := *r.intent
+	return &copy, nil
+}
 func (r *intentMemoryRepo) Execute(_ context.Context, input repository.CommandIntentExecution) (*domain.CommandIntent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.intent.ConfirmationDigest != input.ConfirmationDigest {
 		return nil, repository.ErrCommandIntentConflict
+	}
+	if r.intent.Status == "abandoned" {
+		return nil, repository.ErrCommandIntentAbandoned
 	}
 	if r.intent.Status == "executed" {
 		copy := *r.intent

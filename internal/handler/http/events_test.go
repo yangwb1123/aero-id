@@ -86,9 +86,27 @@ func (f *fakeNotifFetcher) ListSince(ctx context.Context, recipientUID string, s
 }
 
 func TestEventsHandler_Stream_Replay(t *testing.T) {
+	cursor := strconv.FormatInt(1700000000000, 10)
+	for _, tc := range []struct {
+		name   string
+		path   string
+		header string
+	}{
+		{"header", "/v1/events", cursor},
+		{"query", "/v1/events?last_event_id=" + cursor, ""},
+		{"header_precedes_query", "/v1/events?last_event_id=1700000000999", cursor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testEventsHandlerReplay(t, tc.path, tc.header)
+		})
+	}
+}
+
+func testEventsHandlerReplay(t *testing.T, path, header string) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	h := hub.New()
-	defer h.Close()
+	t.Cleanup(h.Close)
 
 	// Fixed unix-millis values keep the cursor/t1/t2 ordering and the
 	// since-equality assertion exact and timezone-independent.
@@ -118,30 +136,16 @@ func TestEventsHandler_Stream_Replay(t *testing.T) {
 	health := httpapi.NewHealthHandler()
 	router := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, health, handler)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest("GET", "/v1/events", nil).WithContext(ctx)
+	req := httptest.NewRequest("GET", path, nil)
 	req.Header.Set("Authorization", "Bearer t")
-	req.Header.Set("Last-Event-ID", strconv.FormatInt(cursorMillis, 10))
-	w := httptest.NewRecorder()
+	req.Header.Set("Last-Event-ID", header)
+	stream := startSSETestStream(t, router, req)
 
-	done := make(chan struct{})
-	go func() {
-		router.ServeHTTP(w, req)
-		close(done)
-	}()
-
-	// Poll until both replay blocks are visible in the response body.
+	// Only the handler goroutine touches the recorder while streaming. Each
+	// flush publishes an immutable body snapshot through a bounded handshake.
 	want1 := "id: 1700000000123"
 	want2 := "id: 1700000000456"
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(w.Body.String(), want1) || !strings.Contains(w.Body.String(), want2) {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for replay blocks; body:\n%s", w.Body.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	body := w.Body.String()
+	body := stream.nextFlush(t)
 	idx1 := strings.Index(body, want1)
 	idx2 := strings.Index(body, want2)
 	if idx1 < 0 || idx2 < 0 || idx1 >= idx2 {
@@ -159,8 +163,17 @@ func TestEventsHandler_Stream_Replay(t *testing.T) {
 		t.Fatalf("n2 replay block missing event/data lines; body:\n%s", body)
 	}
 
-	// The fetcher must have been called exactly once, with the authenticated
-	// actor, the cursor-derived since, and the fixed batch limit.
+	// Live-stream events must be delivered after the replay blocks.
+	h.Publish("u1", "live", "live-data", 9000)
+	liveBody := stream.nextFlush(t)
+	liveBlock := "id: 9000\nevent: live\ndata: live-data\n\n"
+	if liveBody != body+liveBlock {
+		t.Fatalf("live event missing, duplicated or written before replay blocks; body:\n%s", liveBody)
+	}
+
+	stream.stop(t)
+	// Join before inspecting fetcher fields or the final recorder, including
+	// on failure via startSSETestStream's cleanup.
 	if fake.calls != 1 {
 		t.Fatalf("ListSince calls = %d, want 1", fake.calls)
 	}
@@ -173,75 +186,60 @@ func TestEventsHandler_Stream_Replay(t *testing.T) {
 	if fake.gotLimit != 50 {
 		t.Fatalf("ListSince limit = %d, want 50", fake.gotLimit)
 	}
-
-	// Live-stream events must be delivered after the replay blocks.
-	h.Publish("u1", "live", "live-data", 9000)
-	deadline = time.Now().Add(2 * time.Second)
-	for !strings.Contains(w.Body.String(), "id: 9000") {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for live event; body:\n%s", w.Body.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if stream.recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", stream.recorder.Code, http.StatusOK)
 	}
-	if idxLive := strings.Index(w.Body.String(), "id: 9000"); idxLive < idx2 {
-		t.Fatalf("live event written before replay blocks; body:\n%s", w.Body.String())
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not return after cancel")
-	}
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	if got := stream.recorder.Body.String(); got != liveBody {
+		t.Fatalf("unexpected writes after live flush; body:\n%s", got)
 	}
 }
 
 func TestEventsHandler_Stream_ReplayInvalidCursor(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h := hub.New()
-	defer h.Close()
+	for _, tc := range []struct {
+		name   string
+		path   string
+		header string
+	}{
+		{"header_malformed", "/v1/events", "abc"},
+		{"header_zero", "/v1/events", "0"},
+		{"header_negative", "/v1/events", "-5"},
+		{"query_malformed", "/v1/events?last_event_id=abc", ""},
+		{"query_zero", "/v1/events?last_event_id=0", ""},
+		{"query_negative", "/v1/events?last_event_id=-5", ""},
+		{"invalid_header_precedes_valid_query", "/v1/events?last_event_id=1700000000000", "abc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			h := hub.New()
+			t.Cleanup(h.Close)
+			fake := &fakeNotifFetcher{}
+			handler := httpapi.NewEventsHandler(h, fake)
+			health := httpapi.NewHealthHandler()
+			router := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, health, handler)
 
-	fake := &fakeNotifFetcher{}
-	handler := httpapi.NewEventsHandler(h, fake)
-	health := httpapi.NewHealthHandler()
-	router := httpapi.NewRouter(zap.NewNop(), httpapi.RouterConfig{}, okValidator{}, health, handler)
+			req := httptest.NewRequest("GET", tc.path, nil)
+			req.Header.Set("Authorization", "Bearer t")
+			req.Header.Set("Last-Event-ID", tc.header)
+			stream := startSSETestStream(t, router, req)
 
-	for _, cursor := range []string{"abc", "0", "-5"} {
-		ctx, cancel := context.WithCancel(context.Background())
-		req := httptest.NewRequest("GET", "/v1/events", nil).WithContext(ctx)
-		req.Header.Set("Authorization", "Bearer t")
-		req.Header.Set("Last-Event-ID", cursor)
-		w := httptest.NewRecorder()
-
-		done := make(chan struct{})
-		go func() {
-			router.ServeHTTP(w, req)
-			close(done)
-		}()
-
-		// Let the handler reach the live loop. Replay is attempted
-		// synchronously before it, so any fetch would already have happened.
-		time.Sleep(100 * time.Millisecond)
-
-		if fake.calls != 0 {
-			t.Fatalf("cursor %q: ListSince called %d times, want 0 (replay must be skipped)", cursor, fake.calls)
-		}
-		if body := w.Body.String(); strings.Contains(body, "id: ") {
-			t.Fatalf("cursor %q: body contains a replay block, want none:\n%s", cursor, body)
-		}
-
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("cursor %q: handler did not return after cancel", cursor)
-		}
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("cursor %q: status = %d, want %d", cursor, w.Code, http.StatusOK)
-		}
+			// Header observation proves subscription exists before publishing;
+			// the live flush proves the replay branch has actually finished.
+			stream.waitReady(t)
+			h.Publish("u1", "live", "live-data", 9000)
+			body := stream.nextFlush(t)
+			if body != "id: 9000\nevent: live\ndata: live-data\n\n" {
+				t.Fatalf("invalid cursor emitted replay or lost live event; body:\n%s", body)
+			}
+			stream.stop(t)
+			if fake.calls != 0 {
+				t.Fatalf("ListSince called %d times, want 0 (replay must be skipped)", fake.calls)
+			}
+			if stream.recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", stream.recorder.Code, http.StatusOK)
+			}
+			if got := stream.recorder.Body.String(); got != body {
+				t.Fatalf("unexpected writes after live flush; body:\n%s", got)
+			}
+		})
 	}
 }

@@ -12,10 +12,12 @@ import (
 )
 
 var (
-	ErrCommandIntentConflict = errors.New("command intent version or confirmation conflict")
-	ErrCommandIntentStale    = errors.New("command intent local preconditions changed")
-	ErrCommandIntentExpired  = errors.New("command intent expired")
-	ErrCommandIntentTooLarge = errors.New("command intent metadata exceeds budget")
+	ErrCommandIntentConflict          = errors.New("command intent version or confirmation conflict")
+	ErrCommandIntentStale             = errors.New("command intent local preconditions changed")
+	ErrCommandIntentExpired           = errors.New("command intent expired")
+	ErrCommandIntentTooLarge          = errors.New("command intent metadata exceeds budget")
+	ErrCommandIntentAbandoned         = errors.New("command intent is permanently abandoned")
+	ErrCommandIntentDispositionFenced = errors.New("command intent disposition writer is fenced")
 )
 
 type CommandIntentExecution struct {
@@ -34,6 +36,7 @@ type CommandIntentRepository interface {
 	FindByKey(context.Context, domain.CommandPrincipal, string) (*domain.CommandIntent, error)
 	Capture(context.Context, string, domain.ID, []domain.AccountDataset) (domain.CommandPreconditions, error)
 	Execute(context.Context, CommandIntentExecution) (*domain.CommandIntent, error)
+	Abandon(context.Context, CommandIntentAbandonment) (*domain.CommandIntent, error)
 }
 
 type commandIntentRepo struct {
@@ -62,6 +65,7 @@ type commandIntentRow struct {
 	ReceiptID          *domain.ID     `gorm:"column:receipt_id"`
 	CreatedAt          time.Time      `gorm:"column:created_at"`
 	ExpiresAt          time.Time      `gorm:"column:expires_at"`
+	AbandonedAt        *time.Time     `gorm:"column:abandoned_at"`
 }
 
 func (commandIntentRow) TableName() string { return "command_intents" }
@@ -77,7 +81,10 @@ func (r *commandIntentRepo) CreateWithAudit(ctx context.Context, intent *domain.
 		return err
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		current, err := captureCommandPreconditionsTx(tx, intent.Principal.TenantID, intent.AccountID, intent.Plan.Datasets)
+		current, err := captureIntentAccountTx(tx, intent)
+		if err == nil && intent.Plan.Kind == "callback_replay" {
+			err = lockCallbackReplayTargetTx(tx, intent)
+		}
 		if err != nil {
 			return err
 		}

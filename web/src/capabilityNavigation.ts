@@ -7,7 +7,7 @@ const requirements: Record<string, string[]> = {
   migration: ["account.admin.manage"],
   audit: ["audit.read"],
   compliance: ["audit.read", "audit.export", "system.config"],
-  callbacks: ["callback.manage"],
+  callbacks: ["callback.read"],
   replays: ["audit.replay"],
 };
 
@@ -32,4 +32,15 @@ export function routeEligibility(
   )
     return { available: false, reason: "需要主区域" };
   return { available: false, reason: "无权限或不可用" };
+}
+
+// Keep only an already-admitted exact page/detail route during metadata
+// refresh/outage, so its original confirmation isn't lost. Never admit a new
+// deep link using an old report; successful current denials still close access.
+export function preserveAdmittedCapabilityPage(
+  route: string,
+  admittedRoute: string | undefined,
+  report: CapabilityReport | undefined,
+): boolean {
+  return report === undefined && route === admittedRoute;
 }

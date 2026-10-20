@@ -52,7 +52,8 @@ describe("operation form validation", () => {
 
   it("requires exact datasets for destructive and IM actions", () => {
     expect(operationNeedsDatasets("aero-im", "summary")).toBe(true);
-    expect(operationNeedsDatasets("aero-vault", "summary")).toBe(false);
+    expect(operationNeedsDatasets("aero-vault", "summary")).toBe(true);
+    expect(operationNeedsDatasets("snaplink", "summary")).toBe(true);
     expect(operationNeedsDatasets("snaplink", "erase")).toBe(true);
 
     expect(() =>
@@ -67,6 +68,18 @@ describe("operation form validation", () => {
         datasets,
       ),
     ).toThrow("datasets");
+  });
+
+  it("requires explicit scope for all preview sources, including Vault and Snaplink", () => {
+    for (const source of ["snaplink", "aero-vault"] as const) {
+      expect(() =>
+        parseOperationSteps(
+          [{ ...newOperationStep(), source, payload: "{}" }],
+          "sync",
+          datasets,
+        ),
+      ).toThrow("显式同源");
+    }
   });
 
   it("rejects unknown dataset scope before submit", () => {

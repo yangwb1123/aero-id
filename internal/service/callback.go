@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aero/aero-id/internal/domain"
@@ -16,6 +17,7 @@ import (
 )
 
 type CallbackService interface {
+	CallbackDeliveryService
 	Register(context.Context, CallbackInput) (*domain.CallbackSubscription, string, error)
 	List(context.Context, domain.Page) ([]*domain.CallbackSubscription, string, error)
 	Delete(context.Context, domain.ID) error
@@ -54,17 +56,20 @@ type CallbackConfig struct {
 }
 
 type callbackService struct {
-	repo         repository.CallbackRepository
-	cfg          CallbackConfig
-	key          []byte
-	activeKeyID  string
-	keyring      map[string][]byte
-	worker       string
-	publications repository.AuditPublicationRepository
-	publishers   []AuditPublisher
-	bulkhead     *bulkhead.Bulkhead
-	roundTripper http.RoundTripper // test seam; nil = default transport
-	metrics      ControlPlaneMetrics
+	repo                   repository.CallbackRepository
+	deliveryPermission     PermissionChecker
+	deliveryPermissionOnce sync.Once
+	cfg                    CallbackConfig
+	key                    []byte
+	activeKeyID            string
+	keyring                map[string][]byte
+	worker                 string
+	network                callbackNetwork
+	publications           repository.AuditPublicationRepository
+	publishers             []AuditPublisher
+	bulkhead               *bulkhead.Bulkhead
+	roundTripper           http.RoundTripper // test seam; nil = default transport
+	metrics                ControlPlaneMetrics
 }
 
 const (
@@ -74,12 +79,24 @@ const (
 	maxCallbackRetryBase      = time.Minute
 )
 
-func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig) CallbackService {
+type CallbackOption func(*callbackService)
+
+// WithCallbackDeliveryPermission wires the authoritative checker for delivery
+// reads. Legacy management methods retain their existing transport gates.
+func WithCallbackDeliveryPermission(checker PermissionChecker) CallbackOption {
+	return func(s *callbackService) { s.SetCallbackDeliveryPermission(checker) }
+}
+
+func NewCallbackService(repo repository.CallbackRepository, cfg CallbackConfig, opts ...CallbackOption) CallbackService {
 	cfg = normalizeCallbackConfig(cfg)
 	activeKey, activeKeyID, keyring := callbackKeys(cfg)
-	return &callbackService{repo: repo, cfg: cfg, key: activeKey, activeKeyID: activeKeyID, keyring: keyring,
-		worker: "callback-" + idgen.NewID().String(), bulkhead: bulkhead.New(cfg.WorkerConcurrency),
-		metrics: noopControlPlaneMetrics{}}
+	s := &callbackService{repo: repo, cfg: cfg, key: activeKey, activeKeyID: activeKeyID, keyring: keyring,
+		worker: "callback-" + idgen.NewID().String(), network: defaultCallbackNetwork(),
+		bulkhead: bulkhead.New(cfg.WorkerConcurrency), metrics: noopControlPlaneMetrics{}}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func normalizeCallbackConfig(cfg CallbackConfig) CallbackConfig {
@@ -171,15 +188,8 @@ func (s *callbackService) Register(ctx context.Context, input CallbackInput) (*d
 	if err != nil {
 		return nil, "", err
 	}
-	if err := validateCallbackEndpoint(input.Endpoint, s.cfg.AllowPrivateTarget); err != nil {
-		return nil, "", apperr.BadRequest("callback.endpoint_invalid", "callback endpoint is not allowed").Wrap(err)
-	}
-	challenge, err := randomChallenge()
-	if err != nil {
-		return nil, "", apperr.Internal("callback.challenge_failed", "failed to create endpoint challenge").Wrap(err)
-	}
-	if err := verifyCallbackEndpoint(ctx, input.Endpoint, challenge, s.cfg); err != nil {
-		return nil, "", apperr.BadRequest("callback.verification_failed", "callback endpoint verification failed")
+	if err := s.verifyRegistrationEndpoint(ctx, input.Endpoint); err != nil {
+		return nil, "", err
 	}
 	secret, err := randomSecret()
 	if err != nil {

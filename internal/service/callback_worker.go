@@ -1,20 +1,9 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -25,11 +14,13 @@ import (
 // callback_worker.go owns the delivery/publication worker loop (Start), the
 // dead-letter retention purge (purgeDeadLetters), the deliveries drain
 // (drain), and every delivery-attempt helper (markDelivery, deliver,
-// retryDelay, httpClient, and the endpoint validation policy).
+// retryDelay). Network policy/client ownership lives in callback_network.go,
+// callback_address_policy.go and callback_endpoint.go.
 // The request path (Register/List/Delete/ReplayDelivery) lives in
 // callback.go; the audit publication drain lives in callback_audit.go.
 
 func (s *callbackService) Start(ctx context.Context, interval time.Duration) func() {
+	s.callbackDeliveryPermission()
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -116,6 +107,9 @@ func (s *callbackService) drain(ctx context.Context) {
 
 func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.CallbackDelivery) {
 	statusCode, response, deliverErr := s.deliver(ctx, delivery)
+	if s.observeCallbackSendBlock(deliverErr) {
+		return
+	}
 	if errors.Is(deliverErr, errCallbackSecretUnavailable) {
 		s.deferSecretUnavailable(ctx, delivery)
 		return
@@ -143,52 +137,40 @@ func (s *callbackService) markDelivery(ctx context.Context, delivery *domain.Cal
 }
 
 func (s *callbackService) deliver(ctx context.Context, delivery *domain.CallbackDelivery) (int, string, error) {
+	if delivery == nil {
+		return 0, "", errCallbackSendIneligible
+	}
 	// Detect local key failures before endpoint validation can resolve DNS or
 	// consume the remote retry budget. Egress policy still precedes any send.
 	secret, err := s.decrypt(delivery.SecretCiphertext)
 	if err != nil {
 		return 0, "", err
 	}
-	if err := validateCallbackEndpoint(delivery.Endpoint, s.cfg.AllowPrivateTarget); err != nil {
-		return 0, "", err
-	}
-	body, err := json.Marshal(delivery.Payload)
-	if err != nil {
-		return 0, "", err
-	}
 	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, delivery.Endpoint, bytes.NewReader(body))
+	if err := s.checkCallbackSend(requestCtx, delivery); err != nil {
+		return 0, "", err
+	}
+	request, err := callbackDeliveryRequest(requestCtx, delivery, secret)
 	if err != nil {
 		return 0, "", err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Aero-Callback-Schema-Version", "1")
-	request.Header.Set("X-Aero-Callback-Event-ID", delivery.EventID.String())
-	request.Header.Set("X-Aero-Callback-Attempt", fmt.Sprintf("%d", delivery.Attempt+1))
-	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
-	request.Header.Set("X-Aero-Callback-Timestamp", timestamp)
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(timestamp + "\n"))
-	_, _ = mac.Write(body)
-	request.Header.Set("X-Aero-Callback-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	client, err := s.httpClient(delivery.Endpoint)
+	client, gate, err := s.callbackSendClient(requestCtx, delivery)
 	if err != nil {
 		return 0, "", err
 	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
+	// net/http can replace a gate error with its request deadline error. Keep
+	// the explicit pre-transport refusal distinct from an attempted timeout.
+	if blocked := gate.blockedError(); blocked != nil {
+		return 0, "", blocked
+	}
 	if err != nil {
 		return 0, "", err
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, s.cfg.MaxResponseBytes+1))
-	if err != nil {
-		return response.StatusCode, "", err
-	}
-	if int64(len(data)) > s.cfg.MaxResponseBytes {
-		return response.StatusCode, "", errors.New("callback response is too large")
-	}
-	return response.StatusCode, string(data), nil
+	return callbackDeliveryResponse(requestCtx, response, s.cfg.MaxResponseBytes)
 }
 
 func (s *callbackService) retryDelay(attempt int) time.Duration {
@@ -234,49 +216,4 @@ func (s *callbackService) deferSecretUnavailable(ctx context.Context, delivery *
 		return
 	}
 	s.metrics.ObserveCallbackOutcome("secret_unavailable")
-}
-
-//nolint:cyclop // endpoint validation is deliberately fail-closed across URL, DNS, and private-network checks.
-func (s *callbackService) httpClient(endpoint string) (*http.Client, error) {
-	client, err := newCallbackHTTPClient(endpoint, s.cfg)
-	if err != nil {
-		return nil, err
-	}
-	if s.roundTripper != nil {
-		client.Transport = s.roundTripper
-	}
-	return client, nil
-}
-
-func validateCallbackEndpoint(raw string, allowPrivate bool) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
-		return errors.New("endpoint must be an https URL without userinfo")
-	}
-	if allowPrivate {
-		return nil
-	}
-	if isPrivateHost(parsed.Hostname()) {
-		return errors.New("private callback targets are not allowed")
-	}
-	return validateCallbackResolvesPublic(parsed.Hostname())
-}
-
-// validateCallbackResolvesPublic rejects hostnames that do not resolve or that
-// resolve to private addresses (SSRF guard: no DNS-rebinding vector).
-func validateCallbackResolvesPublic(host string) error {
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
-		return errors.New("callback hostname cannot be resolved")
-	}
-	for _, ip := range ips {
-		if !publicIP(ip) {
-			return errors.New("callback resolves to a private address")
-		}
-	}
-	return nil
-}
-
-func isPrivateHost(host string) bool {
-	return strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".local")
 }

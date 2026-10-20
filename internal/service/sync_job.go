@@ -58,7 +58,8 @@ func WithSyncJobPermission(checker PermissionChecker) SyncJobOption {
 }
 
 // Only an authoritative checker is suitable here; enqueue's legacy checker
-// must not become a renewable execution grant.
+// must not become a renewable execution or export-download grant. Execution
+// checks the durable initiator; downloads check the current verified reader.
 func WithSyncJobExecutionPermission(checker PermissionChecker) SyncJobOption {
 	return func(s *syncJobService) { s.executionPermission = checker }
 }

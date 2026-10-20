@@ -141,6 +141,7 @@ func (h *SyncJobHandler) Reconcile(c *gin.Context) {
 }
 
 func (h *SyncJobHandler) DownloadExport(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	id, err := httpx.ParseIDFromParam(c, "id")
 	if err != nil {
 		httpx.WriteError(c, err)

@@ -4,6 +4,7 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -190,7 +191,7 @@ func TestMessageRepo_SoftDeleteExcludedFromList(t *testing.T) {
 	if len(inbox) != 0 {
 		t.Fatalf("expected 0 messages after soft delete, got %d", len(inbox))
 	}
-	if _, err := repo.Get(ctx, m.ID); err != repository.ErrNotFound {
+	if _, err := repo.Get(ctx, m.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Get after soft delete = %v, want ErrNotFound", err)
 	}
 	// SoftDelete is idempotent.
@@ -225,7 +226,7 @@ func TestMessageRepo_GetIncludingDeleted(t *testing.T) {
 	if err := repo.SoftDelete(ctx, m.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Get(ctx, m.ID); err != repository.ErrNotFound {
+	if _, err := repo.Get(ctx, m.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Get after soft delete = %v, want ErrNotFound", err)
 	}
 	deleted, err := repo.GetIncludingDeleted(ctx, m.ID)
@@ -237,7 +238,7 @@ func TestMessageRepo_GetIncludingDeleted(t *testing.T) {
 	}
 
 	// A never-existing id stays ErrNotFound in both scopes.
-	if _, err := repo.GetIncludingDeleted(ctx, idgen.NewID()); err != repository.ErrNotFound {
+	if _, err := repo.GetIncludingDeleted(ctx, idgen.NewID()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("GetIncludingDeleted on missing id = %v, want ErrNotFound", err)
 	}
 }

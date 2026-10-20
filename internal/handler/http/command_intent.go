@@ -20,8 +20,10 @@ func NewCommandIntentHandler(intents service.CommandIntentService) *CommandInten
 
 func (h *CommandIntentHandler) RegisterRoutes(r Routes) {
 	r.ControlPlane.POST("/command-intents", h.Create)
+	r.ControlPlane.GET("/command-intents/by-key", h.FindByKey)
 	r.ControlPlane.GET("/command-intents/:id", h.Get)
 	r.ControlPlane.POST("/command-intents/:id/execute", h.Execute)
+	r.ControlPlane.POST("/command-intents/:id/abandon", h.Abandon)
 }
 
 type commandIntentRequest struct {

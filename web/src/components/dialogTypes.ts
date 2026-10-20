@@ -30,14 +30,7 @@ export type MigrationCommand =
       idempotencyKey: string;
     };
 
-export type CallbackCommand =
-  | { kind: "delete"; id: string; endpoint: string }
-  | {
-      kind: "replay";
-      id: string;
-      signature: string;
-      idempotencyKey: string;
-    };
+export type CallbackCommand = { kind: "delete"; id: string; endpoint: string };
 export interface CallbackSecret {
   subscriptionID: string;
   value: string;

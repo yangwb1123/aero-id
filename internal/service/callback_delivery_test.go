@@ -98,6 +98,9 @@ func (f *callbackFakeRepo) FetchDueDeliveries(ctx context.Context, limit int, wo
 	out := make([]*domain.CallbackDelivery, 0, len(f.deliveries))
 	for _, d := range f.deliveries {
 		if d.NextAttemptAt.Before(time.Now().UTC()) {
+			until := time.Now().UTC().Add(lease)
+			d.Status, d.LeaseOwner, d.LeaseUntil = "delivering", worker, &until
+			d.LeaseGeneration++
 			out = append(out, d)
 		}
 	}

@@ -1,66 +1,63 @@
 <script setup lang="ts">
-import { IrisCard } from "@iris-ui-kit/vue";
+import { computed } from "vue";
+import { IrisAlert } from "@iris-ui-kit/vue";
 import type { AeroIdClient } from "../api/aeroId";
-import PagedRecordTable from "../components/PagedRecordTable.vue";
-import PageError from "../components/PageError.vue";
+import { capabilityAvailable } from "../api/capabilities";
+import AccountProjectionContext from "../components/AccountProjectionContext.vue";
+import ConnectionReferenceList from "../components/ConnectionReferenceList.vue";
 import PageHeader from "../components/PageHeader.vue";
-import PageLoading from "../components/PageLoading.vue";
-import { useAsyncResource } from "../hooks/useAsyncResource";
-const { client } = defineProps<{ client: AeroIdClient }>();
-const resource = useAsyncResource(async () => {
-  const [sources, memberships] = await Promise.all([
-    client.listSources(),
-    client.listMemberships(),
-  ]);
-  return { sources, memberships };
-});
+import { useCapabilities } from "../hooks/capabilityContext";
+defineProps<{ client: AeroIdClient }>();
+const capabilities = useCapabilities();
+const report = computed(() => capabilities?.());
+const canRead = computed(() =>
+  capabilityAvailable(report.value, ["account.self.read"]),
+);
+const account = computed(() => ({
+  account_id: report.value?.account_id,
+  tenant_id: report.value?.tenant_id,
+  home_region: report.value?.home_region,
+}));
 </script>
 
 <template>
-  <PageLoading v-if="resource.loading" />
-  <PageError
-    v-else-if="resource.error"
-    :error="resource.error"
-    :retry="resource.reload"
-  />
-  <section v-else-if="resource.data">
+  <section>
     <PageHeader
       title="来源与成员关系"
-      description="保留 Aero IM、Aero Vault 和 Snaplink 的原生引用，不把不同作用域折叠成一个 tenant_id。"
+      description="先选择一条已保存引用，查看它原本的来源账户、成员和作用域；不调用来源管理接口。"
+    >
+      <template #actions
+        ><a href="#/overview">返回账户概览</a
+        ><a href="#/resources">查看当前资源摘要</a
+        ><a href="#/jobs">选择范围同步 / 导出</a></template
+      >
+    </PageHeader>
+    <AccountProjectionContext :account="account" />
+    <IrisAlert tone="warning" title="不同来源的作用域不能互换">
+      当前会话租户不等于来源租户、IM 工作空间或 Vault 桶；相同 ID
+      文本也不代表同一范围。成员关系与 owner 不是全局权限，不提供来源管理授权。
+    </IrisAlert>
+    <p class="reference-boundary">
+      两个列表独立读取本地引用，未提供 coverage/complete
+      或投影到期预算，不能确认来源全量、完整性或当前新鲜度。刷新只 GET
+      原列表，不创建同步、导出或其他命令；需要更新时再显式选择范围并核对原预览。
+    </p>
+    <ConnectionReferenceList
+      :client="client"
+      kind="sources"
+      :can-read="canRead"
     />
-    <IrisCard variant="outline">
-      <template #header>来源账户</template>
-      <PagedRecordTable
-        :page="resource.data.sources"
-        :load-page="(cursor) => client.listSources(cursor)"
-        :columns="[
-          { key: 'source', label: '来源', aliases: ['source_system'] },
-          {
-            key: 'source_account_id',
-            label: '来源账户',
-            aliases: ['external_id', 'subject'],
-          },
-          { key: 'status', label: '状态', kind: 'status' },
-          { key: 'source_region', label: '区域', aliases: ['region'] },
-          { key: 'last_synced_at', label: '最后同步', kind: 'date' },
-        ]"
-        empty="尚未关联来源账户"
-      />
-    </IrisCard>
-    <IrisCard variant="outline">
-      <template #header>成员关系</template>
-      <PagedRecordTable
-        :page="resource.data.memberships"
-        :load-page="(cursor) => client.listMemberships(cursor)"
-        :columns="[
-          { key: 'source', label: '来源' },
-          { key: 'scope_type', label: '作用域类型' },
-          { key: 'scope_id', label: '作用域 ID' },
-          { key: 'role', label: '角色', aliases: ['membership_role'] },
-          { key: 'status', label: '状态', kind: 'status' },
-        ]"
-        empty="暂无成员关系"
-      />
-    </IrisCard>
+    <ConnectionReferenceList
+      :client="client"
+      kind="memberships"
+      :can-read="canRead"
+    />
   </section>
 </template>
+
+<style scoped>
+.reference-boundary {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+</style>

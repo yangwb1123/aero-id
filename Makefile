@@ -16,7 +16,7 @@ build-audit-replay: ; go build -o bin/audit-replay ./cmd/audit-replay
 build-preflight: ; go build -o bin/preflight ./cmd/preflight
 run:         ; go run ./cmd/server -config configs/config.yaml
 test:        ; go test ./... -count=1
-# Integration tests use Docker-owned fixtures. Keep both the per-test Go
+# Integration tests use Docker-owned fixtures. Keep both the per-package Go
 # timeout and an outer process timeout: a stuck Docker/Testcontainers wait
 # must fail the CI job rather than consume the runner indefinitely.
 INTEGRATION_TEST_TIMEOUT ?= 15m
@@ -26,6 +26,22 @@ test-integration:
 	@docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is unavailable for integration tests" >&2; exit 1; }
 	timeout --foreground --kill-after=30s $(INTEGRATION_PROCESS_TIMEOUT) \
 	  go test -tags=integration -p 1 -timeout=$(INTEGRATION_TEST_TIMEOUT) ./... -count=1
+# Diagnostic full-suite alternative: two isolated Go package processes, not
+# shared fixtures. Keep the original serial gate above unchanged. No filtering,
+# retry, cache, longer timeout or inherited GOFLAGS may turn this into a subset.
+.PHONY: test-integration-bounded check-integration-runner
+test-integration-bounded:
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: Docker is required for integration tests" >&2; exit 1; }
+	@timeout --foreground --kill-after=5s 30s docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is unavailable for integration tests" >&2; exit 1; }
+	GOTOOLCHAIN=local GOWORK=off GOFLAGS= timeout --foreground --kill-after=30s $(INTEGRATION_PROCESS_TIMEOUT) \
+	  go test -mod=readonly -json -tags=integration -p 2 -timeout=$(INTEGRATION_TEST_TIMEOUT) ./... -count=1
+
+# Docker-free execution-contract tests probe the real Make recipes using only
+# private recording commands; they are not fixture or full-suite acceptance.
+check-integration-runner:
+	GOTOOLCHAIN=local GOWORK=off GOFLAGS= timeout --foreground --kill-after=5s 2m \
+	  go test -mod=readonly ./internal/config -run '^TestIntegrationRunner' -count=1 -timeout=60s
+
 # The real Vault contract suite is external-deployment backed and is kept
 # separate from the PostgreSQL/MinIO integration fixture. It skips when no
 # deployment is configured, or fails closed when *_REQUIRED=true is set.
@@ -171,8 +187,10 @@ check-proto-sync:
 
 # Kubernetes release-template gate: source-disabled base, optional feature
 # secrets, immutable images, config checksum annotations, and init preflight.
-# The script also renders a deterministic fixture and runs kubectl client-side
-# validation when kubectl is available.
+# Mandatory offline strict schema validation in the existing deployments/k8s
+# test package, including all five renders and rejection/integrity/budget tests.
+# Schema bytes/GVKs are pinned; no kubectl, kubeconfig or missing-schema skip.
+# Go module provisioning is separate from cluster-free schema validation.
 check-k8s-manifest:
 	@bash scripts/check-k8s-manifest.sh
 

@@ -146,25 +146,36 @@ type operationResponse struct {
 }
 
 type operationStepResponse struct {
-	ID                            string         `json:"id"`
-	StepKey                       string         `json:"step_key"`
-	Source                        string         `json:"source"`
-	Action                        string         `json:"action"`
-	Status                        string         `json:"status"`
-	Attempt                       int            `json:"attempt"`
-	LeaseUntil                    any            `json:"lease_until,omitempty"`
-	SourceOperationID             string         `json:"source_operation_id,omitempty"`
-	Result                        map[string]any `json:"result"`
-	ErrorCode                     string         `json:"error_code,omitempty"`
-	ErrorMessage                  string         `json:"error_message,omitempty"`
-	CompensationAction            string         `json:"compensation_action,omitempty"`
-	CompensationStatus            string         `json:"compensation_status,omitempty"`
-	CompensationAttempt           int            `json:"compensation_attempt,omitempty"`
-	CompensationLeaseUntil        any            `json:"compensation_lease_until,omitempty"`
-	CompensationSourceOperationID string         `json:"compensation_source_operation_id,omitempty"`
-	CompensationResult            map[string]any `json:"compensation_result,omitempty"`
-	CompensationErrorCode         string         `json:"compensation_error_code,omitempty"`
-	CompensationErrorMessage      string         `json:"compensation_error_message,omitempty"`
+	ID                            string                 `json:"id"`
+	StepKey                       string                 `json:"step_key"`
+	Source                        string                 `json:"source"`
+	Action                        string                 `json:"action"`
+	DatasetScope                  operationScopeResponse `json:"dataset_scope"`
+	Status                        string                 `json:"status"`
+	Attempt                       int                    `json:"attempt"`
+	LeaseUntil                    any                    `json:"lease_until,omitempty"`
+	SourceOperationID             string                 `json:"source_operation_id,omitempty"`
+	Result                        map[string]any         `json:"result"`
+	ErrorCode                     string                 `json:"error_code,omitempty"`
+	ErrorMessage                  string                 `json:"error_message,omitempty"`
+	CompensationAction            string                 `json:"compensation_action,omitempty"`
+	CompensationStatus            string                 `json:"compensation_status,omitempty"`
+	CompensationAttempt           int                    `json:"compensation_attempt,omitempty"`
+	CompensationLeaseUntil        any                    `json:"compensation_lease_until,omitempty"`
+	CompensationSourceOperationID string                 `json:"compensation_source_operation_id,omitempty"`
+	CompensationResult            map[string]any         `json:"compensation_result,omitempty"`
+	CompensationErrorCode         string                 `json:"compensation_error_code,omitempty"`
+	CompensationErrorMessage      string                 `json:"compensation_error_message,omitempty"`
+}
+
+type operationScopeResponse struct {
+	Status   string   `json:"status"`
+	Datasets []string `json:"datasets"`
+}
+
+func operationScopeResponseOf(step *domain.OperationStep) operationScopeResponse {
+	scope := service.DescribeOperationStepScope(step)
+	return operationScopeResponse{Status: scope.Status, Datasets: scope.Datasets}
 }
 
 func operationResponseOf(operation *domain.Operation) operationResponse {
@@ -178,7 +189,8 @@ func operationResponseOf(operation *domain.Operation) operationResponse {
 	}
 	for i, step := range operation.Steps {
 		result.Steps[i] = operationStepResponse{ID: step.ID.String(), StepKey: step.StepKey, Source: step.Source,
-			Action: step.Action, Status: string(step.Status), Attempt: step.Attempt, LeaseUntil: step.LeaseUntil,
+			Action: step.Action, DatasetScope: operationScopeResponseOf(step),
+			Status: string(step.Status), Attempt: step.Attempt, LeaseUntil: step.LeaseUntil,
 			SourceOperationID: step.SourceOperationID, Result: step.Result, ErrorCode: step.ErrorCode, ErrorMessage: step.ErrorMessage,
 			CompensationAction: step.CompensationAction, CompensationStatus: string(step.CompensationStatus),
 			CompensationAttempt: step.CompensationAttempt, CompensationLeaseUntil: step.CompensationLeaseUntil,
